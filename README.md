@@ -37,21 +37,14 @@ benchmark/
 ├── LICENSE                      # Apache-2.0 for project-authored material
 ├── PROVENANCE.md                # Upstream repositories and pinned revisions
 ├── THIRD_PARTY_NOTICES.md       # Third-party materials and patch notices
-├── refactor-report.html         # Leaderboard, per-task scores, and failure analyses
-├── tasks/
-│   └── <task>/
-│       ├── instruction.md       # Requirements shown to the agent
-│       ├── task.toml            # Pinned revision, category, images, and execution settings
-│       ├── environment/         # Dockerfile for the agent workspace
-│       ├── solution/            # Reference patch and Oracle entry point
-│       └── tests/               # Verifier, test configuration, and replay patches
-└── runs/
-    └── <task>/<configuration>/rollout_<n>/
-        ├── agent/               # Agent record
-        ├── artifacts/           # Collected run artifacts
-        ├── verifier/            # Evaluation output and reward
-        ├── result.json          # Trial status and summary
-        └── trial.log            # Execution log
+└── tasks/
+    └── <task>/
+        ├── instruction.md       # Requirements shown to the agent
+        ├── task.toml            # Pinned revision, category, images, and execution settings
+        ├── environment/         # Dockerfile for the agent workspace
+        ├── solution/            # Reference patch and Oracle entry point
+        └── tests/               # Verifier, test configuration, and replay patches
+
 ```
 
 ## 1. Overview
@@ -69,7 +62,7 @@ Each task starts at a pinned commit and specifies which code should own a respon
 
 ## 2. Leaderboard
 
-Each configuration ran 160 times. **pass@1** is the share of runs that earned full reward. **pass@4** is the share of the 40 tasks solved at least once in four attempts. **pass^4** is the share solved in all four attempts. Token and cost figures follow the HTML report and include all four attempts per task. [Evaluation report](./refactor-report.html)
+Each configuration ran 160 times. **pass@1** is the share of runs that earned full reward. **pass@4** is the share of the 40 tasks solved at least once in four attempts. **pass^4** is the share solved in all four attempts. 
 
 | Model · effort | Harness | pass@1 | pass@4 | pass^4 | Avg. steps | Tokens per task (M) | Est. USD per task | Tasks passed |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -190,7 +183,7 @@ Of the 2,080 runs, 733 earned full reward and 1,347 fell short. The following ex
 | Boxes generator registry | The implementation reused the catalog object but scanned the modules again on warm queries. Alternating full and module views produced 567 additional scan records. |
 | pdoc rendering configuration | Search-template rendering still read settings from shared Jinja globals, allowing one server’s configuration to affect another. |
 
-The [HTML report](./refactor-report.html) contains the model-specific findings. The [archived runs](./runs/) contain the corresponding agent records and verifier output.
+
 
 ## 8. References
 
