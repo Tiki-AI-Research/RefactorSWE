@@ -2,7 +2,9 @@
 
 The 40 tasks in this directory come from 35 upstream repositories. Each row lists one repository. The base commit hash comes from the `metadata.base_commit_hash` field in each task's `task.toml`. Each license name links to the license file at the repository root for that commit. Each task name links to its local configuration.
 
-This table documents the licenses of the upstream repositories. For separately licensed files, third-party dependencies, container images, task descriptions, reference patches, and verifiers, check the license terms at each source. The GPL and AGPL entries list the version given in the license file at the repository root. Each file's license notice determines whether a later version may be used.
+## Task sources
+
+This table records the license text at each pinned repository root. Package metadata and file-level notices may specify different terms or clarify whether a later version is permitted. See [license declarations for particular tasks](#license-declarations-for-particular-tasks) and [third-party notices](./THIRD_PARTY_NOTICES.md) for the scope of the distributed patches and links to upstream attribution notices.
 
 | Upstream repository | Base commit | License at repository root | Benchmark tasks |
 |---|---|---|---|
@@ -41,3 +43,25 @@ This table documents the licenses of the upstream repositories. For separately l
 | [uqfoundation/dill](https://github.com/uqfoundation/dill) | [50d93fe52c84](https://github.com/uqfoundation/dill/tree/50d93fe52c84cdbfd81c39f5adba68f627fd330b) | [BSD 3-Clause-style license (see original text)](https://github.com/uqfoundation/dill/blob/50d93fe52c84cdbfd81c39f5adba68f627fd330b/LICENSE) | [refactor-dill-dispatch-registry-03](./tasks/refactor-dill-dispatch-registry-03/task.toml)<br>[refactor-dill-module-identity-01](./tasks/refactor-dill-module-identity-01/task.toml) |
 | [wooey/Wooey](https://github.com/wooey/Wooey) | [6e24ffe16f38](https://github.com/wooey/Wooey/tree/6e24ffe16f389a99de28fae3671cbd25df52d51c) | [BSD-3-Clause](https://github.com/wooey/Wooey/blob/6e24ffe16f389a99de28fae3671cbd25df52d51c/LICENSE) | [refactor-wooey-script-registration-01](./tasks/refactor-wooey-script-registration-01/task.toml) |
 | [Yakitrak/notesmd-cli](https://github.com/Yakitrak/notesmd-cli) | [58830c82327b](https://github.com/Yakitrak/notesmd-cli/tree/58830c82327b8b34f8e5d52e5a3a7cfa0ad0ab5a) | [MIT](https://github.com/Yakitrak/notesmd-cli/blob/58830c82327b8b34f8e5d52e5a3a7cfa0ad0ab5a/LICENSE) | [refactor-notesmd-cli-note-operation-04](./tasks/refactor-notesmd-cli-note-operation-04/task.toml) |
+
+## License declarations for particular tasks
+
+| Task source | Applicable upstream declaration |
+|---|---|
+| `opensteno/plover` | Plover project metadata specifies [GPL-2.0-or-later](https://github.com/opensteno/plover/blob/e87c4ef2982fcdeea587d2e612dff829fd331386/setup.cfg). |
+| `florianfesti/boxes` | Boxes project metadata specifies [GPL-3.0-or-later](https://github.com/florianfesti/boxes/blob/d23a70c4912258407161243ed50e06f126d3fca8/pyproject.toml). |
+| `amll-dev/applemusic-like-lyrics` | The patched `packages/core` package specifies [AGPL-3.0-only](https://github.com/amll-dev/applemusic-like-lyrics/blob/5c0959686d18ca185b81811added3cd31299569f/packages/core/package.json). |
+| `actions/setup-go` | The reference patch includes changes to the generated `dist/setup/index.js` and `dist/cache-save/index.js` bundles. See the [bundled dependency notices](https://github.com/actions/setup-go/tree/fba3fb4ead8c8e09a06f1d32ae5436e5818eff15/.licenses/npm). |
+
+## Published container images
+
+Each task's `task.toml` records the agent and verifier image tags and digests in `[environment]` and `[verifier.environment]`. The associated `environment/Dockerfile` and `tests/Dockerfile` describe the pinned upstream checkout and environment build. The tag listing is available on [Docker Hub](https://hub.docker.com/r/tikiaiteam/refactor/tags).
+
+The Dockerfiles also reference these base images in `docker.io/tikiaiteam/refactor`.
+
+| Base image tag | Digest |
+|---|---|
+| `tikiaihub-harbor-bundle-base-image-20261125` | `sha256:a2eec5fcbf6931070109e8783280d36f097060d5f5f91628385e008ab990979f` |
+| `blacktt94-harbor-bundle-base-image-20261125` | `sha256:c3b4c5a85cc1b8b1602e72d70bf655483735dd1ad5591f51b1ccb23781127ef3` |
+
+The repository's [third-party notices](./THIRD_PARTY_NOTICES.md) cover the identified upstream materials in its task artifacts. Verification of image-layer components, image-specific notices, and the corresponding source required for any distributed GPL or AGPL object code is pending.

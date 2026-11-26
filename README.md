@@ -34,7 +34,9 @@ uv tool install --python 3.12 'harbor==0.24.0'
 ```text
 benchmark/
 ├── README.md
-├── PROVENANCE.md                # Upstream sources and license information
+├── LICENSE                      # Apache-2.0 for project-authored material
+├── PROVENANCE.md                # Upstream repositories and pinned revisions
+├── THIRD_PARTY_NOTICES.md       # Third-party materials and patch notices
 ├── refactor-report.html         # Leaderboard, per-task scores, and failure analyses
 ├── tasks/
 │   └── <task>/
@@ -197,4 +199,6 @@ The [HTML report](./refactor-report.html) contains the model-specific findings. 
 
 ## License
 
-Original task instructions, verifiers, and replay tools authored by the RefactorSWE project are licensed under the Apache License, Version 2.0. Third-party material, including upstream code reproduced in patches, remains subject to its applicable license terms. See [PROVENANCE.md](./PROVENANCE.md).
+RefactorSWE's original documentation, task instructions, configuration, standalone verifier code, and replay tooling are available under the [Apache License, Version 2.0](./LICENSE), to the extent the project has authority to license them.
+
+Third-party material, including upstream code reproduced or modified in reference, verifier, and replay patches, remains subject to its applicable license terms. See [PROVENANCE.md](./PROVENANCE.md) for pinned upstream revisions and image references and [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for patch scope and links to upstream licenses and attribution notices.
