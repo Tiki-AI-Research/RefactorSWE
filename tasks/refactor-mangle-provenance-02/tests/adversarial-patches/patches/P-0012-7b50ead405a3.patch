@@ -1,0 +1,1084 @@
+diff --git a/provenance/provenance.go b/provenance/provenance.go
+--- a/provenance/provenance.go
++++ b/provenance/provenance.go
+@@ -142,71 +142,173 @@
+ // leaf is returned. If the predicate is IDB, each returned tree corresponds
+ // to one successful rule application.
+ func Explain(program *analysis.ProgramInfo, store factstore.ReadOnlyFactStore, goal ast.Atom, opts Options) ([]*ProofNode, error) {
++	resolver := &postHocResolver{
++		program: program,
++		store:   store,
++	}
++	return buildProofGraph(goal, opts, resolver)
++}
++
++// premiseResolver is the abstraction injected into the shared proof graph builder.
++// The shared builder handles options normalization, ground validation, depth limiting,
++// caching, cycle detection, rule ID memoization, and node assembly.
++type premiseResolver interface {
++	resolvePremises(b *graphBuilder, goal ast.Atom, depth int, remaining int) []*ProofNode
++}
++
++type graphBuilder struct {
++	opts     Options
++	resolver premiseResolver
++	cache    map[uint64][]*ProofNode
++	onStack  map[uint64]bool
++	ruleIDs  map[string]string
++}
++
++func newGraphBuilder(opts Options, resolver premiseResolver) *graphBuilder {
+ 	if opts.MaxProofs == 0 {
+ 		opts.MaxProofs = defaultMaxProofs
+ 	}
+ 	if opts.MaxDepth == 0 {
+ 		opts.MaxDepth = defaultMaxDepth
+ 	}
++	return &graphBuilder{
++		opts:     opts,
++		resolver: resolver,
++		cache:    make(map[uint64][]*ProofNode),
++		onStack:  make(map[uint64]bool),
++		ruleIDs:  make(map[string]string),
++	}
++}
++
++func buildProofGraph(goal ast.Atom, opts Options, resolver premiseResolver) ([]*ProofNode, error) {
+ 	if !isGround(goal) {
+ 		return nil, ErrGoalNotGround
+ 	}
+-	e := &explainer{
+-		program: program,
+-		store:   store,
+-		opts:    opts,
+-		cache:   make(map[uint64][]*ProofNode),
+-		onStack: make(map[uint64]bool),
+-		ruleIDs: make(map[int]string),
+-	}
+-	proofs := e.explain(goal, 0)
++	b := newGraphBuilder(opts, resolver)
++	proofs := b.prove(goal, 0)
+ 	if len(proofs) == 0 {
+ 		return nil, ErrNoProof
+ 	}
+ 	return proofs, nil
+ }
+ 
+-type explainer struct {
++func (b *graphBuilder) prove(goal ast.Atom, depth int) []*ProofNode {
++	if depth > b.opts.MaxDepth {
++		return []*ProofNode{b.buildPartialLeaf(goal)}
++	}
++	h := goal.Hash()
++	if cached, ok := b.cache[h]; ok {
++		return cached
++	}
++	if b.onStack[h] {
++		return nil
++	}
++	b.onStack[h] = true
++	defer delete(b.onStack, h)
++
++	proofs := b.resolver.resolvePremises(b, goal, depth, b.opts.MaxProofs)
++	b.cache[h] = proofs
++	return proofs
++}
++
++func (b *graphBuilder) ruleID(r ast.Clause) string {
++	key := r.String()
++	if id, ok := b.ruleIDs[key]; ok {
++		return id
++	}
++	id := ruleContentID(r)
++	b.ruleIDs[key] = id
++	return id
++}
++
++func (b *graphBuilder) buildEDBLeaf(goal ast.Atom) *ProofNode {
++	return &ProofNode{
++		ID:   edbProofID(goal),
++		Fact: goal,
++		Kind: KindEDB,
++	}
++}
++
++func (b *graphBuilder) buildAbsenceLeaf(fact ast.Atom) *ProofNode {
++	return &ProofNode{
++		ID:   absenceProofID(fact),
++		Fact: fact,
++		Kind: KindAbsence,
++	}
++}
++
++func (b *graphBuilder) buildPartialLeaf(goal ast.Atom) *ProofNode {
++	return &ProofNode{
++		ID:      partialID(goal),
++		Fact:    goal,
++		Partial: true,
++	}
++}
++
++func (b *graphBuilder) buildDerivedNode(goal ast.Atom, rule *ast.Clause, ruleID string, bindings []Binding, premises []*ProofNode, partial bool) *ProofNode {
++	node := &ProofNode{
++		Fact:     goal,
++		Kind:     KindDerived,
++		Rule:     rule,
++		RuleID:   ruleID,
++		Bindings: bindings,
++		Premises: premises,
++		Partial:  partial,
++	}
++	node.ID = derivedProofID(ruleID, goal, premises)
++	return node
++}
++
++func (b *graphBuilder) buildLetNode(output ast.Atom, rule *ast.Clause, ruleID string, premises []*ProofNode, transformText string, partial bool) *ProofNode {
++	node := &ProofNode{
++		Fact:          output,
++		Kind:          KindLetRow,
++		Rule:          rule,
++		RuleID:        ruleID,
++		Premises:      premises,
++		TransformText: transformText,
++		Partial:       partial,
++	}
++	node.ID = derivedProofID(ruleID, output, premises)
++	return node
++}
++
++func (b *graphBuilder) buildDoNode(output ast.Atom, rule *ast.Clause, ruleID string, groupKey []ast.Constant, premises []*ProofNode, transformText string, partial bool) *ProofNode {
++	sortedPremises := append([]*ProofNode(nil), premises...)
++	sort.Slice(sortedPremises, func(i, j int) bool {
++		return sortedPremises[i].ID < sortedPremises[j].ID
++	})
++	node := &ProofNode{
++		Fact:          output,
++		Kind:          KindDoAggregate,
++		Rule:          rule,
++		RuleID:        ruleID,
++		GroupKey:      groupKey,
++		Premises:      sortedPremises,
++		TransformText: transformText,
++		Partial:       partial,
++	}
++	node.ID = derivedProofID(ruleID, output, sortedPremises)
++	return node
++}
++
++type postHocResolver struct {
+ 	program *analysis.ProgramInfo
+ 	store   factstore.ReadOnlyFactStore
+-	opts    Options
+-	// cache memoizes proofs per ground goal hash. Avoids recomputing proofs
+-	// of facts that appear as premises in multiple parent proofs.
+-	cache map[uint64][]*ProofNode
+-	// onStack tracks goals currently being proved to break cycles.
+-	onStack map[uint64]bool
+-	// ruleIDs memoizes content-addressed rule IDs keyed by index in program.Rules.
+-	ruleIDs map[int]string
+-}
+-
+-func (e *explainer) explain(goal ast.Atom, depth int) []*ProofNode {
+-	if depth > e.opts.MaxDepth {
+-		return []*ProofNode{{Fact: goal, Partial: true, ID: partialID(goal)}}
+-	}
+-	h := goal.Hash()
+-	if cached, ok := e.cache[h]; ok {
+-		return cached
+-	}
+-	if e.onStack[h] {
+-		return nil
+-	}
+-	e.onStack[h] = true
+-	defer delete(e.onStack, h)
+-
++}
++
++func (r *postHocResolver) resolvePremises(b *graphBuilder, goal ast.Atom, depth int, remaining int) []*ProofNode {
+ 	var proofs []*ProofNode
+ 
+-	if e.isEDB(goal.Predicate) && e.store.Contains(goal) {
+-		proofs = append(proofs, &ProofNode{
+-			ID:   edbProofID(goal),
+-			Fact: goal,
+-			Kind: KindEDB,
+-		})
+-	}
+-
+-	for ruleIdx, rule := range e.program.Rules {
+-		if len(proofs) >= e.opts.MaxProofs {
++	if r.isEDB(goal.Predicate) && r.store.Contains(goal) {
++		proofs = append(proofs, &ProofNode{ID: edbProofID(goal), Fact: goal, Kind: KindEDB})
++	}
++
++	for ruleIdx := range r.program.Rules {
++		if len(proofs) >= b.opts.MaxProofs {
+ 			break
+ 		}
++		rule := r.program.Rules[ruleIdx]
+ 		if rule.Head.Predicate != goal.Predicate {
+ 			continue
+ 		}
+@@ -219,20 +321,19 @@
+ 		if err != nil {
+ 			continue
+ 		}
+-		remaining := e.opts.MaxProofs - len(proofs)
+-		for _, sol := range e.solveBody(rulePremises, headUF, depth, remaining) {
+-			if len(proofs) >= e.opts.MaxProofs {
++		rem := remaining - len(proofs)
++		for _, sol := range r.solveBody(b, rulePremises, headUF, depth, rem) {
++			if len(proofs) >= b.opts.MaxProofs {
+ 				break
+ 			}
+-			proof, ok := e.buildProof(&e.program.Rules[ruleIdx], ruleIdx, rule, goal, sol, depth)
+-			if !ok {
+-				continue
+-			}
++			ruleRef := &r.program.Rules[ruleIdx]
++			ruleID := b.ruleID(rule)
++			bindings := extractBindings(rule, sol.subst)
++			proof := b.buildDerivedNode(goal, ruleRef, ruleID, bindings, sol.subProofs, sol.partial)
+ 			proofs = append(proofs, proof)
+ 		}
+ 	}
+ 
+-	e.cache[h] = proofs
+ 	return proofs
+ }
+ 
+@@ -245,11 +346,11 @@
+ 	partial      bool
+ }
+ 
+-func (e *explainer) solveBody(premises []ast.Term, uf unionfind.UnionFind, depth, need int) []bodySolution {
+-	return e.solveBodyRec(premises, uf, depth, need, nil, nil, false)
+-}
+-
+-func (e *explainer) solveBodyRec(premises []ast.Term, uf unionfind.UnionFind, depth, need int, accAtoms []ast.Atom, accProofs []*ProofNode, partial bool) []bodySolution {
++func (r *postHocResolver) solveBody(b *graphBuilder, premises []ast.Term, uf unionfind.UnionFind, depth, need int) []bodySolution {
++	return r.solveBodyRec(b, premises, uf, depth, need, nil, nil, false)
++}
++
++func (r *postHocResolver) solveBodyRec(b *graphBuilder, premises []ast.Term, uf unionfind.UnionFind, depth, need int, accAtoms []ast.Atom, accProofs []*ProofNode, partial bool) []bodySolution {
+ 	if len(premises) == 0 {
+ 		return []bodySolution{{subst: uf, premiseAtoms: accAtoms, subProofs: accProofs, partial: partial}}
+ 	}
+@@ -259,51 +360,47 @@
+ 	first, rest := premises[0], premises[1:]
+ 	switch p := first.(type) {
+ 	case ast.Atom:
+-		return e.solveAtomPremise(p, rest, uf, depth, need, accAtoms, accProofs, partial)
++		return r.solveAtomPremise(b, p, rest, uf, depth, need, accAtoms, accProofs, partial)
+ 	case ast.Eq:
+ 		ok, err := evalEq(p.Left, p.Right, uf, true)
+ 		if err != nil || !ok {
+ 			return nil
+ 		}
+-		return e.solveBodyRec(rest, uf, depth, need, accAtoms, accProofs, partial)
++		return r.solveBodyRec(b, rest, uf, depth, need, accAtoms, accProofs, partial)
+ 	case ast.Ineq:
+ 		ok, err := evalEq(p.Left, p.Right, uf, false)
+ 		if err != nil || !ok {
+ 			return nil
+ 		}
+-		return e.solveBodyRec(rest, uf, depth, need, accAtoms, accProofs, partial)
++		return r.solveBodyRec(b, rest, uf, depth, need, accAtoms, accProofs, partial)
+ 	case ast.NegAtom:
+ 		ground, err := functional.EvalAtom(p.Atom, uf)
+ 		if err != nil || !isGround(ground) {
+ 			// Non-ground negation slipped past safety checks; mark partial.
+-			return e.solveBodyRec(rest, uf, depth, need, accAtoms, accProofs, true)
+-		}
+-		if e.store.Contains(ground) {
++			return r.solveBodyRec(b, rest, uf, depth, need, accAtoms, accProofs, true)
++		}
++		if r.store.Contains(ground) {
+ 			// Negated premise fails: the atom IS in the store.
+ 			return nil
+ 		}
+-		leaf := &ProofNode{
+-			ID:   absenceProofID(ground),
+-			Fact: ground,
+-			Kind: KindAbsence,
+-		}
++		leaf := b.buildAbsenceLeaf(ground)
+ 		newAtoms := append(append([]ast.Atom(nil), accAtoms...), ground)
+ 		newProofs := append(append([]*ProofNode(nil), accProofs...), leaf)
+-		return e.solveBodyRec(rest, uf, depth, need, newAtoms, newProofs, partial)
++		return r.solveBodyRec(b, rest, uf, depth, need, newAtoms, newProofs, partial)
+ 	default:
+ 		// Temporal premises and any other exotic term — mark partial but
+ 		// continue so the user sees an annotated result rather than nothing.
+-		return e.solveBodyRec(rest, uf, depth, need, accAtoms, accProofs, true)
+-	}
+-}
+-
+-func (e *explainer) solveAtomPremise(pAtom ast.Atom, rest []ast.Term, uf unionfind.UnionFind, depth, need int, accAtoms []ast.Atom, accProofs []*ProofNode, partial bool) []bodySolution {
++		return r.solveBodyRec(b, rest, uf, depth, need, accAtoms, accProofs, true)
++	}
++}
++
++func (r *postHocResolver) solveAtomPremise(b *graphBuilder, pAtom ast.Atom, rest []ast.Term, uf unionfind.UnionFind, depth, need int, accAtoms []ast.Atom, accProofs []*ProofNode, partial bool) []bodySolution {
+ 	pattern, err := functional.EvalAtom(pAtom, uf)
+ 	if err != nil {
+ 		return nil
+ 	}
+ 	var results []bodySolution
+-	_ = e.store.GetFacts(pattern, func(fact ast.Atom) error {
++	_ = r.store.GetFacts(pattern, func(fact ast.Atom) error {
+ 		if len(results) >= need {
+ 			return nil
+ 		}
+@@ -311,7 +408,7 @@
+ 		if err != nil {
+ 			return nil
+ 		}
+-		subProofs := e.explain(fact, depth+1)
++		subProofs := b.prove(fact, depth+1)
+ 		if len(subProofs) == 0 {
+ 			return nil
+ 		}
+@@ -319,38 +416,18 @@
+ 		newAtoms := append(append([]ast.Atom(nil), accAtoms...), fact)
+ 		newProofs := append(append([]*ProofNode(nil), accProofs...), sub)
+ 		newPartial := partial || sub.Partial
+-		tail := e.solveBodyRec(rest, extended, depth, need-len(results), newAtoms, newProofs, newPartial)
++		tail := r.solveBodyRec(b, rest, extended, depth, need-len(results), newAtoms, newProofs, newPartial)
+ 		results = append(results, tail...)
+ 		return nil
+ 	})
+ 	return results
+ }
+ 
+-func (e *explainer) buildProof(ruleRef *ast.Clause, ruleIdx int, rule ast.Clause, goal ast.Atom, sol bodySolution, depth int) (*ProofNode, bool) {
+-	ruleID, ok := e.ruleIDs[ruleIdx]
+-	if !ok {
+-		ruleID = ruleContentID(rule)
+-		e.ruleIDs[ruleIdx] = ruleID
+-	}
+-	bindings := extractBindings(rule, sol.subst)
+-	node := &ProofNode{
+-		Fact:     goal,
+-		Kind:     KindDerived,
+-		Rule:     ruleRef,
+-		RuleID:   ruleID,
+-		Bindings: bindings,
+-		Premises: sol.subProofs,
+-		Partial:  sol.partial,
+-	}
+-	node.ID = derivedProofID(ruleID, goal, sol.subProofs)
+-	return node, true
+-}
+-
+-func (e *explainer) isEDB(p ast.PredicateSym) bool {
+-	if e.program == nil {
++func (r *postHocResolver) isEDB(p ast.PredicateSym) bool {
++	if r.program == nil {
+ 		return false
+ 	}
+-	_, ok := e.program.EdbPredicates[p]
++	_, ok := r.program.EdbPredicates[p]
+ 	return ok
+ }
+ 
+diff --git a/provenance/recorder.go b/provenance/recorder.go
+--- a/provenance/recorder.go
++++ b/provenance/recorder.go
+@@ -15,8 +15,6 @@
+ package provenance
+ 
+ import (
+-	"sort"
+-
+ 	"codeberg.org/TauCeti/mangle-go/ast"
+ 	"codeberg.org/TauCeti/mangle-go/engine"
+ 	"codeberg.org/TauCeti/mangle-go/factstore"
+@@ -130,102 +128,56 @@
+ // facts, and to satisfy negated premises via closed-world absence.
+ // Options are the same as for [Explain].
+ func BuildFromRecording(rec *MemoryRecorder, store factstore.ReadOnlyFactStore, goal ast.Atom, opts Options) ([]*ProofNode, error) {
+-	if opts.MaxProofs == 0 {
+-		opts.MaxProofs = defaultMaxProofs
+-	}
+-	if opts.MaxDepth == 0 {
+-		opts.MaxDepth = defaultMaxDepth
+-	}
+-	if !isGround(goal) {
+-		return nil, ErrGoalNotGround
+-	}
+-	b := &builder{
+-		rec:     rec,
+-		store:   store,
+-		opts:    opts,
+-		cache:   make(map[uint64][]*ProofNode),
+-		onStack: make(map[uint64]bool),
+-		ruleIDs: make(map[string]string),
+-	}
+-	proofs := b.build(goal, 0)
+-	if len(proofs) == 0 {
+-		return nil, ErrNoProof
+-	}
+-	return proofs, nil
+-}
+-
+-type builder struct {
+-	rec     *MemoryRecorder
+-	store   factstore.ReadOnlyFactStore
+-	opts    Options
+-	cache   map[uint64][]*ProofNode
+-	onStack map[uint64]bool
+-	ruleIDs map[string]string // rule.String() -> rule content ID
+-}
+-
+-func (b *builder) build(goal ast.Atom, depth int) []*ProofNode {
+-	if depth > b.opts.MaxDepth {
+-		return []*ProofNode{{Fact: goal, Partial: true, ID: partialID(goal)}}
+-	}
+-	h := goal.Hash()
+-	if cached, ok := b.cache[h]; ok {
+-		return cached
+-	}
+-	if b.onStack[h] {
+-		return nil
+-	}
+-	b.onStack[h] = true
+-	defer delete(b.onStack, h)
+-
++	resolver := &recordingResolver{
++		rec:   rec,
++		store: store,
++	}
++	return buildProofGraph(goal, opts, resolver)
++}
++
++type recordingResolver struct {
++	rec   *MemoryRecorder
++	store factstore.ReadOnlyFactStore
++}
++
++func (r *recordingResolver) resolvePremises(b *graphBuilder, goal ast.Atom, depth int, remaining int) []*ProofNode {
+ 	var proofs []*ProofNode
+-	events := b.rec.EventsFor(goal)
++	events := r.rec.EventsFor(goal)
+ 	if len(events) == 0 {
+ 		// Either a leaf EDB fact or a fact the recorder missed (e.g., an
+ 		// internal predicate that was never re-queried from the store).
+-		if b.store.Contains(goal) {
+-			proofs = append(proofs, &ProofNode{ID: edbProofID(goal), Fact: goal, Kind: KindEDB})
+-		}
+-		b.cache[h] = proofs
++		if r.store.Contains(goal) {
++			proofs = append(proofs, b.buildEDBLeaf(goal))
++		}
+ 		return proofs
+ 	}
+ 	for _, ev := range events {
+ 		if len(proofs) >= b.opts.MaxProofs {
+ 			break
+ 		}
+-		p := b.buildFromEvent(ev, depth)
++		p := r.buildFromEvent(b, ev, depth)
+ 		if p == nil {
+ 			continue
+ 		}
+ 		proofs = append(proofs, p)
+ 	}
+-	b.cache[h] = proofs
+ 	return proofs
+ }
+ 
+-func (b *builder) ruleID(r ast.Clause) string {
+-	key := r.String()
+-	if id, ok := b.ruleIDs[key]; ok {
+-		return id
+-	}
+-	id := ruleContentID(r)
+-	b.ruleIDs[key] = id
+-	return id
+-}
+-
+-func (b *builder) buildFromEvent(ev *Event, depth int) *ProofNode {
++func (r *recordingResolver) buildFromEvent(b *graphBuilder, ev *Event, depth int) *ProofNode {
+ 	ruleID := b.ruleID(ev.Rule)
+ 	switch ev.Kind {
+ 	case EventRule:
+-		return b.buildRule(ev, ruleID, depth)
++		return r.buildRule(b, ev, ruleID, depth)
+ 	case EventLet:
+-		return b.buildLet(ev, ruleID, depth)
++		return r.buildLet(b, ev, ruleID, depth)
+ 	case EventDo:
+-		return b.buildDo(ev, ruleID, depth)
++		return r.buildDo(b, ev, ruleID, depth)
+ 	}
+ 	return nil
+ }
+ 
+-func (b *builder) buildRule(ev *Event, ruleID string, depth int) *ProofNode {
++func (r *recordingResolver) buildRule(b *graphBuilder, ev *Event, ruleID string, depth int) *ProofNode {
+ 	// For each positive atom premise, recurse; for non-atom premises
+ 	// (Eq, Ineq, NegAtom), handle as in the simple explainer.
+ 	var premiseProofs []*ProofNode
+@@ -240,7 +192,7 @@
+ 				partial = true
+ 				continue
+ 			}
+-			sub := b.build(fact, depth+1)
++			sub := b.prove(fact, depth+1)
+ 			if len(sub) == 0 {
+ 				partial = true
+ 				continue
+@@ -254,37 +206,24 @@
+ 				partial = true
+ 				continue
+ 			}
+-			if b.store.Contains(ground) {
++			if r.store.Contains(ground) {
+ 				// Inconsistency: negation shouldn't have held if the fact is
+ 				// in the store. Treat as partial.
+ 				partial = true
+ 				continue
+ 			}
+-			premiseProofs = append(premiseProofs, &ProofNode{
+-				ID:   absenceProofID(ground),
+-				Fact: ground,
+-				Kind: KindAbsence,
+-			})
++			premiseProofs = append(premiseProofs, b.buildAbsenceLeaf(ground))
+ 		case ast.Eq, ast.Ineq:
+ 			// Satisfied by construction (the rule fired). No sub-proof.
+ 		default:
+ 			partial = true
+ 		}
+ 	}
+-	node := &ProofNode{
+-		Fact:     ev.Output,
+-		Kind:     KindDerived,
+-		Rule:     &ev.Rule,
+-		RuleID:   ruleID,
+-		Bindings: extractBindings(ev.Rule, ev.Subst),
+-		Premises: premiseProofs,
+-		Partial:  partial,
+-	}
+-	node.ID = derivedProofID(ruleID, ev.Output, premiseProofs)
+-	return node
+-}
+-
+-func (b *builder) buildLet(ev *Event, ruleID string, depth int) *ProofNode {
++	bindings := extractBindings(ev.Rule, ev.Subst)
++	return b.buildDerivedNode(ev.Output, &ev.Rule, ruleID, bindings, premiseProofs, partial)
++}
++
++func (r *recordingResolver) buildLet(b *graphBuilder, ev *Event, ruleID string, depth int) *ProofNode {
+ 	// A let-transform's only "premise" is the body row that fed it. The
+ 	// recorder captured the row but not its atom-level premises; to show
+ 	// contributing facts we'd need the plain-rule event that produced
+@@ -302,10 +241,10 @@
+ 			partial = true
+ 			continue
+ 		}
+-		sub := b.build(ground, depth+1)
++		sub := b.prove(ground, depth+1)
+ 		if len(sub) == 0 {
+-			if b.store.Contains(ground) {
+-				sub = []*ProofNode{{ID: edbProofID(ground), Fact: ground, Kind: KindEDB}}
++			if r.store.Contains(ground) {
++				sub = []*ProofNode{b.buildEDBLeaf(ground)}
+ 			} else {
+ 				partial = true
+ 				continue
+@@ -313,27 +252,17 @@
+ 		}
+ 		premiseProofs = append(premiseProofs, sub[0])
+ 	}
+-	node := &ProofNode{
+-		Fact:          ev.Output,
+-		Kind:          KindLetRow,
+-		Rule:          &ev.Rule,
+-		RuleID:        ruleID,
+-		Premises:      premiseProofs,
+-		TransformText: ev.TransformText,
+-		Partial:       partial,
+-	}
+-	node.ID = derivedProofID(ruleID, ev.Output, premiseProofs)
+-	return node
+-}
+-
+-func (b *builder) buildDo(ev *Event, ruleID string, depth int) *ProofNode {
++	return b.buildLetNode(ev.Output, &ev.Rule, ruleID, premiseProofs, ev.TransformText, partial)
++}
++
++func (r *recordingResolver) buildDo(b *graphBuilder, ev *Event, ruleID string, depth int) *ProofNode {
+ 	var premiseProofs []*ProofNode
+ 	partial := false
+ 	for _, f := range ev.InputFacts {
+-		sub := b.build(f, depth+1)
++		sub := b.prove(f, depth+1)
+ 		if len(sub) == 0 {
+-			if b.store.Contains(f) {
+-				sub = []*ProofNode{{ID: edbProofID(f), Fact: f, Kind: KindEDB}}
++			if r.store.Contains(f) {
++				sub = []*ProofNode{b.buildEDBLeaf(f)}
+ 			} else {
+ 				partial = true
+ 				continue
+@@ -341,24 +270,7 @@
+ 		}
+ 		premiseProofs = append(premiseProofs, sub[0])
+ 	}
+-	// Deterministic premise order (groups arrive in nondeterministic map order
+-	// inside evalDo; the *set* of input facts is the same, but the order
+-	// varies run to run). Sort by proof ID for stable output.
+-	sort.Slice(premiseProofs, func(i, j int) bool {
+-		return premiseProofs[i].ID < premiseProofs[j].ID
+-	})
+-	node := &ProofNode{
+-		Fact:          ev.Output,
+-		Kind:          KindDoAggregate,
+-		Rule:          &ev.Rule,
+-		RuleID:        ruleID,
+-		GroupKey:      ev.GroupKey,
+-		Premises:      premiseProofs,
+-		TransformText: ev.TransformText,
+-		Partial:       partial,
+-	}
+-	node.ID = derivedProofID(ruleID, ev.Output, premiseProofs)
+-	return node
++	return b.buildDoNode(ev.Output, &ev.Rule, ruleID, ev.GroupKey, premiseProofs, ev.TransformText, partial)
+ }
+ 
+ // applyToNeg applies a substitution (the rule's solution) to a negated atom.
+diff --git a/provenance/provenance_test.go b/provenance/provenance_test.go
+--- a/provenance/provenance_test.go
++++ b/provenance/provenance_test.go
+@@ -105,16 +105,24 @@
+ 		foo(X) :- bar(X), baz(X).
+ 	`)
+ 	goal := mustAtom(t, "foo(2)")
+-	if _, err := Explain(pi, store, goal, Options{}); err != ErrNoProof {
++	proofs, err := Explain(pi, store, goal, Options{})
++	if err != ErrNoProof {
+ 		t.Errorf("want ErrNoProof, got %v", err)
++	}
++	if proofs != nil {
++		t.Errorf("want nil proofs on error, got %v", proofs)
+ 	}
+ }
+ 
+ func TestExplainNonGroundGoal(t *testing.T) {
+ 	pi, store := buildAndEval(t, `bar(1).`)
+-	goal := ast.NewAtom("bar", ast.Variable{"X"})
+-	if _, err := Explain(pi, store, goal, Options{}); err != ErrGoalNotGround {
++	goal := ast.NewAtom("bar", ast.Variable{Symbol: "X"})
++	proofs, err := Explain(pi, store, goal, Options{})
++	if err != ErrGoalNotGround {
+ 		t.Errorf("want ErrGoalNotGround, got %v", err)
++	}
++	if proofs != nil {
++		t.Errorf("want nil proofs on error, got %v", proofs)
+ 	}
+ }
+ 
+@@ -368,13 +376,26 @@
+ 		foo(X) :- c(X).
+ 	`)
+ 	goal := mustAtom(t, "foo(1)")
+-	for _, max := range []int{1, 2, 3} {
++	for _, max := range []int{0, 1, 2, 3} {
+ 		proofs, err := Explain(pi, store, goal, Options{MaxProofs: max})
+ 		if err != nil {
+ 			t.Fatalf("MaxProofs=%d Explain: %v", max, err)
+ 		}
+-		if len(proofs) != max {
+-			t.Errorf("MaxProofs=%d: got %d proofs, want %d", max, len(proofs), max)
++		want := max
++		if want == 0 {
++			want = 1
++		}
++		if len(proofs) != want {
++			t.Errorf("MaxProofs=%d: got %d proofs, want %d", max, len(proofs), want)
++		}
++	}
++	for _, neg := range []int{-1, -5} {
++		proofs, err := Explain(pi, store, goal, Options{MaxProofs: neg})
++		if err != ErrNoProof {
++			t.Errorf("MaxProofs=%d Explain: got err %v, want %v", neg, err, ErrNoProof)
++		}
++		if proofs != nil {
++			t.Errorf("MaxProofs=%d Explain: want nil proofs, got %v", neg, proofs)
+ 		}
+ 	}
+ }
+@@ -453,7 +474,7 @@
+ 	}
+ 	// The absence leaf should NOT have a proves() fact (it proves ¬Fact, not Fact).
+ 	var absID ast.Constant
+-	out.GetFacts(ast.NewQuery(ast.PredicateSym{"absence_leaf", 2}), func(a ast.Atom) error {
++	out.GetFacts(ast.NewQuery(ast.PredicateSym{Symbol: "absence_leaf", Arity: 2}), func(a ast.Atom) error {
+ 		absID = a.Args[0].(ast.Constant)
+ 		return nil
+ 	})
+@@ -495,3 +516,69 @@
+ 	t.Logf("provenance:\n%s", buf.String())
+ 	_ = fmt.Sprintf // keep fmt import if logging is disabled
+ }
++
++func TestExplainMaxDepthPartial(t *testing.T) {
++	pi, store := buildAndEval(t, `
++		edge(1, 2).
++		edge(2, 3).
++		edge(3, 4).
++		path(X, Y) :- edge(X, Y).
++		path(X, Z) :- edge(X, Y), path(Y, Z).
++	`)
++	goal := mustAtom(t, "path(1, 4)")
++	// MaxDepth: 1 should truncate deep recursion and mark proof Partial with partialID.
++	proofs, err := Explain(pi, store, goal, Options{MaxDepth: 1})
++	if err != nil {
++		t.Fatalf("Explain: %v", err)
++	}
++	if len(proofs) != 1 {
++		t.Fatalf("got %d proofs, want 1", len(proofs))
++	}
++	p := proofs[0]
++	if !p.Partial {
++		t.Errorf("expected root proof to be marked partial")
++	}
++	// Check that at least one sub-proof is a partial leaf.
++	var foundPartialLeaf bool
++	var walk func(n *ProofNode)
++	walk = func(n *ProofNode) {
++		if n == nil {
++			return
++		}
++		if n.Partial && strings.HasPrefix(n.ID, "/proof/partial/") {
++			foundPartialLeaf = true
++			if n.ID != partialID(n.Fact) {
++				t.Errorf("got partial ID %q, want %q", n.ID, partialID(n.Fact))
++			}
++		}
++		for _, sub := range n.Premises {
++			walk(sub)
++		}
++	}
++	walk(p)
++	if !foundPartialLeaf {
++		t.Errorf("expected to find a partial leaf in the proof tree")
++	}
++}
++
++func TestRuleIDSameTextDifferentIndices(t *testing.T) {
++	// ProgramInfo with two identical clauses at different rule indices.
++	pi, store := buildAndEval(t, `
++		a(1).
++		foo(X) :- a(X).
++		foo(X) :- a(X).
++	`)
++	goal := mustAtom(t, "foo(1)")
++	proofs, err := Explain(pi, store, goal, Options{MaxProofs: 2})
++	if err != nil {
++		t.Fatalf("Explain: %v", err)
++	}
++	if len(proofs) == 0 {
++		t.Fatalf("expected at least 1 proof")
++	}
++	// RuleID should match ruleContentID for foo(X) :- a(X).
++	wantRuleID := ruleContentID(pi.Rules[0])
++	if proofs[0].RuleID != wantRuleID {
++		t.Errorf("got RuleID %q, want %q", proofs[0].RuleID, wantRuleID)
++	}
++}
+diff --git a/provenance/recorder_test.go b/provenance/recorder_test.go
+--- a/provenance/recorder_test.go
++++ b/provenance/recorder_test.go
+@@ -16,6 +16,7 @@
+ 
+ import (
+ 	"bytes"
++	"sort"
+ 	"strings"
+ 	"testing"
+ 
+@@ -279,3 +280,281 @@
+ 		}
+ 	}
+ }
++
++func TestFullModeGoalErrors(t *testing.T) {
++	_, store, rec := buildEvalRec(t, `bar(1).`)
++	nonGround := ast.NewAtom("bar", ast.Variable{Symbol: "X"})
++	proofs, err := BuildFromRecording(rec, store, nonGround, Options{})
++	if err != ErrGoalNotGround {
++		t.Errorf("want ErrGoalNotGround, got %v", err)
++	}
++	if proofs != nil {
++		t.Errorf("want nil proofs on error, got %v", proofs)
++	}
++
++	noProofGoal := mustAtom(t, "bar(2)")
++	proofs, err = BuildFromRecording(rec, store, noProofGoal, Options{})
++	if err != ErrNoProof {
++		t.Errorf("want ErrNoProof, got %v", err)
++	}
++	if proofs != nil {
++		t.Errorf("want nil proofs on error, got %v", proofs)
++	}
++}
++
++func TestFullModeMaxProofs(t *testing.T) {
++	source := `
++		a(1).
++		b(1).
++		c(1).
++		foo(X) :- a(X).
++		foo(X) :- b(X).
++		foo(X) :- c(X).
++	`
++	_, store, rec := buildEvalRec(t, source)
++	goal := mustAtom(t, "foo(1)")
++	for _, max := range []int{0, 1, 2, 3} {
++		proofs, err := BuildFromRecording(rec, store, goal, Options{MaxProofs: max})
++		if err != nil {
++			t.Fatalf("MaxProofs=%d BuildFromRecording: %v", max, err)
++		}
++		want := max
++		if want == 0 {
++			want = 1
++		}
++		if len(proofs) != want {
++			t.Errorf("MaxProofs=%d: got %d proofs, want %d", max, len(proofs), want)
++		}
++	}
++	for _, neg := range []int{-1, -5} {
++		proofs, err := BuildFromRecording(rec, store, goal, Options{MaxProofs: neg})
++		if err != ErrNoProof {
++			t.Errorf("MaxProofs=%d BuildFromRecording: got err %v, want %v", neg, err, ErrNoProof)
++		}
++		if proofs != nil {
++			t.Errorf("MaxProofs=%d BuildFromRecording: want nil proofs, got %v", neg, proofs)
++		}
++	}
++}
++
++func TestFullModeMaxDepthPartial(t *testing.T) {
++	source := `
++		edge(1, 2).
++		edge(2, 3).
++		edge(3, 4).
++		path(X, Y) :- edge(X, Y).
++		path(X, Z) :- edge(X, Y), path(Y, Z).
++	`
++	_, store, rec := buildEvalRec(t, source)
++	goal := mustAtom(t, "path(1, 4)")
++	proofs, err := BuildFromRecording(rec, store, goal, Options{MaxDepth: 1})
++	if err != nil {
++		t.Fatalf("BuildFromRecording: %v", err)
++	}
++	if len(proofs) != 1 {
++		t.Fatalf("got %d proofs, want 1", len(proofs))
++	}
++	p := proofs[0]
++	var foundPartialLeaf bool
++	var walk func(n *ProofNode)
++	walk = func(n *ProofNode) {
++		if n == nil {
++			return
++		}
++		if n.Partial && strings.HasPrefix(n.ID, "/proof/partial/") {
++			foundPartialLeaf = true
++			if n.ID != partialID(n.Fact) {
++				t.Errorf("got partial ID %q, want %q", n.ID, partialID(n.Fact))
++			}
++		}
++		for _, sub := range n.Premises {
++			walk(sub)
++		}
++	}
++	walk(p)
++	if !foundPartialLeaf {
++		t.Errorf("expected to find a partial leaf in the proof tree")
++	}
++}
++
++func TestFullModeMemoization(t *testing.T) {
++	source := `
++		edge(1, 2).
++		edge(2, 3).
++		path(X, Y) :- edge(X, Y).
++		path(X, Z) :- edge(X, Y), path(Y, Z).
++		reach(X, Y) :- path(X, Y), path(X, Y).
++	`
++	_, store, rec := buildEvalRec(t, source)
++	goal := mustAtom(t, "reach(1, 3)")
++	proofs, err := BuildFromRecording(rec, store, goal, Options{})
++	if err != nil {
++		t.Fatalf("BuildFromRecording: %v", err)
++	}
++	if len(proofs) != 1 {
++		t.Fatalf("got %d proofs, want 1", len(proofs))
++	}
++	// Within a single call, memoized subproofs must share pointer and ID.
++	if len(proofs[0].Premises) != 2 {
++		t.Fatalf("expected 2 premises for reach, got %d", len(proofs[0].Premises))
++	}
++	sub1 := proofs[0].Premises[0]
++	sub2 := proofs[0].Premises[1]
++	if sub1 != sub2 {
++		t.Errorf("expected pointer sharing between memoized subproofs")
++	}
++	if sub1.ID != sub2.ID {
++		t.Errorf("expected identical ID for memoized subproofs: %q vs %q", sub1.ID, sub2.ID)
++	}
++
++	// Repeated call in separate invocation produces identical IDs.
++	proofs2, err := BuildFromRecording(rec, store, goal, Options{})
++	if err != nil {
++		t.Fatalf("BuildFromRecording (2nd call): %v", err)
++	}
++	if proofs[0].ID != proofs2[0].ID {
++		t.Errorf("expected stable proof ID across calls: %q vs %q", proofs[0].ID, proofs2[0].ID)
++	}
++}
++
++func TestFullModeCycleTermination(t *testing.T) {
++	// Evaluator with a cycle.
++	source := `
++		edge(1, 2).
++		edge(2, 1).
++		reach(X, Y) :- edge(X, Y).
++		reach(X, Z) :- reach(X, Y), edge(Y, Z).
++	`
++	_, store, rec := buildEvalRec(t, source)
++	goal := mustAtom(t, "reach(1, 2)")
++	// Should terminate without infinite recursion.
++	proofs, err := BuildFromRecording(rec, store, goal, Options{})
++	if err != nil {
++		t.Fatalf("BuildFromRecording: %v", err)
++	}
++	if len(proofs) == 0 {
++		t.Fatalf("expected at least 1 proof")
++	}
++}
++
++func assertSameProof(t *testing.T, a, b *ProofNode) {
++	t.Helper()
++	if a == nil || b == nil {
++		if a != b {
++			t.Fatalf("mismatched nil: a=%v, b=%v", a, b)
++		}
++		return
++	}
++	if a.ID != b.ID {
++		t.Errorf("ID mismatch: %q vs %q", a.ID, b.ID)
++	}
++	if a.Fact.String() != b.Fact.String() {
++		t.Errorf("Fact mismatch: %q vs %q", a.Fact.String(), b.Fact.String())
++	}
++	if a.Kind != b.Kind {
++		t.Errorf("Kind mismatch: %v vs %v", a.Kind, b.Kind)
++	}
++	if a.RuleID != b.RuleID {
++		t.Errorf("RuleID mismatch: %q vs %q", a.RuleID, b.RuleID)
++	}
++	if a.Partial != b.Partial {
++		t.Errorf("Partial mismatch: %v vs %v", a.Partial, b.Partial)
++	}
++	if len(a.Bindings) != len(b.Bindings) {
++		t.Errorf("Bindings len mismatch: %d vs %d", len(a.Bindings), len(b.Bindings))
++	} else {
++		for i := range a.Bindings {
++			if a.Bindings[i].Var != b.Bindings[i].Var || !a.Bindings[i].Value.Equals(b.Bindings[i].Value) {
++				t.Errorf("Binding %d mismatch: %+v vs %+v", i, a.Bindings[i], b.Bindings[i])
++			}
++		}
++	}
++	if len(a.Premises) != len(b.Premises) {
++		t.Fatalf("Premises len mismatch for %s: %d vs %d", a.ID, len(a.Premises), len(b.Premises))
++	}
++	for i := range a.Premises {
++		assertSameProof(t, a.Premises[i], b.Premises[i])
++	}
++}
++
++func collectSortedFacts(store factstore.SimpleInMemoryStore) []string {
++	var facts []string
++	for _, p := range store.ListPredicates() {
++		store.GetFacts(ast.NewQuery(p), func(a ast.Atom) error {
++			facts = append(facts, a.String())
++			return nil
++		})
++	}
++	sort.Strings(facts)
++	return facts
++}
++
++func TestFullModeMatchesSimpleOutput(t *testing.T) {
++	// Program with derived rules, EDB facts, shared subderivations, and negation.
++	source := `
++		edge(1, 2).
++		edge(2, 3).
++		edge(3, 4).
++		path(X, Y) :- edge(X, Y).
++		path(X, Z) :- edge(X, Y), path(Y, Z).
++		node(1).
++		node(2).
++		node(3).
++		node(4).
++		unreachable_from_1(X) :- node(X), !path(1, X).
++	`
++	pi, store, rec := buildEvalRec(t, source)
++
++	// Test 1: path(1, 4) - derived with shared sub-proofs
++	goal1 := mustAtom(t, "path(1, 4)")
++	pSimple1, err := Explain(pi, store, goal1, Options{})
++	if err != nil {
++		t.Fatalf("Explain(path(1, 4)): %v", err)
++	}
++	pFull1, err := BuildFromRecording(rec, store, goal1, Options{})
++	if err != nil {
++		t.Fatalf("BuildFromRecording(path(1, 4)): %v", err)
++	}
++	if len(pSimple1) != len(pFull1) {
++		t.Fatalf("proof count mismatch: %d vs %d", len(pSimple1), len(pFull1))
++	}
++	assertSameProof(t, pSimple1[0], pFull1[0])
++
++	var bufSimple, bufFull bytes.Buffer
++	if err := Print(&bufSimple, pSimple1); err != nil {
++		t.Fatalf("Print simple: %v", err)
++	}
++	if err := Print(&bufFull, pFull1); err != nil {
++		t.Fatalf("Print full: %v", err)
++	}
++	if bufSimple.String() != bufFull.String() {
++		t.Errorf("Print output mismatch:\nsimple:\n%s\nfull:\n%s", bufSimple.String(), bufFull.String())
++	}
++
++	outSimple := factstore.NewSimpleInMemoryStore()
++	if err := EmitFacts(pSimple1, &outSimple); err != nil {
++		t.Fatalf("EmitFacts simple: %v", err)
++	}
++	outFull := factstore.NewSimpleInMemoryStore()
++	if err := EmitFacts(pFull1, &outFull); err != nil {
++		t.Fatalf("EmitFacts full: %v", err)
++	}
++	factsSimple := collectSortedFacts(outSimple)
++	factsFull := collectSortedFacts(outFull)
++	if strings.Join(factsSimple, "\n") != strings.Join(factsFull, "\n") {
++		t.Errorf("EmitFacts mismatch:\nsimple:\n%v\nfull:\n%v", factsSimple, factsFull)
++	}
++
++	// Test 2: unreachable_from_1(1) has no proof because path(1, 1) or !path(1, 1) fails;
++	// but node(1) is stored:
++	goalEDB := mustAtom(t, "node(1)")
++	pSimpleEDB, err := Explain(pi, store, goalEDB, Options{})
++	if err != nil {
++		t.Fatalf("Explain(node(1)): %v", err)
++	}
++	pFullEDB, err := BuildFromRecording(rec, store, goalEDB, Options{})
++	if err != nil {
++		t.Fatalf("BuildFromRecording(node(1)): %v", err)
++	}
++	assertSameProof(t, pSimpleEDB[0], pFullEDB[0])
++}

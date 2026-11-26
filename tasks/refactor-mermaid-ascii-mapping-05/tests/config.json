@@ -1,0 +1,693 @@
+{
+  "reward_mode": "VERIFIER_ONLY",
+  "base_commit": "5f00e3d9ac9fc96a19859d502333e35b87d2ffea",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "python3",
+    "/tests/verifier/run_tests.py",
+    "--config",
+    "{config}",
+    "--report",
+    "{report}"
+  ],
+  "evaluation_files": {
+    "cmd/p2p_cli_contract_test.go": "529b8dfe6cb46128875cb1e706d73491389b3c6103eaae6aeb54bd8cb5deee07",
+    "pkg/graph/f2p_mapping_structure_test.go": "b5cb84bfaf1792e2e0320231a51231b8e1ef889ccfaf0be0ee2bd6ffbdab56ae",
+    "pkg/graph/f2p_typed_contract_test.go": "32123364ad064ef0253c013ad6c0768c87f776e17f83b87508fc9a340b0e1da2",
+    "pkg/graph/p2p_mapping_contract_test.go": "ef54469596f3a30257ffbadd07a52a0681187ad8ac1966802e37b0112285e903",
+    "tests/f2p/run_f2p.py": "9975f7225d24fb0aa3d61c93235da15b644127bb292d5085cbbfb4565cf1bf77",
+    "tests/p2p/run_p2p.py": "8ece900b79a06a7b16362939f067b4c453c50c6612e0795dff5b5c09ff55d482"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 2160.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 420.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 1680.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 420.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 420.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 420.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 420.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "selector": "pkg/graph/graph_test.go::TestASCII",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/graph_test.go::TestExtendedChars",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/graph_test.go::TestMultibyte",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/graph_test.go::TestGraphUseAsciiConfig",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/render_graph_test.go::TestRenderGraphHandlesLongChainWithoutPanic",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/render_graph_test.go::TestRenderGraphKeepsDisplayWidthForWideNodeLabels",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/render_graph_test.go::TestRenderGraphHandlesUnicodeClusterNodeLabels",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/p2p_mapping_contract_test.go::TestP2PCoordinateOverlayMatchesBaseline",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/p2p_mapping_contract_test.go::TestP2PShowCoordsFieldControlsOverlay",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/p2p_mapping_contract_test.go::TestP2PRootSeparationMixedSubgraphRootsLR",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/p2p_mapping_contract_test.go::TestP2PCollisionAdvanceAndPerLevelReservation",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/render_graph_test.go::TestRenderGraphSeparatesDuplicateEdgeLabels",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/render_graph_test.go::TestRenderGraphSeparatesBidirectionalEdgeLabelsLR",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/render_graph_test.go::TestRenderGraphSeparatesBidirectionalEdgeLabelsTD",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/render_graph_test.go::TestRenderGraphAlignsFanoutLabels",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/p2p_mapping_contract_test.go::TestP2PFanoutLayoutAndLabelAlignment",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/p2p_mapping_contract_test.go::TestP2PBackEdgeAndLabelLineRouting",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/render_graph_test.go::TestRenderGraphKeepsDisplayWidthForWideSubgraphTitles",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/render_graph_test.go::TestRenderGraphKeepsStandaloneSubgraphLabelWhenReferencedLater",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/p2p_mapping_contract_test.go::TestP2PSubgraphBoundingBoxAndOffset",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/label_test.go::TestNewGraphLabel",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestSplitGraphLines",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestSplitGraphLinesKeepsLiteralNewlineInsideNodeLabel",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestParseNodeWithExplicitLabel",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestParseNodePreservesLiteralBoundaryQuote",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestParseNodeFallsBackForExtraClosingDelimiter",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestParseNodeFallsBackForUnmatchedQuoteBeforeClosingDelimiter",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestParseNodeShapes",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestMermaidFileToMapKeepsShapedNodeLabelsAcrossBareReferences",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestMermaidFileToMapPreservesEscapedLabelNewlines",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestMermaidFileToMapPreservesLiteralLabelNewlines",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestParseSubgraphHeader",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestMermaidFileToMapParsesSubgraphIDAndTitle",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestMermaidFileToMapKeepsExplicitNodeLabelAcrossBareReferences",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestMermaidFileToMapUsesLatestExplicitLabel",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestMermaidFileToMapParsesNonStandardEdgeOperators",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestMermaidFileToMapParsesChainedNonStandardEdges",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestParsePreservesQuotedLabelMarkersAndUnquotedClassShorthand",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestParseNodeDoesNotTreatQuotedClassMarkerAsShorthand",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestParseRejectsMalformedClassDefWithoutPanicking",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/parse_test.go::TestGraphTypeDetection",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/render_graph_test.go::TestRenderGraphKeepsExplicitTargetLabelAfterBareReference",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/render_graph_test.go::TestRenderGraphSupportsLiteralNewlineInNodeLabel",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/p2p_mapping_contract_test.go::TestP2PParseContractAndErrorBehavior",
+        "role": "P2P"
+      },
+      {
+        "selector": "cmd/root_test.go::TestResolveMaxWidth",
+        "role": "P2P"
+      },
+      {
+        "selector": "cmd/p2p_cli_contract_test.go::TestP2PCLIFlagContractAndRendering",
+        "role": "P2P"
+      },
+      {
+        "selector": "cmd/p2p_cli_contract_test.go::TestP2PCLIErrorExitStatusAndDiagnostics",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/p2p_mapping_contract_test.go::TestP2PPublicApiSurfaceAvailable",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/p2p_mapping_contract_test.go::TestP2PModuleRequirementsUnchanged",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingEntryPointHasNoLayoutLoops",
+        "role": "F2P"
+      },
+      {
+        "selector": "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingEntryPointDelegatesLowLevelPrimitives",
+        "role": "F2P"
+      },
+      {
+        "selector": "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingEntryPointBuildsNoCoordinatesInline",
+        "role": "F2P"
+      },
+      {
+        "selector": "pkg/graph/f2p_mapping_structure_test.go::TestF2PLevelReservationStateOwnedByDedicatedType",
+        "role": "F2P"
+      },
+      {
+        "selector": "pkg/graph/f2p_mapping_structure_test.go::TestF2PRootIdentificationOwnedByDedicatedUnit",
+        "role": "F2P"
+      },
+      {
+        "selector": "pkg/graph/f2p_mapping_structure_test.go::TestF2PRootSeparationOwnedByDedicatedUnit",
+        "role": "F2P"
+      },
+      {
+        "selector": "pkg/graph/f2p_mapping_structure_test.go::TestF2PNodePlacementOwnedByDedicatedUnit",
+        "role": "F2P"
+      },
+      {
+        "selector": "pkg/graph/f2p_mapping_structure_test.go::TestF2PColumnRowSizingOwnedByLabelAwareUnit",
+        "role": "F2P"
+      },
+      {
+        "selector": "pkg/graph/f2p_mapping_structure_test.go::TestF2PEdgeFinalizationOwnedByDedicatedUnit",
+        "role": "F2P"
+      },
+      {
+        "selector": "pkg/graph/f2p_mapping_structure_test.go::TestF2PGridToDrawingConversionOwnedByDedicatedUnit",
+        "role": "F2P"
+      },
+      {
+        "selector": "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingStepsCoverResponsibilitiesWithDistinctOwners",
+        "role": "F2P"
+      }
+    ],
+    "selector_timeout_seconds": 420.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "pkg/graph/graph_test.go::TestASCII",
+          "pkg/graph/graph_test.go::TestExtendedChars",
+          "pkg/graph/graph_test.go::TestMultibyte",
+          "pkg/graph/graph_test.go::TestGraphUseAsciiConfig",
+          "pkg/graph/render_graph_test.go::TestRenderGraphHandlesLongChainWithoutPanic",
+          "pkg/graph/render_graph_test.go::TestRenderGraphKeepsDisplayWidthForWideNodeLabels",
+          "pkg/graph/render_graph_test.go::TestRenderGraphHandlesUnicodeClusterNodeLabels",
+          "pkg/graph/p2p_mapping_contract_test.go::TestP2PCoordinateOverlayMatchesBaseline",
+          "pkg/graph/p2p_mapping_contract_test.go::TestP2PShowCoordsFieldControlsOverlay",
+          "pkg/graph/p2p_mapping_contract_test.go::TestP2PRootSeparationMixedSubgraphRootsLR",
+          "pkg/graph/p2p_mapping_contract_test.go::TestP2PCollisionAdvanceAndPerLevelReservation",
+          "pkg/graph/render_graph_test.go::TestRenderGraphSeparatesDuplicateEdgeLabels",
+          "pkg/graph/render_graph_test.go::TestRenderGraphSeparatesBidirectionalEdgeLabelsLR",
+          "pkg/graph/render_graph_test.go::TestRenderGraphSeparatesBidirectionalEdgeLabelsTD",
+          "pkg/graph/render_graph_test.go::TestRenderGraphAlignsFanoutLabels",
+          "pkg/graph/p2p_mapping_contract_test.go::TestP2PFanoutLayoutAndLabelAlignment",
+          "pkg/graph/p2p_mapping_contract_test.go::TestP2PBackEdgeAndLabelLineRouting",
+          "pkg/graph/render_graph_test.go::TestRenderGraphKeepsDisplayWidthForWideSubgraphTitles",
+          "pkg/graph/render_graph_test.go::TestRenderGraphKeepsStandaloneSubgraphLabelWhenReferencedLater",
+          "pkg/graph/p2p_mapping_contract_test.go::TestP2PSubgraphBoundingBoxAndOffset",
+          "pkg/graph/label_test.go::TestNewGraphLabel",
+          "pkg/graph/parse_test.go::TestSplitGraphLines",
+          "pkg/graph/parse_test.go::TestSplitGraphLinesKeepsLiteralNewlineInsideNodeLabel",
+          "pkg/graph/parse_test.go::TestParseNodeWithExplicitLabel",
+          "pkg/graph/parse_test.go::TestParseNodePreservesLiteralBoundaryQuote",
+          "pkg/graph/parse_test.go::TestParseNodeFallsBackForExtraClosingDelimiter",
+          "pkg/graph/parse_test.go::TestParseNodeFallsBackForUnmatchedQuoteBeforeClosingDelimiter",
+          "pkg/graph/parse_test.go::TestParseNodeShapes",
+          "pkg/graph/parse_test.go::TestMermaidFileToMapKeepsShapedNodeLabelsAcrossBareReferences",
+          "pkg/graph/parse_test.go::TestMermaidFileToMapPreservesEscapedLabelNewlines",
+          "pkg/graph/parse_test.go::TestMermaidFileToMapPreservesLiteralLabelNewlines",
+          "pkg/graph/parse_test.go::TestParseSubgraphHeader",
+          "pkg/graph/parse_test.go::TestMermaidFileToMapParsesSubgraphIDAndTitle",
+          "pkg/graph/parse_test.go::TestMermaidFileToMapKeepsExplicitNodeLabelAcrossBareReferences",
+          "pkg/graph/parse_test.go::TestMermaidFileToMapUsesLatestExplicitLabel",
+          "pkg/graph/parse_test.go::TestMermaidFileToMapParsesNonStandardEdgeOperators",
+          "pkg/graph/parse_test.go::TestMermaidFileToMapParsesChainedNonStandardEdges",
+          "pkg/graph/parse_test.go::TestParsePreservesQuotedLabelMarkersAndUnquotedClassShorthand",
+          "pkg/graph/parse_test.go::TestParseNodeDoesNotTreatQuotedClassMarkerAsShorthand",
+          "pkg/graph/parse_test.go::TestParseRejectsMalformedClassDefWithoutPanicking",
+          "pkg/graph/parse_test.go::TestGraphTypeDetection",
+          "pkg/graph/render_graph_test.go::TestRenderGraphKeepsExplicitTargetLabelAfterBareReference",
+          "pkg/graph/render_graph_test.go::TestRenderGraphSupportsLiteralNewlineInNodeLabel",
+          "pkg/graph/p2p_mapping_contract_test.go::TestP2PParseContractAndErrorBehavior",
+          "cmd/root_test.go::TestResolveMaxWidth",
+          "cmd/p2p_cli_contract_test.go::TestP2PCLIFlagContractAndRendering",
+          "cmd/p2p_cli_contract_test.go::TestP2PCLIErrorExitStatusAndDiagnostics",
+          "pkg/graph/p2p_mapping_contract_test.go::TestP2PPublicApiSurfaceAvailable",
+          "pkg/graph/p2p_mapping_contract_test.go::TestP2PModuleRequirementsUnchanged",
+          "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingEntryPointHasNoLayoutLoops",
+          "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingEntryPointDelegatesLowLevelPrimitives",
+          "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingEntryPointBuildsNoCoordinatesInline",
+          "pkg/graph/f2p_mapping_structure_test.go::TestF2PLevelReservationStateOwnedByDedicatedType",
+          "pkg/graph/f2p_mapping_structure_test.go::TestF2PRootIdentificationOwnedByDedicatedUnit",
+          "pkg/graph/f2p_mapping_structure_test.go::TestF2PRootSeparationOwnedByDedicatedUnit",
+          "pkg/graph/f2p_mapping_structure_test.go::TestF2PNodePlacementOwnedByDedicatedUnit",
+          "pkg/graph/f2p_mapping_structure_test.go::TestF2PColumnRowSizingOwnedByLabelAwareUnit",
+          "pkg/graph/f2p_mapping_structure_test.go::TestF2PEdgeFinalizationOwnedByDedicatedUnit",
+          "pkg/graph/f2p_mapping_structure_test.go::TestF2PGridToDrawingConversionOwnedByDedicatedUnit",
+          "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingStepsCoverResponsibilitiesWithDistinctOwners"
+        ],
+        "timeout_seconds": 420.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingEntryPointHasNoLayoutLoops",
+    "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingEntryPointDelegatesLowLevelPrimitives",
+    "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingEntryPointBuildsNoCoordinatesInline",
+    "pkg/graph/f2p_mapping_structure_test.go::TestF2PLevelReservationStateOwnedByDedicatedType",
+    "pkg/graph/f2p_mapping_structure_test.go::TestF2PRootIdentificationOwnedByDedicatedUnit",
+    "pkg/graph/f2p_mapping_structure_test.go::TestF2PRootSeparationOwnedByDedicatedUnit",
+    "pkg/graph/f2p_mapping_structure_test.go::TestF2PNodePlacementOwnedByDedicatedUnit",
+    "pkg/graph/f2p_mapping_structure_test.go::TestF2PColumnRowSizingOwnedByLabelAwareUnit",
+    "pkg/graph/f2p_mapping_structure_test.go::TestF2PEdgeFinalizationOwnedByDedicatedUnit",
+    "pkg/graph/f2p_mapping_structure_test.go::TestF2PGridToDrawingConversionOwnedByDedicatedUnit",
+    "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingStepsCoverResponsibilitiesWithDistinctOwners"
+  ],
+  "gates": [
+    {
+      "id": "P2P-RENDER-GOLDEN",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B1",
+        "REQ-BEH-T3:C2",
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "pkg/graph/graph_test.go::TestASCII",
+        "pkg/graph/graph_test.go::TestExtendedChars",
+        "pkg/graph/graph_test.go::TestMultibyte",
+        "pkg/graph/graph_test.go::TestGraphUseAsciiConfig",
+        "pkg/graph/render_graph_test.go::TestRenderGraphHandlesLongChainWithoutPanic",
+        "pkg/graph/render_graph_test.go::TestRenderGraphKeepsDisplayWidthForWideNodeLabels",
+        "pkg/graph/render_graph_test.go::TestRenderGraphHandlesUnicodeClusterNodeLabels"
+      ]
+    },
+    {
+      "id": "P2P-COORD-OVERLAY",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B2",
+        "REQ-BEH-T3:C3",
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "pkg/graph/p2p_mapping_contract_test.go::TestP2PCoordinateOverlayMatchesBaseline",
+        "pkg/graph/p2p_mapping_contract_test.go::TestP2PShowCoordsFieldControlsOverlay"
+      ]
+    },
+    {
+      "id": "P2P-ROOT-SEPARATION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B4",
+        "REQ-BEH-T3:B3"
+      ],
+      "tests": [
+        "pkg/graph/p2p_mapping_contract_test.go::TestP2PRootSeparationMixedSubgraphRootsLR"
+      ]
+    },
+    {
+      "id": "P2P-COLLISION-RESERVATION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B5",
+        "REQ-BEH-T3:B3"
+      ],
+      "tests": [
+        "pkg/graph/p2p_mapping_contract_test.go::TestP2PCollisionAdvanceAndPerLevelReservation"
+      ]
+    },
+    {
+      "id": "P2P-EDGE-FANOUT-ROUTING",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6",
+        "REQ-BEH-T3:B3"
+      ],
+      "tests": [
+        "pkg/graph/render_graph_test.go::TestRenderGraphSeparatesDuplicateEdgeLabels",
+        "pkg/graph/render_graph_test.go::TestRenderGraphSeparatesBidirectionalEdgeLabelsLR",
+        "pkg/graph/render_graph_test.go::TestRenderGraphSeparatesBidirectionalEdgeLabelsTD",
+        "pkg/graph/render_graph_test.go::TestRenderGraphAlignsFanoutLabels",
+        "pkg/graph/p2p_mapping_contract_test.go::TestP2PFanoutLayoutAndLabelAlignment",
+        "pkg/graph/p2p_mapping_contract_test.go::TestP2PBackEdgeAndLabelLineRouting"
+      ]
+    },
+    {
+      "id": "P2P-SUBGRAPH-BBOX",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6",
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "pkg/graph/render_graph_test.go::TestRenderGraphKeepsDisplayWidthForWideSubgraphTitles",
+        "pkg/graph/render_graph_test.go::TestRenderGraphKeepsStandaloneSubgraphLabelWhenReferencedLater",
+        "pkg/graph/p2p_mapping_contract_test.go::TestP2PSubgraphBoundingBoxAndOffset"
+      ]
+    },
+    {
+      "id": "P2P-PARSE-CONTRACT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C1",
+        "REQ-BEH-T3:C5"
+      ],
+      "tests": [
+        "pkg/graph/label_test.go::TestNewGraphLabel",
+        "pkg/graph/parse_test.go::TestSplitGraphLines",
+        "pkg/graph/parse_test.go::TestSplitGraphLinesKeepsLiteralNewlineInsideNodeLabel",
+        "pkg/graph/parse_test.go::TestParseNodeWithExplicitLabel",
+        "pkg/graph/parse_test.go::TestParseNodePreservesLiteralBoundaryQuote",
+        "pkg/graph/parse_test.go::TestParseNodeFallsBackForExtraClosingDelimiter",
+        "pkg/graph/parse_test.go::TestParseNodeFallsBackForUnmatchedQuoteBeforeClosingDelimiter",
+        "pkg/graph/parse_test.go::TestParseNodeShapes",
+        "pkg/graph/parse_test.go::TestMermaidFileToMapKeepsShapedNodeLabelsAcrossBareReferences",
+        "pkg/graph/parse_test.go::TestMermaidFileToMapPreservesEscapedLabelNewlines",
+        "pkg/graph/parse_test.go::TestMermaidFileToMapPreservesLiteralLabelNewlines",
+        "pkg/graph/parse_test.go::TestParseSubgraphHeader",
+        "pkg/graph/parse_test.go::TestMermaidFileToMapParsesSubgraphIDAndTitle",
+        "pkg/graph/parse_test.go::TestMermaidFileToMapKeepsExplicitNodeLabelAcrossBareReferences",
+        "pkg/graph/parse_test.go::TestMermaidFileToMapUsesLatestExplicitLabel",
+        "pkg/graph/parse_test.go::TestMermaidFileToMapParsesNonStandardEdgeOperators",
+        "pkg/graph/parse_test.go::TestMermaidFileToMapParsesChainedNonStandardEdges",
+        "pkg/graph/parse_test.go::TestParsePreservesQuotedLabelMarkersAndUnquotedClassShorthand",
+        "pkg/graph/parse_test.go::TestParseNodeDoesNotTreatQuotedClassMarkerAsShorthand",
+        "pkg/graph/parse_test.go::TestParseRejectsMalformedClassDefWithoutPanicking",
+        "pkg/graph/parse_test.go::TestGraphTypeDetection",
+        "pkg/graph/render_graph_test.go::TestRenderGraphKeepsExplicitTargetLabelAfterBareReference",
+        "pkg/graph/render_graph_test.go::TestRenderGraphSupportsLiteralNewlineInNodeLabel",
+        "pkg/graph/p2p_mapping_contract_test.go::TestP2PParseContractAndErrorBehavior"
+      ]
+    },
+    {
+      "id": "P2P-CLI-CONTRACT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C4",
+        "REQ-BEH-T3:C5"
+      ],
+      "tests": [
+        "cmd/root_test.go::TestResolveMaxWidth",
+        "cmd/p2p_cli_contract_test.go::TestP2PCLIFlagContractAndRendering",
+        "cmd/p2p_cli_contract_test.go::TestP2PCLIErrorExitStatusAndDiagnostics"
+      ]
+    },
+    {
+      "id": "P2P-API-SURFACE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C6",
+        "REQ-BEH-T3:C7"
+      ],
+      "tests": [
+        "pkg/graph/p2p_mapping_contract_test.go::TestP2PPublicApiSurfaceAvailable"
+      ]
+    },
+    {
+      "id": "P2P-MODULE-INTEGRITY",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "pkg/graph/p2p_mapping_contract_test.go::TestP2PModuleRequirementsUnchanged"
+      ]
+    },
+    {
+      "id": "F2P-MAPPING-ENTRY-ORCHESTRATION",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-003",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingEntryPointHasNoLayoutLoops",
+        "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingEntryPointDelegatesLowLevelPrimitives",
+        "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingEntryPointBuildsNoCoordinatesInline"
+      ]
+    },
+    {
+      "id": "F2P-MAPPING-STATE-OWNERSHIP",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "pkg/graph/f2p_mapping_structure_test.go::TestF2PLevelReservationStateOwnedByDedicatedType"
+      ]
+    },
+    {
+      "id": "F2P-MAPPING-RESPONSIBILITY-UNITS",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "pkg/graph/f2p_mapping_structure_test.go::TestF2PRootIdentificationOwnedByDedicatedUnit",
+        "pkg/graph/f2p_mapping_structure_test.go::TestF2PRootSeparationOwnedByDedicatedUnit",
+        "pkg/graph/f2p_mapping_structure_test.go::TestF2PNodePlacementOwnedByDedicatedUnit",
+        "pkg/graph/f2p_mapping_structure_test.go::TestF2PColumnRowSizingOwnedByLabelAwareUnit",
+        "pkg/graph/f2p_mapping_structure_test.go::TestF2PEdgeFinalizationOwnedByDedicatedUnit",
+        "pkg/graph/f2p_mapping_structure_test.go::TestF2PGridToDrawingConversionOwnedByDedicatedUnit"
+      ]
+    },
+    {
+      "id": "F2P-MAPPING-DECOMPOSITION-COVERAGE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "pkg/graph/f2p_mapping_structure_test.go::TestF2PMappingStepsCoverResponsibilitiesWithDistinctOwners"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "35a97f5a18948b3d273416c97af0fbdbcaae10dc858b4f6a2e9f6813db5a9c14",
+    "test_patch_sha256": "500936b5203cd68f8f3b03ea59d7931f4c23149866af0626e5103b83634d6e90"
+  },
+  "node_relations": [],
+  "p2p": [
+    "pkg/graph/graph_test.go::TestASCII",
+    "pkg/graph/graph_test.go::TestExtendedChars",
+    "pkg/graph/graph_test.go::TestMultibyte",
+    "pkg/graph/graph_test.go::TestGraphUseAsciiConfig",
+    "pkg/graph/render_graph_test.go::TestRenderGraphHandlesLongChainWithoutPanic",
+    "pkg/graph/render_graph_test.go::TestRenderGraphKeepsDisplayWidthForWideNodeLabels",
+    "pkg/graph/render_graph_test.go::TestRenderGraphHandlesUnicodeClusterNodeLabels",
+    "pkg/graph/p2p_mapping_contract_test.go::TestP2PCoordinateOverlayMatchesBaseline",
+    "pkg/graph/p2p_mapping_contract_test.go::TestP2PShowCoordsFieldControlsOverlay",
+    "pkg/graph/p2p_mapping_contract_test.go::TestP2PRootSeparationMixedSubgraphRootsLR",
+    "pkg/graph/p2p_mapping_contract_test.go::TestP2PCollisionAdvanceAndPerLevelReservation",
+    "pkg/graph/render_graph_test.go::TestRenderGraphSeparatesDuplicateEdgeLabels",
+    "pkg/graph/render_graph_test.go::TestRenderGraphSeparatesBidirectionalEdgeLabelsLR",
+    "pkg/graph/render_graph_test.go::TestRenderGraphSeparatesBidirectionalEdgeLabelsTD",
+    "pkg/graph/render_graph_test.go::TestRenderGraphAlignsFanoutLabels",
+    "pkg/graph/p2p_mapping_contract_test.go::TestP2PFanoutLayoutAndLabelAlignment",
+    "pkg/graph/p2p_mapping_contract_test.go::TestP2PBackEdgeAndLabelLineRouting",
+    "pkg/graph/render_graph_test.go::TestRenderGraphKeepsDisplayWidthForWideSubgraphTitles",
+    "pkg/graph/render_graph_test.go::TestRenderGraphKeepsStandaloneSubgraphLabelWhenReferencedLater",
+    "pkg/graph/p2p_mapping_contract_test.go::TestP2PSubgraphBoundingBoxAndOffset",
+    "pkg/graph/label_test.go::TestNewGraphLabel",
+    "pkg/graph/parse_test.go::TestSplitGraphLines",
+    "pkg/graph/parse_test.go::TestSplitGraphLinesKeepsLiteralNewlineInsideNodeLabel",
+    "pkg/graph/parse_test.go::TestParseNodeWithExplicitLabel",
+    "pkg/graph/parse_test.go::TestParseNodePreservesLiteralBoundaryQuote",
+    "pkg/graph/parse_test.go::TestParseNodeFallsBackForExtraClosingDelimiter",
+    "pkg/graph/parse_test.go::TestParseNodeFallsBackForUnmatchedQuoteBeforeClosingDelimiter",
+    "pkg/graph/parse_test.go::TestParseNodeShapes",
+    "pkg/graph/parse_test.go::TestMermaidFileToMapKeepsShapedNodeLabelsAcrossBareReferences",
+    "pkg/graph/parse_test.go::TestMermaidFileToMapPreservesEscapedLabelNewlines",
+    "pkg/graph/parse_test.go::TestMermaidFileToMapPreservesLiteralLabelNewlines",
+    "pkg/graph/parse_test.go::TestParseSubgraphHeader",
+    "pkg/graph/parse_test.go::TestMermaidFileToMapParsesSubgraphIDAndTitle",
+    "pkg/graph/parse_test.go::TestMermaidFileToMapKeepsExplicitNodeLabelAcrossBareReferences",
+    "pkg/graph/parse_test.go::TestMermaidFileToMapUsesLatestExplicitLabel",
+    "pkg/graph/parse_test.go::TestMermaidFileToMapParsesNonStandardEdgeOperators",
+    "pkg/graph/parse_test.go::TestMermaidFileToMapParsesChainedNonStandardEdges",
+    "pkg/graph/parse_test.go::TestParsePreservesQuotedLabelMarkersAndUnquotedClassShorthand",
+    "pkg/graph/parse_test.go::TestParseNodeDoesNotTreatQuotedClassMarkerAsShorthand",
+    "pkg/graph/parse_test.go::TestParseRejectsMalformedClassDefWithoutPanicking",
+    "pkg/graph/parse_test.go::TestGraphTypeDetection",
+    "pkg/graph/render_graph_test.go::TestRenderGraphKeepsExplicitTargetLabelAfterBareReference",
+    "pkg/graph/render_graph_test.go::TestRenderGraphSupportsLiteralNewlineInNodeLabel",
+    "pkg/graph/p2p_mapping_contract_test.go::TestP2PParseContractAndErrorBehavior",
+    "cmd/root_test.go::TestResolveMaxWidth",
+    "cmd/p2p_cli_contract_test.go::TestP2PCLIFlagContractAndRendering",
+    "cmd/p2p_cli_contract_test.go::TestP2PCLIErrorExitStatusAndDiagnostics",
+    "pkg/graph/p2p_mapping_contract_test.go::TestP2PPublicApiSurfaceAvailable",
+    "pkg/graph/p2p_mapping_contract_test.go::TestP2PModuleRequirementsUnchanged"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": true,
+  "restoration_paths": [
+    "cmd/root_test.go",
+    "pkg/graph/graph_test.go",
+    "pkg/graph/label_test.go",
+    "pkg/graph/parse_test.go",
+    "pkg/graph/render_graph_test.go"
+  ],
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-mermaid-ascii-337fc37d",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "cmd/p2p_cli_contract_test.go",
+    "pkg/graph/f2p_mapping_structure_test.go",
+    "pkg/graph/f2p_typed_contract_test.go",
+    "pkg/graph/p2p_mapping_contract_test.go",
+    "tests/f2p/run_f2p.py",
+    "tests/p2p/run_p2p.py"
+  ],
+  "timeout_seconds": 420,
+  "verifier": "/tests/verifier/verifier.py"
+}

@@ -1,0 +1,62 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+[task]
+name = "tikiai/labeler-match-dimensions-03"
+description = "Share branch and changed-file evaluation between the any and all label matching rules."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "labeler-src-labeler-ts-bc5982b4"
+repository_url = "https://github.com/actions/labeler"
+base_commit_hash = "98ce1450c7908643084f7487327dfa4f4bf8a367"
+display_title = "Common evaluator for label matching rules"
+category = "dedup_extract"
+language = "TypeScript"
+
+[tests]
+fail_to_pass_count = 17
+pass_to_pass_count = 66
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+user = "root"
+network_mode = "public"
+environment_mode = "separate"
+timeout_sec = 1800.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:labeler-match-dimensions-03-verifier-image-20261125"
+image_digest = "sha256:4eecf8d4069b165aecbac1c343691bcca527caae70ab1a9362d412c91b82f293"
+network_mode = "public"
+build_timeout_sec = 3600.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "set -eu\nmkdir -p /logs/artifacts\nrm -f /logs/artifacts/model.patch\ncollect_tmp=$(mktemp -d /logs/artifacts/.collect.XXXXXX)\ntrap 'rm -rf \"$collect_tmp\"' EXIT\nexport GIT_INDEX_FILE=\"$collect_tmp/index\"\ngit -C /workspace/repo rev-parse --verify '98ce1450c7908643084f7487327dfa4f4bf8a367^{commit}' >/dev/null\ngit -C /workspace/repo read-tree 98ce1450c7908643084f7487327dfa4f4bf8a367\ngit -C /workspace/repo add -A -- .\ngit -C /workspace/repo diff --cached --binary --full-index --no-ext-diff --no-textconv 98ce1450c7908643084f7487327dfa4f4bf8a367 -- > \"$collect_tmp/model.patch\"\nmv \"$collect_tmp/model.patch\" /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+user = "agent"
+network_mode = "public"
+timeout_sec = 5400.0
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:labeler-match-dimensions-03-task-image-20261125"
+image_digest = "sha256:e76a0426a55eca10cf64c103f85ab9d8aa947f54453d31e95ffcdc949b7b0307"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[verifier.env]
+
+[solution.env]

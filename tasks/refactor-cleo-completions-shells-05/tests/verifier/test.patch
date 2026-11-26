@@ -1,0 +1,1663 @@
+diff --git a/tests/commands/completion/fixtures/regression/__init__.py b/tests/commands/completion/fixtures/regression/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/tests/commands/completion/fixtures/regression/bash.txt b/tests/commands/completion/fixtures/regression/bash.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..a2773094b291aadcc0049af3bdc02482cae8ad42
+--- /dev/null
++++ b/tests/commands/completion/fixtures/regression/bash.txt
+@@ -0,0 +1,68 @@
++_script_6a747bf4223c4e57_complete()
++{
++    local cur script coms opts com
++    COMPREPLY=()
++    _get_comp_words_by_ref -n : cur words
++
++    # for an alias, get the real script behind it
++    if [[ $(type -t ${words[0]}) == "alias" ]]; then
++        script=$(alias ${words[0]} | sed -E "s/alias ${words[0]}='(.*)'/\1/")
++    else
++        script=${words[0]}
++    fi
++
++    # lookup for command
++    for word in ${words[@]:1}; do
++        if [[ $word != -* ]]; then
++            com=$word
++            break
++        fi
++    done
++
++    # completing for an option
++    if [[ ${cur} == --* ]] ; then
++        opts="--ansi --help --no-ansi --no-interaction --quiet --verbose --version"
++
++        case "$com" in
++
++            (command:with:colons)
++            opts="${opts} --goodbye"
++            ;;
++
++            (hello)
++            opts="${opts} --dangerous-option --option-without-description"
++            ;;
++
++            (help)
++            opts="${opts} "
++            ;;
++
++            (list)
++            opts="${opts} "
++            ;;
++
++            ('spaced command')
++            opts="${opts} --goodbye"
++            ;;
++
++        esac
++
++        COMPREPLY=($(compgen -W "${opts}" -- ${cur}))
++        __ltrim_colon_completions "$cur"
++
++        return 0;
++    fi
++
++    # completing for a command
++    if [[ $cur == $com ]]; then
++        coms="command:with:colons hello help list 'spaced command'"
++
++        COMPREPLY=($(compgen -W "${coms}" -- ${cur}))
++        __ltrim_colon_completions "$cur"
++
++        return 0
++    fi
++}
++
++complete -o default -F _script_6a747bf4223c4e57_complete script
++complete -o default -F _script_6a747bf4223c4e57_complete /path/to/my/script
+diff --git a/tests/commands/completion/fixtures/regression/bash_alias.txt b/tests/commands/completion/fixtures/regression/bash_alias.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..689a1ca4ffc576527ae356865e65ce8effb06ee6
+--- /dev/null
++++ b/tests/commands/completion/fixtures/regression/bash_alias.txt
+@@ -0,0 +1,70 @@
++_script_6a747bf4223c4e57_complete()
++{
++    local cur script coms opts com
++    COMPREPLY=()
++    _get_comp_words_by_ref -n : cur words
++
++    # for an alias, get the real script behind it
++    if [[ $(type -t ${words[0]}) == "alias" ]]; then
++        script=$(alias ${words[0]} | sed -E "s/alias ${words[0]}='(.*)'/\1/")
++    else
++        script=${words[0]}
++    fi
++
++    # lookup for command
++    for word in ${words[@]:1}; do
++        if [[ $word != -* ]]; then
++            com=$word
++            break
++        fi
++    done
++
++    # completing for an option
++    if [[ ${cur} == --* ]] ; then
++        opts="--ansi --help --no-ansi --no-interaction --quiet --verbose --version"
++
++        case "$com" in
++
++            (command:with:colons)
++            opts="${opts} --goodbye"
++            ;;
++
++            (hello)
++            opts="${opts} --dangerous-option --option-without-description"
++            ;;
++
++            (help)
++            opts="${opts} "
++            ;;
++
++            (list)
++            opts="${opts} "
++            ;;
++
++            ('spaced command')
++            opts="${opts} --goodbye"
++            ;;
++
++        esac
++
++        COMPREPLY=($(compgen -W "${opts}" -- ${cur}))
++        __ltrim_colon_completions "$cur"
++
++        return 0;
++    fi
++
++    # completing for a command
++    if [[ $cur == $com ]]; then
++        coms="command:with:colons hello help list 'spaced command'"
++
++        COMPREPLY=($(compgen -W "${coms}" -- ${cur}))
++        __ltrim_colon_completions "$cur"
++
++        return 0
++    fi
++}
++
++complete -o default -F _script_6a747bf4223c4e57_complete script
++complete -o default -F _script_6a747bf4223c4e57_complete /path/to/my/script
++complete -o default -F _script_6a747bf4223c4e57_complete foo
++complete -o default -F _script_6a747bf4223c4e57_complete bar
+diff --git a/tests/commands/completion/fixtures/regression/fish.txt b/tests/commands/completion/fixtures/regression/fish.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..4597e07b3f8f5ab4ef4ddc67d2b22d55422edb02
+--- /dev/null
++++ b/tests/commands/completion/fixtures/regression/fish.txt
+@@ -0,0 +1,41 @@
++function __fish_script_6a747bf4223c4e57_complete_no_subcommand
++    for i in (commandline -opc)
++        if contains -- $i command:with:colons hello help list spaced
++            return 1
++        end
++    end
++    return 0
++end
++
++# global options
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l ansi -d 'Force ANSI output.'
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l help -d 'Display help for the given command. When no command is given display help for the list command.'
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l no-ansi -d 'Disable ANSI output.'
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l no-interaction -d 'Do not ask any interactive question.'
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l quiet -d 'Do not output any message.'
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l verbose -d 'Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug.'
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l version -d 'Display this application version.'
++
++# commands
++complete -c script -f -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -a command:with:colons -d 'Test.'
++complete -c script -f -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -a hello -d 'Complete me please.'
++complete -c script -f -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -a help -d 'Displays help for a command.'
++complete -c script -f -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -a list -d 'Lists commands.'
++complete -c script -f -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -a spaced
++complete -c script -f -n '__fish_seen_subcommand_from spaced; and not __fish_seen_subcommand_from command' -a command -d 'Command with space in name.'
++
++# command options
++
++# command:with:colons
++complete -c script -n '__fish_seen_subcommand_from command:with:colons' -l goodbye -d ''
++
++# hello
++complete -c script -n '__fish_seen_subcommand_from hello' -l dangerous-option -d 'This $hould be `escaped`.'
++complete -c script -n '__fish_seen_subcommand_from hello' -l option-without-description -d ''
++
++# help
++
++# list
++
++# spaced command
++complete -c script -n '__fish_seen_subcommand_from spaced; and __fish_seen_subcommand_from command' -l goodbye -d ''
+diff --git a/tests/commands/completion/fixtures/regression/rules_bash.txt b/tests/commands/completion/fixtures/regression/rules_bash.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..b7a1e6c2451a29a180fe16653af72a4f11172b68
+--- /dev/null
++++ b/tests/commands/completion/fixtures/regression/rules_bash.txt
+@@ -0,0 +1,68 @@
++_script_6a747bf4223c4e57_complete()
++{
++    local cur script coms opts com
++    COMPREPLY=()
++    _get_comp_words_by_ref -n : cur words
++
++    # for an alias, get the real script behind it
++    if [[ $(type -t ${words[0]}) == "alias" ]]; then
++        script=$(alias ${words[0]} | sed -E "s/alias ${words[0]}='(.*)'/\1/")
++    else
++        script=${words[0]}
++    fi
++
++    # lookup for command
++    for word in ${words[@]:1}; do
++        if [[ $word != -* ]]; then
++            com=$word
++            break
++        fi
++    done
++
++    # completing for an option
++    if [[ ${cur} == --* ]] ; then
++        opts="--ansi --help --no-ansi --no-interaction --quiet --verbose --version"
++
++        case "$com" in
++
++            ('cache clear')
++            opts="${opts} --alpha --zeta"
++            ;;
++
++            ('cache prune')
++            opts="${opts} --force"
++            ;;
++
++            (help)
++            opts="${opts} "
++            ;;
++
++            (list)
++            opts="${opts} "
++            ;;
++
++            (option-order)
++            opts="${opts} --alpha --colon\:name --zulu"
++            ;;
++
++        esac
++
++        COMPREPLY=($(compgen -W "${opts}" -- ${cur}))
++        __ltrim_colon_completions "$cur"
++
++        return 0;
++    fi
++
++    # completing for a command
++    if [[ $cur == $com ]]; then
++        coms="'cache clear' 'cache prune' help list option-order"
++
++        COMPREPLY=($(compgen -W "${coms}" -- ${cur}))
++        __ltrim_colon_completions "$cur"
++
++        return 0
++    fi
++}
++
++complete -o default -F _script_6a747bf4223c4e57_complete script
++complete -o default -F _script_6a747bf4223c4e57_complete /path/to/my/script
+diff --git a/tests/commands/completion/fixtures/regression/rules_fish.txt b/tests/commands/completion/fixtures/regression/rules_fish.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..a52460992a91f219946dcda530cd320e0185c552
+--- /dev/null
++++ b/tests/commands/completion/fixtures/regression/rules_fish.txt
+@@ -0,0 +1,43 @@
++function __fish_script_6a747bf4223c4e57_complete_no_subcommand
++    for i in (commandline -opc)
++        if contains -- $i cache help list option-order
++            return 1
++        end
++    end
++    return 0
++end
++
++# global options
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l ansi -d 'Force ANSI output.'
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l help -d 'Display help for the given command. When no command is given display help for the list command.'
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l no-ansi -d 'Disable ANSI output.'
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l no-interaction -d 'Do not ask any interactive question.'
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l quiet -d 'Do not output any message.'
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l verbose -d 'Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug.'
++complete -c script -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -l version -d 'Display this application version.'
++
++# commands
++complete -c script -f -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -a cache
++complete -c script -f -n '__fish_seen_subcommand_from cache; and not __fish_seen_subcommand_from clear prune' -a clear -d 'Clear the cache.'
++complete -c script -f -n '__fish_seen_subcommand_from cache; and not __fish_seen_subcommand_from clear prune' -a prune -d 'Prune the cache.'
++complete -c script -f -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -a help -d 'Displays help for a command.'
++complete -c script -f -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -a list -d 'Lists commands.'
++complete -c script -f -n '__fish_script_6a747bf4223c4e57_complete_no_subcommand' -a option-order -d 'Don\'t \'quote\' this & that.'
++
++# command options
++
++# cache clear
++complete -c script -n '__fish_seen_subcommand_from cache; and __fish_seen_subcommand_from clear' -l alpha -d ''
++complete -c script -n '__fish_seen_subcommand_from cache; and __fish_seen_subcommand_from clear' -l zeta -d ''
++
++# cache prune
++complete -c script -n '__fish_seen_subcommand_from cache; and __fish_seen_subcommand_from prune' -l force -d ''
++
++# help
++
++# list
++
++# option-order
++complete -c script -n '__fish_seen_subcommand_from option-order' -l alpha -d 'First option.'
++complete -c script -n '__fish_seen_subcommand_from option-order' -l colon:name -d 'An option with a colon.'
++complete -c script -n '__fish_seen_subcommand_from option-order' -l zulu -d 'Last option.'
+diff --git a/tests/commands/completion/fixtures/regression/rules_zsh.txt b/tests/commands/completion/fixtures/regression/rules_zsh.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..a2a2169bba056100b20034f65d6a9900092c2b29
+--- /dev/null
++++ b/tests/commands/completion/fixtures/regression/rules_zsh.txt
+@@ -0,0 +1,65 @@
++#compdef script
++
++_script_6a747bf4223c4e57_complete()
++{
++    local state com cur
++    local -a opts
++    local -a coms
++
++    cur=${words[${#words[@]}]}
++
++    # lookup for command
++    for word in ${words[@]:1}; do
++        if [[ $word != -* ]]; then
++            com=$word
++            break
++        fi
++    done
++
++    if [[ ${cur} == --* ]]; then
++        state="option"
++        opts+=("--ansi:Force ANSI output." "--help:Display help for the given command. When no command is given display help for the list command." "--no-ansi:Disable ANSI output." "--no-interaction:Do not ask any interactive question." "--quiet:Do not output any message." "--verbose:Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug." "--version:Display this application version.")
++    elif [[ $cur == $com ]]; then
++        state="command"
++        coms+=("'cache clear':Clear the cache." "'cache prune':Prune the cache." "help:Displays help for a command." "list:Lists commands." "option-order:Don\'t \'quote\' this \& that.")
++    fi
++
++    case $state in
++        (command)
++            _describe 'command' coms
++        ;;
++        (option)
++            case "$com" in
++
++            ('cache clear')
++            opts+=("--alpha" "--zeta")
++            ;;
++
++            ('cache prune')
++            opts+=("--force")
++            ;;
++
++            (help)
++            opts+=()
++            ;;
++
++            (list)
++            opts+=()
++            ;;
++
++            (option-order)
++            opts+=("--alpha:First option." "--colon\:name:An option with a colon." "--zulu:Last option.")
++            ;;
++
++            esac
++
++            _describe 'option' opts
++        ;;
++        *)
++            # fallback to file completion
++            _arguments '*:file:_files'
++    esac
++}
++
++_script_6a747bf4223c4e57_complete "$@"
++compdef _script_6a747bf4223c4e57_complete /path/to/my/script
+diff --git a/tests/commands/completion/fixtures/regression/zsh.txt b/tests/commands/completion/fixtures/regression/zsh.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..c3c401af4551530c1c2bd9f53941c012380a47ad
+--- /dev/null
++++ b/tests/commands/completion/fixtures/regression/zsh.txt
+@@ -0,0 +1,65 @@
++#compdef script
++
++_script_6a747bf4223c4e57_complete()
++{
++    local state com cur
++    local -a opts
++    local -a coms
++
++    cur=${words[${#words[@]}]}
++
++    # lookup for command
++    for word in ${words[@]:1}; do
++        if [[ $word != -* ]]; then
++            com=$word
++            break
++        fi
++    done
++
++    if [[ ${cur} == --* ]]; then
++        state="option"
++        opts+=("--ansi:Force ANSI output." "--help:Display help for the given command. When no command is given display help for the list command." "--no-ansi:Disable ANSI output." "--no-interaction:Do not ask any interactive question." "--quiet:Do not output any message." "--verbose:Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug." "--version:Display this application version.")
++    elif [[ $cur == $com ]]; then
++        state="command"
++        coms+=("command\:with\:colons:Test." "hello:Complete me please." "help:Displays help for a command." "list:Lists commands." "'spaced command':Command with space in name.")
++    fi
++
++    case $state in
++        (command)
++            _describe 'command' coms
++        ;;
++        (option)
++            case "$com" in
++
++            (command:with:colons)
++            opts+=("--goodbye")
++            ;;
++
++            (hello)
++            opts+=("--dangerous-option:This \$hould be \`escaped\`." "--option-without-description")
++            ;;
++
++            (help)
++            opts+=()
++            ;;
++
++            (list)
++            opts+=()
++            ;;
++
++            ('spaced command')
++            opts+=("--goodbye")
++            ;;
++
++            esac
++
++            _describe 'option' opts
++        ;;
++        *)
++            # fallback to file completion
++            _arguments '*:file:_files'
++    esac
++}
++
++_script_6a747bf4223c4e57_complete "$@"
++compdef _script_6a747bf4223c4e57_complete /path/to/my/script
+diff --git a/tests/commands/completion/fixtures/regression/zsh_alias.txt b/tests/commands/completion/fixtures/regression/zsh_alias.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..6ea5504ea1c564a822b55d9e70b111335a05eae5
+--- /dev/null
++++ b/tests/commands/completion/fixtures/regression/zsh_alias.txt
+@@ -0,0 +1,67 @@
++#compdef script
++
++_script_6a747bf4223c4e57_complete()
++{
++    local state com cur
++    local -a opts
++    local -a coms
++
++    cur=${words[${#words[@]}]}
++
++    # lookup for command
++    for word in ${words[@]:1}; do
++        if [[ $word != -* ]]; then
++            com=$word
++            break
++        fi
++    done
++
++    if [[ ${cur} == --* ]]; then
++        state="option"
++        opts+=("--ansi:Force ANSI output." "--help:Display help for the given command. When no command is given display help for the list command." "--no-ansi:Disable ANSI output." "--no-interaction:Do not ask any interactive question." "--quiet:Do not output any message." "--verbose:Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug." "--version:Display this application version.")
++    elif [[ $cur == $com ]]; then
++        state="command"
++        coms+=("command\:with\:colons:Test." "hello:Complete me please." "help:Displays help for a command." "list:Lists commands." "'spaced command':Command with space in name.")
++    fi
++
++    case $state in
++        (command)
++            _describe 'command' coms
++        ;;
++        (option)
++            case "$com" in
++
++            (command:with:colons)
++            opts+=("--goodbye")
++            ;;
++
++            (hello)
++            opts+=("--dangerous-option:This \$hould be \`escaped\`." "--option-without-description")
++            ;;
++
++            (help)
++            opts+=()
++            ;;
++
++            (list)
++            opts+=()
++            ;;
++
++            ('spaced command')
++            opts+=("--goodbye")
++            ;;
++
++            esac
++
++            _describe 'option' opts
++        ;;
++        *)
++            # fallback to file completion
++            _arguments '*:file:_files'
++    esac
++}
++
++_script_6a747bf4223c4e57_complete "$@"
++compdef _script_6a747bf4223c4e57_complete /path/to/my/script
++compdef _script_6a747bf4223c4e57_complete foo
++compdef _script_6a747bf4223c4e57_complete bar
+diff --git a/tests/commands/completion/test_completions_regression.py b/tests/commands/completion/test_completions_regression.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..20d7a229d0df7ea328179d3275119355fb4ff597
+--- /dev/null
++++ b/tests/commands/completion/test_completions_regression.py
+@@ -0,0 +1,617 @@
++from __future__ import annotations
++
++from pathlib import Path
++from typing import TYPE_CHECKING
++from typing import ClassVar
++
++import pytest
++
++from cleo.application import Application
++from cleo.commands.command import Command
++from cleo.helpers import option
++from cleo.testers.command_tester import CommandTester
++from tests.commands.completion.fixtures.command_with_colons import CommandWithColons
++from tests.commands.completion.fixtures.command_with_space_in_name import SpacedCommand
++from tests.commands.completion.fixtures.hello_command import HelloCommand
++
++
++if TYPE_CHECKING:
++    from cleo.io.inputs.option import Option
++    from pytest_mock import MockerFixture
++
++FIXTURES_PATH = Path(__file__).parent / "fixtures" / "regression"
++
++SCRIPT_NAME = "/path/to/my/script"
++SUPPORTED_SHELLS = ("bash", "zsh", "fish")
++
++
++class HiddenCompletionCommand(Command):
++    name = "hidden-command"
++    description = "A hidden command."
++    hidden = True
++
++
++class DisabledCompletionCommand(Command):
++    name = "disabled-command"
++    description = "A disabled command."
++
++
++class UnnamedCompletionCommand(Command):
++    name = "unnamed-command"
++    description = "A command whose name is cleared."
++
++
++class NamespacedCacheClearCommand(Command):
++    name = "cache clear"
++    description = "Clear the cache."
++    options: ClassVar[list[Option]] = [option("zeta"), option("alpha")]
++
++
++class NamespacedCachePruneCommand(Command):
++    name = "cache prune"
++    description = "Prune the cache."
++    options: ClassVar[list[Option]] = [option("force", flag=True)]
++
++
++class EscapingCompletionCommand(Command):
++    name = "option-order"
++    description = "Don't 'quote' this & that."
++    options: ClassVar[list[Option]] = [
++        option("zulu", description="Last option."),
++        option("alpha", description="First option."),
++        option("colon:name", description="An option with a colon."),
++    ]
++
++
++def _mock_script_name(mocker: MockerFixture) -> None:
++    mocker.patch(
++        "cleo.io.inputs.string_input.StringInput.script_name",
++        new_callable=mocker.PropertyMock,
++        return_value=SCRIPT_NAME,
++    )
++
++
++def _fixture_application() -> Application:
++    app = Application()
++    app.add(HelloCommand())
++    app.add(CommandWithColons())
++    app.add(SpacedCommand())
++
++    return app
++
++
++def _rules_application() -> Application:
++    app = Application()
++    app.add(HiddenCompletionCommand())
++
++    disabled_command = app.add(DisabledCompletionCommand())
++    assert disabled_command is not None
++    disabled_command.enabled = False
++
++    unnamed_command = app.add(UnnamedCompletionCommand())
++    assert unnamed_command is not None
++    unnamed_command.name = None
++
++    app.add(NamespacedCacheClearCommand())
++    app.add(NamespacedCachePruneCommand())
++    app.add(EscapingCompletionCommand())
++
++    return app
++
++
++def _run(app: Application, args: str) -> tuple[int, str, str]:
++    tester = CommandTester(app.find("completions"))
++    status = tester.execute(args)
++
++    return (
++        status,
++        tester.io.fetch_output().replace("\r\n", "\n"),
++        tester.io.fetch_error().replace("\r\n", "\n"),
++    )
++
++
++def _expected(name: str) -> str:
++    return (FIXTURES_PATH / name).read_text(encoding="utf-8")
++
++
++def test_bash_script_output_is_character_identical(mocker: MockerFixture) -> None:
++    _mock_script_name(mocker)
++
++    _, output, _ = _run(_fixture_application(), "bash")
++
++    assert output == _expected("bash.txt")
++
++
++def test_zsh_script_output_is_character_identical(mocker: MockerFixture) -> None:
++    _mock_script_name(mocker)
++
++    _, output, _ = _run(_fixture_application(), "zsh")
++
++    assert output == _expected("zsh.txt")
++
++
++def test_fish_script_output_is_character_identical(mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++    _mock_script_name(mocker)
++
++    _, output, _ = _run(_fixture_application(), "fish")
++
++    assert output == _expected("fish.txt")
++    mocker.stopall()
++    _assert_real_fallback_identity(monkeypatch, tmp_path)
++
++
++def test_command_and_option_inclusion_and_ordering_rules(
++    mocker: MockerFixture,
++) -> None:
++    _mock_script_name(mocker)
++    app = _rules_application()
++
++    for shell in SUPPORTED_SHELLS:
++        _, output, _ = _run(app, shell)
++
++        assert output == _expected(f"rules_{shell}.txt")
++        assert "hidden-command" not in output
++        assert "disabled-command" not in output
++        assert "unnamed-command" not in output
++
++    _assert_lazy_definition_rendering_order()
++    _assert_visibility_at_each_command()
++    _assert_bash_does_not_read_unused_description()
++    _assert_later_definition_does_not_rewrite_earlier_output()
++
++
++def test_alias_option_is_repeatable_and_keeps_script_effect(
++    mocker: MockerFixture,
++) -> None:
++    _mock_script_name(mocker)
++    app = _fixture_application()
++
++    _, bash_with_aliases, _ = _run(app, "bash --alias foo --alias bar")
++    assert bash_with_aliases == _expected("bash_alias.txt")
++
++    _, zsh_with_aliases, _ = _run(app, "zsh --alias foo --alias bar")
++    assert zsh_with_aliases == _expected("zsh_alias.txt")
++
++    # --alias has never changed the script generated for fish
++    _, fish_with_alias, _ = _run(app, "fish --alias foo")
++    assert fish_with_alias == _expected("fish.txt")
++    _assert_duplicate_aliases(app)
++
++
++def test_shell_is_inferred_from_shell_environment_variable(
++    mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    _mock_script_name(mocker)
++    monkeypatch.setenv("SHELL", "/usr/local/bin/zsh")
++
++    status, output, error = _run(_fixture_application(), "")
++
++    assert status == 0
++    assert error == ""
++    assert output == _expected("zsh.txt")
++
++
++def test_explicit_shell_argument_wins_over_shell_environment_variable(
++    mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    _mock_script_name(mocker)
++    monkeypatch.setenv("SHELL", "/usr/local/bin/zsh")
++
++    _, output, _ = _run(_fixture_application(), "bash")
++
++    assert output == _expected("bash.txt")
++
++
++def test_missing_shell_environment_variable_raises_runtime_error(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.delenv("SHELL", raising=False)
++
++    tester = CommandTester(_fixture_application().find("completions"))
++
++    with pytest.raises(RuntimeError):
++        tester.execute("")
++
++    assert tester.io.fetch_output() == ""
++    assert tester.io.fetch_error() == ""
++
++
++def test_empty_shell_environment_variable_raises_runtime_error(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setenv("SHELL", "")
++    tester = CommandTester(_fixture_application().find("completions"))
++    with pytest.raises(RuntimeError):
++        tester.execute("")
++    assert tester.io.fetch_output() == ""
++    assert tester.io.fetch_error() == ""
++
++
++def test_root_shell_environment_variable_raises_runtime_error(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setenv("SHELL", "/")
++    tester = CommandTester(_fixture_application().find("completions"))
++    with pytest.raises(RuntimeError):
++        tester.execute("")
++    assert tester.io.fetch_output() == ""
++    assert tester.io.fetch_error() == ""
++
++
++def test_unsupported_shell_raises_value_error_and_emits_no_output() -> None:
++    tester = CommandTester(_fixture_application().find("completions"))
++
++    with pytest.raises(ValueError) as exc_info:
++        tester.execute("pomodoro")
++
++    message = str(exc_info.value)
++    for shell in SUPPORTED_SHELLS:
++        assert shell in message
++
++    assert tester.io.fetch_output() == ""
++    assert tester.io.fetch_error() == ""
++
++
++def test_successful_run_exits_with_status_zero_and_touches_no_files(
++    mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++) -> None:
++    _mock_script_name(mocker)
++    monkeypatch.chdir(tmp_path)
++    app = _fixture_application()
++
++    identity = _application_identity(app)
++    for shell in SUPPORTED_SHELLS:
++        status, output, error = _run(app, shell)
++
++        assert status == 0
++        assert output
++        assert error == ""
++        assert _application_identity(app) == identity
++
++    assert list(tmp_path.rglob("*")) == []
++
++    _assert_traversal_lifecycle()
++
++
++def test_completions_command_contract_is_unchanged() -> None:
++    command = _fixture_application().find("completions")
++
++    assert command.name == "completions"
++
++    arguments = {argument.name: argument for argument in command.definition.arguments}
++    assert "shell" in arguments
++    assert not arguments["shell"].is_required()
++    assert not arguments["shell"].is_list()
++    assert command.definition.required_argument_count == 0
++
++    options = {option_.name: option_ for option_ in command.definition.options}
++    assert "alias" in options
++    assert not options["alias"].is_flag()
++    assert options["alias"].accepts_value()
++    assert options["alias"].is_list()
++
++
++def test_full_external_behavior_of_all_supported_shells_is_preserved(
++    mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++) -> None:
++    _mock_script_name(mocker)
++    monkeypatch.chdir(tmp_path)
++    app = _fixture_application()
++
++    for shell in SUPPORTED_SHELLS:
++        status, output, error = _run(app, shell)
++
++        assert status == 0
++        assert output == _expected(f"{shell}.txt")
++        assert error == ""
++
++    _, aliased_bash, _ = _run(app, "bash --alias foo --alias bar")
++    assert aliased_bash == _expected("bash_alias.txt")
++
++    monkeypatch.setenv("SHELL", "/usr/local/bin/zsh")
++
++    _, inferred, _ = _run(app, "")
++    assert inferred == _expected("zsh.txt")
++
++    _, explicit, _ = _run(app, "bash")
++    assert explicit == _expected("bash.txt")
++
++    unsupported = CommandTester(app.find("completions"))
++
++    with pytest.raises(ValueError) as exc_info:
++        unsupported.execute("pomodoro")
++
++    message = str(exc_info.value)
++    for shell in SUPPORTED_SHELLS:
++        assert shell in message
++
++    assert unsupported.io.fetch_output() == ""
++
++    monkeypatch.delenv("SHELL", raising=False)
++
++    missing_shell = CommandTester(app.find("completions"))
++
++    with pytest.raises(RuntimeError):
++        missing_shell.execute("")
++
++    assert missing_shell.io.fetch_output() == ""
++    assert missing_shell.io.fetch_error() == ""
++
++    assert list(tmp_path.rglob("*")) == []
++
++
++def _assert_real_fallback_identity(monkeypatch, tmp_path):
++    # Use actual Input objects. Neither the resolver nor the hash is patched.
++    import hashlib
++    import posixpath
++    from cleo.io.inputs.argv_input import ArgvInput
++    from cleo.io.inputs.string_input import StringInput
++
++    monkeypatch.chdir(tmp_path)
++    for script in ("bin/my-tool", None):
++        app = _fixture_application()
++        command = app.find("completions")
++        tester = CommandTester(command)
++        input_ = ArgvInput([script, "completions", "fish"]) if script else StringInput("completions fish")
++        assert input_.script_name == script
++        tester.io.set_input(input_)
++        assert command.run(tester.io) == 0
++        resolved = posixpath.realpath(script or "cleo")
++        name = Path(resolved).name.replace("-", "_")
++        function = f"_{name}_{hashlib.md5(resolved.encode()).hexdigest()[:16]}_complete"
++        assert function in tester.io.fetch_output()
++        assert tester.io.fetch_error() == ""
++
++
++def _assert_duplicate_aliases(app):
++    import hashlib
++    function = f"_script_{hashlib.md5(SCRIPT_NAME.encode()).hexdigest()[:16]}_complete"
++    for shell, prefix in (("bash", "complete -o default -F"), ("zsh", "compdef")):
++        _, original, _ = _run(app, shell)
++        status, output, error = _run(app, f"{shell} --alias dup --alias dup")
++        line = f"{prefix} {function} dup\n"
++        assert output.count(line) == 2
++        assert output.replace(line, "") == original
++        assert status == 0 and error == ""
++
++
++def _application_identity(app):
++    return (app.name, app.version, app._auto_exit, app._catch_exceptions, app._single_command, id(app._command_loader))
++
++
++def _assert_traversal_lifecycle():
++    from cleo.commands.completions_command import CompletionsCommand
++    from cleo.loaders.factory_command_loader import FactoryCommandLoader
++
++    class FreshApplication(Application):
++        def __init__(self):
++            super().__init__("repair-lifecycle", "1.0")
++            self.init_transitions = 0
++
++        def _init(self):
++            if not self._initialized:
++                self.init_transitions += 1
++            super()._init()
++
++    class LazyCommand(Command):
++        name = "repair-lazy-target"
++        description = "Must be materialized through the real loader."
++
++    for shell in SUPPORTED_SHELLS:
++        app = FreshApplication()
++        loaded = []
++
++        def factory():
++            command = LazyCommand()
++            loaded.append(command)
++            return command
++
++        loader = FactoryCommandLoader({"repair-lazy-target": factory})
++        app.set_command_loader(loader)
++        command = CompletionsCommand()
++        command.set_application(app)
++        identity = _application_identity(app)
++        assert not app._initialized and not loaded
++        for iteration in (1, 2):
++            tester = CommandTester(command)
++            assert tester.execute(shell) == 0
++            assert tester.io.fetch_error() == ""
++            assert "repair-lazy-target" in tester.io.fetch_output()
++            assert app._initialized and app.init_transitions == 1
++            assert len(loaded) == 1
++            assert app._commands["repair-lazy-target"] is loaded[0]
++            assert _application_identity(app) == identity
++
++
++def _assert_lazy_definition_rendering_order():
++    # Public definition access can finish a command's metadata. Descriptions
++    # must be rendered at the same point as before the refactor, before that
++    # command's options are read. Compare whole scripts to an eager reference.
++    from cleo.loaders.factory_command_loader import FactoryCommandLoader
++    from cleo.io.inputs.option import Option
++
++    before = "Description before definition."
++    after = "Description after definition."
++
++    # A public option description may include its default. Global descriptions
++    # must be rendered before a lazy command definition updates that default.
++    class DefaultDescribingOption(Option):
++        @property
++        def description(self):
++            return f"Configuration path (default: {self.default})."
++
++    class ReferenceCommand(Command):
++        name = "lazy-metadata"
++        description = before
++        options = [option("metadata-option", description="Metadata option.")]
++
++    class LazyDefinitionCommand(Command):
++        name = ReferenceCommand.name
++        description = before
++
++        def __init__(self):
++            super().__init__()
++            self.metadata_initializations = 0
++
++        @property
++        def definition(self):
++            definition = super().definition
++            if not self.metadata_initializations:
++                definition.add_option(
++                    option("metadata-option", description="Metadata option.")
++                )
++                self.description = after
++                global_option.set_default("after")
++                self.metadata_initializations += 1
++            return definition
++
++    for shell in SUPPORTED_SHELLS:
++        app = Application()
++        global_option = DefaultDescribingOption(
++            "config-path", flag=False, default="before"
++        )
++        app.definition.add_option(global_option)
++        loaded = []
++
++        def factory():
++            command = LazyDefinitionCommand()
++            loaded.append(command)
++            return command
++
++        app.set_command_loader(
++            FactoryCommandLoader({ReferenceCommand.name: factory})
++        )
++        assert not loaded
++        for description, default in ((before, "before"), (after, "after")):
++            reference = Application()
++            reference.definition.add_option(
++                DefaultDescribingOption("config-path", flag=False, default=default)
++            )
++            eager_command = ReferenceCommand()
++            eager_command.description = description
++            reference.add(eager_command)
++            expected = _run(reference, shell)
++            actual = _run(app, shell)
++            assert actual == expected, (
++                f"{shell} script changed when a command finishes its definition; "
++                "global option and command descriptions must precede command "
++                "option traversal"
++            )
++            assert actual[0] == 0 and actual[2] == ""
++            assert len(loaded) == 1
++            assert loaded[0].metadata_initializations == 1
++            assert loaded[0].description == after
++            assert global_option.default == "after"
++
++
++def _assert_visibility_at_each_command():
++    from cleo.loaders.factory_command_loader import FactoryCommandLoader
++    for shell in SUPPORTED_SHELLS:
++        for change in ('hidden', 'disabled', 'unnamed'):
++            app = Application()
++            loaded = []
++            class First(Command):
++                name = 'visibility-alpha'
++                description = 'First.'
++                def __init__(self):
++                    super().__init__()
++                    self.reads = 0
++                @property
++                def definition(self):
++                    value = super().definition
++                    self.reads += 1
++                    sibling = app.get('visibility-omega')
++                    if change == 'hidden': sibling.hidden = True
++                    elif change == 'disabled': sibling.enabled = False
++                    else: sibling.name = None
++                    return value
++            class Second(Command):
++                name = 'visibility-omega'
++                description = 'Second.'
++                def __init__(self):
++                    super().__init__()
++                    self.reads = 0
++                @property
++                def definition(self):
++                    self.reads += 1
++                    return super().definition
++            def load(cls):
++                def factory():
++                    c = cls(); loaded.append(c); return c
++                return factory
++            app.set_command_loader(FactoryCommandLoader({'visibility-alpha':load(First), 'visibility-omega':load(Second)}))
++            expected_app = Application()
++            first = Command(); first.name = 'visibility-alpha'; first.description = 'First.'
++            expected_app.add(first)
++            second = Command(); second.name = 'visibility-omega'; second.description = 'Second.'
++            expected_app.add(second)
++            if change == 'hidden': second.hidden = True
++            elif change == 'disabled': second.enabled = False
++            else: second.name = None
++            expected = _run(expected_app, shell)
++            for iteration in (1, 2):
++                assert _run(app, shell) == expected, f'{shell}: visibility must be checked when each command is reached ({change})'
++                assert len(loaded) == 2
++                assert next(c for c in loaded if isinstance(c, Second)).reads == 0, 'excluded command definition must not be read'
++                assert next(c for c in loaded if isinstance(c, First)).reads == iteration
++
++
++def _assert_bash_does_not_read_unused_description():
++    from cleo.io.inputs.option import Option
++    for location in ('global', 'command'):
++        for throws in (False, True):
++            reads = []
++            class ObservedOption(Option):
++                @property
++                def description(self):
++                    reads.append('description')
++                    if throws: raise RuntimeError('unused description was evaluated')
++                    return 'A description not used by bash.'
++            def application(observed):
++                app = Application(); cmd = Command(); cmd.name = 'description-target'
++                app.add(cmd)
++                opt = ObservedOption('observed-option', flag=True) if observed else option('observed-option', description='A description not used by bash.')
++                definition = app.definition if location == 'global' else cmd.definition
++                definition.add_option(opt)
++                return app
++            expected = _run(application(False), 'bash')
++            try:
++                actual = _run(application(True), 'bash')
++            except RuntimeError as exc:
++                pytest.fail(f'bash accessed an unused description: {exc}')
++            assert actual == expected
++            assert reads == [], 'bash must not evaluate description when only the name is rendered'
++
++
++def _assert_later_definition_does_not_rewrite_earlier_output():
++    from cleo.io.inputs.option import Option
++    from cleo.loaders.factory_command_loader import FactoryCommandLoader
++    class DynamicOption(Option):
++        @property
++        def description(self):
++            return f'Configuration default: {self.default}.'
++    for shell in SUPPORTED_SHELLS:
++        app = Application()
++        earlier = DynamicOption('earlier-option', flag=False, default='before')
++        class First(Command):
++            name = 'order-alpha'
++            description = 'First.'
++            def __init__(self):
++                super().__init__(); self._definition.add_option(earlier)
++        class Second(Command):
++            name = 'order-omega'
++            description = 'Second.'
++            @property
++            def definition(self):
++                result = super().definition
++                earlier.set_default('after')
++                return result
++        app.set_command_loader(FactoryCommandLoader({'order-alpha':First,'order-omega':Second}))
++        for default in ('before', 'after'):
++            reference = Application()
++            first = Command(); first.name = 'order-alpha'; first.description = 'First.'
++            first.definition.add_option(DynamicOption('earlier-option', flag=False, default=default))
++            second = Command(); second.name = 'order-omega'; second.description = 'Second.'
++            reference.add(first); reference.add(second)
++            assert _run(app, shell) == _run(reference, shell), f'{shell}: a later definition changed an earlier option description'
++            assert earlier.default == 'after'
+diff --git a/tests/commands/completion/test_completions_separation.py b/tests/commands/completion/test_completions_separation.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d21bc79d07fa94e8f54878f17848527456e19f58
+--- /dev/null
++++ b/tests/commands/completion/test_completions_separation.py
+@@ -0,0 +1,496 @@
++"""Observe the public completion split, without prescribing keys/classes/files.
++
++Legacy node names are retained so the existing verifier inventory stays stable.
++Ownership is checked on executed production functions, not helper names. The
++operation model below covers the Python path/hash/traversal/template primitives
++used by this case; it is not a claim of general Python semantic equivalence.
++"""
++from __future__ import annotations
++
++import ast
++import builtins
++import dis
++import importlib
++import inspect
++import sys
++import textwrap
++from collections.abc import Mapping
++from contextlib import contextmanager
++from dataclasses import is_dataclass
++from functools import lru_cache
++from functools import partial
++from pathlib import Path
++
++from cleo.application import Application
++from cleo.commands.command import Command
++from cleo.io.inputs.definition import Definition
++from cleo.io.inputs.option import Option
++from cleo.testers.command_tester import CommandTester
++
++SHELLS = ("bash", "zsh", "fish")
++COMMAND_MODULE = "cleo.commands.completions_command"
++REPLACEMENT_MARKER = "__f2p_independent_unit_probe__"
++_CODE_GLOBALS = {}
++_DATA_CONSTRUCTOR_CODES = set()
++_OBSERVED_RECEIVERS = {}
++_REPLACEMENT_RESULTS = {}
++_MISSING = object()
++_FORMATTING_CODES = set()
++
++
++class ReplacementProbe(str):
++    def __new__(cls, *args, **kwargs):
++        return super().__new__(cls, REPLACEMENT_MARKER)
++
++    def __getattr__(self, name):
++        return lambda *args, **kwargs: REPLACEMENT_MARKER
++
++    def __call__(self, *args, **kwargs):
++        return REPLACEMENT_MARKER
++
++    def render(self, *args, **kwargs):
++        return REPLACEMENT_MARKER
++
++    def generate(self, *args, **kwargs):
++        return REPLACEMENT_MARKER
++
++
++class ProbeCommand(Command):
++    name = "f2p-probe"
++    description = "A production traversal probe."
++
++    def handle(self):
++        return 0
++
++
++def _command_class():
++    return importlib.import_module(COMMAND_MODULE).CompletionsCommand
++
++
++def _run(shell):
++    app = Application()
++    app.add(ProbeCommand())
++    tester = CommandTester(app.find("completions"))
++    status = tester.execute(shell)
++    return status, tester.io.fetch_output().replace("\r\n", "\n"), tester.io.fetch_error()
++
++
++def _production_owners():
++    # Only modules reached by actual generation are inspected. Importing every
++    # production module would change startup/state and discover unrelated units.
++    for name, module in sorted(list(sys.modules.items())):
++        if module is None or not (name == "cleo" or name.startswith("cleo.")):
++            continue
++        yield module
++        for value in list(vars(module).values()):
++            if isinstance(value, type) and value.__module__ == name:
++                yield value
++    # A cohesive unit may be an instance, including one created during generation.
++    # Only receivers reached by the real trace are eligible for instance probes.
++    yield from list(_OBSERVED_RECEIVERS.values())
++
++
++def _owner_members(owner):
++    members = dict(vars(owner)) if hasattr(owner, "__dict__") else {}
++    if not isinstance(owner, type) and not inspect.ismodule(owner):
++        for base in type(owner).__mro__:
++            for key, value in vars(base).items():
++                if inspect.isfunction(_unwrap(value)):
++                    members.setdefault(key, value)
++    return members
++
++
++def _unwrap(value):
++    return value.__func__ if isinstance(value, (staticmethod, classmethod)) else value
++
++
++def _generation_code(code):
++    # Framework accessors are not generation owners; inspect their callers.
++    path = Path(code.co_filename)
++    return (
++        code not in _DATA_CONSTRUCTOR_CODES
++        and path.name not in ("application.py", "command.py", "command_tester.py")
++        and not code.co_name.startswith("<")
++        and "/io/" not in path.as_posix()
++        and "/formatters/" not in path.as_posix()
++    )
++
++
++def _trace(shell):
++    calls = {}
++    returns = []
++    option_owners = set()
++    sorting_owners = set()
++    _FORMATTING_CODES.clear()
++    option_getter = Definition.options.fget.__code__
++    command_codes = {
++        getattr(_unwrap(value), "__code__", None)
++        for value in vars(_command_class()).values()
++    }
++
++    def observe(frame, event, result):
++        module = frame.f_globals.get("__name__", "")
++        if event == "call" and module == "string" and frame.f_code.co_name in {"substitute", "safe_substitute"}:
++            if frame.f_back is not None and frame.f_back.f_globals.get("__name__", "").startswith("cleo."):
++                _FORMATTING_CODES.add(frame.f_back.f_code)
++        if not (module == "cleo" or module.startswith("cleo.")):
++            return
++        code = frame.f_code
++        if event == "c_call" and getattr(result, "__name__", "") in {"format", "format_map"} and isinstance(getattr(result, "__self__", None), str):
++            _FORMATTING_CODES.add(code)
++        if event == "call":
++            _CODE_GLOBALS[code] = frame.f_globals
++            receiver = frame.f_locals.get("self")
++            calls[code] = code in command_codes or isinstance(receiver, _command_class())
++            if (receiver is not None and not calls[code]
++                    and type(receiver).__module__.startswith("cleo.")):
++                # dataclasses synthesize field-assignment constructors with no
++                # source file. Their called factories remain separately traced.
++                if (code.co_name == "__init__" and code.co_filename == "<string>"
++                        and is_dataclass(receiver)):
++                    _DATA_CONSTRUCTOR_CODES.add(code)
++                elif _generation_code(code):
++                    _OBSERVED_RECEIVERS[id(receiver)] = receiver
++            # Observe the trusted definition accessor, not an arbitrary field
++            # named options on an already prepared completion-data object.
++            if code is option_getter and frame.f_back is not None:
++                caller = frame.f_back.f_code
++                if caller in calls and _generation_code(caller):
++                    option_owners.add(caller)
++        elif event == "return" and isinstance(result, (str, Mapping)):
++            returns.append((code, result))
++
++    original_sorted = builtins.sorted
++    def observed_sorted(values, *args, **kwargs):
++        if isinstance(values, (list, tuple)) and values and all(isinstance(v, Option) for v in values):
++            frame = sys._getframe(1)
++            if frame.f_globals.get("__name__", "").startswith("cleo.") and _generation_code(frame.f_code):
++                sorting_owners.add(frame.f_code)
++        return original_sorted(values, *args, **kwargs)
++
++    def observe_operations(frame, event, arg):
++        if not frame.f_globals.get("__name__", "").startswith("cleo."):
++            return None
++        if event == "call":
++            frame.f_trace_opcodes = True
++        elif event == "opcode" and frame.f_lasti in _percent_offsets(frame.f_code):
++            _FORMATTING_CODES.add(frame.f_code)
++        return observe_operations
++
++    previous, previous_trace = sys.getprofile(), sys.gettrace()
++    try:
++        builtins.sorted = observed_sorted
++        sys.setprofile(observe)
++        sys.settrace(observe_operations)
++        status, output, error = _run(shell)
++    finally:
++        sys.settrace(previous_trace)
++        sys.setprofile(previous)
++        builtins.sorted = original_sorted
++    assert status == 0 and output and not error
++    return calls, returns, output, sorting_owners or option_owners
++
++
++@lru_cache(maxsize=None)
++def _percent_offsets(code):
++    return frozenset(i.offset for i in dis.get_instructions(code)
++                     if i.opname == "BINARY_OP" and i.argrepr == "%")
++
++
++def _full_script_formatter(code, result, output):
++    return (_generation_code(code) and code in _FORMATTING_CODES and isinstance(result, str)
++            and result.rstrip("\n") == output.rstrip("\n"))
++
++
++@lru_cache(maxsize=None)
++def _roles(code):
++    # Ignore framework primitives. Their callers, which implement generation,
++    # are still inspected; merely using Application.all is not a shared owner.
++    if not _generation_code(code):
++        return frozenset()
++    try:
++        tree = ast.parse(textwrap.dedent(inspect.getsource(code)))
++    except (OSError, TypeError, SyntaxError):
++        raise RuntimeError(f"unsupported executed generation code {code.co_name}")
++    # Error-message formatting is part of shell validation. It is not script
++    # rendering, so expressions beneath raise statements must be excluded.
++    class ExcludeErrors(ast.NodeTransformer):
++        def visit_Raise(self, node):
++            return ast.Pass()
++
++    tree = ExcludeErrors().visit(tree)
++    roles = set()
++    for node in ast.walk(tree):
++        if isinstance(node, ast.Call):
++            name = node.func.attr if isinstance(node.func, ast.Attribute) else ""
++            if isinstance(node.func, ast.Name):
++                # Import spelling is not a contract: from-imports and aliases
++                # must resolve to the same primitive as module attributes.
++                value = _CODE_GLOBALS.get(code, {}).get(node.func.id)
++                name = getattr(value, "__name__", node.func.id).removeprefix("openssl_")
++            if name in {"realpath", "abspath", "resolve"}:
++                roles.add("script identity")
++            if name in {"md5", "sha1", "sha256", "blake2b", "blake2s"}:
++                roles.add("function naming")
++            if name == "sub" and node.args and isinstance(node.args[0], ast.Constant):
++                pattern = node.args[0].value
++                if isinstance(pattern, str) and "A-Za-z0-9_" in pattern:
++                    roles.add("function sanitization")
++            if name in {"option", "get_option"} and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "alias":
++                roles.add("aliases")
++            if name == "all" and not node.args and not node.keywords:
++                roles.add("command traversal")
++            if name in {"substitute", "safe_substitute", "format_map"}:
++                roles.add("template filling")
++            if name in {"join", "format"}:
++                roles.add("shell rendering")
++        if isinstance(node, ast.JoinedStr):
++            roles.add("shell rendering")
++        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) and isinstance(node.left, (ast.Subscript, ast.Name, ast.Constant, ast.Attribute)):
++            roles.add("template filling")
++    return frozenset(roles)
++
++
++def _executed_roles(code, option_owners):
++    roles = _roles(code)
++    if code in option_owners:
++        roles = roles | {"option traversal"}
++    return roles
++
++
++def _assert_narrow(shells=SHELLS):
++    offenders = []
++    for shell in shells:
++        calls, _, _, option_owners = _trace(shell)
++        for code, owned in calls.items():
++            # Reading --alias in handle to pass it to an external unit is legal;
++            # assembling aliases in a command-owned derivation helper is not.
++            roles = set(_executed_roles(code, option_owners))
++            if code.co_name == "handle":
++                roles.discard("aliases")
++            if owned and roles:
++                offenders.append((shell, code.co_qualname, sorted(roles)))
++    assert not offenders, f"actual generation/common work remains on the command: {offenders}"
++
++
++def _assert_shared():
++    observations = {}
++    for shell in SHELLS:
++        calls, returns, output, option_owners = _trace(shell)
++        observations[shell] = {
++            role: ({code for code, result in returns if _full_script_formatter(code, result, output)}
++                   if role == "template filling" else
++                   {code for code in calls if role in _executed_roles(code, option_owners)})
++            for role in ("script identity", "function naming", "function sanitization", "aliases", "command traversal", "option traversal", "template filling")
++        }
++    for role in observations["bash"]:
++        shells = ("bash", "zsh") if role == "aliases" else SHELLS
++        owners = [observations[shell][role] for shell in shells]
++        assert all(owners), f"no executed owner observed for common {role}"
++        assert all(owner == owners[0] for owner in owners[1:]), (
++            f"common {role} is copied/defined separately across shells: "
++            f"{[(shell, sorted(code.co_qualname for code in observations[shell][role])) for shell in shells]}"
++        )
++    _assert_narrow()
++
++
++def _probe_result(result):
++    if isinstance(result, str):
++        return REPLACEMENT_MARKER
++    # Preserve the template-data schema, changing one observable text value.
++    # Replacing a mapping with a string would reject a valid data-returning unit.
++    if isinstance(result, Mapping):
++        replacement = dict(result)
++        for key, value in replacement.items():
++            if isinstance(value, str):
++                replacement[key] = REPLACEMENT_MARKER
++                return replacement
++    return _MISSING
++
++
++@contextmanager
++def _replaced(binding):
++    owner, key, original = binding
++    if isinstance(owner, dict):
++        owner[key] = ReplacementProbe if isinstance(original, type) else ReplacementProbe()
++        previous = original
++    else:
++        previous = vars(owner).get(key, _MISSING) if hasattr(owner, "__dict__") else _MISSING
++        result = _REPLACEMENT_RESULTS.get((id(owner), key), REPLACEMENT_MARKER)
++        replacement = lambda *args, **kwargs: result
++        if isinstance(owner, type):
++            if isinstance(original, staticmethod):
++                replacement = staticmethod(replacement)
++            elif isinstance(original, classmethod):
++                replacement = classmethod(replacement)
++        setattr(owner, key, replacement)
++    try:
++        yield
++    finally:
++        if isinstance(owner, dict):
++            owner[key] = previous
++        elif previous is _MISSING:
++            delattr(owner, key)
++        else:
++            setattr(owner, key, previous)
++
++
++def _selects(binding, shell, outputs):
++    try:
++        with _replaced(binding):
++            status, output, error = _run(shell)
++            if status != 0 or error or REPLACEMENT_MARKER not in output:
++                return False
++            for other in SHELLS:
++                if other != shell:
++                    status, output, error = _run(other)
++                    if status != 0 or error or output != outputs[other]:
++                        return False
++    except (Exception, AssertionError):
++        return False
++    return True
++
++
++def _unit_codes(unit):
++    # A registry entry must own executed generation code. Template strings and
++    # other static data are replaceable inputs, not generation responsibilities.
++    while isinstance(unit, partial):
++        unit = unit.func
++    codes = {getattr(_unwrap(unit), "__code__", None)}
++    owners = unit.__mro__ if isinstance(unit, type) else (unit,)
++    for owner in owners:
++        codes.update(
++            getattr(_unwrap(value), "__code__", None)
++            for value in _owner_members(owner).values()
++        )
++    return codes - {None}
++
++
++def _dispatch_bindings():
++    # A callable wrapper around command-owned rendering is not an external
++    # generation responsibility, even if replacing the wrapper changes output.
++    _assert_narrow()
++    _OBSERVED_RECEIVERS.clear()
++    _REPLACEMENT_RESULTS.clear()
++    traces = {shell: _trace(shell) for shell in SHELLS}
++    outputs = {shell: value[2] for shell, value in traces.items()}
++    owners = list(_production_owners())
++    mappings = []
++    seen = set()
++    for owner in owners:
++        for name, value in list(_owner_members(owner).items()):
++            if name.startswith("__"):
++                continue
++            if isinstance(value, dict) and id(value) not in seen:
++                seen.add(id(value))
++                mappings.extend((value, key, unit) for key, unit in list(value.items()))
++    found = {}
++    for shell in SHELLS:
++        # Match both registry and method probes to actual external execution;
++        # changing a shell's template alone must not satisfy these six nodes.
++        returning = {
++            code: result for code, result in traces[shell][1]
++            if not traces[shell][0][code] and _generation_code(code)
++            and (isinstance(result, Mapping) or
++                 result.rstrip("\n") == outputs[shell].rstrip("\n"))
++        }
++        for binding in mappings:
++            if not (_unit_codes(binding[2]) & returning.keys()):
++                continue
++            if _selects(binding, shell, outputs):
++                found[shell] = binding
++                break
++        if shell in found:
++            continue
++        # A shell unit can return the whole script or data consumed by the
++        # common template filler. Bind the actual class/instance responsibility.
++        for owner in owners:
++            for key, value in list(_owner_members(owner).items()):
++                code = getattr(_unwrap(value), "__code__", None)
++                if code not in returning:
++                    continue
++                replacement = _probe_result(returning[code])
++                if replacement is _MISSING:
++                    continue
++                _REPLACEMENT_RESULTS[(id(owner), key)] = replacement
++                binding = (owner, key, value)
++                if _selects(binding, shell, outputs):
++                    found[shell] = binding
++                    break
++            if shell in found:
++                break
++    assert set(found) == set(SHELLS), f"no actual independently replaceable external behaviour found for {set(SHELLS) - set(found)}"
++    return found
++
++
++def _assert_independent(shell=None):
++    bindings = _dispatch_bindings()
++    outputs = {name: _run(name)[1] for name in SHELLS}
++    for name in ((shell,) if shell else SHELLS):
++        assert _selects(bindings[name], name, outputs)
++
++
++def test_shell_generation_is_dispatched_through_a_shell_keyed_unit_registry():
++    _dispatch_bindings()
++
++
++def test_shell_registry_binds_each_supported_shell_to_a_distinct_generation_unit():
++    bindings = _dispatch_bindings()
++    assert len({(id(owner), key) for owner, key, _ in bindings.values()}) == 3
++
++
++def test_bash_generation_unit_is_defined_outside_the_command_module():
++    _assert_narrow(("bash",))
++
++
++def test_zsh_generation_unit_is_defined_outside_the_command_module():
++    _assert_narrow(("zsh",))
++
++
++def test_fish_generation_unit_is_defined_outside_the_command_module():
++    _assert_narrow(("fish",))
++
++
++def test_bash_generation_unit_can_be_replaced_independently_of_the_others():
++    _assert_independent("bash")
++
++
++def test_zsh_generation_unit_can_be_replaced_independently_of_the_others():
++    _assert_independent("zsh")
++
++
++def test_fish_generation_unit_can_be_replaced_independently_of_the_others():
++    _assert_independent("fish")
++
++
++def test_replacing_one_shell_unit_does_not_change_the_other_shells_scripts():
++    _assert_independent()
++
++
++def test_command_class_no_longer_defines_the_per_shell_rendering_methods():
++    _assert_narrow()
++
++
++def test_command_class_no_longer_branches_on_shell_name_literals():
++    # Shell validation branches are explicitly legal; ownership is the contract.
++    _assert_narrow()
++
++
++def test_command_class_no_longer_performs_template_substitution():
++    _assert_narrow()
++
++
++def test_command_class_no_longer_defines_the_shared_derivation_helpers():
++    _assert_narrow()
++
++
++def test_shared_derivation_helpers_are_defined_once_and_not_in_the_command_module():
++    _assert_shared()
++
++
++def test_shell_generation_units_share_a_common_shell_independent_base():
++    _assert_shared()
++
++
++def test_shared_shell_independent_base_is_defined_outside_the_command_module():
++    _assert_shared()

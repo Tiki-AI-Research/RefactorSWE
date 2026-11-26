@@ -1,0 +1,965 @@
+{
+  "base_commit": "edee2f91616c6d73112a13e7c0dbde72ce938877",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "python3",
+    "tests/f2p_junit_runner.py",
+    "--config",
+    "{config}",
+    "--report",
+    "{report}",
+    "--timeout",
+    "180"
+  ],
+  "evaluation_files": {
+    "case30_boundary_test.go": "94b0696660d5ed803fa2e80a25cf016ae0bf10d13220d13e934ec1ae57faa418",
+    "case30_legacy_wrapper_test.go": "6fe681367f9fdf4d1b0b7500dd10abd8a53e11f3ab08595c7c1f3971a0cb2f39",
+    "tests/f2p/capgen/main.go": "2013fe4963cd7776cc2ac4c98ca95d6104cfb0becc445cbf321c495a70fe266b",
+    "tests/f2p/dispatch/main.go": "caca14439a4f55cecf53bd2d1bd9357e4c2fc631326ff5f96655c58734c9e86a",
+    "tests/f2p/f2p_capability_consistency_test.go": "da04074d8ab9f637cfef4d067190dfec1223b5a31231fb2c5ace27d7f65f6bf9",
+    "tests/f2p/f2p_capability_surface_test.go": "09db27012684ebd71a14b8d333819c01acc0d47bb1fb5ac506a7f7a0365fa5a2",
+    "tests/f2p/f2p_child_semantics_test.go": "012e8461b13fe76babf97191772219d438a7e721e3401f3497ae5fd926aa6fcf",
+    "tests/f2p/f2p_first_token_test.go": "e340e2c8cd2763f41f1f2eeaa5ffce504562d3292804e7f8c268666bb35ba540",
+    "tests/f2p/f2p_promoted_capability_test.go": "499624bee561f40e647f2216ba908bac612bc1546c797da092c1f626d921b03b",
+    "tests/f2p/f2p_support_test.go": "55a241e8813fdd5242434941062d3fe993209a02096ac43c2feffc82399f3026",
+    "tests/f2p_junit_runner.py": "be35a9591da7093f94baf9e8cdcaae048fa2e7bf2b8ba071b9079e71290c4ac8",
+    "tests/p2p_decode_test.go": "1bd40bbbdb1afa83e28a7e1f161fed1539ca346ce786ddde2467452c45023a84",
+    "tests/p2p_fixture_test.go": "47a41f60922f8a1a95afa18de674ece405a897efa319c3f54af5590e3fb4ad88",
+    "tests/p2p_integrity_test.go": "c9d35a655f060a77d5456b25bf5336c4c762f8f73848059ae8ff22089783c633",
+    "tests/p2p_junit_runner.py": "a4e3ceb95bf96d3a197e5dc349b225e74c4fcf9b535acfe0ac757e8e16880e94",
+    "tests/p2p_nodes_test.go": "aab21cbfd104651d0aff2c25f6ba9452f0c393d250b10a6841b3f0650d718e6d",
+    "tests/p2p_path_test.go": "96f3ec9b28841c4fca0fa7c468e64bd3df364eb3e676126b3ce5b36d5f8313a7",
+    "tests/p2p_support.go": "966d74ee01b7604b341e68a10bc88e875172842fcf9d664a7cc776f93d423f02",
+    "tests/p2p_traversal_test.go": "d90a83695e73b79058aac76031f7337103fc5d9721570ba5ab8f48920e7e2aff",
+    "tests/p2p_work_test.go": "7a1b1d3b847480f5811ea1cbd385985fc70197f1890e644023461fa544cdf66b",
+    "tests/testdata/case30_boundary.json": "3a0095088ad8be2089667c7e60dbfde4b7bbbb8fe449b1261a611bdd11ed882d",
+    "tests/testdata/case30_nontransition_functions.json": "39dc0c6bf1250858dceee34d9da36693bacc9c6190d8226d3819425f26727ae4",
+    "tests/testdata/p2p_snapshots.json": "44224c5387d55960babf1a4223b828dd613ffc41bc103db3611e58d6c8abceba",
+    "tests/workcheck/main.go": "50ad32fdecec9942141ad4fd8b863892e2251b862865a03dbaf1069e3955f40c"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 4080.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 900.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 3600.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 900.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 900.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 900.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 900.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "selector": "tests/p2p_traversal_test.go::TestWalkVisitOrderSnapshot",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_traversal_test.go::TestParentIdentitySnapshot",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_traversal_test.go::TestFilterOrderSnapshot",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_traversal_test.go::TestFilterFileSnapshot",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_traversal_test.go::TestVisitorProtocolCalls",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_traversal_test.go::TestWalkVisitsEachNodeOnce",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_nodes_test.go::TestNodeMethodsForEveryNodeKind",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_nodes_test.go::TestFormatOutputSnapshot",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_decode_test.go::TestDecodeValueSnapshot",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_decode_test.go::TestDecodeErrorSnapshot",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_decode_test.go::TestDecodeDepthLimitSentinel",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_path_test.go::TestPathFilterSnapshot",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_path_test.go::TestPathReplaceSnapshot",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_integrity_test.go::TestExportedAPISurfacePreserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/p2p_integrity_test.go::TestModuleDependencyGraphUnchanged",
+        "role": "P2P"
+      },
+      {
+        "selector": "parser/parser_test.go::TestParser",
+        "role": "P2P"
+      },
+      {
+        "selector": "parser/parser_test.go::TestParseEmptyDocument",
+        "role": "P2P"
+      },
+      {
+        "selector": "parser/parser_test.go::TestParseComplicatedDocument",
+        "role": "P2P"
+      },
+      {
+        "selector": "parser/parser_test.go::TestParseWhitespace",
+        "role": "P2P"
+      },
+      {
+        "selector": "parser/parser_test.go::TestNewLineChar",
+        "role": "P2P"
+      },
+      {
+        "selector": "parser/parser_test.go::TestSyntaxError",
+        "role": "P2P"
+      },
+      {
+        "selector": "parser/parser_test.go::TestComment",
+        "role": "P2P"
+      },
+      {
+        "selector": "parser/parser_test.go::TestCommentWithNull",
+        "role": "P2P"
+      },
+      {
+        "selector": "parser/parser_test.go::TestSequenceComment",
+        "role": "P2P"
+      },
+      {
+        "selector": "parser/parser_test.go::TestCommentWithMap",
+        "role": "P2P"
+      },
+      {
+        "selector": "parser/parser_test.go::TestInFlowStyle",
+        "role": "P2P"
+      },
+      {
+        "selector": "parser/parser_test.go::TestNodePath",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestDecodeWithMergeKey",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestDecoder_UnmarshalYAMLWithAlias",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestDecoder_DecodeWithAnchorAnyValue",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestDecoder_SiblingAnchorAlias",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestDecoder_AnchorInUnmappedField",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestRoundtripAnchorAlias",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestDecodeWithSameAnchor",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestSetNullValue",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestIssue735",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestDecode_Literal",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestDecoder_LiteralWithNewLine",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestDecoder_DecodeWithNode",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestIssue617",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestBytesUnmarshalerWithMapAlias",
+        "role": "P2P"
+      },
+      {
+        "selector": "decode_test.go::TestDecoder_AnchorReferenceDirs",
+        "role": "P2P"
+      },
+      {
+        "selector": "fuzz_test.go::FuzzUnmarshalToMap",
+        "role": "P2P"
+      },
+      {
+        "selector": "yaml_test_suite_test.go::TestYAMLTestSuite",
+        "role": "P2P"
+      },
+      {
+        "selector": "yaml_test.go::TestSmartAnchor",
+        "role": "P2P"
+      },
+      {
+        "selector": "printer/printer_test.go::Test_Printer",
+        "role": "P2P"
+      },
+      {
+        "selector": "printer/printer_test.go::TestPrinter_Anchor",
+        "role": "P2P"
+      },
+      {
+        "selector": "printer/printer_test.go::Test_Printer_Multiline",
+        "role": "P2P"
+      },
+      {
+        "selector": "encode_test.go::TestTagMarshalling",
+        "role": "P2P"
+      },
+      {
+        "selector": "encode_test.go::TestIssue356",
+        "role": "P2P"
+      },
+      {
+        "selector": "encode_test.go::TestMarshalIndentWithMultipleText",
+        "role": "P2P"
+      },
+      {
+        "selector": "encode_test.go::TestEncodeWithAnchorAndAlias",
+        "role": "P2P"
+      },
+      {
+        "selector": "encode_test.go::TestEncoder_MarshalAnchor",
+        "role": "P2P"
+      },
+      {
+        "selector": "encode_test.go::TestIssue259",
+        "role": "P2P"
+      },
+      {
+        "selector": "encode_test.go::TestEncoder_Flow",
+        "role": "P2P"
+      },
+      {
+        "selector": "yaml_test.go::TestRoundTripWithComment",
+        "role": "P2P"
+      },
+      {
+        "selector": "yaml_test.go::TestStreamDecodingWithComment",
+        "role": "P2P"
+      },
+      {
+        "selector": "path_test.go::TestPathBuilder",
+        "role": "P2P"
+      },
+      {
+        "selector": "path_test.go::TestPath",
+        "role": "P2P"
+      },
+      {
+        "selector": "path_test.go::TestPath_FilterFile",
+        "role": "P2P"
+      },
+      {
+        "selector": "path_test.go::TestPath_ReservedKeyword",
+        "role": "P2P"
+      },
+      {
+        "selector": "path_test.go::TestPath_Invalid",
+        "role": "P2P"
+      },
+      {
+        "selector": "path_test.go::TestPath_ReadNode",
+        "role": "P2P"
+      },
+      {
+        "selector": "path_test.go::TestPath_Merge",
+        "role": "P2P"
+      },
+      {
+        "selector": "path_test.go::TestPath_Replace",
+        "role": "P2P"
+      },
+      {
+        "selector": "path_test.go::TestInvalidPath",
+        "role": "P2P"
+      },
+      {
+        "selector": "case30_boundary_test.go::TestP2PBoundaryDecodeMatrix",
+        "role": "P2P"
+      },
+      {
+        "selector": "case30_boundary_test.go::TestP2PBoundaryFormatAndPathMatrix",
+        "role": "P2P"
+      },
+      {
+        "selector": "case30_boundary_test.go::TestP2PBoundaryOldNodeCompatibility",
+        "role": "P2P"
+      },
+      {
+        "selector": "case30_boundary_test.go::TestP2PBoundaryNilPruning",
+        "role": "P2P"
+      },
+      {
+        "selector": "case30_legacy_wrapper_test.go::TestP2PLegacyEmbeddedWrapperBehavior",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_capability_surface_test.go::TestChildCapabilityPresentOnEveryNodeKind",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_capability_surface_test.go::TestChildCapabilityUniformMethodAcrossNodeKinds",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_capability_surface_test.go::TestFirstTokenCapabilityPresentOnEveryNodeKind",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_capability_surface_test.go::TestFirstTokenCapabilityUniformMethodAcrossNodeKinds",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_capability_surface_test.go::TestChildCapabilityPresentOnEveryParsedNodeKind",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_capability_surface_test.go::TestFirstTokenCapabilityPresentOnEveryParsedNodeKind",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForScalarKinds",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForMappingKinds",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForSequenceKinds",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForWrapperKinds",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityKeepsCommentKindsAsLeaves",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_capability_consistency_test.go::TestChildCapabilityMatchesParentLookupForParsedTree",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_promoted_capability_test.go::TestTraversalConsumesNodeCapabilities",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_promoted_capability_test.go::TestFormattingConsumesNodeCapabilities",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_promoted_capability_test.go::TestKeyExtractionConsumesNodeCapabilities",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_promoted_capability_test.go::TestDecodingConsumesNodeCapabilities",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_capability_consistency_test.go::TestChildCapabilityOrderMatchesFilterOutput",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_capability_consistency_test.go::TestChildCapabilityOrderMatchesFilterFileAcrossDocuments",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityMatchesScalarAndMergeKeyTokens",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityMatchesMappingHeadRules",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityMatchesWrapperHeadRules",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityIsNilForHeadlessKinds",
+        "role": "F2P"
+      }
+    ],
+    "selector_timeout_seconds": 900.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "tests/p2p_traversal_test.go::TestWalkVisitOrderSnapshot",
+          "tests/p2p_traversal_test.go::TestParentIdentitySnapshot",
+          "tests/p2p_traversal_test.go::TestFilterOrderSnapshot",
+          "tests/p2p_traversal_test.go::TestFilterFileSnapshot",
+          "tests/p2p_traversal_test.go::TestVisitorProtocolCalls",
+          "tests/p2p_traversal_test.go::TestWalkVisitsEachNodeOnce",
+          "tests/p2p_nodes_test.go::TestNodeMethodsForEveryNodeKind",
+          "tests/p2p_nodes_test.go::TestFormatOutputSnapshot",
+          "tests/p2p_decode_test.go::TestDecodeValueSnapshot",
+          "tests/p2p_decode_test.go::TestDecodeErrorSnapshot",
+          "tests/p2p_decode_test.go::TestDecodeDepthLimitSentinel",
+          "tests/p2p_path_test.go::TestPathFilterSnapshot",
+          "tests/p2p_path_test.go::TestPathReplaceSnapshot",
+          "tests/p2p_integrity_test.go::TestExportedAPISurfacePreserved",
+          "tests/p2p_integrity_test.go::TestModuleDependencyGraphUnchanged",
+          "parser/parser_test.go::TestParser",
+          "parser/parser_test.go::TestParseEmptyDocument",
+          "parser/parser_test.go::TestParseComplicatedDocument",
+          "parser/parser_test.go::TestParseWhitespace",
+          "parser/parser_test.go::TestNewLineChar",
+          "parser/parser_test.go::TestSyntaxError",
+          "parser/parser_test.go::TestComment",
+          "parser/parser_test.go::TestCommentWithNull",
+          "parser/parser_test.go::TestSequenceComment",
+          "parser/parser_test.go::TestCommentWithMap",
+          "parser/parser_test.go::TestInFlowStyle",
+          "parser/parser_test.go::TestNodePath",
+          "decode_test.go::TestDecodeWithMergeKey",
+          "decode_test.go::TestDecoder_UnmarshalYAMLWithAlias",
+          "decode_test.go::TestDecoder_DecodeWithAnchorAnyValue",
+          "decode_test.go::TestDecoder_SiblingAnchorAlias",
+          "decode_test.go::TestDecoder_AnchorInUnmappedField",
+          "decode_test.go::TestRoundtripAnchorAlias",
+          "decode_test.go::TestDecodeWithSameAnchor",
+          "decode_test.go::TestSetNullValue",
+          "decode_test.go::TestIssue735",
+          "decode_test.go::TestDecode_Literal",
+          "decode_test.go::TestDecoder_LiteralWithNewLine",
+          "decode_test.go::TestDecoder_DecodeWithNode",
+          "decode_test.go::TestIssue617",
+          "decode_test.go::TestBytesUnmarshalerWithMapAlias",
+          "decode_test.go::TestDecoder_AnchorReferenceDirs",
+          "fuzz_test.go::FuzzUnmarshalToMap",
+          "yaml_test_suite_test.go::TestYAMLTestSuite",
+          "yaml_test.go::TestSmartAnchor",
+          "printer/printer_test.go::Test_Printer",
+          "printer/printer_test.go::TestPrinter_Anchor",
+          "printer/printer_test.go::Test_Printer_Multiline",
+          "encode_test.go::TestTagMarshalling",
+          "encode_test.go::TestIssue356",
+          "encode_test.go::TestMarshalIndentWithMultipleText",
+          "encode_test.go::TestEncodeWithAnchorAndAlias",
+          "encode_test.go::TestEncoder_MarshalAnchor",
+          "encode_test.go::TestIssue259",
+          "encode_test.go::TestEncoder_Flow",
+          "yaml_test.go::TestRoundTripWithComment",
+          "yaml_test.go::TestStreamDecodingWithComment",
+          "path_test.go::TestPathBuilder",
+          "path_test.go::TestPath",
+          "path_test.go::TestPath_FilterFile",
+          "path_test.go::TestPath_ReservedKeyword",
+          "path_test.go::TestPath_Invalid",
+          "path_test.go::TestPath_ReadNode",
+          "path_test.go::TestPath_Merge",
+          "path_test.go::TestPath_Replace",
+          "path_test.go::TestInvalidPath",
+          "case30_boundary_test.go::TestP2PBoundaryDecodeMatrix",
+          "case30_boundary_test.go::TestP2PBoundaryFormatAndPathMatrix",
+          "case30_boundary_test.go::TestP2PBoundaryOldNodeCompatibility",
+          "case30_boundary_test.go::TestP2PBoundaryNilPruning",
+          "case30_legacy_wrapper_test.go::TestP2PLegacyEmbeddedWrapperBehavior",
+          "tests/f2p/f2p_capability_surface_test.go::TestChildCapabilityPresentOnEveryNodeKind",
+          "tests/f2p/f2p_capability_surface_test.go::TestChildCapabilityUniformMethodAcrossNodeKinds",
+          "tests/f2p/f2p_capability_surface_test.go::TestFirstTokenCapabilityPresentOnEveryNodeKind",
+          "tests/f2p/f2p_capability_surface_test.go::TestFirstTokenCapabilityUniformMethodAcrossNodeKinds",
+          "tests/f2p/f2p_capability_surface_test.go::TestChildCapabilityPresentOnEveryParsedNodeKind",
+          "tests/f2p/f2p_capability_surface_test.go::TestFirstTokenCapabilityPresentOnEveryParsedNodeKind",
+          "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForScalarKinds",
+          "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForMappingKinds",
+          "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForSequenceKinds",
+          "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForWrapperKinds",
+          "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityKeepsCommentKindsAsLeaves",
+          "tests/f2p/f2p_capability_consistency_test.go::TestChildCapabilityMatchesParentLookupForParsedTree",
+          "tests/f2p/f2p_promoted_capability_test.go::TestTraversalConsumesNodeCapabilities",
+          "tests/f2p/f2p_promoted_capability_test.go::TestFormattingConsumesNodeCapabilities",
+          "tests/f2p/f2p_promoted_capability_test.go::TestKeyExtractionConsumesNodeCapabilities",
+          "tests/f2p/f2p_promoted_capability_test.go::TestDecodingConsumesNodeCapabilities",
+          "tests/f2p/f2p_capability_consistency_test.go::TestChildCapabilityOrderMatchesFilterOutput",
+          "tests/f2p/f2p_capability_consistency_test.go::TestChildCapabilityOrderMatchesFilterFileAcrossDocuments",
+          "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityMatchesScalarAndMergeKeyTokens",
+          "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityMatchesMappingHeadRules",
+          "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityMatchesWrapperHeadRules",
+          "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityIsNilForHeadlessKinds"
+        ],
+        "timeout_seconds": 900.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "tests/f2p/f2p_capability_surface_test.go::TestChildCapabilityPresentOnEveryNodeKind",
+    "tests/f2p/f2p_capability_surface_test.go::TestChildCapabilityUniformMethodAcrossNodeKinds",
+    "tests/f2p/f2p_capability_surface_test.go::TestFirstTokenCapabilityPresentOnEveryNodeKind",
+    "tests/f2p/f2p_capability_surface_test.go::TestFirstTokenCapabilityUniformMethodAcrossNodeKinds",
+    "tests/f2p/f2p_capability_surface_test.go::TestChildCapabilityPresentOnEveryParsedNodeKind",
+    "tests/f2p/f2p_capability_surface_test.go::TestFirstTokenCapabilityPresentOnEveryParsedNodeKind",
+    "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForScalarKinds",
+    "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForMappingKinds",
+    "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForSequenceKinds",
+    "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForWrapperKinds",
+    "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityKeepsCommentKindsAsLeaves",
+    "tests/f2p/f2p_capability_consistency_test.go::TestChildCapabilityMatchesParentLookupForParsedTree",
+    "tests/f2p/f2p_promoted_capability_test.go::TestTraversalConsumesNodeCapabilities",
+    "tests/f2p/f2p_promoted_capability_test.go::TestFormattingConsumesNodeCapabilities",
+    "tests/f2p/f2p_promoted_capability_test.go::TestKeyExtractionConsumesNodeCapabilities",
+    "tests/f2p/f2p_promoted_capability_test.go::TestDecodingConsumesNodeCapabilities",
+    "tests/f2p/f2p_capability_consistency_test.go::TestChildCapabilityOrderMatchesFilterOutput",
+    "tests/f2p/f2p_capability_consistency_test.go::TestChildCapabilityOrderMatchesFilterFileAcrossDocuments",
+    "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityMatchesScalarAndMergeKeyTokens",
+    "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityMatchesMappingHeadRules",
+    "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityMatchesWrapperHeadRules",
+    "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityIsNilForHeadlessKinds"
+  ],
+  "gates": [
+    {
+      "id": "P2P-TRAVERSAL",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C1",
+        "REQ-BEH-T6:B2",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/p2p_traversal_test.go::TestWalkVisitOrderSnapshot",
+        "tests/p2p_traversal_test.go::TestParentIdentitySnapshot",
+        "tests/p2p_traversal_test.go::TestFilterOrderSnapshot",
+        "tests/p2p_traversal_test.go::TestFilterFileSnapshot",
+        "tests/p2p_traversal_test.go::TestVisitorProtocolCalls",
+        "tests/p2p_traversal_test.go::TestWalkVisitsEachNodeOnce"
+      ]
+    },
+    {
+      "id": "P2P-PARSER-AST",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C2",
+        "REQ-BEH-T6:B2",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "parser/parser_test.go::TestParser",
+        "parser/parser_test.go::TestParseEmptyDocument",
+        "parser/parser_test.go::TestParseComplicatedDocument",
+        "parser/parser_test.go::TestParseWhitespace",
+        "parser/parser_test.go::TestNewLineChar",
+        "parser/parser_test.go::TestSyntaxError",
+        "parser/parser_test.go::TestComment",
+        "parser/parser_test.go::TestCommentWithNull",
+        "parser/parser_test.go::TestSequenceComment",
+        "parser/parser_test.go::TestCommentWithMap",
+        "parser/parser_test.go::TestInFlowStyle",
+        "parser/parser_test.go::TestNodePath"
+      ]
+    },
+    {
+      "id": "P2P-NODE-INTERFACE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C2",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "tests/p2p_nodes_test.go::TestNodeMethodsForEveryNodeKind"
+      ]
+    },
+    {
+      "id": "P2P-API-SURFACE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-001",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "tests/p2p_integrity_test.go::TestExportedAPISurfacePreserved"
+      ]
+    },
+    {
+      "id": "P2P-DECODE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C3",
+        "REQ-BEH-T6:B1",
+        "REQ-BEH-T6:B5",
+        "REQ-BEH-T6:B6",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/p2p_decode_test.go::TestDecodeValueSnapshot",
+        "tests/p2p_decode_test.go::TestDecodeErrorSnapshot",
+        "tests/p2p_decode_test.go::TestDecodeDepthLimitSentinel",
+        "decode_test.go::TestDecodeWithMergeKey",
+        "decode_test.go::TestDecoder_UnmarshalYAMLWithAlias",
+        "decode_test.go::TestDecoder_DecodeWithAnchorAnyValue",
+        "decode_test.go::TestDecoder_SiblingAnchorAlias",
+        "decode_test.go::TestDecoder_AnchorInUnmappedField",
+        "decode_test.go::TestRoundtripAnchorAlias",
+        "decode_test.go::TestDecodeWithSameAnchor",
+        "decode_test.go::TestSetNullValue",
+        "decode_test.go::TestIssue735",
+        "decode_test.go::TestDecode_Literal",
+        "decode_test.go::TestDecoder_LiteralWithNewLine",
+        "decode_test.go::TestDecoder_DecodeWithNode",
+        "decode_test.go::TestIssue617",
+        "decode_test.go::TestBytesUnmarshalerWithMapAlias",
+        "decode_test.go::TestDecoder_AnchorReferenceDirs",
+        "fuzz_test.go::FuzzUnmarshalToMap",
+        "yaml_test_suite_test.go::TestYAMLTestSuite",
+        "yaml_test.go::TestSmartAnchor"
+      ]
+    },
+    {
+      "id": "P2P-FORMAT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C4",
+        "REQ-BEH-T6:B3",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/p2p_nodes_test.go::TestFormatOutputSnapshot",
+        "printer/printer_test.go::Test_Printer",
+        "printer/printer_test.go::TestPrinter_Anchor",
+        "printer/printer_test.go::Test_Printer_Multiline",
+        "encode_test.go::TestTagMarshalling",
+        "encode_test.go::TestIssue356",
+        "encode_test.go::TestMarshalIndentWithMultipleText",
+        "encode_test.go::TestEncodeWithAnchorAndAlias",
+        "encode_test.go::TestEncoder_MarshalAnchor",
+        "encode_test.go::TestIssue259",
+        "encode_test.go::TestEncoder_Flow",
+        "yaml_test.go::TestRoundTripWithComment",
+        "yaml_test.go::TestStreamDecodingWithComment"
+      ]
+    },
+    {
+      "id": "P2P-PATH",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B4",
+        "REQ-BEH-T6:B6",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/p2p_path_test.go::TestPathFilterSnapshot",
+        "tests/p2p_path_test.go::TestPathReplaceSnapshot",
+        "path_test.go::TestPathBuilder",
+        "path_test.go::TestPath",
+        "path_test.go::TestPath_FilterFile",
+        "path_test.go::TestPath_ReservedKeyword",
+        "path_test.go::TestPath_Invalid",
+        "path_test.go::TestPath_ReadNode",
+        "path_test.go::TestPath_Merge",
+        "path_test.go::TestPath_Replace",
+        "path_test.go::TestInvalidPath"
+      ]
+    },
+    {
+      "id": "P2P-DEPENDENCY-GRAPH",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "tests/p2p_integrity_test.go::TestModuleDependencyGraphUnchanged"
+      ]
+    },
+    {
+      "id": "F2P-CAPABILITY-SURFACE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T6:C2",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "tests/f2p/f2p_capability_surface_test.go::TestChildCapabilityPresentOnEveryNodeKind",
+        "tests/f2p/f2p_capability_surface_test.go::TestChildCapabilityUniformMethodAcrossNodeKinds",
+        "tests/f2p/f2p_capability_surface_test.go::TestFirstTokenCapabilityPresentOnEveryNodeKind",
+        "tests/f2p/f2p_capability_surface_test.go::TestFirstTokenCapabilityUniformMethodAcrossNodeKinds",
+        "tests/f2p/f2p_capability_surface_test.go::TestChildCapabilityPresentOnEveryParsedNodeKind",
+        "tests/f2p/f2p_capability_surface_test.go::TestFirstTokenCapabilityPresentOnEveryParsedNodeKind"
+      ]
+    },
+    {
+      "id": "F2P-CHILD-ENUMERATION",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T6:B2"
+      ],
+      "tests": [
+        "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForScalarKinds",
+        "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForMappingKinds",
+        "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForSequenceKinds",
+        "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityMatchesWalkChildrenForWrapperKinds",
+        "tests/f2p/f2p_child_semantics_test.go::TestChildCapabilityKeepsCommentKindsAsLeaves",
+        "tests/f2p/f2p_capability_consistency_test.go::TestChildCapabilityMatchesParentLookupForParsedTree"
+      ]
+    },
+    {
+      "id": "F2P-COMMON-CONSUMER-DISPATCH",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T6:C1"
+      ],
+      "tests": [
+        "tests/f2p/f2p_promoted_capability_test.go::TestTraversalConsumesNodeCapabilities",
+        "tests/f2p/f2p_promoted_capability_test.go::TestFormattingConsumesNodeCapabilities",
+        "tests/f2p/f2p_promoted_capability_test.go::TestKeyExtractionConsumesNodeCapabilities",
+        "tests/f2p/f2p_promoted_capability_test.go::TestDecodingConsumesNodeCapabilities",
+        "tests/f2p/f2p_capability_consistency_test.go::TestChildCapabilityOrderMatchesFilterOutput",
+        "tests/f2p/f2p_capability_consistency_test.go::TestChildCapabilityOrderMatchesFilterFileAcrossDocuments"
+      ]
+    },
+    {
+      "id": "F2P-FIRST-TOKEN",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T6:C4",
+        "REQ-BEH-T6:B3"
+      ],
+      "tests": [
+        "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityMatchesScalarAndMergeKeyTokens",
+        "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityMatchesMappingHeadRules",
+        "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityMatchesWrapperHeadRules",
+        "tests/f2p/f2p_first_token_test.go::TestFirstTokenCapabilityIsNilForHeadlessKinds"
+      ]
+    },
+    {
+      "id": "P2P-BOUNDARY-COMPATIBILITY",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C1",
+        "REQ-BEH-T6:C3",
+        "REQ-BEH-T6:C4",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "case30_boundary_test.go::TestP2PBoundaryDecodeMatrix",
+        "case30_boundary_test.go::TestP2PBoundaryFormatAndPathMatrix",
+        "case30_boundary_test.go::TestP2PBoundaryOldNodeCompatibility",
+        "case30_boundary_test.go::TestP2PBoundaryNilPruning",
+        "case30_legacy_wrapper_test.go::TestP2PLegacyEmbeddedWrapperBehavior"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "da3c811cc8928d62a42ed566cd8b21b56407f558cb0dfa84e3fa499694968449",
+    "test_patch_sha256": "56da3f437cc7874aa2618e98e16b12247b6f772bf5fea74399bd822ca0dfdf65"
+  },
+  "node_relations": [],
+  "p2p": [
+    "tests/p2p_traversal_test.go::TestWalkVisitOrderSnapshot",
+    "tests/p2p_traversal_test.go::TestParentIdentitySnapshot",
+    "tests/p2p_traversal_test.go::TestFilterOrderSnapshot",
+    "tests/p2p_traversal_test.go::TestFilterFileSnapshot",
+    "tests/p2p_traversal_test.go::TestVisitorProtocolCalls",
+    "tests/p2p_traversal_test.go::TestWalkVisitsEachNodeOnce",
+    "tests/p2p_nodes_test.go::TestNodeMethodsForEveryNodeKind",
+    "tests/p2p_nodes_test.go::TestFormatOutputSnapshot",
+    "tests/p2p_decode_test.go::TestDecodeValueSnapshot",
+    "tests/p2p_decode_test.go::TestDecodeErrorSnapshot",
+    "tests/p2p_decode_test.go::TestDecodeDepthLimitSentinel",
+    "tests/p2p_path_test.go::TestPathFilterSnapshot",
+    "tests/p2p_path_test.go::TestPathReplaceSnapshot",
+    "tests/p2p_integrity_test.go::TestExportedAPISurfacePreserved",
+    "tests/p2p_integrity_test.go::TestModuleDependencyGraphUnchanged",
+    "parser/parser_test.go::TestParser",
+    "parser/parser_test.go::TestParseEmptyDocument",
+    "parser/parser_test.go::TestParseComplicatedDocument",
+    "parser/parser_test.go::TestParseWhitespace",
+    "parser/parser_test.go::TestNewLineChar",
+    "parser/parser_test.go::TestSyntaxError",
+    "parser/parser_test.go::TestComment",
+    "parser/parser_test.go::TestCommentWithNull",
+    "parser/parser_test.go::TestSequenceComment",
+    "parser/parser_test.go::TestCommentWithMap",
+    "parser/parser_test.go::TestInFlowStyle",
+    "parser/parser_test.go::TestNodePath",
+    "decode_test.go::TestDecodeWithMergeKey",
+    "decode_test.go::TestDecoder_UnmarshalYAMLWithAlias",
+    "decode_test.go::TestDecoder_DecodeWithAnchorAnyValue",
+    "decode_test.go::TestDecoder_SiblingAnchorAlias",
+    "decode_test.go::TestDecoder_AnchorInUnmappedField",
+    "decode_test.go::TestRoundtripAnchorAlias",
+    "decode_test.go::TestDecodeWithSameAnchor",
+    "decode_test.go::TestSetNullValue",
+    "decode_test.go::TestIssue735",
+    "decode_test.go::TestDecode_Literal",
+    "decode_test.go::TestDecoder_LiteralWithNewLine",
+    "decode_test.go::TestDecoder_DecodeWithNode",
+    "decode_test.go::TestIssue617",
+    "decode_test.go::TestBytesUnmarshalerWithMapAlias",
+    "decode_test.go::TestDecoder_AnchorReferenceDirs",
+    "fuzz_test.go::FuzzUnmarshalToMap",
+    "yaml_test_suite_test.go::TestYAMLTestSuite",
+    "yaml_test.go::TestSmartAnchor",
+    "printer/printer_test.go::Test_Printer",
+    "printer/printer_test.go::TestPrinter_Anchor",
+    "printer/printer_test.go::Test_Printer_Multiline",
+    "encode_test.go::TestTagMarshalling",
+    "encode_test.go::TestIssue356",
+    "encode_test.go::TestMarshalIndentWithMultipleText",
+    "encode_test.go::TestEncodeWithAnchorAndAlias",
+    "encode_test.go::TestEncoder_MarshalAnchor",
+    "encode_test.go::TestIssue259",
+    "encode_test.go::TestEncoder_Flow",
+    "yaml_test.go::TestRoundTripWithComment",
+    "yaml_test.go::TestStreamDecodingWithComment",
+    "path_test.go::TestPathBuilder",
+    "path_test.go::TestPath",
+    "path_test.go::TestPath_FilterFile",
+    "path_test.go::TestPath_ReservedKeyword",
+    "path_test.go::TestPath_Invalid",
+    "path_test.go::TestPath_ReadNode",
+    "path_test.go::TestPath_Merge",
+    "path_test.go::TestPath_Replace",
+    "path_test.go::TestInvalidPath",
+    "case30_boundary_test.go::TestP2PBoundaryDecodeMatrix",
+    "case30_boundary_test.go::TestP2PBoundaryFormatAndPathMatrix",
+    "case30_boundary_test.go::TestP2PBoundaryOldNodeCompatibility",
+    "case30_boundary_test.go::TestP2PBoundaryNilPruning",
+    "case30_legacy_wrapper_test.go::TestP2PLegacyEmbeddedWrapperBehavior"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": true,
+  "restoration_paths": [
+    "decode_test.go",
+    "encode_test.go",
+    "fuzz_test.go",
+    "parser/parser_test.go",
+    "path_test.go",
+    "printer/printer_test.go",
+    "yaml_test.go",
+    "yaml_test_suite_test.go"
+  ],
+  "reward_mode": "VERIFIER_ONLY",
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-go-yaml-ast-convert-01",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "case30_boundary_test.go",
+    "case30_legacy_wrapper_test.go",
+    "tests/f2p/capgen/main.go",
+    "tests/f2p/dispatch/main.go",
+    "tests/f2p/f2p_capability_consistency_test.go",
+    "tests/f2p/f2p_capability_surface_test.go",
+    "tests/f2p/f2p_child_semantics_test.go",
+    "tests/f2p/f2p_first_token_test.go",
+    "tests/f2p/f2p_promoted_capability_test.go",
+    "tests/f2p/f2p_support_test.go",
+    "tests/f2p_junit_runner.py",
+    "tests/p2p_decode_test.go",
+    "tests/p2p_fixture_test.go",
+    "tests/p2p_integrity_test.go",
+    "tests/p2p_junit_runner.py",
+    "tests/p2p_nodes_test.go",
+    "tests/p2p_path_test.go",
+    "tests/p2p_support.go",
+    "tests/p2p_traversal_test.go",
+    "tests/p2p_work_test.go",
+    "tests/testdata/case30_boundary.json",
+    "tests/testdata/case30_nontransition_functions.json",
+    "tests/testdata/p2p_snapshots.json",
+    "tests/workcheck/main.go"
+  ],
+  "timeout_seconds": 900,
+  "verifier": "/tests/verifier/verifier.py"
+}

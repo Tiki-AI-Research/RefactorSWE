@@ -1,0 +1,1827 @@
+diff --git a/tests/f2p_runner.py b/tests/f2p_runner.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6b1c14c55c7699469659cfb73ca016dbf6fb89cd
+--- /dev/null
++++ b/tests/f2p_runner.py
+@@ -0,0 +1,156 @@
++"""Aggregate execution shim for the frozen P2P and F2P selectors.
++
++The replay image provides the project's locked dependencies either in a
++repository-local ``.venv`` or in the warm ``uv`` package cache.  This shim
++resolves the first interpreter that can import pytest together with the
++project modules exercised by the selectors, runs every selector passed on the
++command line with pytest and writes the JUnit report required by the plan
++command.  It only uses files already present in the repository and the image.
++"""
++
++from __future__ import annotations
++
++import glob
++import os
++import shutil
++import subprocess
++import sys
++
++IMPORT_CHECK = (
++    "import pytest, irsim; "
++    "from irsim.config import env_param, path_param, world_param; "
++    "from irsim.env.env_plot import EnvPlot; "
++    "from irsim.gui.keyboard_control import KeyboardControl; "
++    "from irsim.world.object_base import ObjectBase; "
++    "from irsim.world.sensors.lidar2d import Lidar2D; "
++    "from irsim.world.world import World"
++)
++
++CACHE_ROOTS = (
++    "/root/.cache/uv",
++    "/home/agent/.cache/uv",
++    "/workspace/.uv-cache",
++)
++
++
++def repo_root() -> str:
++    """Return the repository root that contains this shim's tests directory."""
++    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++
++
++def cached_site_dirs() -> str:
++    """Return a PYTHONPATH for the unpacked packages of the image's uv cache."""
++    roots = []
++    env_cache = os.environ.get("UV_CACHE_DIR")
++    if env_cache:
++        roots.append(env_cache)
++    roots.extend(CACHE_ROOTS)
++    roots.append(os.path.join(os.path.expanduser("~"), ".cache", "uv"))
++
++    entries = []
++    for root in dict.fromkeys(roots):
++        pattern = os.path.join(root, "archive-v0", "*")
++        for path in sorted(glob.glob(pattern)):
++            if os.path.isdir(path):
++                entries.append(path)
++    return os.pathsep.join(entries)
++
++
++def interpreter_candidates(root: str) -> list[str]:
++    """Return existing interpreter paths to probe, most specific first."""
++    candidates = []
++    for variable in ("F2P_PYTHON", "P2P_PYTHON"):
++        env_python = os.environ.get(variable)
++        if env_python:
++            candidates.append(env_python)
++    candidates.extend(
++        [
++            os.path.join(root, ".venv", "bin", "python"),
++            os.path.join(os.path.dirname(root), ".venv", "bin", "python"),
++            "/workspace/repo/.venv/bin/python",
++            sys.executable,
++        ]
++    )
++    for name in ("python3", "python"):
++        found = shutil.which(name)
++        if found:
++            candidates.append(found)
++    return [path for path in dict.fromkeys(candidates) if path and os.path.exists(path)]
++
++
++def resolve_interpreter(root: str) -> tuple[str | None, dict[str, str] | None]:
++    """Probe interpreters and return the first one that can run the tests."""
++    cache_path = cached_site_dirs()
++    for use_cache in (False, True):
++        if use_cache and not cache_path:
++            continue
++        for candidate in interpreter_candidates(root):
++            env = dict(os.environ)
++            if use_cache:
++                existing = env.get("PYTHONPATH")
++                env["PYTHONPATH"] = cache_path + (
++                    os.pathsep + existing if existing else ""
++                )
++            try:
++                probe = subprocess.run(
++                    [candidate, "-c", IMPORT_CHECK],
++                    cwd=root,
++                    env=env,
++                    capture_output=True,
++                    timeout=60,
++                )
++            except (OSError, subprocess.SubprocessError):
++                continue
++            if probe.returncode == 0:
++                return candidate, env
++    return None, None
++
++
++def main(argv: list[str]) -> int:
++    if len(argv) < 3:
++        sys.stderr.write(
++            "usage: python tests/f2p_runner.py <junit-report-path> "
++            "<selector> [selector ...]\n"
++        )
++        return 2
++
++    report = os.path.abspath(argv[1])
++    selectors = argv[2:]
++    root = repo_root()
++    report_dir = os.path.dirname(report)
++    if report_dir:
++        os.makedirs(report_dir, exist_ok=True)
++
++    interpreter, env = resolve_interpreter(root)
++    if interpreter is None:
++        sys.stderr.write(
++            "f2p_runner: no interpreter with pytest and project dependencies "
++            "found; probed .venv, PATH pythons, and the image uv cache\n"
++        )
++        return 2
++
++    sys.stdout.write(f"f2p_runner: interpreter={interpreter}\n")
++    env = dict(env)
++    env["PYTHONPATH"] = os.path.join(root, "tests") + os.pathsep + root + os.pathsep + env.get("PYTHONPATH", "")
++    command = [
++        interpreter,
++        "-m",
++        "pytest",
++        "-p", "codingrl_failure_origin",
++        *selectors,
++        f"--junitxml={report}",
++        "-p",
++        "no:cacheprovider",
++        "-o",
++        "addopts=",
++        "-q",
++    ]
++    display_runner = shutil.which("xvfb-run")
++    if display_runner is None:
++        sys.stderr.write("f2p_runner: xvfb-run is required for keyboard regression tests\n")
++        return 2
++    return subprocess.call([display_runner, "-a", *command], cwd=root, env=env)
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv))
+diff --git a/tests/p2p_runner.py b/tests/p2p_runner.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..62b71f222a7c439d459f4b2bf88d804f3896f6f2
+--- /dev/null
++++ b/tests/p2p_runner.py
+@@ -0,0 +1,151 @@
++"""Execution shim for the frozen P2P command.
++
++The replay image provides the project's locked dependencies either in the
++repository-local ``.venv`` or in the warm ``uv`` package cache. This shim
++resolves the first interpreter that can import pytest together with the
++project modules exercised by the P2P selectors, then runs those exact selectors
++with pytest and writes the JUnit report required by the plan command. It only
++uses files already present in the repository and the image.
++"""
++
++from __future__ import annotations
++
++import glob
++import os
++import shutil
++import subprocess
++import sys
++
++IMPORT_CHECK = (
++    "import pytest, irsim; "
++    "from irsim.config import env_param, path_param, world_param; "
++    "from irsim.env.env_plot import EnvPlot; "
++    "from irsim.gui.keyboard_control import KeyboardControl; "
++    "from irsim.world.object_base import ObjectBase; "
++    "from irsim.world.sensors.lidar2d import Lidar2D; "
++    "from irsim.world.world import World"
++)
++
++CACHE_ROOTS = (
++    "/root/.cache/uv",
++    "/home/agent/.cache/uv",
++    "/workspace/.uv-cache",
++)
++
++
++def repo_root() -> str:
++    """Return the repository root that contains this shim's tests directory."""
++    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++
++
++def cached_site_dirs() -> str:
++    """Return a PYTHONPATH for the unpacked packages of the image's uv cache."""
++    roots = []
++    env_cache = os.environ.get("UV_CACHE_DIR")
++    if env_cache:
++        roots.append(env_cache)
++    roots.extend(CACHE_ROOTS)
++    roots.append(os.path.join(os.path.expanduser("~"), ".cache", "uv"))
++
++    entries = []
++    for root in dict.fromkeys(roots):
++        pattern = os.path.join(root, "archive-v0", "*")
++        for path in sorted(glob.glob(pattern)):
++            if os.path.isdir(path):
++                entries.append(path)
++    return os.pathsep.join(entries)
++
++
++def interpreter_candidates(root: str) -> list[str]:
++    """Return existing interpreter paths to probe, most specific first."""
++    candidates = []
++    env_python = os.environ.get("P2P_PYTHON")
++    if env_python:
++        candidates.append(env_python)
++    candidates.extend(
++        [
++            os.path.join(root, ".venv", "bin", "python"),
++            os.path.join(os.path.dirname(root), ".venv", "bin", "python"),
++            "/workspace/repo/.venv/bin/python",
++            sys.executable,
++        ]
++    )
++    for name in ("python3", "python"):
++        found = shutil.which(name)
++        if found:
++            candidates.append(found)
++    return [path for path in dict.fromkeys(candidates) if path and os.path.exists(path)]
++
++
++def resolve_interpreter(root: str) -> tuple[str | None, dict[str, str] | None]:
++    """Probe interpreters and return the first one that can run the tests."""
++    cache_path = cached_site_dirs()
++    for use_cache in (False, True):
++        if use_cache and not cache_path:
++            continue
++        for candidate in interpreter_candidates(root):
++            env = dict(os.environ)
++            if use_cache:
++                existing = env.get("PYTHONPATH")
++                env["PYTHONPATH"] = cache_path + (
++                    os.pathsep + existing if existing else ""
++                )
++            try:
++                probe = subprocess.run(
++                    [candidate, "-c", IMPORT_CHECK],
++                    cwd=root,
++                    env=env,
++                    capture_output=True,
++                    timeout=60,
++                )
++            except (OSError, subprocess.SubprocessError):
++                continue
++            if probe.returncode == 0:
++                return candidate, env
++    return None, None
++
++
++def main(argv: list[str]) -> int:
++    if len(argv) < 3:
++        sys.stderr.write(
++            "usage: python tests/p2p_runner.py <junit-report-path> "
++            "<selector> [selector ...]\n"
++        )
++        return 2
++
++    report = os.path.abspath(argv[1])
++    selectors = argv[2:]
++    root = repo_root()
++    report_dir = os.path.dirname(report)
++    if report_dir:
++        os.makedirs(report_dir, exist_ok=True)
++
++    interpreter, env = resolve_interpreter(root)
++    if interpreter is None:
++        sys.stderr.write(
++            "p2p_runner: no interpreter with pytest and project dependencies "
++            "found; probed .venv, PATH pythons, and the image uv cache\n"
++        )
++        return 2
++
++    sys.stdout.write(f"p2p_runner: interpreter={interpreter}\n")
++    env = dict(env)
++    env["PYTHONPATH"] = os.path.join(root, "tests") + os.pathsep + root + os.pathsep + env.get("PYTHONPATH", "")
++    command = [
++        interpreter,
++        "-m",
++        "pytest",
++        "-p", "codingrl_failure_origin",
++        *selectors,
++        f"--junitxml={report}",
++        "-p",
++        "no:cacheprovider",
++        "-o",
++        "addopts=",
++        "-q",
++    ]
++    return subprocess.call(command, cwd=root, env=env)
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv))
+diff --git a/tests/test_param_proxy_contract.py b/tests/test_param_proxy_contract.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..905ac1f473eefe7c8e12df752fbc8c19d42878fb
+--- /dev/null
++++ b/tests/test_param_proxy_contract.py
+@@ -0,0 +1,665 @@
++"""Supplemental P2P contract tests for the shared parameter-proxy refactor.
++
++Every assertion in this module already holds for the baseline implementation of
++``irsim.config.env_param``, ``irsim.config.world_param`` and
++``irsim.config.path_param`` and for the consumers that resolve parameters
++owner-first with a global fallback.  The tests pin the observable routing,
++indexing, isolation and fallback behavior that extracting one shared parameter
++store must keep unchanged.
++"""
++
++import os
++import platform
++import subprocess
++import sys
++from dataclasses import fields, is_dataclass
++from types import ModuleType
++
++import numpy as np
++import pytest
++
++import irsim
++from irsim.config import env_param, path_param, world_param
++from irsim.config.env_param import EnvParam
++from irsim.config.path_param import PathManager
++from irsim.config.world_param import WorldParam
++from irsim.env.env_plot import EnvPlot
++from irsim.gui.keyboard_control import KeyboardControl
++from irsim.world.object_base import ObjectBase
++from irsim.world.sensors.lidar2d import Lidar2D
++from irsim.world.world import World
++
++ENV_FIELDS = [
++    "objects",
++    "logger",
++    "GeometryTree",
++    "platform_name",
++    "id_iter",
++    "env_id",
++    "rng",
++]
++WORLD_FIELDS = [
++    "time",
++    "step_mode",
++    "control_mode",
++    "collision_mode",
++    "step_time",
++    "count",
++]
++PATH_FIELDS = ["root_path", "ani_buffer_path", "ani_path", "fig_path"]
++
++
++class _SilentLogger:
++    """Logger stub that swallows every call used by the consumers."""
++
++    def __getattr__(self, _name):
++        return lambda *_args, **_kwargs: None
++
++
++class _FakeEnv:
++    def __init__(self, env_param_instance, world_param_instance):
++        self._env_param = env_param_instance
++        self._world_param = world_param_instance
++
++
++class _FakeParent:
++    """Object-like sensor parent exposing the owning environment."""
++
++    def __init__(self, env):
++        self._env = env
++
++
++class _FakeWorld:
++    """Minimal world for the plotting helper."""
++
++    def __init__(self, *, with_world_param, with_env):
++        self.plot_parse = {}
++        self.grid_map = None
++        self.fog_map = None
++        self.x_range = (0.0, 10.0)
++        self.y_range = (0.0, 10.0)
++        if with_world_param:
++            self._wp = WorldParam(count=7)
++        if with_env:
++            self._env = _FakeEnv(EnvParam(), WorldParam())
++
++
++@pytest.fixture(autouse=True)
++def _isolate_param_modules():
++    """Restore the three parameter modules after each supplemental test."""
++    snapshot = [
++        (
++            module,
++            module._instances,
++            list(module._instances),
++            module._current,
++            [dict(instance.__dict__) for instance in module._instances],
++        )
++        for module in (env_param, world_param, path_param)
++    ]
++    yield
++    for module, original_list, instances, current, states in snapshot:
++        module._instances = original_list
++        original_list[:] = instances
++        for instance, state in zip(instances, states, strict=True):
++            instance.__dict__.clear()
++            instance.__dict__.update(state)
++        module._current = current
++
++
++@pytest.fixture
++def _two_environments(tmp_path):
++    environments = []
++    try:
++        for environment_name in ("contract-a", "contract-b"):
++            config_path = tmp_path / f"{environment_name}.yaml"
++            config_path.write_text(
++                "world:\n  step_time: 0.1\n"
++                "robot: []\nobstacle: []\n"
++            )
++            environments.append(
++                irsim.make(str(config_path), headless=True, log_level="ERROR")
++            )
++        yield tuple(environments)
++    finally:
++        for environment in environments:
++            environment.close(ending_time=0)
++
++
++def test_environments_expose_their_own_path_parameter_instance(_two_environments):
++    first, second = _two_environments
++    assert first.path_param is first._path_manager
++    assert second.path_param is second._path_manager
++    assert first.path_param is not second.path_param
++
++
++def test_environment_step_rebinds_all_three_parameter_modules(_two_environments):
++    first, second = _two_environments
++    first.step()
++    assert env_param._current is first._env_param
++    assert world_param._current is first._world_param
++    assert path_param._current is first._path_manager
++    second.step()
++    assert env_param._current is second._env_param
++    assert world_param._current is second._world_param
++    assert path_param._current is second._path_manager
++
++
++def test_alternating_environment_steps_preserve_parameter_count_and_time(
++    _two_environments,
++):
++    expected_counts = [0, 0]
++    for active_index in (0, 1, 0):
++        _two_environments[active_index].step()
++        expected_counts[active_index] += 1
++        for environment_index, environment in enumerate(_two_environments):
++            expected_count = expected_counts[environment_index]
++            assert environment._world_param.count == expected_count
++            assert environment._world_param.time == pytest.approx(
++                round(expected_count * environment.step_time, 2)
++            )
++
++
++def test_param_modules_expose_public_dataclasses_with_unchanged_fields():
++    for module in (env_param, world_param, path_param):
++        assert issubclass(type(module), ModuleType)
++        assert sys.modules[module.__name__] is module
++        assert callable(module.bind)
++    assert sys.modules["irsim.config.path_param"] is path_param
++    assert callable(path_param.__getitem__)
++    assert callable(path_param.__setitem__)
++    assert is_dataclass(EnvParam)
++    assert is_dataclass(WorldParam)
++    assert is_dataclass(PathManager)
++    assert [field.name for field in fields(EnvParam)] == ENV_FIELDS
++    assert [field.name for field in fields(WorldParam)] == WORLD_FIELDS
++    assert [field.name for field in fields(PathManager)] == PATH_FIELDS
++    assert env_param.EnvParam is EnvParam
++    assert world_param.WorldParam is WorldParam
++    assert path_param.PathManager is PathManager
++
++
++def test_param_dataclass_defaults_and_constructors_unchanged():
++    env = EnvParam()
++    assert env.objects == []
++    assert env.logger is None
++    assert env.GeometryTree is None
++    assert env.platform_name == platform.system()
++    assert env.env_id is None
++    assert env.rng is None
++    assert next(env.id_iter) == 0
++
++    assert WorldParam() == WorldParam(
++        time=0.0,
++        step_mode="internal",
++        control_mode="auto",
++        collision_mode="stop",
++        step_time=0.1,
++        count=0,
++    )
++
++    path = PathManager()
++    assert path.root_path == os.path.dirname(irsim.__file__)
++    assert path.ani_buffer_path == sys.path[0] + "/animation_buffer"
++    assert path.ani_path == sys.path[0] + "/animation"
++    assert path.fig_path == sys.path[0] + "/figure"
++
++
++def test_env_param_module_attribute_routing_follows_bind():
++    bound = EnvParam()
++    bound.logger = "bound-logger"
++    assert env_param.bind(bound) is None
++    assert env_param._instances[0] is bound
++    assert env_param._current is bound
++    assert env_param.logger == "bound-logger"
++
++    env_param.logger = "rewritten"
++    assert bound.logger == "rewritten"
++    assert env_param.logger == "rewritten"
++
++    current = EnvParam(logger="assigned-current")
++    env_param._current = current
++    assert env_param.logger == "assigned-current"
++    env_param.logger = "assigned-current-written"
++    assert current.logger == "assigned-current-written"
++    assert bound.logger == "rewritten"
++    assert env_param._instances[0] is bound
++
++
++def test_world_param_module_attribute_routing_follows_bind():
++    bound = WorldParam(count=4)
++    assert world_param.bind(bound) is None
++    assert world_param._instances[0] is bound
++    assert world_param._current is bound
++    assert world_param.count == 4
++
++    world_param.step_time = 0.25
++    assert bound.step_time == 0.25
++    assert world_param.step_time == 0.25
++
++    current = WorldParam(count=37)
++    world_param._current = current
++    assert world_param.count == 37
++    world_param.count = 38
++    assert current.count == 38
++    assert bound.count == 4
++    assert world_param._instances[0] is bound
++
++
++def test_non_parameter_module_attributes_stay_on_the_module():
++    for module, bound in ((env_param, EnvParam()), (world_param, WorldParam())):
++        module.bind(bound)
++        for probe in ("_p2p_bookkeeping_probe", "contract_bookkeeping"):
++            try:
++                setattr(module, probe, "module-value")
++                assert vars(module).get(probe) == "module-value"
++                assert getattr(module, probe) == "module-value"
++                assert not hasattr(bound, probe)
++            finally:
++                vars(module).pop(probe, None)
++
++
++def test_existing_module_names_take_precedence_over_instance_attributes():
++    probe = "contract_module_shadow"
++    for module, bound in ((env_param, EnvParam()), (world_param, WorldParam())):
++        setattr(bound, probe, "instance-value")
++        module.bind(bound)
++        vars(module)[probe] = "module-value"
++        try:
++            assert getattr(module, probe) == "module-value"
++        finally:
++            vars(module).pop(probe, None)
++
++
++def test_missing_module_names_fall_back_to_non_field_instance_attributes():
++    probe = "contract_instance_only"
++    for module, bound in ((env_param, EnvParam()), (world_param, WorldParam())):
++        assert probe not in vars(module)
++        setattr(bound, probe, "instance-value")
++        module.bind(bound)
++        assert getattr(module, probe) == "instance-value"
++        delattr(bound, probe)
++        with pytest.raises(AttributeError):
++            getattr(module, probe)
++
++
++def test_module_reads_and_writes_before_bind_use_default_instance_at_index_zero():
++    env_default = EnvParam()
++    env_default.logger = "default-logger"
++    env_param._instances[:] = [env_default]
++    env_param._current = env_default
++
++    world_default = WorldParam(count=1)
++    world_param._instances[:] = [world_default]
++    world_param._current = world_default
++
++    assert env_param.logger == "default-logger"
++    env_param.logger = "written-before-bind"
++    assert env_default.logger == "written-before-bind"
++
++    assert world_param.count == 1
++    world_param.count = 6
++    assert world_default.count == 6
++    assert world_param._instances[0] is world_default
++
++    fresh_check = """
++import sys
++import traceback
++from irsim.config import env_param, path_param, world_param
++try:
++    env_param._instances[0].logger = 'fresh-env-default'
++    world_param._instances[0].count = 83
++    path_param._instances[0].fig_path = '/fresh-path-default'
++    assert env_param.logger == 'fresh-env-default'
++    assert world_param.count == 83
++    assert path_param.path_manager.fig_path == '/fresh-path-default'
++    env_param.logger = 'fresh-env-written'
++    world_param.count = 84
++    path_param.path_manager.fig_path = '/fresh-path-written'
++    assert env_param._instances[0].logger == 'fresh-env-written'
++    assert world_param._instances[0].count == 84
++    assert path_param._instances[0].fig_path == '/fresh-path-written'
++except AssertionError:
++    traceback.print_exc()
++    print("IRSIM_FRESH_ASSERTION_FAILURE", file=sys.stderr)
++    raise SystemExit(86)
++"""
++    probe = subprocess.run(
++        [sys.executable, "-c", fresh_check],
++        capture_output=True,
++        text=True,
++        timeout=120,
++    )
++    if probe.returncode == 86 and probe.stderr.endswith("\nIRSIM_FRESH_ASSERTION_FAILURE\n"):
++        raise AssertionError(probe.stderr)
++    if probe.returncode:
++        raise RuntimeError(
++            f"fresh parameter check execution error (exit {probe.returncode})"
++            f"\nstdout:\n{probe.stdout}\nstderr:\n{probe.stderr}"
++        )
++
++
++def test_bind_on_empty_storage_appends_index_zero_and_routes_reads():
++    env_param._instances.clear()
++    env_bound = EnvParam()
++    assert env_param.bind(env_bound) is None
++    assert env_param._instances[0] is env_bound
++    assert env_param._current is env_bound
++    env_param.logger = "empty-env"
++    assert env_bound.logger == "empty-env"
++
++    world_param._instances.clear()
++    world_bound = WorldParam()
++    assert world_param.bind(world_bound) is None
++    assert world_param._instances[0] is world_bound
++    assert world_param._current is world_bound
++    world_param.count = 2
++    assert world_bound.count == 2
++
++    path_param._instances.clear()
++    path_bound = PathManager()
++    assert path_param.bind(path_bound) is None
++    assert path_param._instances[0] is path_bound
++    assert path_param._current is path_bound
++    path_param.path_manager.fig_path = "/empty-path"
++    assert path_bound.fig_path == "/empty-path"
++
++
++def test_env_param_indexed_reads_keep_list_semantics_including_negative_indices():
++    first, second = EnvParam(), EnvParam()
++    env_param._instances[:] = [first, second]
++    env_param._current = first
++
++    assert env_param[0] is first
++    assert env_param[1] is second
++    assert env_param[-1] is second
++    assert env_param[-2] is first
++    for index in (2, -3):
++        with pytest.raises(IndexError, match="^list index out of range$"):
++            env_param[index]
++    env_param._instances = []
++    for index in (0, -1):
++        with pytest.raises(IndexError, match="^list index out of range$"):
++            env_param[index]
++
++    replacement = [EnvParam(), EnvParam()]
++    env_param._instances = replacement
++    assert env_param[0] is replacement[0]
++    assert env_param[1] is replacement[1]
++    bound = EnvParam()
++    env_param.bind(bound)
++    assert env_param._instances is replacement
++    assert replacement[0] is bound
++    assert env_param._current is bound
++
++
++def test_world_param_indexed_reads_keep_list_semantics_including_negative_indices():
++    first, second = WorldParam(count=1), WorldParam(count=2)
++    world_param._instances[:] = [first, second]
++    world_param._current = first
++
++    assert world_param[0] is first
++    assert world_param[1] is second
++    assert world_param[-1] is second
++    assert world_param[-2] is first
++    for index in (2, -3):
++        with pytest.raises(IndexError, match="^list index out of range$"):
++            world_param[index]
++    world_param._instances = []
++    for index in (0, -1):
++        with pytest.raises(IndexError, match="^list index out of range$"):
++            world_param[index]
++
++    replacement = [WorldParam(count=11), WorldParam(count=12)]
++    world_param._instances = replacement
++    assert world_param[0] is replacement[0]
++    assert world_param[1] is replacement[1]
++    bound = WorldParam(count=13)
++    world_param.bind(bound)
++    assert world_param._instances is replacement
++    assert replacement[0] is bound
++    assert world_param._current is bound
++
++
++def test_path_param_callable_reads_keep_list_semantics_including_negative_indices():
++    first, second = PathManager(), PathManager()
++    path_param._instances[:] = [first, second]
++    path_param._current = first
++
++    assert path_param.__getitem__(0) is first
++    assert path_param.__getitem__(1) is second
++    assert path_param.__getitem__(-1) is second
++    assert path_param.__getitem__(-2) is first
++    for index in (2, -3):
++        with pytest.raises(IndexError, match="^list index out of range$"):
++            path_param.__getitem__(index)
++    path_param._instances = []
++    for index in (0, -1):
++        with pytest.raises(IndexError, match="^list index out of range$"):
++            path_param.__getitem__(index)
++
++    replacement = [PathManager(), PathManager()]
++    path_param._instances = replacement
++    assert path_param.__getitem__(0) is replacement[0]
++    assert path_param.__getitem__(1) is replacement[1]
++    bound = PathManager()
++    path_param.bind(bound)
++    assert path_param._instances is replacement
++    assert replacement[0] is bound
++    assert path_param._current is bound
++
++
++def test_indexed_assignment_extends_storage_with_default_instances():
++    env_param._instances[:] = [EnvParam()]
++    env_param._current = env_param._instances[0]
++    env_instance = EnvParam()
++    env_param[4] = env_instance
++    assert len(env_param._instances) == 5
++    assert env_param._instances[4] is env_instance
++    for instance in env_param._instances[1:4]:
++        assert isinstance(instance, EnvParam)
++        assert instance is not env_instance
++    assert len({id(instance) for instance in env_param._instances[1:4]}) == 3
++
++    world_param._instances[:] = [WorldParam()]
++    world_param._current = world_param._instances[0]
++    world_instance = WorldParam(count=5)
++    world_param[4] = world_instance
++    assert len(world_param._instances) == 5
++    assert world_param._instances[4] is world_instance
++    for instance in world_param._instances[1:4]:
++        assert isinstance(instance, WorldParam)
++        assert instance is not world_instance
++        assert instance.count == WorldParam().count
++    assert len({id(instance) for instance in world_param._instances[1:4]}) == 3
++
++    path_param._instances[:] = [PathManager()]
++    path_param._current = path_param._instances[0]
++    path_instance = PathManager()
++    path_param.__setitem__(4, path_instance)
++    assert len(path_param._instances) == 5
++    assert path_param._instances[4] is path_instance
++    for instance in path_param._instances[1:4]:
++        assert isinstance(instance, PathManager)
++        assert instance is not path_instance
++    assert len({id(instance) for instance in path_param._instances[1:4]}) == 3
++
++
++def test_indexed_assignment_at_zero_updates_current_alias_and_routing():
++    env_instance = EnvParam()
++    env_instance.logger = "index-zero"
++    env_param[0] = env_instance
++    assert env_param._instances[0] is env_instance
++    assert env_param._current is env_instance
++    assert env_param.logger == "index-zero"
++    env_param.logger = "index-zero-rewritten"
++    assert env_instance.logger == "index-zero-rewritten"
++
++    world_instance = WorldParam(count=8)
++    world_param[0] = world_instance
++    assert world_param._instances[0] is world_instance
++    assert world_param._current is world_instance
++    assert world_param.count == 8
++
++    path_instance = PathManager()
++    path_instance.ani_path = "/index-zero"
++    path_param.__setitem__(0, path_instance)
++    assert path_param._instances[0] is path_instance
++    assert path_param._current is path_instance
++    assert path_param.path_manager.ani_path == "/index-zero"
++
++
++def test_negative_indexed_assignment_error_messages_are_preserved():
++    with pytest.raises(IndexError, match="env_param index must be non-negative"):
++        env_param.__setitem__(-1, EnvParam())
++    with pytest.raises(IndexError, match="world_param index must be non-negative"):
++        world_param.__setitem__(-1, WorldParam())
++    with pytest.raises(IndexError, match="path_param index must be non-negative"):
++        path_param.__setitem__(-1, PathManager())
++
++
++def test_path_manager_proxy_reads_and_writes_follow_latest_binding():
++    first = PathManager()
++    first.ani_path = "/first"
++    path_param.bind(first)
++    assert path_param.path_manager.ani_path == "/first"
++
++    path_param.path_manager.fig_path = "/first-figure"
++    assert first.fig_path == "/first-figure"
++
++    latest = PathManager()
++    latest.ani_path = "/latest"
++    latest.fig_path = "/latest-figure"
++    path_param.bind(latest)
++    assert path_param.path_manager.ani_path == "/latest"
++    assert path_param.path_manager.fig_path == "/latest-figure"
++    path_param.path_manager.fig_path = "/latest-written"
++    assert latest.fig_path == "/latest-written"
++    assert first.ani_path == "/first"
++    assert first.fig_path == "/first-figure"
++
++    current = PathManager(fig_path="/assigned-current-figure")
++    path_param._current = current
++    assert path_param.path_manager.fig_path == "/assigned-current-figure"
++    path_param.path_manager.fig_path = "/assigned-current-written"
++    assert current.fig_path == "/assigned-current-written"
++    assert latest.fig_path == "/latest-written"
++    assert path_param._instances[0] is latest
++
++
++def test_unowned_object_reads_use_live_global_param_binding():
++    env_param.bind(EnvParam())
++    env_param.logger = _SilentLogger()
++    obj = ObjectBase(role="obstacle", state=[1, 2, 0.5])
++    assert obj._env is None
++    assert obj._env_param is env_param
++    assert obj._world_param is world_param
++
++    env_param.bind(EnvParam())
++    env_param.logger = "live-env-logger"
++    world_param.bind(WorldParam(count=3))
++    assert obj.env_param.logger == "live-env-logger"
++    assert obj.world_param.count == 3
++
++
++def test_unowned_world_reads_use_live_global_param_binding():
++    env_param.bind(EnvParam())
++    env_param.logger = _SilentLogger()
++    world = World(name="p2p-unowned")
++    assert world._env is None
++    assert world._env_param is env_param
++    assert world._wp is world_param
++    world_param.bind(WorldParam(count=11, step_time=0.25))
++    assert world._wp.count == 11
++    assert world._wp.step_time == 0.25
++    world_param.bind(WorldParam(count=23, step_time=0.5))
++    assert world._wp.count == 23
++    assert world._wp.step_time == 0.5
++
++    env_param.bind(EnvParam())
++    env_param.logger = "live-world-logger"
++    assert world.logger == "live-world-logger"
++    assert world._env_param.logger == "live-world-logger"
++
++
++def test_unowned_keyboard_reads_use_live_global_param_binding():
++    env_param.bind(EnvParam())
++    env_param.logger = _SilentLogger()
++    keyboard = KeyboardControl(env_ref=None, backend="mpl")
++    assert keyboard._env_param is env_param
++    assert keyboard._world_param is world_param
++
++    env_param.bind(EnvParam())
++    env_param.logger = "live-keyboard-logger"
++    world_param.bind(WorldParam(count=9))
++    assert keyboard._env_param.logger == "live-keyboard-logger"
++    assert keyboard._world_param.count == 9
++
++    owned_world_param = WorldParam(count=12)
++    owned_env_param = EnvParam()
++    owned_env_param.logger = "owned-keyboard-logger"
++    owner = _FakeEnv(owned_env_param, owned_world_param)
++    owned_keyboard = KeyboardControl(env_ref=owner, backend="mpl")
++    assert owned_keyboard._world_param is owned_world_param
++    assert owned_keyboard._env_param is owned_env_param
++
++
++def test_unowned_lidar_reads_use_live_global_param_binding():
++    lidar = Lidar2D(
++        state=np.array([[0.0], [0.0], [0.0]]),
++        obj_id=1,
++        number=36,
++        angle_range=6.283185,
++        range_max=10.0,
++    )
++    assert lidar.parent is None
++    assert lidar._env_param is env_param
++
++    env_param.bind(EnvParam())
++    env_param.logger = "live-lidar-logger"
++    assert lidar._env_param.logger == "live-lidar-logger"
++
++    owned_env_param = EnvParam()
++    lidar.parent = _FakeParent(_FakeEnv(owned_env_param, WorldParam()))
++    assert lidar._env_param is owned_env_param
++
++
++def test_plot_helper_world_param_is_owner_first_and_env_param_is_global_only():
++    env_param.bind(EnvParam())
++    env_param.logger = _SilentLogger()
++    owner_world = _FakeWorld(with_world_param=True, with_env=True)
++    plot = EnvPlot(owner_world, objects=[], figure_pixels=[200, 150], show_title=False)
++    assert plot._world_param is owner_world._wp
++    assert plot._world_param.count == 7
++    assert plot._env_param is env_param
++    assert plot._env_param is not owner_world._env._env_param
++    assert plot.logger is env_param.logger
++
++
++def test_plot_helper_world_param_falls_back_to_live_global_binding():
++    env_param.bind(EnvParam())
++    env_param.logger = _SilentLogger()
++    plain_world = _FakeWorld(with_world_param=False, with_env=False)
++    plot = EnvPlot(plain_world, objects=[], figure_pixels=[200, 150], show_title=False)
++    assert plot._world_param is world_param
++
++    world_param.bind(WorldParam(count=11))
++    assert plot._world_param.count == 11
++
++
++def test_public_entry_points_and_negative_read_guards_are_preserved():
++    for module in (env_param, world_param):
++        assert callable(module.bind)
++        assert isinstance(module._instances, list)
++        assert module._current is not None
++        assert callable(module.__getitem__)
++        assert callable(module.__setitem__)
++
++    assert callable(path_param.bind)
++    assert callable(path_param.__getitem__)
++    assert callable(path_param.__setitem__)
++    assert isinstance(path_param._instances, list)
++
++    assert env_param.__getitem__(-1) is env_param._instances[-1]
++    assert world_param.__getitem__(-1) is world_param._instances[-1]
++    assert path_param.__getitem__(-1) is path_param._instances[-1]
+diff --git a/tests/test_shared_param_store_f2p.py b/tests/test_shared_param_store_f2p.py
+new file mode 100644
+index 0000000..071f934
+--- /dev/null
++++ b/tests/test_shared_param_store_f2p.py
+@@ -0,0 +1,798 @@
++"""F2P probes for the shared parameter-store extraction.
++
++The frozen P2P contract tests pin the observable behaviour of the three
++module-level parameter proxies and their consumers; they pass on the
++pre-refactor baseline by construction.  The probes below pin the *structure*
++the refactor has to introduce, which the baseline does not provide:
++
++* ``env_param``/``world_param``/``path_param`` must be served by one shared
++  parameter-store abstraction instead of three copies of the same proxy code.
++* the duplicated owner-first / global-fallback accessor bodies in objects,
++  worlds, sensors, keyboard and plotting helpers must resolve through one shared
++  implementation. The plotting helper's environment-parameter accessor stays
++  global-only.
++
++Every probe compares live runtime objects (classes, code objects, module
++homes) that the refactor has to unify.  No helper name, private attribute or
++file placement is pinned, so any extraction that converges on one shared
++abstraction satisfies them.
++"""
++
++from __future__ import annotations
++
++import contextlib
++import inspect
++import os
++import sys
++from types import SimpleNamespace
++
++import pytest
++
++_PARAM_MODULE_FILES = (
++    "irsim/config/env_param.py",
++    "irsim/config/world_param.py",
++    "irsim/config/path_param.py",
++)
++
++
++def _project_root() -> str:
++    """Return the repository root that contains this test file."""
++    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++
++
++def _is_project_source(filename: str) -> bool:
++    """Return True for source files that belong to the project under test."""
++    if not filename or filename.startswith("<"):
++        return False
++    root = _project_root()
++    filename = os.path.abspath(filename)
++    if not filename.startswith(root + os.sep):
++        return False
++    parts = os.path.relpath(filename, root).split(os.sep)
++    return (
++        parts[0] != "tests"
++        and not any(part.startswith(".") for part in parts)
++        and "site-packages" not in parts
++    )
++
++
++def _executed_project_code(call) -> set:
++    """Return the project code objects executed while ``call`` runs."""
++    executed = []
++
++    def _profiler(frame, event, arg):
++        if event == "call" and _is_project_source(frame.f_code.co_filename):
++            executed.append(frame.f_code)
++
++    previous = sys.getprofile()
++    sys.setprofile(_profiler)
++    try:
++        call()
++    finally:
++        sys.setprofile(previous)
++    return set(executed)
++
++
++def _executed_project_files(call) -> set:
++    """Return the absolute source files executed while ``call`` runs."""
++    return {os.path.abspath(code.co_filename) for code in _executed_project_code(call)}
++
++
++def _shared_store_file() -> str:
++    """Return the source file of the class serving the env/world modules."""
++    from irsim.config import env_param
++
++    proxy_class = type(env_param)
++    module = sys.modules.get(getattr(proxy_class, "__module__", ""))
++    filename = getattr(module, "__file__", None)
++    if filename:
++        return os.path.abspath(filename)
++    try:
++        return os.path.abspath(inspect.getfile(proxy_class))
++    except TypeError:
++        return ""
++
++
++def _outside_parameter_module_files(code_objects) -> set:
++    """Return the code objects not defined in the three parameter modules."""
++    parameter_files = _parameter_module_files()
++    return {
++        code
++        for code in code_objects
++        if os.path.abspath(code.co_filename) not in parameter_files
++    }
++
++
++def _parameter_module_files() -> set:
++    """Return the absolute source paths of the three parameter modules."""
++    root = _project_root()
++    return {
++        os.path.join(root, *relative.split("/")) for relative in _PARAM_MODULE_FILES
++    }
++
++
++def _shared_route_code(env_call, world_call, env_input, world_input):
++    """Return shared route code that receives each operation's input."""
++    def carrying_codes(call, expected):
++        records, _ = _project_call_records(call)
++        return _outside_parameter_module_files({
++            code for code, frame, _result in records
++            if any(type(value) is type(expected) and value == expected
++                   for value in frame.f_locals.values())
++        })
++
++    return carrying_codes(env_call, env_input) & carrying_codes(world_call, world_input)
++
++
++_UNSET = object()
++
++
++def _project_call_records(call):
++    """Return ``(code, frame, result)`` records for project calls in ``call``.
++
++    ``result`` is the value the call returned, which lets a probe tie a shared
++    implementation to the value it produced instead of merely observing that
++    some project file ran.
++    """
++    records = []
++
++    def _profiler(frame, event, arg):
++        if event == "call" and _is_project_source(frame.f_code.co_filename):
++            records.append([frame.f_code, frame, _UNSET])
++        elif event == "return":
++            for record in reversed(records):
++                if record[1] is frame and record[2] is _UNSET:
++                    record[2] = arg
++                    break
++
++    previous = sys.getprofile()
++    sys.setprofile(_profiler)
++    try:
++        result = call()
++    finally:
++        sys.setprofile(previous)
++    return records, result
++
++
++def _carrier_codes(records, value, excluded_files):
++    """Return project code objects outside ``excluded_files`` returning ``value``."""
++    return {
++        code
++        for code, _frame, result in records
++        if result is value
++        and _is_project_source(code.co_filename)
++        and os.path.abspath(code.co_filename) not in excluded_files
++    }
++
++
++def _resolution_carriers(records, value):
++    """Code returning the resolved value; ownership is established separately.
++
++    File placement and incidental local variables do not prove responsibility.
++    Read-stack intersection below binds carriers to an actual owner lookup.
++    """
++    return {
++        code for code, _frame, result in records
++        if result is value and _is_project_source(code.co_filename)
++    }
++
++
++def _state_snapshot(module):
++    """Return ``(instances, current)`` of a parameter module as an immutable copy."""
++    return (tuple(module._instances), module._current)
++
++
++def _state_records(call, module):
++    """Return ``(records, result)`` with module-state snapshots around each call.
++
++    Each record is ``(code, frame, entry_state, exit_state, return_value)``.
++    The entry/exit snapshots make a state change performed *inside* a code
++    object's own frame observable, which is what ties a shared implementation
++    to the responsibility it carries instead of only proving that it ran.
++    """
++    records = []
++
++    def _profiler(frame, event, arg):
++        if not _is_project_source(frame.f_code.co_filename):
++            return
++        if event == "call":
++            records.append([frame.f_code, frame, _state_snapshot(module), _UNSET, _UNSET])
++        elif event == "return":
++            for record in reversed(records):
++                if record[1] is frame and record[3] is _UNSET:
++                    record[3] = _state_snapshot(module)
++                    record[4] = arg
++                    break
++
++    previous = sys.getprofile()
++    sys.setprofile(_profiler)
++    try:
++        result = call()
++    finally:
++        sys.setprofile(previous)
++    return records, result
++
++
++def _state_transition_codes(records, predicate):
++    """Return code objects whose own frame performs the transition.
++
++    A record qualifies when ``predicate`` is false at its frame's entry and
++    true at its exit.  A qualifying frame that merely spans a transition a
++    nested parameter-module frame performs is dropped, so a shared wrapper
++    around the module's own inline update is not credited with the change.
++    """
++    changed = [
++        record
++        for record in records
++        if not predicate(record[2]) and predicate(record[3])
++    ]
++    parameter_frames = [
++        frame
++        for code, frame, _entry, _exit, _result in changed
++        if _in_parameter_module(code)
++    ]
++    return {
++        code
++        for code, frame, _entry, _exit, _result in changed
++        if not any(_frame_contains(frame, other) for other in parameter_frames)
++    }
++
++
++def _in_parameter_module(code) -> bool:
++    """Return True when ``code`` is defined in one of the parameter modules."""
++    return os.path.abspath(code.co_filename) in _parameter_module_files()
++
++
++def _frame_contains(outer, inner) -> bool:
++    """Return True when ``inner`` is ``outer`` or runs inside ``outer``."""
++    frame = inner
++    while frame is not None:
++        if frame is outer:
++            return True
++        frame = frame.f_back
++    return False
++
++
++def _bound_state(state, instance) -> bool:
++    """Return True when ``state`` shows ``instance`` at index 0 and as current."""
++    instances, current = state
++    return bool(instances) and instances[0] is instance and current is instance
++
++
++def _stored_state(state, index, instance) -> bool:
++    """Return True when ``state`` shows ``instance`` stored at ``index``."""
++    instances, current = state
++    if index == 0:
++        return bool(instances) and instances[0] is instance and current is instance
++    return len(instances) > index and instances[index] is instance
++
++
++def _read_index(module, index):
++    """Read ``index`` through the module's public indexed-read entry point."""
++    from irsim.config import path_param
++
++    if module is path_param:
++        return module.__getitem__(index)
++    return module[index]
++
++
++def _assign_index(module, index, instance) -> None:
++    """Assign ``index`` through the module's public indexed-write entry point."""
++    from irsim.config import path_param
++
++    if module is path_param:
++        module.__setitem__(index, instance)
++    else:
++        module[index] = instance
++
++
++def _stack_code_objects(frame):
++    """Return the project code objects on ``frame``'s call stack."""
++    codes = set()
++    while frame is not None:
++        if _is_project_source(frame.f_code.co_filename):
++            codes.add(frame.f_code)
++        frame = frame.f_back
++    return codes
++
++
++class _RecordingOwner:
++    """Owner stand-in that records the call stacks resolving its parameters."""
++
++    def __init__(self, **instances):
++        object.__setattr__(self, "_param_instances", dict(instances))
++        object.__setattr__(self, "_param_stacks", {name: [] for name in instances})
++
++    def _resolve(self, name):
++        self._param_stacks[name].append(_stack_code_objects(sys._getframe(1)))
++        return self._param_instances[name]
++
++    @property
++    def _env_param(self):
++        return self._resolve("_env_param")
++
++    @property
++    def _world_param(self):
++        return self._resolve("_world_param")
++
++    @property
++    def _wp(self):
++        return self._resolve("_wp")
++
++
++def _recording_param_type(base, field_name):
++    """Return a ``base`` subclass recording the stack that writes ``field_name``."""
++
++    class _Recording(base):
++        def __init__(self, *args, **kwargs):
++            object.__setattr__(self, "writer_stacks", [])
++            super().__init__(*args, **kwargs)
++            self.writer_stacks.clear()
++
++    def _getter(self):
++        return self._written_value
++
++    def _setter(self, value):
++        self.writer_stacks.append(_stack_code_objects(sys._getframe(1)))
++        object.__setattr__(self, "_written_value", value)
++
++    setattr(_Recording, field_name, property(_getter, _setter))
++    return _Recording
++
++
++@contextlib.contextmanager
++def _preserved_parameter_state():
++    """Save and restore ``_instances``/``_current`` of the parameter modules."""
++    from irsim.config import env_param, path_param, world_param
++
++    modules = (env_param, world_param, path_param)
++    snapshot = [(list(module._instances), module._current) for module in modules]
++    try:
++        yield modules
++    finally:
++        for module, (instances, current) in zip(modules, snapshot):
++            module._instances[:] = instances
++            module._current = current
++
++
++def _unowned_object():
++    from irsim.world.object_base import ObjectBase
++
++    instance = object.__new__(ObjectBase)
++    instance._env = None
++    return instance
++
++
++def _owned_object():
++    from irsim.world.object_base import ObjectBase
++
++    instance = object.__new__(ObjectBase)
++    instance._env = SimpleNamespace(
++        _env_param=SimpleNamespace(env_marker="owner"),
++        _world_param=SimpleNamespace(world_marker="owner"),
++    )
++    return instance
++
++
++def _unowned_world():
++    from irsim.world.world import World
++
++    instance = object.__new__(World)
++    instance._env = None
++    return instance
++
++
++def _owned_world():
++    from irsim.world.world import World
++
++    instance = object.__new__(World)
++    instance._env = SimpleNamespace(_env_param=SimpleNamespace(env_marker="owner"))
++    return instance
++
++
++def _unowned_sensor():
++    from irsim.world.sensors.lidar2d import Lidar2D
++
++    instance = object.__new__(Lidar2D)
++    instance.parent = None
++    return instance
++
++
++def _owned_sensor():
++    from irsim.world.sensors.lidar2d import Lidar2D
++
++    instance = object.__new__(Lidar2D)
++    instance.parent = SimpleNamespace(
++        _env=SimpleNamespace(_env_param=SimpleNamespace(env_marker="owner"))
++    )
++    return instance
++
++
++def _unowned_keyboard():
++    from irsim.gui.keyboard_control import KeyboardControl
++
++    instance = object.__new__(KeyboardControl)
++    instance.env_ref = None
++    return instance
++
++
++def _owned_keyboard():
++    from irsim.gui.keyboard_control import KeyboardControl
++
++    instance = object.__new__(KeyboardControl)
++    instance.env_ref = SimpleNamespace(
++        _env_param=SimpleNamespace(env_marker="owner"),
++        _world_param=SimpleNamespace(world_marker="owner"),
++    )
++    return instance
++
++
++def _owned_object_with(owner):
++    from irsim.world.object_base import ObjectBase
++
++    instance = object.__new__(ObjectBase)
++    instance._env = owner
++    return instance
++
++
++def _owned_world_with(owner):
++    from irsim.world.world import World
++
++    instance = object.__new__(World)
++    instance._env = owner
++    return instance
++
++
++def _owned_sensor_with(owner):
++    from irsim.world.sensors.lidar2d import Lidar2D
++
++    instance = object.__new__(Lidar2D)
++    instance.parent = SimpleNamespace(_env=owner)
++    return instance
++
++
++def _owned_keyboard_with(owner):
++    from irsim.gui.keyboard_control import KeyboardControl
++
++    instance = object.__new__(KeyboardControl)
++    instance.env_ref = owner
++    return instance
++
++
++def _unowned_plot():
++    from irsim.env.env_plot import EnvPlot
++
++    instance = object.__new__(EnvPlot)
++    instance.world = SimpleNamespace()
++    return instance
++
++
++@pytest.mark.parametrize("module_name", ["env_param", "world_param"])
++def test_shared_proxy_class_is_defined_outside_the_parameter_modules(module_name):
++    """The route must execute implementation outside the parameter modules."""
++    from irsim.config import env_param, world_param
++
++    calls = {"env_param": lambda: env_param.logger, "world_param": lambda: world_param.count}
++    assert _outside_parameter_module_files(_executed_project_code(calls[module_name])), (
++        f"{module_name} must delegate parameter routing to the shared implementation"
++    )
++
++
++def test_env_and_world_share_one_attribute_read_route():
++    """Both modules must route attribute reads through one shared function."""
++    from irsim.config import env_param, world_param
++
++    assert _shared_route_code(lambda: env_param.logger, lambda: world_param.count, "logger", "count"), (
++        "env_param and world_param must share an executed attribute-read route"
++    )
++
++
++def test_env_and_world_share_one_attribute_write_route():
++    """Both modules must route parameter-field writes through one shared route."""
++    from irsim.config import env_param, world_param
++    from irsim.config.env_param import EnvParam
++    from irsim.config.world_param import WorldParam
++
++    env_probe = _recording_param_type(EnvParam, "logger")()
++    world_probe = _recording_param_type(WorldParam, "count")()
++    env_marker = SimpleNamespace(write_marker="env")
++    world_marker = SimpleNamespace(write_marker="world")
++
++    with _preserved_parameter_state():
++        env_param.bind(env_probe)
++        world_param.bind(world_probe)
++        env_param.logger = env_marker
++        world_param.count = world_marker
++
++    for module, name in ((env_param, "logger"), (world_param, "count")):
++        if name in vars(module):
++            delattr(module, name)
++
++    assert env_probe.logger is env_marker, (
++        "env_param.logger must be delivered to the bound instance instead of "
++        f"becoming a module attribute, got {env_probe.logger!r}"
++    )
++    assert world_probe.count is world_marker, (
++        "world_param.count must be delivered to the bound instance instead of "
++        f"becoming a module attribute, got {world_probe.count!r}"
++    )
++    assert env_probe.writer_stacks and world_probe.writer_stacks, (
++        "the module-level parameter-field write must reach the bound instance "
++        "through a routing hook defined by the module class instead of the "
++        "inherited default attribute write"
++    )
++
++    excluded = {
++        os.path.abspath(env_param.__file__),
++        os.path.abspath(world_param.__file__),
++    }
++    env_codes = {
++        code
++        for code in set().union(*env_probe.writer_stacks)
++        if os.path.abspath(code.co_filename) not in excluded
++    }
++    world_codes = {
++        code
++        for code in set().union(*world_probe.writer_stacks)
++        if os.path.abspath(code.co_filename) not in excluded
++    }
++    shared = env_codes & world_codes
++    assert shared, (
++        "env_param and world_param parameter-field writes must both run one "
++        "shared routing implementation defined outside the two parameter "
++        "modules; env_param stack: "
++        f"{sorted(code.co_name for code in env_codes)}, world_param stack: "
++        f"{sorted(code.co_name for code in world_codes)}"
++    )
++
++
++def test_env_and_world_share_one_indexed_read_route():
++    """Both modules must route indexed reads through one shared function."""
++    from irsim.config import env_param, world_param
++
++    assert _shared_route_code(lambda: env_param[0], lambda: world_param[0], 0, 0), (
++        "env_param and world_param must share an executed indexed-read route"
++    )
++
++
++def test_env_and_world_share_one_indexed_write_route():
++    """Both modules must route indexed writes through one shared function."""
++    from irsim.config import env_param, world_param
++    from irsim.config.env_param import EnvParam
++    from irsim.config.world_param import WorldParam
++
++    with _preserved_parameter_state():
++        assert _shared_route_code(
++            lambda: env_param.__setitem__(0, EnvParam()),
++            lambda: world_param.__setitem__(0, WorldParam()),
++            0, 0,
++        ), "env_param and world_param must share an executed indexed-write route"
++
++
++def test_path_manager_proxy_comes_from_the_shared_store_module():
++    """The path_manager proxy must delegate reads and writes to shared code."""
++    from irsim.config import path_param
++    from irsim.config.path_param import PathManager
++
++    reader_codes = []
++    writer_codes = []
++
++    class RecordingPathManager(PathManager):
++        @property
++        def root_path(self):
++            reader_codes.append(sys._getframe(1).f_code)
++            return self._recorded_root_path
++
++        @root_path.setter
++        def root_path(self, value):
++            writer_codes.append(sys._getframe(1).f_code)
++            self._recorded_root_path = value
++
++    initial_value = "shared-proxy-initial-root"
++    updated_value = "shared-proxy-updated-root"
++    instance = RecordingPathManager(root_path=initial_value)
++
++    with _preserved_parameter_state():
++        path_param.bind(instance)
++        reader_codes.clear()
++        writer_codes.clear()
++        assert path_param.path_manager.root_path == initial_value
++        path_param.path_manager.root_path = updated_value
++        assert instance._recorded_root_path == updated_value
++
++    for operation, codes in (("read", reader_codes), ("write", writer_codes)):
++        route_codes = {
++            code for code in codes if _is_project_source(code.co_filename)
++        }
++        assert _outside_parameter_module_files(route_codes), (
++            f"path_manager attribute {operation} must be performed by shared code"
++        )
++
++
++@pytest.mark.parametrize("initial_storage", ["empty", "nonempty"])
++@pytest.mark.parametrize("effect", ["index_zero", "current_alias"])
++def test_bind_uses_shared_store_for_one_state_effect(initial_storage, effect):
++    """One binding state transition is performed by shared code."""
++    from irsim.config import env_param, path_param, world_param
++    from irsim.config.env_param import EnvParam
++    from irsim.config.path_param import PathManager
++    from irsim.config.world_param import WorldParam
++
++    transitions = []
++    with _preserved_parameter_state():
++        for module, factory in (
++            (env_param, EnvParam),
++            (world_param, WorldParam),
++            (path_param, PathManager),
++        ):
++            old, supplied = factory(), factory()
++            module._instances[:] = [] if initial_storage == "empty" else [old]
++            module._current = old
++            if effect == "index_zero":
++                predicate = lambda state, x=supplied: bool(state[0]) and state[0][0] is x
++            else:
++                predicate = lambda state, x=supplied: state[1] is x
++            records, _ = _state_records(lambda: module.bind(supplied), module)
++            assert predicate(_state_snapshot(module)), (module.__name__, effect)
++            transitions.append(_state_transition_codes(records, predicate))
++    assert _outside_parameter_module_files(set.intersection(*transitions)), (
++        f"bind {effect} with {initial_storage} storage must use shared code"
++    )
++
++
++@pytest.mark.parametrize("effect", [
++    "store_at_zero", "extend_storage", "store_at_new_index", "current_alias",
++])
++def test_indexed_assignment_uses_shared_store_for_one_state_effect(effect):
++    """One indexed-assignment state transition is performed by shared code."""
++    from irsim.config import env_param, path_param, world_param
++    from irsim.config.env_param import EnvParam
++    from irsim.config.path_param import PathManager
++    from irsim.config.world_param import WorldParam
++
++    transitions = []
++    with _preserved_parameter_state():
++        for module, factory in (
++            (env_param, EnvParam),
++            (world_param, WorldParam),
++            (path_param, PathManager),
++        ):
++            old, supplied = factory(), factory()
++            module._instances[:] = [old]
++            module._current = old
++            index = 3 if effect in {"extend_storage", "store_at_new_index"} else 0
++            if effect == "extend_storage":
++                predicate = lambda state: len(state[0]) == 4
++            elif effect == "current_alias":
++                predicate = lambda state, x=supplied: state[1] is x
++            else:
++                predicate = lambda state, i=index, x=supplied: (
++                    len(state[0]) > i and state[0][i] is x
++                )
++            records, _ = _state_records(
++                lambda: _assign_index(module, index, supplied), module
++            )
++            assert predicate(_state_snapshot(module)), (module.__name__, effect)
++            transitions.append(_state_transition_codes(records, predicate))
++    assert _outside_parameter_module_files(set.intersection(*transitions)), (
++        f"indexed assignment {effect} must use shared code"
++    )
++
++
++@pytest.mark.parametrize("index", [0, -1], ids=["zero", "negative"])
++def test_indexed_read_uses_shared_store_for_one_index(index):
++    """One indexed-read branch returns through shared code."""
++    from irsim.config import env_param, path_param, world_param
++    from irsim.config.env_param import EnvParam
++    from irsim.config.path_param import PathManager
++    from irsim.config.world_param import WorldParam
++
++    carriers = []
++    with _preserved_parameter_state():
++        for module, factory in (
++            (env_param, EnvParam),
++            (world_param, WorldParam),
++            (path_param, PathManager),
++        ):
++            first, last = factory(), factory()
++            module._instances[:] = [first, last]
++            module._current = first
++            expected = first if index == 0 else last
++            records, result = _project_call_records(lambda: _read_index(module, index))
++            assert result is expected, (module.__name__, index)
++            carriers.append(_carrier_codes(records, expected, _parameter_module_files()))
++    assert _outside_parameter_module_files(set.intersection(*carriers)), (
++        f"indexed read {index} must return through shared code"
++    )
++
++
++_CONSUMER_ACCESSORS = (
++    ("object", "_env_param"),
++    ("object", "_world_param"),
++    ("world", "_env_param"),
++    ("sensor", "_env_param"),
++    ("keyboard", "_env_param"),
++    ("keyboard", "_world_param"),
++    ("plot", "_world_param"),
++)
++
++
++def _consumer_probe(consumer, accessor, branch):
++    from irsim.config import env_param, world_param
++    from irsim.env.env_plot import EnvPlot
++
++    fallback = env_param if accessor == "_env_param" else world_param
++    owner = _RecordingOwner(
++        _env_param=SimpleNamespace(marker="env"),
++        _world_param=SimpleNamespace(marker="world"),
++        _wp=SimpleNamespace(marker="plot"),
++    )
++    if consumer == "plot":
++        instance = object.__new__(EnvPlot)
++        instance.world = owner if branch == "owner" else SimpleNamespace()
++        expected = owner._param_instances["_wp"] if branch == "owner" else fallback
++    else:
++        owned = {
++            "object": _owned_object_with,
++            "world": _owned_world_with,
++            "sensor": _owned_sensor_with,
++            "keyboard": _owned_keyboard_with,
++        }
++        unowned = {
++            "object": _unowned_object,
++            "world": _unowned_world,
++            "sensor": _unowned_sensor,
++            "keyboard": _unowned_keyboard,
++        }
++        instance = owned[consumer](owner) if branch == "owner" else unowned[consumer]()
++        expected = owner._param_instances[accessor] if branch == "owner" else fallback
++    lookup_stacks = owner._param_stacks[
++        "_wp" if consumer == "plot" else accessor
++    ] if branch == "owner" else []
++    return lambda: getattr(instance, accessor), expected, lookup_stacks
++
++
++@pytest.mark.parametrize("branch", ["owner", "global"])
++@pytest.mark.parametrize("consumer,accessor", _CONSUMER_ACCESSORS, ids=[
++    "object_env", "object_world", "world_env", "sensor_env",
++    "keyboard_env", "keyboard_world", "plot_world",
++])
++def test_one_consumer_branch_uses_shared_resolution(consumer, accessor, branch):
++    """One accessor branch resolves through the same code as another consumer."""
++    def observed_codes(kind, name, mode, *, required):
++        call, expected, stacks = _consumer_probe(kind, name, mode)
++        try:
++            records, result = _project_call_records(call)
++            if result is not expected:
++                if required:
++                    assert result is expected, (kind, name, mode)
++                return set()
++            codes = _resolution_carriers(records, expected)
++            if mode == "global":
++                owner_call, owner_expected, stacks = _consumer_probe(kind, name, "owner")
++                owner_records, owner_result = _project_call_records(owner_call)
++                if owner_result is not owner_expected:
++                    if required:
++                        assert owner_result is owner_expected, (kind, name, "owner")
++                    return set()
++                codes &= _resolution_carriers(owner_records, owner_expected)
++            # Thin availability adaptation may happen before the resolver;
++            # at least one real parameter read must execute inside it.
++            return codes & set().union(*stacks)
++        except Exception:
++            if required:
++                raise
++            # A different consumer's bug must fail its own scored node, not
++            # make every otherwise correct consumer fail through a fixed anchor.
++            return set()
++
++    own_codes = observed_codes(consumer, accessor, branch, required=True)
++    assert own_codes, f"{consumer}.{accessor} {branch} must resolve its owner in shared code"
++    alternatives = [
++        observed_codes(other, name, branch, required=False)
++        for other, name in _CONSUMER_ACCESSORS
++        if name == accessor and other != consumer
++    ]
++    assert any(own_codes & other_codes for other_codes in alternatives), (
++        f"{consumer}.{accessor} {branch} must share resolution with another consumer"
++    )
+diff --git a/tests/codingrl_failure_origin.py b/tests/codingrl_failure_origin.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..36084784804efdf1a7ef699ed214023aa761e0bb
+--- /dev/null
++++ b/tests/codingrl_failure_origin.py
+@@ -0,0 +1,27 @@
++"""Record candidate-source exceptions during frozen pytest fixture execution."""
++import json
++from pathlib import Path
++import pytest
++
++_ALLOWED = (AttributeError, TypeError, ValueError, KeyError, IndexError, AssertionError)
++_ROOT = Path(__file__).resolve().parents[1]
++
++@pytest.hookimpl(hookwrapper=True)
++def pytest_runtest_makereport(item, call):
++    outcome = yield
++    report = outcome.get_result()
++    if call.when not in ("setup", "teardown") or call.excinfo is None:
++        return
++    if not isinstance(call.excinfo.value, _ALLOWED):
++        return
++    try:
++        origin = Path(str(call.excinfo.traceback[-1].path)).resolve().relative_to(_ROOT)
++    except (ValueError, IndexError):
++        return
++    if not origin.parts or origin.parts[0] != "irsim" or origin.suffix != ".py":
++        return
++    record = {"producer": "codingrl-pytest-candidate-origin/v1", "phase": call.when,
++              "exception": type(call.excinfo.value).__name__, "path": origin.as_posix()}
++    prop = ("codingrl.candidate_origin", json.dumps(record, sort_keys=True))
++    item.user_properties.append(prop)
++    report.user_properties.append(prop)

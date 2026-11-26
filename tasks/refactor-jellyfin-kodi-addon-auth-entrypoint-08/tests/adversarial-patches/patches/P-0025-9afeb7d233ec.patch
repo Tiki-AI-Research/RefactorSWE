@@ -1,0 +1,263 @@
+diff --git a/jellyfin_kodi/database/__init__.py b/jellyfin_kodi/database/__init__.py
+index f54c579bcc16be6ab65f8ef3218da61e3a001f07..06bf373f3640e7d8633e8641639302433858b665 100644
+--- a/jellyfin_kodi/database/__init__.py
++++ b/jellyfin_kodi/database/__init__.py
+@@ -362,18 +362,9 @@ def save_sync(sync):
+         outfile.write(data)
+ 
+ 
+-def get_credentials():
+-    if (3, 0) <= sys.version_info < (3, 6):
+-        LOG.error("Python versions 3.0-3.5 are NOT supported.")
+-
+-    if not xbmcvfs.exists(ADDON_DATA):
+-        xbmcvfs.mkdirs(ADDON_DATA)
+-
+-    try:
+-        with open(os.path.join(ADDON_DATA, "data.json"), "rb") as infile:
+-            credentials = json.load(infile)
+-    except IOError:
+-        credentials = {}
++def read_credentials():
++    with open(os.path.join(ADDON_DATA, "data.json"), "rb") as infile:
++        credentials = json.load(infile)
+ 
+     credentials["Servers"] = credentials.get("Servers", [])
+ 
+@@ -398,6 +389,19 @@ def get_credentials():
+     return credentials
+ 
+ 
++def get_credentials():
++    if (3, 0) <= sys.version_info < (3, 6):
++        LOG.error("Python versions 3.0-3.5 are NOT supported.")
++
++    if not xbmcvfs.exists(ADDON_DATA):
++        xbmcvfs.mkdirs(ADDON_DATA)
++
++    try:
++        return read_credentials()
++    except IOError:
++        return {"Servers": []}
++
++
+ def save_credentials(credentials):
+     credentials = credentials or {}
+ 
+diff --git a/jellyfin_kodi/entrypoint/context.py b/jellyfin_kodi/entrypoint/context.py
+index 41b52bf5262960492e3575232f07c405c5beb6ae..ebdeb323652f86865fc0694898e2e7a99237b6e8 100644
+--- a/jellyfin_kodi/entrypoint/context.py
++++ b/jellyfin_kodi/entrypoint/context.py
+@@ -10,9 +10,9 @@ import xbmcaddon
+ 
+ from .. import database
+ from ..dialogs import context
+-from ..helper import translate, settings, dialog, LazyLogger
+-from ..helper.utils import translate_path
++from ..helper import dialog, LazyLogger, settings, translate
+ from ..jellyfin import Jellyfin
++from ..jellyfin.configuration import Config
+ 
+ #################################################################################################
+ 
+@@ -56,18 +56,13 @@ class Context(object):
+                 self.media = xbmc.getInfoLabel("ListItem.DBTYPE")
+                 item_id = None
+ 
+-        addon_data = translate_path(
+-            "special://profile/addon_data/plugin.video.jellyfin/data.json"
+-        )
+-        with open(addon_data, "rb") as infile:
+-            data = json.load(infile)
++        try:
++            Config.get_credentials()
++        except (AttributeError, IndexError, KeyError, TypeError):
++            pass
+ 
+         try:
+-            server_data = data["Servers"][0]
+-            self.api_client.config.data["auth.server"] = server_data.get("address")
+-            self.api_client.config.data["auth.server-name"] = server_data.get("Name")
+-            self.api_client.config.data["auth.user_id"] = server_data.get("UserId")
+-            self.api_client.config.data["auth.token"] = server_data.get("AccessToken")
++            self.api_client.config.inject()
+         except Exception as e:
+             LOG.warning("Addon appears to not be configured yet: {}".format(e))
+ 
+diff --git a/jellyfin_kodi/entrypoint/default.py b/jellyfin_kodi/entrypoint/default.py
+index cc2a42945cd4bb1123a3bcc5e46658b0b03b0950..6c35d64a540336af9289d5322d568a5b06cb5169 100644
+--- a/jellyfin_kodi/entrypoint/default.py
++++ b/jellyfin_kodi/entrypoint/default.py
+@@ -2,7 +2,6 @@
+ 
+ #################################################################################################
+ 
+-import json
+ import sys
+ import os
+ from urllib.parse import parse_qsl, urlencode
+@@ -71,20 +70,10 @@ class Events(object):
+         jellyfin_client = Jellyfin(server).get_client()
+         api_client = jellyfin_client.jellyfin
+ 
+-        addon_data = translate_path(
+-            "special://profile/addon_data/plugin.video.jellyfin/data.json"
+-        )
+         try:
+-            with open(addon_data, "rb") as infile:
+-                data = json.load(infile)
+-
+-            server_data = data["Servers"][0]
+-            api_client.config.data["auth.server"] = server_data.get("address")
+-            api_client.config.data["auth.server-name"] = server_data.get("Name")
+-            api_client.config.data["auth.user_id"] = server_data.get("UserId")
+-            api_client.config.data["auth.token"] = server_data.get("AccessToken")
++            api_client.config.inject()
+         except Exception as e:
+-            LOG.warning("Addon appears to not be configured yet: {}".format(e))
++            raise
+ 
+         LOG.info("path: %s params: %s", path, JsonDebugPrinter(params))
+ 
+diff --git a/jellyfin_kodi/helper/api.py b/jellyfin_kodi/helper/api.py
+index 682b381c865e981656cd2da43e6eac547ff651ee..5b16eb58a1e213e296b5da8ed4070b75c352d255 100644
+--- a/jellyfin_kodi/helper/api.py
++++ b/jellyfin_kodi/helper/api.py
+@@ -1,11 +1,9 @@
+ # -*- coding: utf-8 -*-
+ 
+-import json
+-
+ ##################################################################################################
+ 
+-from . import settings, LazyLogger
+-from .utils import translate_path
++from . import LazyLogger, settings
++from ..jellyfin.configuration import Config
+ 
+ ##################################################################################################
+ 
+@@ -21,14 +19,11 @@ class API(object):
+         """
+         self.item = item
+         self.server = server
++        self.path_data = {}
+ 
+-        addon_data = translate_path(
+-            "special://profile/addon_data/plugin.video.jellyfin/data.json"
+-        )
+         try:
+-            with open(addon_data, "rb") as infile:
+-                data = json.load(infile)
+-            self.path_data = data["Servers"][0].get("paths", {})
++            server_data = Config.get_server()
++            self.path_data = server_data.get("paths", {})
+         except Exception as e:
+             LOG.warning("Addon appears to not be configured yet: {}".format(e))
+ 
+diff --git a/jellyfin_kodi/jellyfin/configuration.py b/jellyfin_kodi/jellyfin/configuration.py
+index 1b80cd9d1f5774e87e9966574e06690809d633a9..19b7370134726b2ad21d7829812023b752010976 100644
+--- a/jellyfin_kodi/jellyfin/configuration.py
++++ b/jellyfin_kodi/jellyfin/configuration.py
+@@ -19,6 +19,53 @@ DEFAULT_HTTP_TIMEOUT = 30
+ 
+ class Config(object):
+ 
++    _credentials_cache = None
++
++    @classmethod
++    def reset_credentials_cache(cls):
++        cls._credentials_cache = None
++
++    @classmethod
++    def _load_credentials(cls):
++        if cls._credentials_cache is not None:
++            success, result = cls._credentials_cache
++            if success:
++                return result
++            raise result
++
++        try:
++            from ..database import read_credentials
++
++            credentials = read_credentials()
++            cls._credentials_cache = (True, credentials)
++            return credentials
++        except Exception as e:
++            cls._credentials_cache = (False, e)
++            raise
++
++    @classmethod
++    def get_credentials(cls):
++        return cls._load_credentials()
++
++    @classmethod
++    def get_server(cls):
++        credentials = cls._load_credentials()
++        return credentials["Servers"][0]
++
++    get_first_server = get_server
++
++    def inject(self, target=None):
++        cfg = target or self
++        if not isinstance(cfg, Config):
++            raise TypeError("Config instance required for inject")
++        server = self.get_server()
++        cfg.data["auth.server"] = server.get("address")
++        cfg.data["auth.server-name"] = server.get("Name")
++        cfg.data["auth.user_id"] = server.get("UserId")
++        cfg.data["auth.token"] = server.get("AccessToken")
++
++    inject_credentials = inject
++
+     def __init__(self):
+ 
+         LOG.debug("Configuration initializing...")
+diff --git a/jellyfin_kodi/objects/actions.py b/jellyfin_kodi/objects/actions.py
+index 4668971dcf5fbda9f1444ecff99af934330d797f..7f5cc4c498cc0450884bc3a9462d993a62c9608f 100644
+--- a/jellyfin_kodi/objects/actions.py
++++ b/jellyfin_kodi/objects/actions.py
+@@ -4,7 +4,6 @@
+ 
+ import threading
+ import sys
+-import json
+ from datetime import timedelta
+ 
+ import xbmc
+@@ -16,7 +15,6 @@ from ..helper import translate, playutils, api, window, settings, dialog
+ from ..dialogs import resume
+ from ..helper import LazyLogger
+ from ..jellyfin import Jellyfin
+-from ..helper.utils import translate_path
+ 
+ from .obj import Objects
+ 
+@@ -36,25 +34,13 @@ class Actions(object):
+             LOG.debug("No api client provided, attempting to use config file")
+             jellyfin_client = Jellyfin(server_id).get_client()
+             api_client = jellyfin_client.jellyfin
+-            addon_data = translate_path(
+-                "special://profile/addon_data/plugin.video.jellyfin/data.json"
+-            )
+             try:
+-                with open(addon_data, "rb") as infile:
+-                    data = json.load(infile)
+-
+-                    server_data = data["Servers"][0]
+-                    api_client.config.data["auth.server"] = server_data.get("address")
+-                    api_client.config.data["auth.server-name"] = server_data.get("Name")
+-                    api_client.config.data["auth.user_id"] = server_data.get("UserId")
+-                    api_client.config.data["auth.token"] = server_data.get(
+-                        "AccessToken"
+-                    )
++                api_client.config.inject()
+             except Exception as e:
+                 LOG.warning("Addon appears to not be configured yet: {}".format(e))
+ 
+         self.api_client = api_client
+-        self.server = self.api_client.config.data["auth.server"]
++        self.server = self.api_client.config.data.get("auth.server")
+ 
+         self.stack = []
+ 

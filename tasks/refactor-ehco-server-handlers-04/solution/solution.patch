@@ -1,0 +1,2486 @@
+diff --git a/internal/web/auth.go b/internal/web/auth.go
+index 55050591768b0b15868709e2371ddb3cfdc8bfe6..3689403d994813077c7b6a5d2394e64b0037a703 100644
+--- a/internal/web/auth.go
++++ b/internal/web/auth.go
+@@ -82,9 +82,8 @@ func (s *sessionStore) revoke(sid string) {
+ 	s.mu.Unlock()
+ }
+ 
+-// authenticator combines the session store with config-driven bearer-token
+-// validation. One type owns both because the middleware needs to ask
+-// "is this request authenticated?" and the answer can come from either side.
++// authenticator combines the session store with bearer-token validation
++// and authentication endpoints.
+ type authenticator struct {
+ 	cfg      *config.Config
+ 	sessions *sessionStore
+@@ -104,11 +103,14 @@ func newAuthenticator(cfg *config.Config) *authenticator {
+ // open — used in dev / fresh deployments where credentials haven't
+ // been pushed yet.
+ func (a *authenticator) authRequired() bool {
++	if a.cfg == nil {
++		return false
++	}
+ 	return a.cfg.DashboardPass != "" || a.cfg.ApiToken != ""
+ }
+ 
+ // checkRequest tries cookie session, then bearer header, then x-ehco-token.
+-// Returns (authenticated, sidToRefresh). If sidToRefresh is non-empty
++// Returns (authenticated, sidToRefresh, newExpiry). If sidToRefresh is non-empty
+ // the middleware should re-issue the cookie with the slid expiry.
+ func (a *authenticator) checkRequest(r *http.Request) (bool, string, time.Time) {
+ 	if !a.authRequired() {
+@@ -123,7 +125,7 @@ func (a *authenticator) checkRequest(r *http.Request) (bool, string, time.Time)
+ 	}
+ 
+ 	// 2. Bearer header — preferred for machine clients.
+-	if a.cfg.ApiToken != "" {
++	if a.cfg != nil && a.cfg.ApiToken != "" {
+ 		if h := r.Header.Get(bearerHeader); strings.HasPrefix(h, bearerPrefix) {
+ 			supplied := strings.TrimPrefix(h, bearerPrefix)
+ 			if subtle.ConstantTimeCompare([]byte(supplied), []byte(a.cfg.ApiToken)) == 1 {
+@@ -199,16 +201,31 @@ type loginRequest struct {
+ 	Password string `json:"password"`
+ }
+ 
+-// HandleLogin authenticates against cfg.DashboardPass and, on success,
++// AuthInfo reports whether the server requires login and whether the
++// current request already carries a valid session/bearer. The SPA boots
++// off this — if auth_required is false it skips LoginGate entirely; if
++// authenticated is true on first hit (e.g. cookie still valid) it goes
++// straight to the dashboard.
++//
++// Public — must remain reachable without auth so the SPA can probe.
++func (a *authenticator) AuthInfo(c echo.Context) error {
++	authenticated, _, _ := a.checkRequest(c.Request())
++	return c.JSON(http.StatusOK, map[string]bool{
++		"auth_required": a.authRequired(),
++		"authenticated": authenticated,
++	})
++}
++
++// HandleLogin authenticates against DashboardPass and, on success,
+ // issues a session cookie. Public endpoint.
+-func (s *Server) HandleLogin(c echo.Context) error {
+-	if !s.auth.authRequired() {
++func (a *authenticator) HandleLogin(c echo.Context) error {
++	if !a.authRequired() {
+ 		// No password configured — login is meaningless. Don't 401, but
+ 		// don't issue a session either; the SPA already knows from
+ 		// /auth/info that nothing's required.
+ 		return c.JSON(http.StatusOK, map[string]any{"authenticated": true})
+ 	}
+-	if s.cfg.DashboardPass == "" {
++	if a.cfg == nil || a.cfg.DashboardPass == "" {
+ 		// ApiToken is set but DashboardPass isn't — machine-only deployment.
+ 		// Browsers can't log in.
+ 		return echo.NewHTTPError(http.StatusForbidden, "dashboard login not configured")
+@@ -217,10 +234,10 @@ func (s *Server) HandleLogin(c echo.Context) error {
+ 	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+ 		return echo.NewHTTPError(http.StatusBadRequest, "invalid login body")
+ 	}
+-	if subtle.ConstantTimeCompare([]byte(req.Password), []byte(s.cfg.DashboardPass)) != 1 {
++	if subtle.ConstantTimeCompare([]byte(req.Password), []byte(a.cfg.DashboardPass)) != 1 {
+ 		return echo.NewHTTPError(http.StatusUnauthorized, "invalid password")
+ 	}
+-	sid, exp, err := s.auth.sessions.issue()
++	sid, exp, err := a.sessions.issue()
+ 	if err != nil {
+ 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to issue session")
+ 	}
+@@ -231,9 +248,9 @@ func (s *Server) HandleLogin(c echo.Context) error {
+ // HandleLogout revokes the session and clears the cookie. Idempotent —
+ // safe to call from any state. Public endpoint so the SPA can sign out
+ // even if the cookie was somehow lost.
+-func (s *Server) HandleLogout(c echo.Context) error {
++func (a *authenticator) HandleLogout(c echo.Context) error {
+ 	if cookie, err := c.Request().Cookie(sessionCookieName); err == nil {
+-		s.auth.sessions.revoke(cookie.Value)
++		a.sessions.revoke(cookie.Value)
+ 	}
+ 	clearSessionCookie(c)
+ 	return c.JSON(http.StatusOK, map[string]any{"authenticated": false})
+diff --git a/internal/web/handler_api.go b/internal/web/handler_api.go
+index d7a727f05bc67013f6b7a69c513df6189340726a..53d31bafb2c9d793447176b5ac7b6c166e2e2db8 100644
+--- a/internal/web/handler_api.go
++++ b/internal/web/handler_api.go
+@@ -1,6 +1,7 @@
+ package web
+ 
+ import (
++	"context"
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
+@@ -10,8 +11,10 @@ import (
+ 
+ 	"github.com/Ehco1996/ehco/internal/cmgr"
+ 	"github.com/Ehco1996/ehco/internal/cmgr/ms"
++	"github.com/Ehco1996/ehco/internal/config"
+ 	"github.com/Ehco1996/ehco/internal/glue"
+ 	"github.com/labstack/echo/v4"
++	"go.uber.org/zap"
+ )
+ 
+ const (
+@@ -19,6 +22,53 @@ const (
+ 	errInvalidParam  = "invalid parameter: %s"
+ )
+ 
++type RuleSource interface {
++	RuleCount() int
++	LastReloadTime() time.Time
++}
++
++type StatusSource interface {
++	Snapshot() (glue.XraySnapshot, bool)
++}
++
++type NodeMetricsQuerier interface {
++	QueryNodeMetrics(ctx context.Context, req *ms.QueryNodeMetricsReq) (*ms.QueryNodeMetricsResp, error)
++}
++
++type DBMaintenanceStore interface {
++	DBHealth(ctx context.Context) (*ms.DBHealth, error)
++	DBCleanup(ctx context.Context, days int) (*ms.MaintenanceResult, error)
++	DBVacuum(ctx context.Context) (*ms.MaintenanceResult, error)
++	DBTruncate(ctx context.Context, confirm string) (*ms.MaintenanceResult, error)
++	DBResetStats() error
++}
++
++type xrayReloaderProvider interface {
++	Reloader() glue.Reloader
++}
++
++type configRuleSource struct {
++	cfg *config.Config
++}
++
++func newConfigRuleSource(cfg *config.Config) *configRuleSource {
++	return &configRuleSource{cfg: cfg}
++}
++
++func (s *configRuleSource) RuleCount() int {
++	if s == nil || s.cfg == nil {
++		return 0
++	}
++	return len(s.cfg.RelayConfigs)
++}
++
++func (s *configRuleSource) LastReloadTime() time.Time {
++	if s == nil || s.cfg == nil {
++		return time.Time{}
++	}
++	return s.cfg.LastLoadTime()
++}
++
+ type queryParams struct {
+ 	startTS int64
+ 	endTS   int64
+@@ -63,7 +113,15 @@ func parseTimestamp(s string) (int64, error) {
+ 	return strconv.ParseInt(s, 10, 64)
+ }
+ 
+-func (s *Server) GetNodeMetrics(c echo.Context) error {
++type nodeMetricsHandler struct {
++	querier NodeMetricsQuerier
++}
++
++func newNodeMetricsHandler(querier NodeMetricsQuerier) *nodeMetricsHandler {
++	return &nodeMetricsHandler{querier: querier}
++}
++
++func (h *nodeMetricsHandler) GetNodeMetrics(c echo.Context) error {
+ 	params, err := parseQueryParams(c)
+ 	if err != nil {
+ 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+@@ -72,30 +130,39 @@ func (s *Server) GetNodeMetrics(c echo.Context) error {
+ 	if params.latest {
+ 		req.Num = 1
+ 	}
+-	metrics, err := s.connMgr.QueryNodeMetrics(c.Request().Context(), req)
++	metrics, err := h.querier.QueryNodeMetrics(c.Request().Context(), req)
+ 	if err != nil {
+ 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+ 	}
+ 	return c.JSON(http.StatusOK, metrics)
+ }
+ 
+-// AuthInfo reports whether the server requires login and whether the
+-// current request already carries a valid session/bearer. The SPA boots
+-// off this — if auth_required is false it skips LoginGate entirely; if
+-// authenticated is true on first hit (e.g. cookie still valid) it goes
+-// straight to the dashboard.
+-//
+-// Public — must remain reachable without auth so the SPA can probe.
+-func (s *Server) AuthInfo(c echo.Context) error {
+-	authenticated, _, _ := s.auth.checkRequest(c.Request())
+-	return c.JSON(http.StatusOK, map[string]bool{
+-		"auth_required": s.auth.authRequired(),
+-		"authenticated": authenticated,
+-	})
++type configHandler struct {
++	cfg          *config.Config
++	relay        glue.Reloader
++	xrayReloader xrayReloaderProvider
++	l            *zap.SugaredLogger
++}
++
++func newConfigHandler(
++	cfg *config.Config,
++	relay glue.Reloader,
++	xrayReloader xrayReloaderProvider,
++	l *zap.SugaredLogger,
++) *configHandler {
++	if l == nil {
++		l = zap.S().Named("config")
++	}
++	return &configHandler{
++		cfg:          cfg,
++		relay:        relay,
++		xrayReloader: xrayReloader,
++		l:            l,
++	}
+ }
+ 
+-func (s *Server) CurrentConfig(c echo.Context) error {
+-	ret, err := json.Marshal(s.cfg)
++func (h *configHandler) CurrentConfig(c echo.Context) error {
++	ret, err := json.Marshal(h.cfg)
+ 	if err != nil {
+ 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+ 	}
+@@ -103,24 +170,26 @@ func (s *Server) CurrentConfig(c echo.Context) error {
+ 	return c.JSONBlob(http.StatusOK, ret)
+ }
+ 
+-func (s *Server) HandleReload(c echo.Context) error {
+-	if s.Reloader == nil {
++func (h *configHandler) HandleReload(c echo.Context) error {
++	if h.relay == nil {
+ 		return echo.NewHTTPError(http.StatusBadRequest, "reload not support")
+ 	}
+ 
+ 	go func() {
+-		if err := s.Reloader.Reload(true); err != nil {
+-			s.l.Errorf("reload relay meet error: %v", err)
++		if err := h.relay.Reload(true); err != nil {
++			h.l.Errorf("reload relay meet error: %v", err)
+ 		}
+-		if xr := s.xrayReloader.Load(); xr != nil && *xr != nil {
+-			if err := (*xr).Reload(true); err != nil {
+-				s.l.Errorf("reload xray meet error: %v", err)
++		if h.xrayReloader != nil {
++			if xr := h.xrayReloader.Reloader(); xr != nil {
++				if err := xr.Reload(true); err != nil {
++					h.l.Errorf("reload xray meet error: %v", err)
++				}
+ 			}
+ 		}
+ 	}()
+ 
+ 	if _, err := c.Response().Write([]byte("reload success")); err != nil {
+-		s.l.Errorf("write response meet err=%v", err)
++		h.l.Errorf("write response meet err=%v", err)
+ 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+ 	}
+ 	return nil
+@@ -141,29 +210,44 @@ type OverviewResp struct {
+ 	LastReloadAt time.Time `json:"last_reload_at,omitempty"`
+ }
+ 
+-func (s *Server) Overview(c echo.Context) error {
++type overviewHandler struct {
++	rules   RuleSource
++	status  StatusSource
++	metrics NodeMetricsQuerier
++}
++
++func newOverviewHandler(rules RuleSource, status StatusSource, metrics NodeMetricsQuerier) *overviewHandler {
++	return &overviewHandler{
++		rules:   rules,
++		status:  status,
++		metrics: metrics,
++	}
++}
++
++func (h *overviewHandler) Overview(c echo.Context) error {
+ 	out := OverviewResp{}
+ 
+-	if s.cfg != nil {
+-		out.Rules = len(s.cfg.RelayConfigs)
+-		out.LastReloadAt = s.cfg.LastLoadTime()
++	if h.rules != nil {
++		out.Rules = h.rules.RuleCount()
++		out.LastReloadAt = h.rules.LastReloadTime()
+ 	}
+ 
+-	if p := s.xrayStatus.Load(); p != nil && *p != nil {
+-		snap := (*p).Snapshot()
+-		out.Xray = &snap
++	if h.status != nil {
++		if snap, ok := h.status.Snapshot(); ok {
++			out.Xray = &snap
++		}
+ 	}
+ 
+-	if s.connMgr != nil {
++	if h.metrics != nil {
+ 		now := time.Now()
+ 		req := &ms.QueryNodeMetricsReq{
+ 			StartTimestamp: now.Add(-5 * time.Minute).Unix(),
+ 			EndTimestamp:   now.Unix(),
+ 			Num:            1,
+ 		}
+-		if resp, err := s.connMgr.QueryNodeMetrics(c.Request().Context(), req); err == nil && len(resp.Data) > 0 {
+-			h := resp.Data[0]
+-			out.Host = &h
++		if resp, err := h.metrics.QueryNodeMetrics(c.Request().Context(), req); err == nil && len(resp.Data) > 0 {
++			host := resp.Data[0]
++			out.Host = &host
+ 		}
+ 	}
+ 
+@@ -184,32 +268,40 @@ func dbMaintenanceErr(err error) *echo.HTTPError {
+ 	}
+ }
+ 
+-func (s *Server) GetDBHealth(c echo.Context) error {
+-	h, err := s.connMgr.DBHealth(c.Request().Context())
++type dbHandler struct {
++	store DBMaintenanceStore
++}
++
++func newDBHandler(store DBMaintenanceStore) *dbHandler {
++	return &dbHandler{store: store}
++}
++
++func (h *dbHandler) GetDBHealth(c echo.Context) error {
++	res, err := h.store.DBHealth(c.Request().Context())
+ 	if err != nil {
+ 		return dbMaintenanceErr(err)
+ 	}
+-	return c.JSON(http.StatusOK, h)
++	return c.JSON(http.StatusOK, res)
+ }
+ 
+ type dbCleanupReq struct {
+ 	OlderThanDays int `json:"older_than_days"`
+ }
+ 
+-func (s *Server) PostDBCleanup(c echo.Context) error {
++func (h *dbHandler) PostDBCleanup(c echo.Context) error {
+ 	var req dbCleanupReq
+ 	if err := c.Bind(&req); err != nil {
+ 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+ 	}
+-	res, err := s.connMgr.DBCleanup(c.Request().Context(), req.OlderThanDays)
++	res, err := h.store.DBCleanup(c.Request().Context(), req.OlderThanDays)
+ 	if err != nil {
+ 		return dbMaintenanceErr(err)
+ 	}
+ 	return c.JSON(http.StatusOK, res)
+ }
+ 
+-func (s *Server) PostDBVacuum(c echo.Context) error {
+-	res, err := s.connMgr.DBVacuum(c.Request().Context())
++func (h *dbHandler) PostDBVacuum(c echo.Context) error {
++	res, err := h.store.DBVacuum(c.Request().Context())
+ 	if err != nil {
+ 		return dbMaintenanceErr(err)
+ 	}
+@@ -220,31 +312,39 @@ type dbTruncateReq struct {
+ 	Confirm string `json:"confirm"`
+ }
+ 
+-func (s *Server) PostDBTruncate(c echo.Context) error {
++func (h *dbHandler) PostDBTruncate(c echo.Context) error {
+ 	var req dbTruncateReq
+ 	if err := c.Bind(&req); err != nil {
+ 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+ 	}
+-	res, err := s.connMgr.DBTruncate(c.Request().Context(), req.Confirm)
++	res, err := h.store.DBTruncate(c.Request().Context(), req.Confirm)
+ 	if err != nil {
+ 		return dbMaintenanceErr(err)
+ 	}
+ 	return c.JSON(http.StatusOK, res)
+ }
+ 
+-func (s *Server) PostDBResetStats(c echo.Context) error {
+-	if err := s.connMgr.DBResetStats(); err != nil {
++func (h *dbHandler) PostDBResetStats(c echo.Context) error {
++	if err := h.store.DBResetStats(); err != nil {
+ 		return dbMaintenanceErr(err)
+ 	}
+ 	return c.NoContent(http.StatusNoContent)
+ }
+ 
+-func (s *Server) HandleHealthCheck(c echo.Context) error {
++type healthCheckHandler struct {
++	checker glue.HealthChecker
++}
++
++func newHealthCheckHandler(checker glue.HealthChecker) *healthCheckHandler {
++	return &healthCheckHandler{checker: checker}
++}
++
++func (h *healthCheckHandler) HandleHealthCheck(c echo.Context) error {
+ 	relayLabel := c.QueryParam("relay_label")
+ 	if relayLabel == "" {
+ 		return echo.NewHTTPError(http.StatusBadRequest, "relay_label is required")
+ 	}
+-	latency, err := s.HealthCheck(c.Request().Context(), relayLabel)
++	latency, err := h.checker.HealthCheck(c.Request().Context(), relayLabel)
+ 	if err != nil {
+ 		res := HealthCheckResp{Message: err.Error(), ErrorCode: -1}
+ 		return c.JSON(http.StatusBadRequest, res)
+diff --git a/internal/web/handler_update.go b/internal/web/handler_update.go
+index 35ad5a761c69b7e78579a2e84a0810d18bbb7015..729186c58c9f617f13ea201654614d40f656efa0 100644
+--- a/internal/web/handler_update.go
++++ b/internal/web/handler_update.go
+@@ -9,6 +9,7 @@ import (
+ 	"github.com/Ehco1996/ehco/internal/constant"
+ 	"github.com/Ehco1996/ehco/internal/updater"
+ 	"github.com/labstack/echo/v4"
++	"go.uber.org/zap"
+ )
+ 
+ const updateApplyTimeout = 5 * time.Minute
+@@ -23,7 +24,18 @@ type VersionInfo struct {
+ 	GoArch      string    `json:"go_arch"`
+ }
+ 
+-func (s *Server) Version(c echo.Context) error {
++type updateHandler struct {
++	l *zap.SugaredLogger
++}
++
++func newUpdateHandler(l *zap.SugaredLogger) *updateHandler {
++	if l == nil {
++		l = zap.S().Named("update")
++	}
++	return &updateHandler{l: l}
++}
++
++func (h *updateHandler) Version(c echo.Context) error {
+ 	return c.JSON(http.StatusOK, VersionInfo{
+ 		Version:     constant.Version,
+ 		GitBranch:   constant.GitBranch,
+@@ -35,7 +47,7 @@ func (s *Server) Version(c echo.Context) error {
+ 	})
+ }
+ 
+-func (s *Server) UpdateCheck(c echo.Context) error {
++func (h *updateHandler) UpdateCheck(c echo.Context) error {
+ 	channel := c.QueryParam("channel")
+ 	if channel == "" {
+ 		channel = updater.ChannelAuto
+@@ -52,8 +64,8 @@ func (s *Server) UpdateCheck(c echo.Context) error {
+ // UpdateApply kicks off the update in a detached goroutine and returns
+ // immediately. The dashboard polls /version to detect completion (the
+ // running process restarts mid-flow, so any in-process state machine is
+-// inherently lossy). Failures are logged via s.l; check journalctl.
+-func (s *Server) UpdateApply(c echo.Context) error {
++// inherently lossy). Failures are logged via h.l; check journalctl.
++func (h *updateHandler) UpdateApply(c echo.Context) error {
+ 	if runtime.GOOS != "linux" {
+ 		return echo.NewHTTPError(http.StatusBadRequest,
+ 			"self-update only supported on linux; current platform is "+runtime.GOOS)
+@@ -65,13 +77,13 @@ func (s *Server) UpdateApply(c echo.Context) error {
+ 	if opts.Channel == "" {
+ 		opts.Channel = updater.ChannelAuto
+ 	}
+-	s.l.Infof("update apply requested channel=%s force=%v restart=%v", opts.Channel, opts.Force, opts.Restart)
++	h.l.Infof("update apply requested channel=%s force=%v restart=%v", opts.Channel, opts.Force, opts.Restart)
+ 
+ 	go func() {
+ 		ctx, cancel := context.WithTimeout(context.Background(), updateApplyTimeout)
+ 		defer cancel()
+-		if err := updater.Apply(ctx, opts, constant.Version, constant.GitRevision, s.l); err != nil {
+-			s.l.Errorf("update failed: %v", err)
++		if err := updater.Apply(ctx, opts, constant.Version, constant.GitRevision, h.l); err != nil {
++			h.l.Errorf("update failed: %v", err)
+ 		}
+ 	}()
+ 	return c.NoContent(http.StatusAccepted)
+diff --git a/internal/web/handlers_ws.go b/internal/web/handlers_ws.go
+index 6c8c7da4f89d26d6532e3431b6aa0659e40222c5..3b70c450b8a2c26588797d91e8d8279ba2aad51d 100644
+--- a/internal/web/handlers_ws.go
++++ b/internal/web/handlers_ws.go
+@@ -6,9 +6,21 @@ import (
+ 	"github.com/Ehco1996/ehco/pkg/log"
+ 	"github.com/gobwas/ws"
+ 	"github.com/labstack/echo/v4"
++	"go.uber.org/zap"
+ )
+ 
+-func (s *Server) handleWebSocketLogs(c echo.Context) error {
++type logStreamHandler struct {
++	l *zap.SugaredLogger
++}
++
++func newLogStreamHandler(l *zap.SugaredLogger) *logStreamHandler {
++	if l == nil {
++		l = zap.S().Named("ws")
++	}
++	return &logStreamHandler{l: l}
++}
++
++func (h *logStreamHandler) HandleWebSocketLogs(c echo.Context) error {
+ 	conn, _, _, err := ws.UpgradeHTTP(c.Request(), c.Response())
+ 	if err != nil {
+ 		return err
+@@ -22,7 +34,7 @@ func (s *Server) handleWebSocketLogs(c echo.Context) error {
+ 		_, err := ws.ReadFrame(conn)
+ 		if err != nil {
+ 			if _, ok := err.(net.Error); ok {
+-				s.l.Errorf("WebSocket read error: %v", err)
++				h.l.Errorf("WebSocket read error: %v", err)
+ 			}
+ 			break
+ 		}
+diff --git a/internal/web/server.go b/internal/web/server.go
+index b39a64318133a9131f54c6db8f9e0761401dfe3a..10aad9af4fe797e107ae4380b5706a4b3be1067d 100644
+--- a/internal/web/server.go
++++ b/internal/web/server.go
+@@ -22,44 +22,102 @@ const (
+ 	apiPrefix   = "/api/v1"
+ )
+ 
+-type Server struct {
+-	glue.Reloader
+-	glue.HealthChecker
++type xrayStatusHolder struct {
++	val atomic.Pointer[glue.XrayStatus]
++}
++
++func newXrayStatusHolder() *xrayStatusHolder {
++	return &xrayStatusHolder{}
++}
++
++func (h *xrayStatusHolder) Set(p glue.XrayStatus) {
++	if p == nil {
++		return
++	}
++	h.val.Store(&p)
++}
+ 
++func (h *xrayStatusHolder) Get() glue.XrayStatus {
++	if h == nil {
++		return nil
++	}
++	p := h.val.Load()
++	if p != nil && *p != nil {
++		return *p
++	}
++	return nil
++}
++
++func (h *xrayStatusHolder) Snapshot() (glue.XraySnapshot, bool) {
++	s := h.Get()
++	if s == nil {
++		return glue.XraySnapshot{}, false
++	}
++	return s.Snapshot(), true
++}
++
++type xrayReloaderHolder struct {
++	val atomic.Pointer[glue.Reloader]
++}
++
++func newXrayReloaderHolder() *xrayReloaderHolder {
++	return &xrayReloaderHolder{}
++}
++
++func (h *xrayReloaderHolder) Set(r glue.Reloader) {
++	if r == nil {
++		return
++	}
++	h.val.Store(&r)
++}
++
++func (h *xrayReloaderHolder) Reloader() glue.Reloader {
++	if h == nil {
++		return nil
++	}
++	p := h.val.Load()
++	if p != nil && *p != nil {
++		return *p
++	}
++	return nil
++}
++
++type Server struct {
+ 	e    *echo.Echo
+ 	addr string
+ 	l    *zap.SugaredLogger
+-	cfg  *config.Config
+-	auth *authenticator
+-
+-	connMgr cmgr.Cmgr
+-
+-	// xrayStatus is wired post-construction by cli boot once the
+-	// XrayServer exists. Always read via Load() — may be nil when
+-	// xray sync is disabled. Atomic pointer keeps it lock-free.
+-	xrayStatus atomic.Pointer[glue.XrayStatus]
+ 
+-	// xrayReloader allows HandleReload to trigger an immediate reload on Xray
+-	// alongside RelayServer.
+-	xrayReloader atomic.Pointer[glue.Reloader]
++	xrayStatusHolder   *xrayStatusHolder
++	xrayReloaderHolder *xrayReloaderHolder
+ }
+ 
+ // SetXrayStatus is called by cli boot once the XrayServer is
+-// constructed. The /overview handler picks it up via Load().
++// constructed. The /overview handler picks it up via the status holder.
+ func (s *Server) SetXrayStatus(p glue.XrayStatus) {
+-	if p == nil {
++	if s == nil || s.xrayStatusHolder == nil || p == nil {
+ 		return
+ 	}
+-	s.xrayStatus.Store(&p)
++	s.xrayStatusHolder.Set(p)
+ }
+ 
+ // SetXrayReloader is called by cli boot once the XrayServer is
+ // constructed. HandleReload uses it to reload Xray alongside Relay.
+ func (s *Server) SetXrayReloader(r glue.Reloader) {
+-	if r == nil {
++	if s == nil || s.xrayReloaderHolder == nil || r == nil {
+ 		return
+ 	}
+-	s.xrayReloader.Store(&r)
++	s.xrayReloaderHolder.Set(r)
++}
++
++type serverHandlers struct {
++	auth        *authenticator
++	config      *configHandler
++	overview    *overviewHandler
++	health      *healthCheckHandler
++	nodeMetrics *nodeMetricsHandler
++	db          *dbHandler
++	update      *updateHandler
++	logs        *logStreamHandler
+ }
+ 
+ func NewServer(
+@@ -82,24 +140,39 @@ func NewServer(
+ 		return nil, fmt.Errorf("failed to setup metrics: %w", err)
+ 	}
+ 
+-	s := &Server{
+-		Reloader:      relayReloader,
+-		HealthChecker: healthChecker,
++	statusHolder := newXrayStatusHolder()
++	reloaderHolder := newXrayReloaderHolder()
++
++	ruleSrc := newConfigRuleSource(cfg)
+ 
+-		e:       e,
+-		l:       l,
+-		cfg:     cfg,
+-		auth:    auth,
+-		connMgr: connMgr,
+-		addr:    net.JoinHostPort(cfg.WebHost, fmt.Sprintf("%d", cfg.WebPort)),
++	handlers := &serverHandlers{
++		auth:        auth,
++		config:      newConfigHandler(cfg, relayReloader, reloaderHolder, l),
++		overview:    newOverviewHandler(ruleSrc, statusHolder, connMgr),
++		nodeMetrics: newNodeMetricsHandler(connMgr),
++		health:      newHealthCheckHandler(healthChecker),
++		db:          newDBHandler(connMgr),
++		update:      newUpdateHandler(l),
++		logs:        newLogStreamHandler(l),
+ 	}
+ 
+-	setupRoutes(s)
++	setupRoutes(e, handlers)
++
++	s := &Server{
++		e:                  e,
++		addr:               net.JoinHostPort(cfg.WebHost, fmt.Sprintf("%d", cfg.WebPort)),
++		l:                  l,
++		xrayStatusHolder:   statusHolder,
++		xrayReloaderHolder: reloaderHolder,
++	}
+ 
+ 	return s, nil
+ }
+ 
+ func validateConfig(cfg *config.Config) error {
++	if cfg == nil {
++		return fmt.Errorf("config is nil")
++	}
+ 	if cfg.WebPort <= 0 || cfg.WebPort > 65535 {
+ 		return fmt.Errorf("invalid web port: %d", cfg.WebPort)
+ 	}
+@@ -120,36 +193,34 @@ func setupMetrics(cfg *config.Config) error {
+ 	return nil
+ }
+ 
+-func setupRoutes(s *Server) {
+-	e := s.e
+-
++func setupRoutes(e *echo.Echo, h *serverHandlers) {
+ 	e.GET(metricsPath, echo.WrapHandler(promhttp.Handler()))
+ 	e.GET("/debug/pprof/*", echo.WrapHandler(http.DefaultServeMux))
+ 
+ 	api := e.Group(apiPrefix)
+-	api.GET("/auth/info", s.AuthInfo)
+-	api.POST("/auth/login", s.HandleLogin)
+-	api.POST("/auth/logout", s.HandleLogout)
+-	api.GET("/config/", s.CurrentConfig)
+-	api.POST("/config/reload/", s.HandleReload)
+-	api.GET("/health_check/", s.HandleHealthCheck)
+-	api.GET("/node_metrics/", s.GetNodeMetrics)
+-	api.GET("/overview", s.Overview)
+-	api.GET("/version", s.Version)
+-	api.GET("/update/check", s.UpdateCheck)
+-	api.POST("/update/apply", s.UpdateApply)
++	api.GET("/auth/info", h.auth.AuthInfo)
++	api.POST("/auth/login", h.auth.HandleLogin)
++	api.POST("/auth/logout", h.auth.HandleLogout)
++	api.GET("/config/", h.config.CurrentConfig)
++	api.POST("/config/reload/", h.config.HandleReload)
++	api.GET("/health_check/", h.health.HandleHealthCheck)
++	api.GET("/node_metrics/", h.nodeMetrics.GetNodeMetrics)
++	api.GET("/overview", h.overview.Overview)
++	api.GET("/version", h.update.Version)
++	api.GET("/update/check", h.update.UpdateCheck)
++	api.POST("/update/apply", h.update.UpdateApply)
+ 
+ 	// Local SQLite store: read-side health snapshot + maintenance ops.
+ 	// All four mutations are auth-gated through the api group's
+ 	// existing middleware — the /db/truncate confirm-string is a
+ 	// second line of defence, not a first.
+-	api.GET("/db/health", s.GetDBHealth)
+-	api.POST("/db/cleanup", s.PostDBCleanup)
+-	api.POST("/db/vacuum", s.PostDBVacuum)
+-	api.POST("/db/truncate", s.PostDBTruncate)
+-	api.POST("/db/reset_stats", s.PostDBResetStats)
++	api.GET("/db/health", h.db.GetDBHealth)
++	api.POST("/db/cleanup", h.db.PostDBCleanup)
++	api.POST("/db/vacuum", h.db.PostDBVacuum)
++	api.POST("/db/truncate", h.db.PostDBTruncate)
++	api.POST("/db/reset_stats", h.db.PostDBResetStats)
+ 
+-	e.GET("/ws/logs", s.handleWebSocketLogs)
++	e.GET("/ws/logs", h.logs.HandleWebSocketLogs)
+ 
+ 	// SPA: assets are served from the embedded dist tree, every other
+ 	// path falls through to the SPA shell so client-side routing works.
+@@ -161,7 +232,6 @@ func setupRoutes(s *Server) {
+ 
+ // APIGroup returns the /api/v1 echo group so other components (e.g. XrayServer)
+ // can mount their own endpoints under the same auth/middleware stack.
+-// Must be called before Start.
+ func (s *Server) APIGroup() *echo.Group {
+ 	return s.e.Group(apiPrefix)
+ }
+diff --git a/internal/web/server_test.go b/internal/web/server_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..3df05f042c3577b54cdc85ae2cbc4ad53cd1ee9f
+--- /dev/null
++++ b/internal/web/server_test.go
+@@ -0,0 +1,1698 @@
++package web
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/gobwas/ws"
++	"github.com/gobwas/ws/wsutil"
++	"github.com/labstack/echo/v4"
++	"github.com/prometheus/client_golang/prometheus"
++
++	"github.com/Ehco1996/ehco/internal/cmgr"
++	"github.com/Ehco1996/ehco/internal/cmgr/ms"
++	"github.com/Ehco1996/ehco/internal/config"
++	"github.com/Ehco1996/ehco/internal/conn"
++	"github.com/Ehco1996/ehco/internal/glue"
++	"github.com/Ehco1996/ehco/internal/metrics"
++	"github.com/Ehco1996/ehco/pkg/log"
++	"go.uber.org/zap"
++)
++
++func unregisterTestMetrics() {
++	prometheus.Unregister(metrics.EhcoAlive)
++	prometheus.Unregister(metrics.CurConnectionCount)
++	prometheus.Unregister(metrics.NetWorkTransmitBytes)
++	prometheus.Unregister(metrics.HandShakeDurationMilliseconds)
++	prometheus.Unregister(metrics.PingResponseDurationMilliseconds)
++}
++
++func TestServer_RouteTable(t *testing.T) {
++	unregisterTestMetrics()
++	defer unregisterTestMetrics()
++
++	cfg := &config.Config{
++		WebHost: "127.0.0.1",
++		WebPort: 19001,
++	}
++	s, err := NewServer(cfg, nil, nil, nil)
++	if err != nil {
++		t.Fatalf("NewServer: %v", err)
++	}
++
++	expectedRoutes := map[string]bool{
++		"GET /metrics/":               true,
++		"GET /debug/pprof/*":          true,
++		"GET /api/v1/auth/info":       true,
++		"POST /api/v1/auth/login":     true,
++		"POST /api/v1/auth/logout":    true,
++		"GET /api/v1/config/":         true,
++		"POST /api/v1/config/reload/": true,
++		"GET /api/v1/health_check/":   true,
++		"GET /api/v1/node_metrics/":   true,
++		"GET /api/v1/overview":        true,
++		"GET /api/v1/version":         true,
++		"GET /api/v1/update/check":    true,
++		"POST /api/v1/update/apply":   true,
++		"GET /api/v1/db/health":       true,
++		"POST /api/v1/db/cleanup":     true,
++		"POST /api/v1/db/vacuum":      true,
++		"POST /api/v1/db/truncate":    true,
++		"POST /api/v1/db/reset_stats": true,
++		"GET /ws/logs":                true,
++		"GET /assets/*":               true,
++		"GET /favicon.ico":            true,
++		"GET /":                       true,
++		"GET /*":                      true,
++	}
++
++	routes := s.e.Routes()
++	gotRoutes := make(map[string]int)
++	for _, r := range routes {
++		key := r.Method + " " + r.Path
++		gotRoutes[key]++
++	}
++
++	if len(gotRoutes) != len(expectedRoutes) {
++		t.Fatalf("expected %d routes, got %d: %v", len(expectedRoutes), len(gotRoutes), gotRoutes)
++	}
++
++	for r := range expectedRoutes {
++		if gotRoutes[r] != 1 {
++			t.Errorf("route %s: expected count 1, got %d", r, gotRoutes[r])
++		}
++	}
++}
++
++type fakeCmgrForServer struct {
++	fakeNodeQuerier
++	fakeDBStore
++}
++
++func (f *fakeCmgrForServer) ListConnections(connType string, page, pageSize int) []conn.RelayConn {
++	return nil
++}
++func (f *fakeCmgrForServer) AddConnection(c conn.RelayConn)               {}
++func (f *fakeCmgrForServer) RemoveConnection(c conn.RelayConn)            {}
++func (f *fakeCmgrForServer) CountConnection(connType string) int          { return 0 }
++func (f *fakeCmgrForServer) GetActiveConnectCntByRelayLabel(l string) int { return 0 }
++func (f *fakeCmgrForServer) Start(ctx context.Context, errCH chan error)  {}
++
++type fakeChecker struct {
++	latency int64
++	err     error
++	label   string
++}
++
++func (f *fakeChecker) HealthCheck(ctx context.Context, label string) (int64, error) {
++	f.label = label
++	return f.latency, f.err
++}
++
++func TestServer_RoutePermissionMatrix(t *testing.T) {
++	unregisterTestMetrics()
++	defer unregisterTestMetrics()
++
++	cfg := &config.Config{
++		WebHost:       "127.0.0.1",
++		WebPort:       19002,
++		DashboardPass: "secretpass",
++		ApiToken:      "mytoken",
++	}
++	cmgrMock := &fakeCmgrForServer{}
++	reloaderMock := &fakeReloader{}
++	checkerMock := &fakeChecker{latency: 10}
++	s, err := NewServer(cfg, reloaderMock, checkerMock, cmgrMock)
++	if err != nil {
++		t.Fatalf("NewServer: %v", err)
++	}
++
++	// 9 public paths: anonymous must NOT be 401
++	publicPaths := []struct {
++		method string
++		path   string
++		body   string
++	}{
++		{http.MethodGet, "/", ""},
++		{http.MethodGet, "/index.html", ""},
++		{http.MethodGet, "/favicon.ico", ""},
++		{http.MethodGet, "/favicon.svg", ""},
++		{http.MethodGet, "/robots.txt", ""},
++		{http.MethodGet, "/assets/test.css", ""},
++		{http.MethodGet, "/api/v1/auth/info", ""},
++		{http.MethodPost, "/api/v1/auth/login", `{"password":"secretpass"}`},
++		{http.MethodPost, "/api/v1/auth/logout", ""},
++	}
++
++	for _, p := range publicPaths {
++		req := httptest.NewRequest(p.method, p.path, strings.NewReader(p.body))
++		req.Header.Set("Content-Type", "application/json")
++		rec := httptest.NewRecorder()
++		s.e.ServeHTTP(rec, req)
++		if rec.Code == http.StatusUnauthorized {
++			t.Errorf("public path %s %s returned 401", p.method, p.path)
++		}
++		if p.path == "/api/v1/auth/logout" {
++			if rec.Code != http.StatusOK {
++				t.Errorf("anonymous logout expected 200, got %d", rec.Code)
++			}
++			var body map[string]any
++			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
++				t.Errorf("unmarshal anonymous logout response: %v", err)
++			} else if auth, ok := body["authenticated"].(bool); !ok || auth {
++				t.Errorf("expected authenticated: false, got %v", body["authenticated"])
++			}
++		}
++	}
++
++	// Protected routes: anonymous must be 401
++	protectedPaths := []struct {
++		method string
++		path   string
++	}{
++		{http.MethodGet, "/metrics/"},
++		{http.MethodGet, "/debug/pprof/"},
++		{http.MethodGet, "/api/v1/config/"},
++		{http.MethodPost, "/api/v1/config/reload/"},
++		{http.MethodGet, "/api/v1/health_check/"},
++		{http.MethodGet, "/api/v1/node_metrics/"},
++		{http.MethodGet, "/api/v1/overview"},
++		{http.MethodGet, "/api/v1/version"},
++		{http.MethodGet, "/api/v1/update/check"},
++		{http.MethodPost, "/api/v1/update/apply"},
++		{http.MethodGet, "/api/v1/db/health"},
++		{http.MethodPost, "/api/v1/db/cleanup"},
++		{http.MethodPost, "/api/v1/db/vacuum"},
++		{http.MethodPost, "/api/v1/db/truncate"},
++		{http.MethodPost, "/api/v1/db/reset_stats"},
++		{http.MethodGet, "/ws/logs"},
++	}
++
++	for _, p := range protectedPaths {
++		req := httptest.NewRequest(p.method, p.path, nil)
++		rec := httptest.NewRecorder()
++		s.e.ServeHTTP(rec, req)
++		if rec.Code != http.StatusUnauthorized {
++			t.Errorf("protected path %s %s anonymous: expected 401, got %d", p.method, p.path, rec.Code)
++		}
++	}
++
++	// Protected path with credentials: Bearer and X-Ehco-Token
++	for _, authHeader := range []struct {
++		key   string
++		value string
++	}{
++		{"Authorization", "Bearer mytoken"},
++		{"X-Ehco-Token", "mytoken"},
++	} {
++		reqAuth := httptest.NewRequest(http.MethodGet, "/api/v1/config/", nil)
++		reqAuth.Header.Set(authHeader.key, authHeader.value)
++		recAuth := httptest.NewRecorder()
++		s.e.ServeHTTP(recAuth, reqAuth)
++		if recAuth.Code == http.StatusUnauthorized {
++			t.Errorf("protected path with %s returned 401", authHeader.key)
++		}
++	}
++}
++
++func TestServer_APIGroupMountsBehindAuthAndLogging(t *testing.T) {
++	unregisterTestMetrics()
++	defer unregisterTestMetrics()
++
++	cfg := &config.Config{
++		WebHost:       "127.0.0.1",
++		WebPort:       19003,
++		DashboardPass: "secret",
++		ApiToken:      "token123",
++	}
++	s, err := NewServer(cfg, nil, nil, nil)
++	if err != nil {
++		t.Fatalf("NewServer: %v", err)
++	}
++
++	grp := s.APIGroup()
++	grp.GET("/custom_endpoint", func(c echo.Context) error {
++		return c.String(http.StatusOK, "custom ok")
++	})
++
++	// Anonymous: 401
++	reqAnon := httptest.NewRequest(http.MethodGet, "/api/v1/custom_endpoint", nil)
++	recAnon := httptest.NewRecorder()
++	s.e.ServeHTTP(recAnon, reqAnon)
++	if recAnon.Code != http.StatusUnauthorized {
++		t.Fatalf("expected 401, got %d", recAnon.Code)
++	}
++
++	// With Bearer: 200
++	reqAuth := httptest.NewRequest(http.MethodGet, "/api/v1/custom_endpoint", nil)
++	reqAuth.Header.Set("Authorization", "Bearer token123")
++	recAuth := httptest.NewRecorder()
++	s.e.ServeHTTP(recAuth, reqAuth)
++	if recAuth.Code != http.StatusOK {
++		t.Fatalf("expected 200, got %d body=%s", recAuth.Code, recAuth.Body.String())
++	}
++}
++
++type fakeXrayStatus struct {
++	snap glue.XraySnapshot
++}
++
++func (f *fakeXrayStatus) Snapshot() glue.XraySnapshot {
++	return f.snap
++}
++
++type fakeReloader struct {
++	reloaded atomic.Bool
++}
++
++func (f *fakeReloader) Reload(force bool) error {
++	f.reloaded.Store(true)
++	return nil
++}
++
++func TestServerXraySetters_LateBinding(t *testing.T) {
++	// Zero-value server doesn't panic
++	var zeroS Server
++	zeroS.SetXrayStatus(nil)
++	zeroS.SetXrayReloader(nil)
++	zeroS.SetXrayStatus(&fakeXrayStatus{})
++	zeroS.SetXrayReloader(&fakeReloader{})
++
++	unregisterTestMetrics()
++	defer unregisterTestMetrics()
++
++	cfg := &config.Config{
++		WebHost: "127.0.0.1",
++		WebPort: 19004,
++	}
++	relayReloader := &fakeReloader{}
++	s, err := NewServer(cfg, relayReloader, nil, nil)
++	if err != nil {
++		t.Fatalf("NewServer: %v", err)
++	}
++
++	// Passing nil before setter does not panic
++	s.SetXrayStatus(nil)
++	s.SetXrayReloader(nil)
++
++	// First overview request: no xray
++	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil)
++	rec := httptest.NewRecorder()
++	s.e.ServeHTTP(rec, req)
++	if rec.Code != http.StatusOK {
++		t.Fatalf("expected 200, got %d", rec.Code)
++	}
++	if strings.Contains(rec.Body.String(), `"xray"`) {
++		t.Fatalf("expected xray to be omitted, got %s", rec.Body.String())
++	}
++
++	// Reload before xray reloader: returns 200, only relay reloaded
++	reqReload := httptest.NewRequest(http.MethodPost, "/api/v1/config/reload/", nil)
++	recReload := httptest.NewRecorder()
++	s.e.ServeHTTP(recReload, reqReload)
++	if recReload.Code != http.StatusOK {
++		t.Fatalf("expected 200, got %d", recReload.Code)
++	}
++	time.Sleep(20 * time.Millisecond)
++	if !relayReloader.reloaded.Load() {
++		t.Fatalf("expected relay reloader to be called")
++	}
++
++	// Now set xray status and xray reloader
++	status := &fakeXrayStatus{
++		snap: glue.XraySnapshot{Conns: 42, Users: 10},
++	}
++	s.SetXrayStatus(status)
++
++	xrayReloader := &fakeReloader{}
++	s.SetXrayReloader(xrayReloader)
++
++	// Passing nil afterwards does NOT clear either
++	s.SetXrayStatus(nil)
++	s.SetXrayReloader(nil)
++
++	// Second overview request on same server instance: now has xray
++	rec2 := httptest.NewRecorder()
++	s.e.ServeHTTP(rec2, req)
++	if rec2.Code != http.StatusOK {
++		t.Fatalf("expected 200, got %d", rec2.Code)
++	}
++	var resp OverviewResp
++	if err := json.Unmarshal(rec2.Body.Bytes(), &resp); err != nil {
++		t.Fatalf("unmarshal error: %v", err)
++	}
++	if resp.Xray == nil || resp.Xray.Conns != 42 || resp.Xray.Users != 10 {
++		t.Fatalf("expected xray snapshot (conns=42, users=10), got %+v", resp.Xray)
++	}
++	if resp.Rules != len(cfg.RelayConfigs) {
++		t.Errorf("expected rules %d, got %d", len(cfg.RelayConfigs), resp.Rules)
++	}
++	if !resp.LastReloadAt.Equal(cfg.LastLoadTime()) {
++		t.Errorf("expected LastReloadAt %v, got %v", cfg.LastLoadTime(), resp.LastReloadAt)
++	}
++
++	// Second reload request on same server instance: triggers xray reloader as well
++	relayReloader.reloaded.Store(false)
++	recReload2 := httptest.NewRecorder()
++	s.e.ServeHTTP(recReload2, reqReload)
++	if recReload2.Code != http.StatusOK {
++		t.Fatalf("expected 200, got %d", recReload2.Code)
++	}
++	time.Sleep(50 * time.Millisecond)
++	if !relayReloader.reloaded.Load() {
++		t.Fatalf("expected relay reloader to be called")
++	}
++	if !xrayReloader.reloaded.Load() {
++		t.Fatalf("expected xray reloader to be called after late binding")
++	}
++}
++
++func TestHandleReload_NoReloaderIs400(t *testing.T) {
++	e := echo.New()
++	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/reload/", nil)
++	rec := httptest.NewRecorder()
++	c := e.NewContext(req, rec)
++
++	h := newConfigHandler(&config.Config{}, nil, nil, nil)
++	err := h.HandleReload(c)
++	if err == nil {
++		t.Fatalf("expected error, got nil")
++	}
++	httpErr, ok := err.(*echo.HTTPError)
++	if !ok || httpErr.Code != http.StatusBadRequest {
++		t.Fatalf("expected 400 HTTPError, got %v", err)
++	}
++	if httpErr.Message != "reload not support" {
++		t.Fatalf("expected 'reload not support', got %v", httpErr.Message)
++	}
++}
++
++type blockingReloader struct {
++	blockCh chan struct{}
++	called  chan bool
++}
++
++func (b *blockingReloader) Reload(force bool) error {
++	b.called <- force
++	<-b.blockCh
++	return nil
++}
++
++func TestHandleReload_RespondsBeforeReloadersFinish(t *testing.T) {
++	e := echo.New()
++	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/reload/", nil)
++	rec := httptest.NewRecorder()
++	c := e.NewContext(req, rec)
++
++	relayReloader := &blockingReloader{
++		blockCh: make(chan struct{}),
++		called:  make(chan bool, 1),
++	}
++	xrayReloader := &blockingReloader{
++		blockCh: make(chan struct{}),
++		called:  make(chan bool, 1),
++	}
++
++	holder := newXrayReloaderHolder()
++	holder.Set(xrayReloader)
++
++	h := newConfigHandler(&config.Config{}, relayReloader, holder, nil)
++
++	done := make(chan error, 1)
++	go func() {
++		done <- h.HandleReload(c)
++	}()
++
++	select {
++	case err := <-done:
++		if err != nil {
++			t.Fatalf("HandleReload error: %v", err)
++		}
++		if rec.Body.String() != "reload success" {
++			t.Fatalf("expected 'reload success', got %q", rec.Body.String())
++		}
++	case <-time.After(1 * time.Second):
++		t.Fatal("HandleReload blocked waiting for reloaders")
++	}
++
++	select {
++	case force := <-relayReloader.called:
++		if !force {
++			t.Errorf("expected relay force=true")
++		}
++	case <-time.After(1 * time.Second):
++		t.Fatal("relay Reload was not called")
++	}
++
++	close(relayReloader.blockCh)
++
++	select {
++	case force := <-xrayReloader.called:
++		if !force {
++			t.Errorf("expected xray force=true")
++		}
++	case <-time.After(1 * time.Second):
++		t.Fatal("xray Reload was not called")
++	}
++
++	close(xrayReloader.blockCh)
++}
++
++type fakeRuleSource struct {
++	rules int
++	time  time.Time
++}
++
++func (f *fakeRuleSource) RuleCount() int {
++	return f.rules
++}
++
++func (f *fakeRuleSource) LastReloadTime() time.Time {
++	return f.time
++}
++
++type fakeStatusSource struct {
++	snap glue.XraySnapshot
++	ok   bool
++}
++
++func (f *fakeStatusSource) Snapshot() (glue.XraySnapshot, bool) {
++	return f.snap, f.ok
++}
++
++type fakeNodeQuerier struct {
++	data []ms.NodeMetrics
++	err  error
++	req  *ms.QueryNodeMetricsReq
++}
++
++func (f *fakeNodeQuerier) QueryNodeMetrics(ctx context.Context, req *ms.QueryNodeMetricsReq) (*ms.QueryNodeMetricsResp, error) {
++	f.req = req
++	if f.err != nil {
++		return nil, f.err
++	}
++	return &ms.QueryNodeMetricsResp{Data: f.data}, nil
++}
++
++func TestOverview_SourcesOptional(t *testing.T) {
++	now := time.Now().Truncate(time.Second)
++
++	rules := &fakeRuleSource{rules: 5, time: now}
++	status := &fakeStatusSource{snap: glue.XraySnapshot{Conns: 12}, ok: true}
++	metrics := &fakeNodeQuerier{data: []ms.NodeMetrics{{CPUUsage: 25.5}}}
++
++	cases := []struct {
++		name        string
++		ruleSrc     RuleSource
++		statusSrc   StatusSource
++		metricSrc   NodeMetricsQuerier
++		expectRules int
++		hasXray     bool
++		hasHost     bool
++	}{
++		{"all nil", nil, nil, nil, 0, false, false},
++		{"rules only", rules, nil, nil, 5, false, false},
++		{"status only", nil, status, nil, 0, true, false},
++		{"metrics only", nil, nil, metrics, 0, false, true},
++		{"rules + status", rules, status, nil, 5, true, false},
++		{"rules + metrics", rules, nil, metrics, 5, false, true},
++		{"all three present", rules, status, metrics, 5, true, true},
++	}
++
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			h := newOverviewHandler(tc.ruleSrc, tc.statusSrc, tc.metricSrc)
++			e := echo.New()
++			req := httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil)
++			rec := httptest.NewRecorder()
++			c := e.NewContext(req, rec)
++
++			if err := h.Overview(c); err != nil {
++				t.Fatalf("Overview: %v", err)
++			}
++			if rec.Code != http.StatusOK {
++				t.Fatalf("expected 200, got %d", rec.Code)
++			}
++
++			body := rec.Body.String()
++			// Must never contain null for xray or host
++			if strings.Contains(body, `"xray":null`) {
++				t.Errorf("xray is null in %s", body)
++			}
++			if strings.Contains(body, `"host":null`) {
++				t.Errorf("host is null in %s", body)
++			}
++
++			// last_reload_at is always serialized
++			if !strings.Contains(body, `"last_reload_at"`) {
++				t.Errorf("last_reload_at missing in %s", body)
++			}
++
++			var resp OverviewResp
++			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
++				t.Fatalf("unmarshal OverviewResp: %v", err)
++			}
++
++			// rules count must match expectation
++			if resp.Rules != tc.expectRules {
++				t.Errorf("expected rules %d, got %d", tc.expectRules, resp.Rules)
++			}
++
++			// last_reload_at must equal LastReloadTime() when ruleSrc is present, or zero when absent
++			if tc.ruleSrc != nil {
++				expectedTime := tc.ruleSrc.LastReloadTime()
++				if !resp.LastReloadAt.Equal(expectedTime) {
++					t.Errorf("expected LastReloadAt %v, got %v", expectedTime, resp.LastReloadAt)
++				}
++			} else {
++				if !resp.LastReloadAt.IsZero() {
++					t.Errorf("expected zero LastReloadAt when ruleSrc is nil, got %v", resp.LastReloadAt)
++				}
++			}
++
++			if tc.hasXray != (resp.Xray != nil) {
++				t.Errorf("xray presence mismatch: expected %v, got %v", tc.hasXray, resp.Xray != nil)
++			}
++			if tc.hasHost != (resp.Host != nil) {
++				t.Errorf("host presence mismatch: expected %v, got %v", tc.hasHost, resp.Host != nil)
++			}
++		})
++	}
++
++	// Verify host query params
++	querier := &fakeNodeQuerier{data: []ms.NodeMetrics{{CPUUsage: 10}}}
++	h := newOverviewHandler(nil, nil, querier)
++	e := echo.New()
++	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil)
++	rec := httptest.NewRecorder()
++	c := e.NewContext(req, rec)
++	_ = h.Overview(c)
++	if querier.req == nil {
++		t.Fatal("QueryNodeMetrics was not called")
++	}
++	if querier.req.Num != 1 {
++		t.Errorf("expected Num=1, got %d", querier.req.Num)
++	}
++	diff := querier.req.EndTimestamp - querier.req.StartTimestamp
++	if diff != 300 {
++		t.Errorf("expected 300s window, got %d", diff)
++	}
++}
++
++func TestConfigRuleSource(t *testing.T) {
++	// 1. nil configRuleSource
++	var nilSrc *configRuleSource
++	if nilSrc.RuleCount() != 0 {
++		t.Errorf("expected 0 rules for nil source, got %d", nilSrc.RuleCount())
++	}
++	if !nilSrc.LastReloadTime().IsZero() {
++		t.Errorf("expected zero time for nil source, got %v", nilSrc.LastReloadTime())
++	}
++
++	// 2. configRuleSource with nil Config
++	srcWithNilCfg := newConfigRuleSource(nil)
++	if srcWithNilCfg.RuleCount() != 0 {
++		t.Errorf("expected 0 rules for nil cfg, got %d", srcWithNilCfg.RuleCount())
++	}
++	if !srcWithNilCfg.LastReloadTime().IsZero() {
++		t.Errorf("expected zero time for nil cfg, got %v", srcWithNilCfg.LastReloadTime())
++	}
++
++	// 3. configRuleSource with initialized Config
++	tmpDir := t.TempDir()
++	cfgPath := filepath.Join(tmpDir, "config.json")
++	if err := os.WriteFile(cfgPath, []byte(`{"relay_configs":[{"listen":"127.0.0.1:1000","listen_type":"raw","transport_type":"raw"},{"listen":"127.0.0.1:1001","listen_type":"raw","transport_type":"raw"}]}`), 0644); err != nil {
++		t.Fatalf("write temp config: %v", err)
++	}
++	cfg := config.NewConfig(cfgPath)
++	if err := cfg.LoadConfig(true); err != nil {
++		t.Fatalf("load config: %v", err)
++	}
++
++	src := newConfigRuleSource(cfg)
++	if src.RuleCount() != 2 {
++		t.Errorf("expected 2 rules, got %d", src.RuleCount())
++	}
++	if src.LastReloadTime().IsZero() {
++		t.Fatal("expected non-zero LastReloadTime after LoadConfig")
++	}
++	if !src.LastReloadTime().Equal(cfg.LastLoadTime()) {
++		t.Errorf("expected LastReloadTime %v to match cfg.LastLoadTime %v", src.LastReloadTime(), cfg.LastLoadTime())
++	}
++
++	// Overview handler using this configRuleSource
++	h := newOverviewHandler(src, nil, nil)
++	e := echo.New()
++	req := httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil)
++	rec := httptest.NewRecorder()
++	c := e.NewContext(req, rec)
++	if err := h.Overview(c); err != nil {
++		t.Fatalf("Overview: %v", err)
++	}
++	var resp OverviewResp
++	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
++		t.Fatalf("unmarshal OverviewResp: %v", err)
++	}
++	if resp.Rules != 2 {
++		t.Errorf("expected 2 rules in overview, got %d", resp.Rules)
++	}
++	if !resp.LastReloadAt.Equal(cfg.LastLoadTime()) {
++		t.Errorf("expected overview LastReloadAt %v to match cfg.LastLoadTime %v", resp.LastReloadAt, cfg.LastLoadTime())
++	}
++}
++
++func TestNodeMetrics_QueryParams(t *testing.T) {
++	now := time.Now().Unix()
++
++	cases := []struct {
++		name       string
++		query      string
++		mockErr    error
++		expectCode int
++		verifyReq  func(t *testing.T, req *ms.QueryNodeMetricsReq)
++	}{
++		{
++			name:       "default params (60s window)",
++			query:      "",
++			expectCode: http.StatusOK,
++			verifyReq: func(t *testing.T, req *ms.QueryNodeMetricsReq) {
++				diff := req.EndTimestamp - req.StartTimestamp
++				if diff != defaultTimeRange {
++					t.Errorf("expected %d range, got %d", defaultTimeRange, diff)
++				}
++				if req.Num != -1 {
++					t.Errorf("expected Num=-1, got %d", req.Num)
++				}
++				if req.Step != 0 {
++					t.Errorf("expected step=0, got %d", req.Step)
++				}
++			},
++		},
++		{
++			name:       "explicit timestamps",
++			query:      fmt.Sprintf("?start_ts=%d&end_ts=%d", now-100, now),
++			expectCode: http.StatusOK,
++			verifyReq: func(t *testing.T, req *ms.QueryNodeMetricsReq) {
++				if req.StartTimestamp != now-100 || req.EndTimestamp != now {
++					t.Errorf("unexpected range: %d to %d", req.StartTimestamp, req.EndTimestamp)
++				}
++			},
++		},
++		{
++			name:       "latest=true sets Num=1",
++			query:      "?latest=true",
++			expectCode: http.StatusOK,
++			verifyReq: func(t *testing.T, req *ms.QueryNodeMetricsReq) {
++				if req.Num != 1 {
++					t.Errorf("expected Num=1, got %d", req.Num)
++				}
++			},
++		},
++		{
++			name:       "step > 0 passed through",
++			query:      "?step=15",
++			expectCode: http.StatusOK,
++			verifyReq: func(t *testing.T, req *ms.QueryNodeMetricsReq) {
++				if req.Step != 15 {
++					t.Errorf("expected Step=15, got %d", req.Step)
++				}
++			},
++		},
++		{
++			name:       "invalid time range start >= end returns 400",
++			query:      fmt.Sprintf("?start_ts=%d&end_ts=%d", now+100, now),
++			expectCode: http.StatusBadRequest,
++		},
++		{
++			name:       "querier error returns 500",
++			query:      "",
++			mockErr:    errors.New("db error"),
++			expectCode: http.StatusInternalServerError,
++		},
++	}
++
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			q := &fakeNodeQuerier{err: tc.mockErr}
++			h := newNodeMetricsHandler(q)
++			e := echo.New()
++			req := httptest.NewRequest(http.MethodGet, "/api/v1/node_metrics/"+tc.query, nil)
++			rec := httptest.NewRecorder()
++			c := e.NewContext(req, rec)
++
++			err := h.GetNodeMetrics(c)
++			if tc.expectCode >= 400 {
++				if err == nil {
++					t.Fatalf("expected error, got nil")
++				}
++				httpErr, ok := err.(*echo.HTTPError)
++				if !ok || httpErr.Code != tc.expectCode {
++					t.Fatalf("expected code %d, got %v", tc.expectCode, err)
++				}
++			} else {
++				if err != nil {
++					t.Fatalf("unexpected error: %v", err)
++				}
++				if rec.Code != tc.expectCode {
++					t.Fatalf("expected code %d, got %d", tc.expectCode, rec.Code)
++				}
++				if tc.verifyReq != nil {
++					tc.verifyReq(t, q.req)
++				}
++			}
++		})
++	}
++}
++
++type fakeDBStore struct {
++	healthErr   error
++	cleanupErr  error
++	vacuumErr   error
++	truncateErr error
++	resetErr    error
++}
++
++func (f *fakeDBStore) DBHealth(ctx context.Context) (*ms.DBHealth, error) {
++	if f.healthErr != nil {
++		return nil, f.healthErr
++	}
++	return &ms.DBHealth{FileBytes: 1024}, nil
++}
++
++func (f *fakeDBStore) DBCleanup(ctx context.Context, days int) (*ms.MaintenanceResult, error) {
++	if f.cleanupErr != nil {
++		return nil, f.cleanupErr
++	}
++	return &ms.MaintenanceResult{DurationMs: 10}, nil
++}
++
++func (f *fakeDBStore) DBVacuum(ctx context.Context) (*ms.MaintenanceResult, error) {
++	if f.vacuumErr != nil {
++		return nil, f.vacuumErr
++	}
++	return &ms.MaintenanceResult{DurationMs: 10}, nil
++}
++
++func (f *fakeDBStore) DBTruncate(ctx context.Context, confirm string) (*ms.MaintenanceResult, error) {
++	if f.truncateErr != nil {
++		return nil, f.truncateErr
++	}
++	return &ms.MaintenanceResult{DurationMs: 10}, nil
++}
++
++func (f *fakeDBStore) DBResetStats() error {
++	return f.resetErr
++}
++
++func TestDB_ErrorMappingAndReset(t *testing.T) {
++	e := echo.New()
++
++	// 1. ErrMetricsDisabled -> 503
++	store503 := &fakeDBStore{healthErr: cmgr.ErrMetricsDisabled}
++	h503 := newDBHandler(store503)
++	req := httptest.NewRequest(http.MethodGet, "/api/v1/db/health", nil)
++	rec := httptest.NewRecorder()
++	c := e.NewContext(req, rec)
++	err := h503.GetDBHealth(c)
++	if err == nil {
++		t.Fatal("expected 503 error, got nil")
++	}
++	httpErr, ok := err.(*echo.HTTPError)
++	if !ok || httpErr.Code != http.StatusServiceUnavailable {
++		t.Fatalf("expected 503, got %v", err)
++	}
++
++	// 2. ErrTruncateNotConfirmed -> 400
++	store400 := &fakeDBStore{truncateErr: ms.ErrTruncateNotConfirmed}
++	h400 := newDBHandler(store400)
++	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/db/truncate", strings.NewReader(`{"confirm":"wrong"}`))
++	req2.Header.Set("Content-Type", "application/json")
++	rec2 := httptest.NewRecorder()
++	c2 := e.NewContext(req2, rec2)
++	err2 := h400.PostDBTruncate(c2)
++	if err2 == nil {
++		t.Fatal("expected 400 error, got nil")
++	}
++	httpErr2, ok := err2.(*echo.HTTPError)
++	if !ok || httpErr2.Code != http.StatusBadRequest {
++		t.Fatalf("expected 400, got %v", err2)
++	}
++
++	// 3. Generic error -> 500
++	store500 := &fakeDBStore{vacuumErr: errors.New("vacuum failed")}
++	h500 := newDBHandler(store500)
++	req3 := httptest.NewRequest(http.MethodPost, "/api/v1/db/vacuum", nil)
++	rec3 := httptest.NewRecorder()
++	c3 := e.NewContext(req3, rec3)
++	err3 := h500.PostDBVacuum(c3)
++	if err3 == nil {
++		t.Fatal("expected 500 error, got nil")
++	}
++	httpErr3, ok := err3.(*echo.HTTPError)
++	if !ok || httpErr3.Code != http.StatusInternalServerError {
++		t.Fatalf("expected 500, got %v", err3)
++	}
++
++	// 4. Reset stats success -> 204 NoContent with empty body
++	store204 := &fakeDBStore{}
++	h204 := newDBHandler(store204)
++	req4 := httptest.NewRequest(http.MethodPost, "/api/v1/db/reset_stats", nil)
++	rec4 := httptest.NewRecorder()
++	c4 := e.NewContext(req4, rec4)
++	err4 := h204.PostDBResetStats(c4)
++	if err4 != nil {
++		t.Fatalf("unexpected error: %v", err4)
++	}
++	if rec4.Code != http.StatusNoContent {
++		t.Fatalf("expected 204, got %d", rec4.Code)
++	}
++	if rec4.Body.Len() != 0 {
++		t.Fatalf("expected empty body, got %s", rec4.Body.String())
++	}
++}
++
++func TestHandleLogin_Outcomes(t *testing.T) {
++	e := echo.New()
++
++	// 1. Neither DashboardPass nor ApiToken configured: 200 authenticated: true, no session issued
++	authOpen := newAuthenticator(&config.Config{})
++	reqOpen := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"password":"any"}`))
++	reqOpen.Header.Set("Content-Type", "application/json")
++	recOpen := httptest.NewRecorder()
++	cOpen := e.NewContext(reqOpen, recOpen)
++	if err := authOpen.HandleLogin(cOpen); err != nil {
++		t.Fatalf("HandleLogin open: %v", err)
++	}
++	if recOpen.Code != http.StatusOK {
++		t.Fatalf("expected 200, got %d", recOpen.Code)
++	}
++	if !strings.Contains(recOpen.Body.String(), `"authenticated":true`) {
++		t.Fatalf("expected authenticated:true in %s", recOpen.Body.String())
++	}
++	if len(recOpen.Result().Cookies()) != 0 {
++		t.Fatal("open dashboard should not issue cookies")
++	}
++
++	// 2. Only ApiToken set (machine only): 403 Forbidden
++	authMachineOnly := newAuthenticator(&config.Config{ApiToken: "some-token"})
++	reqMachine := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"password":"any"}`))
++	reqMachine.Header.Set("Content-Type", "application/json")
++	recMachine := httptest.NewRecorder()
++	cMachine := e.NewContext(reqMachine, recMachine)
++	errMachine := authMachineOnly.HandleLogin(cMachine)
++	if errMachine == nil {
++		t.Fatal("expected 403, got nil")
++	}
++	httpErrM, ok := errMachine.(*echo.HTTPError)
++	if !ok || httpErrM.Code != http.StatusForbidden {
++		t.Fatalf("expected 403, got %v", errMachine)
++	}
++
++	// 3. Malformed JSON body: 400 Bad Request
++	authPass := newAuthenticator(&config.Config{DashboardPass: "correct-pass"})
++	reqBadJSON := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`invalid json`))
++	reqBadJSON.Header.Set("Content-Type", "application/json")
++	recBadJSON := httptest.NewRecorder()
++	cBadJSON := e.NewContext(reqBadJSON, recBadJSON)
++	errBadJSON := authPass.HandleLogin(cBadJSON)
++	if errBadJSON == nil {
++		t.Fatal("expected 400, got nil")
++	}
++	httpErrBad, ok := errBadJSON.(*echo.HTTPError)
++	if !ok || httpErrBad.Code != http.StatusBadRequest {
++		t.Fatalf("expected 400, got %v", errBadJSON)
++	}
++
++	// 4. Wrong password: 401 Unauthorized
++	reqWrong := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"password":"wrong-pass"}`))
++	reqWrong.Header.Set("Content-Type", "application/json")
++	recWrong := httptest.NewRecorder()
++	cWrong := e.NewContext(reqWrong, recWrong)
++	errWrong := authPass.HandleLogin(cWrong)
++	if errWrong == nil {
++		t.Fatal("expected 401, got nil")
++	}
++	httpErrWrong, ok := errWrong.(*echo.HTTPError)
++	if !ok || httpErrWrong.Code != http.StatusUnauthorized {
++		t.Fatalf("expected 401, got %v", errWrong)
++	}
++
++	// 5. Correct password: 200 + sets session cookie
++	reqCorrect := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"password":"correct-pass"}`))
++	reqCorrect.Header.Set("Content-Type", "application/json")
++	recCorrect := httptest.NewRecorder()
++	cCorrect := e.NewContext(reqCorrect, recCorrect)
++	if err := authPass.HandleLogin(cCorrect); err != nil {
++		t.Fatalf("expected success, got %v", err)
++	}
++	if recCorrect.Code != http.StatusOK {
++		t.Fatalf("expected 200, got %d", recCorrect.Code)
++	}
++	cookies := recCorrect.Result().Cookies()
++	var sidCookie *http.Cookie
++	for _, ck := range cookies {
++		if ck.Name == sessionCookieName {
++			sidCookie = ck
++		}
++	}
++	if sidCookie == nil || sidCookie.Value == "" {
++		t.Fatal("session cookie was not issued")
++	}
++
++	// 6. Logout: clears cookie and revokes session
++	reqLogout := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
++	reqLogout.AddCookie(sidCookie)
++	recLogout := httptest.NewRecorder()
++	cLogout := e.NewContext(reqLogout, recLogout)
++	if err := authPass.HandleLogout(cLogout); err != nil {
++		t.Fatalf("logout failed: %v", err)
++	}
++	if recLogout.Code != http.StatusOK {
++		t.Fatalf("expected 200, got %d", recLogout.Code)
++	}
++	var logoutBody map[string]any
++	if err := json.Unmarshal(recLogout.Body.Bytes(), &logoutBody); err != nil {
++		t.Fatalf("unmarshal logout body: %v", err)
++	}
++	if authVal, ok := logoutBody["authenticated"].(bool); !ok || authVal {
++		t.Fatalf("expected authenticated: false, got %v", logoutBody["authenticated"])
++	}
++	logoutCookies := recLogout.Result().Cookies()
++	var clearedCookie *http.Cookie
++	for _, ck := range logoutCookies {
++		if ck.Name == sessionCookieName {
++			clearedCookie = ck
++		}
++	}
++	if clearedCookie == nil || clearedCookie.MaxAge >= 0 {
++		t.Fatal("cookie was not cleared on logout")
++	}
++	// Session in store should now be revoked
++	if ok, _ := authPass.sessions.validate(sidCookie.Value); ok {
++		t.Fatal("session was not revoked on logout")
++	}
++
++	// 7. Logout when already unauthenticated (no cookie at all): idempotent 200, authenticated: false
++	reqLogoutUnauth := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
++	recLogoutUnauth := httptest.NewRecorder()
++	cLogoutUnauth := e.NewContext(reqLogoutUnauth, recLogoutUnauth)
++	if err := authPass.HandleLogout(cLogoutUnauth); err != nil {
++		t.Fatalf("logout when already unauthenticated failed: %v", err)
++	}
++	if recLogoutUnauth.Code != http.StatusOK {
++		t.Fatalf("expected 200 on unauthenticated logout, got %d", recLogoutUnauth.Code)
++	}
++	var unauthBody map[string]any
++	if err := json.Unmarshal(recLogoutUnauth.Body.Bytes(), &unauthBody); err != nil {
++		t.Fatalf("unmarshal unauthenticated logout: %v", err)
++	}
++	if authVal, ok := unauthBody["authenticated"].(bool); !ok || authVal {
++		t.Fatalf("expected authenticated: false, got %v", unauthBody["authenticated"])
++	}
++
++	// 8. Logout with stale/invalid session cookie: idempotent 200, authenticated: false, clears cookie
++	reqLogoutInvalid := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
++	reqLogoutInvalid.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "non-existent-sid"})
++	recLogoutInvalid := httptest.NewRecorder()
++	cLogoutInvalid := e.NewContext(reqLogoutInvalid, recLogoutInvalid)
++	if err := authPass.HandleLogout(cLogoutInvalid); err != nil {
++		t.Fatalf("logout with invalid cookie failed: %v", err)
++	}
++	if recLogoutInvalid.Code != http.StatusOK {
++		t.Fatalf("expected 200 on invalid cookie logout, got %d", recLogoutInvalid.Code)
++	}
++	var invalidBody map[string]any
++	if err := json.Unmarshal(recLogoutInvalid.Body.Bytes(), &invalidBody); err != nil {
++		t.Fatalf("unmarshal invalid cookie logout: %v", err)
++	}
++	if authVal, ok := invalidBody["authenticated"].(bool); !ok || authVal {
++		t.Fatalf("expected authenticated: false, got %v", invalidBody["authenticated"])
++	}
++}
++
++func TestHandleLogout_IdempotentAndUnauthenticated(t *testing.T) {
++	e := echo.New()
++
++	// 1. Password-protected setup
++	cfgPass := &config.Config{DashboardPass: "admin123"}
++	authPass := newAuthenticator(cfgPass)
++
++	sid, exp, err := authPass.sessions.issue()
++	if err != nil {
++		t.Fatalf("issue session: %v", err)
++	}
++
++	// Active session logout: 200, authenticated: false, cookie cleared, session revoked
++	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
++	req1.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sid, Expires: exp})
++	rec1 := httptest.NewRecorder()
++	c1 := e.NewContext(req1, rec1)
++	if err := authPass.HandleLogout(c1); err != nil {
++		t.Fatalf("HandleLogout: %v", err)
++	}
++	if rec1.Code != http.StatusOK {
++		t.Errorf("expected 200, got %d", rec1.Code)
++	}
++	var body1 map[string]any
++	if err := json.Unmarshal(rec1.Body.Bytes(), &body1); err != nil {
++		t.Fatalf("unmarshal: %v", err)
++	}
++	if auth, ok := body1["authenticated"].(bool); !ok || auth {
++		t.Errorf("expected authenticated: false, got %v", body1["authenticated"])
++	}
++	if valid, _ := authPass.sessions.validate(sid); valid {
++		t.Error("session was not revoked after logout")
++	}
++
++	// Repeated logout on already-logged-out state (no cookies at all): idempotent 200, authenticated: false
++	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
++	rec2 := httptest.NewRecorder()
++	c2 := e.NewContext(req2, rec2)
++	if err := authPass.HandleLogout(c2); err != nil {
++		t.Fatalf("HandleLogout (already logged out): %v", err)
++	}
++	if rec2.Code != http.StatusOK {
++		t.Errorf("expected 200 on unauthenticated logout, got %d", rec2.Code)
++	}
++	var body2 map[string]any
++	if err := json.Unmarshal(rec2.Body.Bytes(), &body2); err != nil {
++		t.Fatalf("unmarshal: %v", err)
++	}
++	if auth, ok := body2["authenticated"].(bool); !ok || auth {
++		t.Errorf("expected authenticated: false, got %v", body2["authenticated"])
++	}
++
++	// Logout with invalid / non-existent session cookie: idempotent 200, authenticated: false
++	req3 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
++	req3.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "invalid-token-12345"})
++	rec3 := httptest.NewRecorder()
++	c3 := e.NewContext(req3, rec3)
++	if err := authPass.HandleLogout(c3); err != nil {
++		t.Fatalf("HandleLogout (invalid cookie): %v", err)
++	}
++	if rec3.Code != http.StatusOK {
++		t.Errorf("expected 200 on invalid cookie logout, got %d", rec3.Code)
++	}
++	var body3 map[string]any
++	if err := json.Unmarshal(rec3.Body.Bytes(), &body3); err != nil {
++		t.Fatalf("unmarshal: %v", err)
++	}
++	if auth, ok := body3["authenticated"].(bool); !ok || auth {
++		t.Errorf("expected authenticated: false, got %v", body3["authenticated"])
++	}
++
++	// 2. Auth disabled setup (no pass, no token): logout still returns 200 with authenticated: false
++	cfgNoAuth := &config.Config{}
++	authNoAuth := newAuthenticator(cfgNoAuth)
++	reqNoAuth := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
++	recNoAuth := httptest.NewRecorder()
++	cNoAuth := e.NewContext(reqNoAuth, recNoAuth)
++	if err := authNoAuth.HandleLogout(cNoAuth); err != nil {
++		t.Fatalf("HandleLogout (no auth): %v", err)
++	}
++	if recNoAuth.Code != http.StatusOK {
++		t.Errorf("expected 200 on no-auth logout, got %d", recNoAuth.Code)
++	}
++	var bodyNoAuth map[string]any
++	if err := json.Unmarshal(recNoAuth.Body.Bytes(), &bodyNoAuth); err != nil {
++		t.Fatalf("unmarshal: %v", err)
++	}
++	if auth, ok := bodyNoAuth["authenticated"].(bool); !ok || auth {
++		t.Errorf("expected authenticated: false, got %v", bodyNoAuth["authenticated"])
++	}
++}
++
++func TestSessionStore_ExpiryPruneAndSlide(t *testing.T) {
++	store := newSessionStore()
++	sid, exp, err := store.issue()
++	if err != nil {
++		t.Fatalf("issue: %v", err)
++	}
++
++	// Validate fresh session: returns true and slides expiry
++	ok, newExp := store.validate(sid)
++	if !ok {
++		t.Fatal("expected validate to be true")
++	}
++	if newExp.Before(exp) {
++		t.Fatalf("expected slide forward, got %v < %v", newExp, exp)
++	}
++
++	// Artificially expire the session
++	store.mu.Lock()
++	store.sessions[sid] = time.Now().Add(-1 * time.Hour)
++	store.mu.Unlock()
++
++	// Validate expired session: should return false and prune entry
++	ok, _ = store.validate(sid)
++	if ok {
++		t.Fatal("expected expired session to validate false")
++	}
++	store.mu.Lock()
++	_, exists := store.sessions[sid]
++	store.mu.Unlock()
++	if exists {
++		t.Fatal("expected expired session to be pruned from sessions map")
++	}
++}
++
++func TestLogStream_UpgradeAndBroadcast(t *testing.T) {
++	_ = log.InitGlobalLogger("info")
++
++	e := echo.New()
++	wsH := newLogStreamHandler(nil)
++	e.GET("/ws/logs", wsH.HandleWebSocketLogs)
++
++	ts := httptest.NewServer(e)
++	defer ts.Close()
++
++	// Connect two WebSocket clients to test fan-out and unregistration on close
++	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/logs"
++	conn1, _, _, err := ws.DefaultDialer.Dial(context.Background(), wsURL)
++	if err != nil {
++		t.Fatalf("ws dial conn1: %v", err)
++	}
++	defer conn1.Close()
++
++	conn2, _, _, err := ws.DefaultDialer.Dial(context.Background(), wsURL)
++	if err != nil {
++		t.Fatalf("ws dial conn2: %v", err)
++	}
++	defer conn2.Close()
++
++	// Broadcast first log message: both clients should receive it
++	msg1 := "fanout log message 1"
++	zap.L().Info(msg1)
++
++	readData1, op1, err := wsutil.ReadServerData(conn1)
++	if err != nil {
++		t.Fatalf("conn1 read failed: %v", err)
++	}
++	if op1 != ws.OpText || !strings.Contains(string(readData1), msg1) {
++		t.Errorf("conn1 expected %q, got %q", msg1, string(readData1))
++	}
++
++	readData2, op2, err := wsutil.ReadServerData(conn2)
++	if err != nil {
++		t.Fatalf("conn2 read failed: %v", err)
++	}
++	if op2 != ws.OpText || !strings.Contains(string(readData2), msg1) {
++		t.Errorf("conn2 expected %q, got %q", msg1, string(readData2))
++	}
++
++	// Close conn1 to trigger unregistration in HandleWebSocketLogs (defer RemoveWebSocketConn)
++	_ = conn1.Close()
++	time.Sleep(50 * time.Millisecond)
++
++	// Broadcast second log message: conn2 must continue to receive it without stalling
++	msg2 := "fanout log message 2"
++	zap.L().Info(msg2)
++
++	readData2Next, op2Next, err := wsutil.ReadServerData(conn2)
++	if err != nil {
++		t.Fatalf("conn2 second read failed after conn1 closed: %v", err)
++	}
++	if op2Next != ws.OpText || !strings.Contains(string(readData2Next), msg2) {
++		t.Errorf("conn2 expected %q, got %q", msg2, string(readData2Next))
++	}
++}
++
++func TestLogStream_FanoutDeadConnRemoval(t *testing.T) {
++	syncher := log.NewWebSocketLogSyncher()
++
++	// Create 2 TCP loopback pairs to simulate 2 connected clients
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatalf("listen: %v", err)
++	}
++	defer ln.Close()
++
++	c1, err := net.Dial("tcp", ln.Addr().String())
++	if err != nil {
++		t.Fatalf("dial c1: %v", err)
++	}
++	s1, err := ln.Accept()
++	if err != nil {
++		t.Fatalf("accept s1: %v", err)
++	}
++
++	c2, err := net.Dial("tcp", ln.Addr().String())
++	if err != nil {
++		t.Fatalf("dial c2: %v", err)
++	}
++	s2, err := ln.Accept()
++	if err != nil {
++		t.Fatalf("accept s2: %v", err)
++	}
++
++	syncher.AddConn(s1)
++	syncher.AddConn(s2)
++
++	// Force s1 to fail on write: set linger 0 and close client c1, and close s1
++	if tcpC1, ok := c1.(*net.TCPConn); ok {
++		_ = tcpC1.SetLinger(0)
++	}
++	_ = c1.Close()
++	_ = s1.Close()
++
++	// Write log frame through syncher
++	logEntry := []byte(`{"msg":"surviving client log"}`)
++	n, err := syncher.Write(logEntry)
++	if err != nil {
++		t.Fatalf("syncher.Write error: %v", err)
++	}
++	if n != len(logEntry) {
++		t.Errorf("expected n=%d, got %d", len(logEntry), n)
++	}
++
++	// c2 should receive the frame despite s1 failing
++	_ = c2.SetReadDeadline(time.Now().Add(1 * time.Second))
++	data, op, err := wsutil.ReadServerData(c2)
++	if err != nil {
++		t.Fatalf("c2 failed reading frame: %v", err)
++	}
++	if op != ws.OpText {
++		t.Errorf("expected OpText, got %v", op)
++	}
++	if !strings.Contains(string(data), "surviving client log") {
++		t.Errorf("expected frame to contain log message, got %s", string(data))
++	}
++
++	// Remove c2 via RemoveConn
++	syncher.RemoveConn(s2)
++	_ = c2.Close()
++	_ = s2.Close()
++
++	// Writing when no connections are active should succeed cleanly
++	if _, err := syncher.Write(logEntry); err != nil {
++		t.Errorf("write with zero conns error: %v", err)
++	}
++
++	// Test global AddWebSocketConn and RemoveWebSocketConn helpers
++	s3, c3 := net.Pipe()
++	log.AddWebSocketConn(s3)
++	log.RemoveWebSocketConn(s3)
++	_ = s3.Close()
++	_ = c3.Close()
++}
++
++func TestSPAHandler_FallbackBoundary(t *testing.T) {
++	e := echo.New()
++	e.GET("/assets/*", assetHandler())
++	e.GET("/favicon.ico", assetHandler())
++	e.GET("/", spaHandler())
++	e.GET("/*", spaHandler())
++
++	// 1. Reserved prefixes get 404
++	for _, p := range []string{"/api/nope", "/ws/nope", "/metrics/nope", "/debug/nope"} {
++		req := httptest.NewRequest(http.MethodGet, p, nil)
++		rec := httptest.NewRecorder()
++		e.ServeHTTP(rec, req)
++		if rec.Code != http.StatusNotFound {
++			t.Errorf("prefix %s expected 404, got %d", p, rec.Code)
++		}
++	}
++
++	// 2. Missing file under /assets/* gets 404
++	reqAsset := httptest.NewRequest(http.MethodGet, "/assets/missing-asset-file.css", nil)
++	recAsset := httptest.NewRecorder()
++	e.ServeHTTP(recAsset, reqAsset)
++	if recAsset.Code != http.StatusNotFound {
++		t.Errorf("missing asset expected 404, got %d", recAsset.Code)
++	}
++
++	// 3. Fallback client-side route gets SPA shell
++	reqSPA := httptest.NewRequest(http.MethodGet, "/some/random/route", nil)
++	recSPA := httptest.NewRecorder()
++	e.ServeHTTP(recSPA, reqSPA)
++	if recSPA.Code != http.StatusOK {
++		t.Errorf("SPA route expected 200, got %d", recSPA.Code)
++	}
++	if !strings.Contains(recSPA.Body.String(), "<!DOCTYPE html>") && !strings.Contains(recSPA.Body.String(), "<html") {
++		t.Errorf("expected HTML SPA shell, got %s", recSPA.Body.String())
++	}
++	if recSPA.Header().Get("Cache-Control") != "no-store" {
++		t.Errorf("expected Cache-Control: no-store, got %s", recSPA.Header().Get("Cache-Control"))
++	}
++}
++
++func TestNewServer_Validation(t *testing.T) {
++	cases := []struct {
++		name string
++		cfg  *config.Config
++	}{
++		{"nil config", nil},
++		{"port 0", &config.Config{WebPort: 0}},
++		{"negative port", &config.Config{WebPort: -1}},
++		{"port 65536", &config.Config{WebPort: 65536}},
++		{"port 70000", &config.Config{WebPort: 70000}},
++	}
++
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			s, err := NewServer(tc.cfg, nil, nil, nil)
++			if err == nil {
++				t.Fatalf("expected error for %s, got nil server=%v", tc.name, s)
++			}
++			if s != nil {
++				t.Fatalf("expected nil server on error, got %v", s)
++			}
++		})
++	}
++}
++
++func TestServer_StartStop_And_SettersAfterStart(t *testing.T) {
++	unregisterTestMetrics()
++	defer unregisterTestMetrics()
++
++	l, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatalf("listen: %v", err)
++	}
++	port := l.Addr().(*net.TCPAddr).Port
++	_ = l.Close()
++
++	cfg := &config.Config{
++		WebHost: "127.0.0.1",
++		WebPort: port,
++	}
++	relayReloader := &fakeReloader{}
++	s, err := NewServer(cfg, relayReloader, nil, nil)
++	if err != nil {
++		t.Fatalf("NewServer: %v", err)
++	}
++
++	go func() {
++		_ = s.Start()
++	}()
++
++	addr := fmt.Sprintf("127.0.0.1:%d", port)
++	for i := 0; i < 50; i++ {
++		time.Sleep(20 * time.Millisecond)
++		conn, dialErr := net.DialTimeout("tcp", addr, 100*time.Millisecond)
++		if dialErr == nil {
++			_ = conn.Close()
++			break
++		}
++	}
++
++	// Call setters AFTER start
++	status := &fakeXrayStatus{
++		snap: glue.XraySnapshot{Conns: 99, Users: 15},
++	}
++	s.SetXrayStatus(status)
++	xrayReloader := &fakeReloader{}
++	s.SetXrayReloader(xrayReloader)
++	// Passing nil does not overwrite
++	s.SetXrayStatus(nil)
++	s.SetXrayReloader(nil)
++
++	// Verify overview returns injected status
++	httpResp, err := http.Get(fmt.Sprintf("http://%s/api/v1/overview", addr))
++	if err != nil {
++		t.Fatalf("GET overview: %v", err)
++	}
++	var ov OverviewResp
++	if err := json.NewDecoder(httpResp.Body).Decode(&ov); err != nil {
++		t.Fatalf("decode overview: %v", err)
++	}
++	_ = httpResp.Body.Close()
++	if ov.Xray == nil || ov.Xray.Conns != 99 || ov.Xray.Users != 15 {
++		t.Fatalf("expected xray snapshot (conns=99, users=15), got %+v", ov.Xray)
++	}
++
++	// Verify reload triggers xrayReloader
++	postResp, err := http.Post(fmt.Sprintf("http://%s/api/v1/config/reload/", addr), "application/json", nil)
++	if err != nil {
++		t.Fatalf("POST reload: %v", err)
++	}
++	_ = postResp.Body.Close()
++	time.Sleep(50 * time.Millisecond)
++	if !xrayReloader.reloaded.Load() {
++		t.Fatalf("expected xray reloader to be called after Start()")
++	}
++
++	// Stop server
++	if err := s.Stop(); err != nil {
++		t.Fatalf("Stop error: %v", err)
++	}
++}
++
++type fakeHealthCheckerWithResult struct {
++	latency int64
++	err     error
++	label   string
++}
++
++func (f *fakeHealthCheckerWithResult) HealthCheck(ctx context.Context, relayLabel string) (int64, error) {
++	f.label = relayLabel
++	return f.latency, f.err
++}
++
++func TestHealthCheckHandler_Outcomes(t *testing.T) {
++	e := echo.New()
++
++	// 1. Missing relay_label returns 400
++	h := newHealthCheckHandler(&fakeHealthCheckerWithResult{})
++	req := httptest.NewRequest(http.MethodGet, "/api/v1/health_check/", nil)
++	rec := httptest.NewRecorder()
++	c := e.NewContext(req, rec)
++	err := h.HandleHealthCheck(c)
++	if err == nil {
++		t.Fatalf("expected error, got nil")
++	}
++	httpErr, ok := err.(*echo.HTTPError)
++	if !ok || httpErr.Code != http.StatusBadRequest {
++		t.Fatalf("expected 400 HTTPError, got %v", err)
++	}
++	if httpErr.Message != "relay_label is required" {
++		t.Fatalf("expected 'relay_label is required', got %v", httpErr.Message)
++	}
++
++	// 2. Checker returns error: 400 with HealthCheckResp {ErrorCode: -1, Message: err.Error()}
++	checkerErr := &fakeHealthCheckerWithResult{err: errors.New("dial failed")}
++	hErr := newHealthCheckHandler(checkerErr)
++	reqErr := httptest.NewRequest(http.MethodGet, "/api/v1/health_check/?relay_label=node-1", nil)
++	recErr := httptest.NewRecorder()
++	cErr := e.NewContext(reqErr, recErr)
++	if err := hErr.HandleHealthCheck(cErr); err != nil {
++		t.Fatalf("unexpected handler error: %v", err)
++	}
++	if recErr.Code != http.StatusBadRequest {
++		t.Fatalf("expected 400, got %d", recErr.Code)
++	}
++	var respErr HealthCheckResp
++	if err := json.Unmarshal(recErr.Body.Bytes(), &respErr); err != nil {
++		t.Fatalf("unmarshal error: %v", err)
++	}
++	if respErr.ErrorCode != -1 || respErr.Message != "dial failed" {
++		t.Fatalf("expected ErrorCode=-1, Message='dial failed', got %+v", respErr)
++	}
++	if checkerErr.label != "node-1" {
++		t.Fatalf("expected checker to receive 'node-1', got %q", checkerErr.label)
++	}
++
++	// 3. Checker succeeds: 200 with HealthCheckResp {Message: "connect success", Latency: latency}
++	checkerOK := &fakeHealthCheckerWithResult{latency: 45}
++	hOK := newHealthCheckHandler(checkerOK)
++	reqOK := httptest.NewRequest(http.MethodGet, "/api/v1/health_check/?relay_label=node-2", nil)
++	recOK := httptest.NewRecorder()
++	cOK := e.NewContext(reqOK, recOK)
++	if err := hOK.HandleHealthCheck(cOK); err != nil {
++		t.Fatalf("unexpected handler error: %v", err)
++	}
++	if recOK.Code != http.StatusOK {
++		t.Fatalf("expected 200, got %d", recOK.Code)
++	}
++	var respOK HealthCheckResp
++	if err := json.Unmarshal(recOK.Body.Bytes(), &respOK); err != nil {
++		t.Fatalf("unmarshal error: %v", err)
++	}
++	if respOK.Message != "connect success" || respOK.Latency != 45 || respOK.ErrorCode != 0 {
++		t.Fatalf("expected connect success with 45ms latency and ErrorCode=0, got %+v", respOK)
++	}
++}
++
++func TestAuthenticator_ConfigReloadDynamicCredentials(t *testing.T) {
++	cfg := &config.Config{
++		DashboardPass: "initial-pass",
++		ApiToken:      "initial-token",
++	}
++	auth := newAuthenticator(cfg)
++
++	// Initially requires auth
++	if !auth.authRequired() {
++		t.Fatal("expected authRequired to be true")
++	}
++
++	// Login with initial password succeeds
++	e := echo.New()
++	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"password":"initial-pass"}`))
++	req.Header.Set("Content-Type", "application/json")
++	rec := httptest.NewRecorder()
++	c := e.NewContext(req, rec)
++	if err := auth.HandleLogin(c); err != nil {
++		t.Fatalf("login failed: %v", err)
++	}
++	if rec.Code != http.StatusOK {
++		t.Fatalf("expected 200, got %d", rec.Code)
++	}
++
++	// Simulate config reload updating DashboardPass and ApiToken in-place
++	cfg.DashboardPass = "reloaded-pass"
++	cfg.ApiToken = "reloaded-token"
++
++	// Old password is now rejected with 401
++	reqOld := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"password":"initial-pass"}`))
++	reqOld.Header.Set("Content-Type", "application/json")
++	recOld := httptest.NewRecorder()
++	cOld := e.NewContext(reqOld, recOld)
++	errOld := auth.HandleLogin(cOld)
++	if errOld == nil {
++		t.Fatal("expected 401 with old password after reload, got nil")
++	}
++	if httpErr, ok := errOld.(*echo.HTTPError); !ok || httpErr.Code != http.StatusUnauthorized {
++		t.Fatalf("expected 401, got %v", errOld)
++	}
++
++	// New password is accepted with 200
++	reqNew := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"password":"reloaded-pass"}`))
++	reqNew.Header.Set("Content-Type", "application/json")
++	recNew := httptest.NewRecorder()
++	cNew := e.NewContext(reqNew, recNew)
++	if err := auth.HandleLogin(cNew); err != nil {
++		t.Fatalf("login with new pass failed: %v", err)
++	}
++	if recNew.Code != http.StatusOK {
++		t.Fatalf("expected 200, got %d", recNew.Code)
++	}
++
++	// Bearer header checks reflect reloaded token
++	reqBearerOld := httptest.NewRequest(http.MethodGet, "/api/v1/config/", nil)
++	reqBearerOld.Header.Set("Authorization", "Bearer initial-token")
++	okOld, _, _ := auth.checkRequest(reqBearerOld)
++	if okOld {
++		t.Fatal("expected old bearer token to be rejected after reload")
++	}
++
++	reqBearerNew := httptest.NewRequest(http.MethodGet, "/api/v1/config/", nil)
++	reqBearerNew.Header.Set("Authorization", "Bearer reloaded-token")
++	okNew, _, _ := auth.checkRequest(reqBearerNew)
++	if !okNew {
++		t.Fatal("expected new bearer token to be accepted after reload")
++	}
++
++	// Simulate reload clearing credentials: dashboard becomes open
++	cfg.DashboardPass = ""
++	cfg.ApiToken = ""
++	if auth.authRequired() {
++		t.Fatal("expected authRequired to be false after clearing credentials")
++	}
++	reqOpen := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"password":"any"}`))
++	reqOpen.Header.Set("Content-Type", "application/json")
++	recOpen := httptest.NewRecorder()
++	cOpen := e.NewContext(reqOpen, recOpen)
++	if err := auth.HandleLogin(cOpen); err != nil {
++		t.Fatalf("login open: %v", err)
++	}
++	if !strings.Contains(recOpen.Body.String(), `"authenticated":true`) {
++		t.Fatalf("expected authenticated:true in %s", recOpen.Body.String())
++	}
++}
++
++func TestUpdateHandler_Outcomes(t *testing.T) {
++	e := echo.New()
++	h := newUpdateHandler(nil)
++
++	// 1. Version returns VersionInfo with 200
++	reqV := httptest.NewRequest(http.MethodGet, "/api/v1/version", nil)
++	recV := httptest.NewRecorder()
++	cV := e.NewContext(reqV, recV)
++	if err := h.Version(cV); err != nil {
++		t.Fatalf("Version: %v", err)
++	}
++	if recV.Code != http.StatusOK {
++		t.Fatalf("expected 200, got %d", recV.Code)
++	}
++	var vInfo VersionInfo
++	if err := json.Unmarshal(recV.Body.Bytes(), &vInfo); err != nil {
++		t.Fatalf("unmarshal VersionInfo: %v", err)
++	}
++	if vInfo.GoOS != runtime.GOOS || vInfo.GoArch != runtime.GOARCH {
++		t.Fatalf("unexpected OS/Arch in VersionInfo: %+v", vInfo)
++	}
++
++	// 2. UpdateCheck maps upstream error to 502 Bad Gateway
++	// With canceled context, updater.Check fails immediately
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	reqCheck := httptest.NewRequest(http.MethodGet, "/api/v1/update/check", nil).WithContext(ctx)
++	recCheck := httptest.NewRecorder()
++	cCheck := e.NewContext(reqCheck, recCheck)
++	errCheck := h.UpdateCheck(cCheck)
++	if errCheck == nil {
++		t.Fatalf("expected 502 error for canceled context, got nil")
++	}
++	httpErrCheck, ok := errCheck.(*echo.HTTPError)
++	if !ok || httpErrCheck.Code != http.StatusBadGateway {
++		t.Fatalf("expected 502 Bad Gateway, got %v", errCheck)
++	}
++
++	// 3. UpdateApply
++	// 3a. Malformed body returns 400
++	reqBadBody := httptest.NewRequest(http.MethodPost, "/api/v1/update/apply", strings.NewReader("malformed-body"))
++	reqBadBody.Header.Set("Content-Type", "application/json")
++	recBadBody := httptest.NewRecorder()
++	cBadBody := e.NewContext(reqBadBody, recBadBody)
++	errBadBody := h.UpdateApply(cBadBody)
++	if runtime.GOOS == "linux" {
++		if errBadBody == nil {
++			t.Fatal("expected 400 on malformed body, got nil")
++		}
++		if httpErr, ok := errBadBody.(*echo.HTTPError); !ok || httpErr.Code != http.StatusBadRequest {
++			t.Fatalf("expected 400 for malformed body, got %v", errBadBody)
++		}
++	} else {
++		if errBadBody == nil {
++			t.Fatal("expected 400 on non-linux, got nil")
++		}
++		if httpErr, ok := errBadBody.(*echo.HTTPError); !ok || httpErr.Code != http.StatusBadRequest {
++			t.Fatalf("expected 400 on non-linux, got %v", errBadBody)
++		}
++	}
++
++	// 3b. Valid body: on linux returns 202 without waiting; on non-linux returns 400
++	reqValid := httptest.NewRequest(http.MethodPost, "/api/v1/update/apply",
++		strings.NewReader(`{"channel":"stable","force":false,"restart":false}`))
++	reqValid.Header.Set("Content-Type", "application/json")
++	recValid := httptest.NewRecorder()
++	cValid := e.NewContext(reqValid, recValid)
++	errValid := h.UpdateApply(cValid)
++	if runtime.GOOS == "linux" {
++		if errValid != nil {
++			t.Fatalf("expected 202 on linux, got err: %v", errValid)
++		}
++		if recValid.Code != http.StatusAccepted {
++			t.Fatalf("expected 202 Accepted, got %d", recValid.Code)
++		}
++	} else {
++		if errValid == nil {
++			t.Fatal("expected 400 on non-linux, got nil")
++		}
++		if httpErr, ok := errValid.(*echo.HTTPError); !ok || httpErr.Code != http.StatusBadRequest {
++			t.Fatalf("expected 400 on non-linux, got %v", errValid)
++		}
++	}
++}

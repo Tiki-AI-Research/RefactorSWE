@@ -1,0 +1,11 @@
+--- a/internal/web/auth.go
++++ b/internal/web/auth.go
+@@ -114,7 +114,7 @@
+ // the middleware should re-issue the cookie with the slid expiry.
+ func (a *authenticator) checkRequest(r *http.Request) (bool, string, time.Time) {
+ 	if !a.authRequired() {
+-		return true, "", time.Time{}
++		return false, "", time.Time{}
+ 	}
+ 
+ 	// 1. Cookie — preferred for browsers.

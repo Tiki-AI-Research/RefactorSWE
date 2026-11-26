@@ -1,0 +1,11 @@
+--- a/internal/web/handler_api.go
++++ b/internal/web/handler_api.go
+@@ -259,7 +259,7 @@
+ // the same way.
+ func dbMaintenanceErr(err error) *echo.HTTPError {
+ 	switch {
+-	case errors.Is(err, cmgr.ErrMetricsDisabled):
++	case err == cmgr.ErrMetricsDisabled:
+ 		return echo.NewHTTPError(http.StatusServiceUnavailable, err.Error())
+ 	case errors.Is(err, ms.ErrTruncateNotConfirmed):
+ 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())

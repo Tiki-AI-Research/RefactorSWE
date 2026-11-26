@@ -1,0 +1,66 @@
+__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true when either the branch or changed files patter matches
+__tests__/branch.test.ts::checkAnyBranch when multiple patterns are provided and at least one pattern matches returns true
+__tests__/p2p-matching-regression.test.ts::any quantifier semantics returns false when no entry has a present dimension
+__tests__/p2p-matching-regression.test.ts::any quantifier semantics returns false when every present dimension fails
+__tests__/p2p-matching-regression.test.ts::any quantifier semantics matches when a later entry has a matching dimension
+__tests__/main.test.ts::run does not add a label when the match config options are not supported
+__tests__/branch.test.ts::checkAllBranch when multiple patterns are provided and not all patterns matched returns false
+__tests__/p2p-matching-regression.test.ts::all quantifier semantics requires every present dimension of an entry to match
+__tests__/p2p-matching-regression.test.ts::all quantifier semantics accepts an entry that has no present dimension
+__tests__/p2p-matching-regression.test.ts::all quantifier semantics returns false when every entry is empty
+__tests__/p2p-matching-regression.test.ts::all quantifier semantics returns false when a later entry fails
+__tests__/main.test.ts::run adds a label when matching any and all patterns are provided
+__tests__/main.test.ts::run does not add a label when not all any and all patterns are matched
+__tests__/p2p-matching-regression.test.ts::combined any and all blocks requires both the any block and the all block to match
+__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting checks the base branch before changed files and the head branch
+__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting short-circuits an any entry as soon as a dimension matches
+__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting short-circuits an all entry as soon as a dimension fails
+__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting does not evaluate the head branch after the changed files dimension fails
+__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting stops evaluating an all block at the first failing entry
+__tests__/p2p-matching-regression.test.ts::empty changed files in an all block fails an all entry with changed files before evaluating any file patterns
+__tests__/p2p-matching-regression.test.ts::empty changed files in an all block fails an all block with an empty changed files list even when branch dimensions match
+__tests__/labeler.test.ts::checkMatchConfigs when multiple MatchConfigs are supplied returns false when only one config matches
+__tests__/labeler.test.ts::checkMatchConfigs when multiple MatchConfigs are supplied returns true when only both config matches
+__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns false for a file starting with dot if `dot` option is false
+__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true for a file starting with dot if `dot` option is true
+__tests__/main.test.ts::run (with dot: true) adds labels to PRs that match our glob patterns
+__tests__/main.test.ts::run (with dot: false) does not add labels to PRs that do not match our glob patterns
+__tests__/p2p-matching-regression.test.ts::configuration normalization presence controls dotfile matching in an all block
+__tests__/labeler.test.ts::getLabelConfigMapFromObject returns a MatchConfig
+__tests__/labeler.test.ts::toMatchConfig when all expected config options are present and there are also unexpected options present does not include the unexpected items in the returned MatchConfig object
+__tests__/p2p-matching-regression.test.ts::configuration normalization presence treats a dimension as absent when its configuration key is missing
+__tests__/p2p-matching-regression.test.ts::configuration normalization presence keeps a dimension present when its configuration key has an empty pattern array
+__tests__/labeler.test.ts::toMatchConfig when all expected config options are present returns a MatchConfig object with all options
+__tests__/p2p-matching-regression.test.ts::configuration normalization presence combines base branch, changed files and head branch in one entry
+__tests__/branch.test.ts::toBranchMatchConfig when the config contains a head-branch option and the matching option is a string sets headBranch in the matchConfig
+__tests__/branch.test.ts::toBranchMatchConfig when the config contains both a base-branch and head-branch option sets headBranch and baseBranch in the matchConfig
+__tests__/p2p-matching-regression.test.ts::configuration normalization presence normalizes branch string patterns to one element arrays
+__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config but the glob pattern config key is not provided throws the error
+__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config but the glob pattern config key is not valid throws the error
+__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config and the glob pattern config key is provided and the value is an array of strings sets the value in the config object
+__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config and the glob pattern config key is provided and the value is a string sets the string as an array in the config object
+__tests__/changedFiles.test.ts::checkAnyChangedFiles when any given glob pattern config matched returns true
+__tests__/changedFiles.test.ts::checkAllChangedFiles when all given glob pattern configs matched returns true
+__tests__/p2p-matching-regression.test.ts::configuration normalization presence matches with each of the four changed files pattern modes
+__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true when our pattern does match changed files
+__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns false when our pattern does not match changed files
+__tests__/main.test.ts::run max-files-changed skips file-based labels when changed files exceed limit
+__tests__/main.test.ts::run max-files-changed still applies branch-based labels when max-files-changed is exceeded
+__tests__/main.test.ts::run max-files-changed preserves preexisting changed-files labels with sync-labels when max-files-changed is exceeded
+__tests__/main.test.ts::run changed-files-labels-limit skips changed-files labels when count exceeds limit
+__tests__/main.test.ts::run changed-files-labels-limit still applies branch-based labels when changed-files limit is exceeded
+__tests__/main.test.ts::run (with sync-labels: true) it deletes preexisting PR labels that no longer match the glob pattern
+__tests__/main.test.ts::run (with dot: false) adds labels to PRs that match our glob patterns
+__tests__/labeler.test.ts::getLabelConfigResultFromObject extracts changed-files-labels-limit as a number
+__tests__/labeler.test.ts::getLabelConfigResultFromObject extracts max-files-changed as a number
+__tests__/labeler.test.ts::configUsesChangedFiles returns true when config has changed-files in all block
+__tests__/p2p-matching-regression.test.ts::missing branch context fails the head branch dimension without throwing
+__tests__/p2p-matching-regression.test.ts::missing branch context fails the base branch dimension without throwing
+__tests__/p2p-matching-regression.test.ts::missing branch context still matches the changed files dimension when branch context is missing
+__tests__/main.test.ts::run adds multiple labels based on branch names that match different regexp patterns
+__tests__/main.test.ts::run can support multiple branches by providing an array
+__tests__/main.test.ts::run does not lose a label added concurrently with matching labels
+__tests__/p2p-matching-regression.test.ts::preserved matching surface keeps both quantifiers, all dimensions and all pattern modes working together
+__tests__/main.test.ts::run max-files-changed applies labels when changed files count equals limit
+__tests__/main.test.ts::run changed-files-labels-limit applies labels when new count equals the limit
+__tests__/main.test.ts::run changed-files-labels-limit does not count preexisting labels toward the limit

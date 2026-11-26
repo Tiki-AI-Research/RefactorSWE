@@ -1,0 +1,1356 @@
+{
+  "base_commit": "50d93fe52c84cdbfd81c39f5adba68f627fd330b",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "python",
+    "dill/tests/f2p_runner.py",
+    "--junit",
+    "{report}"
+  ],
+  "evaluation_files": {
+    "dill/tests/test_session_p2p.py": "7ad857414389ff11a2aaf1adffb7df80c1b6ae3ddde126fde265d1dc6d5fdcb3",
+    "dill/tests/p2p_runner.py": "db07e09e5454b8e14464a06800655edce0570639daba54339729d18c9a56e1be",
+    "dill/tests/test_session_f2p.py": "794f61e629c5220462cd44b21a00d13c7bb66c1ce8df886f87736ef1761b0205",
+    "dill/tests/f2p_runner.py": "56f875fc3b24cfbaf6e721443e6bfe94302b63af98c38f4be0b735f896af8ade",
+    "dill/tests/test_session_regressions.py": "910a5a67eea93c62614356a5e2ff2cdb2df193c98d447bd32503a5a5381015cf"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "core_schedule": {
+      "admission": "remaining-deadline",
+      "order": [
+        "baseline",
+        "solution",
+        "focused",
+        "package",
+        "advisory"
+      ],
+      "schema_version": "grader-verifier-core-flow/v1"
+    },
+    "estimated_total_seconds": 1680.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 300.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 1200.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 300.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "selector": "dill/tests/test_session.py::test_refimported_imported_as",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_p2p.py::test_imported_alias_reference_identity",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_p2p.py::test_imported_module_reference_identity",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_p2p.py::test_runtime_registration_cleanup",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session.py::test_runtime_module",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session.py::test_symlink_rejected",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session.py::test_symlink_toctou",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_p2p.py::test_symlink_paths_are_rejected",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_p2p.py::test_incompatible_module_name_is_rejected",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_p2p.py::test_non_module_target_is_rejected",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_p2p.py::test_asdict_isolated_and_source_recorded",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_p2p.py::test_borrowed_stream_remains_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_p2p.py::test_public_roundtrip_return_forms",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session.py::test_session_other",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session.py::test_default_path_warning",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_p2p.py::test_default_path_emits_security_warning",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_p2p.py::test_legacy_aliases_preserve_behavior",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_clean_runtime_state",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_update_merges_runtime_prior_state",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_does_not_mutate_runtime_source",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_self_reference_rebinds_to_copy",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_namespace_reference_rebinds_to_copy",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_records_stream_source",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_imported_module_reference_identity",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_imported_alias_reference_identity",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_seekable_borrowed_stream_remains_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_runtime_failure_removes_registration",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_close_failure_keeps_close_error",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_pathlike_source_roundtrip",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_restores_refimported_object_after_cleanup",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_asdict_rejects_module_keyword_before_path_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_load_runtime_name_decodes_and_cleans_registration",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_load_rejects_runtime_saved_state_for_imported_target",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_load_owned_reader_close_error_is_observable",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_general_unpickle_uses_runtime_registration_key",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_f2p.py::test_legacy_session_entry_points_preserve_return_contract",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_implicit_main_returns_none",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_function_globals_identity",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_load_supported_import_alias_identity",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_supported_import_alias_identity",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_load_does_not_expand_import_alias_set",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_does_not_expand_import_alias_set",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_load_failure_after_registration_cleans_runtime",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_borrowed_writer_success_remains_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_borrowed_writer_failure_remains_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_load_borrowed_peek_reader_remains_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_borrowed_peek_reader_remains_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_load_borrowed_seek_reader_remains_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_borrowed_seek_reader_remains_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_load_bufferable_reader_lifecycle",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_bufferable_reader_lifecycle",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_owned_dump_closes_after_success",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_owned_dump_closes_after_failure",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_owned_dump_close_error_overrides_operation_error",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_owned_load_closes_after_success",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_owned_load_closes_after_failure",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_owned_load_close_error_keeps_registration",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_owned_load_close_error_overrides_operation_error",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_owned_asdict_closes_after_success",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_owned_asdict_closes_after_failure",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_owned_asdict_close_error_overrides_operation_error",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_runtime_update_requires_prior",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_load_borrowed_peek_reader_failure_remains_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_borrowed_peek_reader_failure_remains_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_load_borrowed_seek_reader_failure_remains_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_borrowed_seek_reader_failure_remains_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_load_bufferable_reader_failure_lifecycle",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_bufferable_reader_failure_lifecycle",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_owned_dump_close_error_after_success_is_observable",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_owned_asdict_close_error_after_success_is_observable",
+        "role": "P2P"
+      },
+      {
+        "selector": "dill/tests/test_session_regressions.py::test_runtime_function_globals_identity",
+        "role": "P2P"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_failure_after_registration_cleans_runtime__error_is_value_error"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_failure_after_registration_cleans_runtime__error_message"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_name"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_value"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_is_copy"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__runtime_module_unchanged"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__session_recorded"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__runtime_not_registered"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_asdict_runtime_update_preserves_prior_binding"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__dump_module"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__load_module"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__load_module_asdict"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_general_module_identity_management_is_refactored__import_module"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_session_regressions.py::test_general_module_identity_management_is_refactored__save_module"
+      }
+    ],
+    "selector_timeout_seconds": 300.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "dill/tests/test_session.py::test_refimported_imported_as",
+          "dill/tests/test_session_p2p.py::test_imported_alias_reference_identity",
+          "dill/tests/test_session_p2p.py::test_imported_module_reference_identity",
+          "dill/tests/test_session_p2p.py::test_runtime_registration_cleanup",
+          "dill/tests/test_session.py::test_runtime_module",
+          "dill/tests/test_session.py::test_symlink_rejected",
+          "dill/tests/test_session.py::test_symlink_toctou",
+          "dill/tests/test_session_p2p.py::test_symlink_paths_are_rejected",
+          "dill/tests/test_session_p2p.py::test_incompatible_module_name_is_rejected",
+          "dill/tests/test_session_p2p.py::test_non_module_target_is_rejected",
+          "dill/tests/test_session_p2p.py::test_asdict_isolated_and_source_recorded",
+          "dill/tests/test_session_p2p.py::test_borrowed_stream_remains_open",
+          "dill/tests/test_session_p2p.py::test_public_roundtrip_return_forms",
+          "dill/tests/test_session.py::test_session_other",
+          "dill/tests/test_session.py::test_default_path_warning",
+          "dill/tests/test_session_p2p.py::test_default_path_emits_security_warning",
+          "dill/tests/test_session_p2p.py::test_legacy_aliases_preserve_behavior",
+          "dill/tests/test_session_f2p.py::test_asdict_clean_runtime_state",
+          "dill/tests/test_session_f2p.py::test_asdict_update_merges_runtime_prior_state",
+          "dill/tests/test_session_f2p.py::test_asdict_does_not_mutate_runtime_source",
+          "dill/tests/test_session_f2p.py::test_asdict_self_reference_rebinds_to_copy",
+          "dill/tests/test_session_f2p.py::test_asdict_namespace_reference_rebinds_to_copy",
+          "dill/tests/test_session_f2p.py::test_asdict_records_stream_source",
+          "dill/tests/test_session_f2p.py::test_asdict_imported_module_reference_identity",
+          "dill/tests/test_session_f2p.py::test_asdict_imported_alias_reference_identity",
+          "dill/tests/test_session_f2p.py::test_asdict_seekable_borrowed_stream_remains_open",
+          "dill/tests/test_session_f2p.py::test_asdict_runtime_failure_removes_registration",
+          "dill/tests/test_session_f2p.py::test_asdict_close_failure_keeps_close_error",
+          "dill/tests/test_session_f2p.py::test_asdict_pathlike_source_roundtrip",
+          "dill/tests/test_session_f2p.py::test_asdict_restores_refimported_object_after_cleanup",
+          "dill/tests/test_session_f2p.py::test_asdict_rejects_module_keyword_before_path_open",
+          "dill/tests/test_session_f2p.py::test_load_runtime_name_decodes_and_cleans_registration",
+          "dill/tests/test_session_f2p.py::test_load_rejects_runtime_saved_state_for_imported_target",
+          "dill/tests/test_session_f2p.py::test_load_owned_reader_close_error_is_observable",
+          "dill/tests/test_session_f2p.py::test_general_unpickle_uses_runtime_registration_key",
+          "dill/tests/test_session_f2p.py::test_legacy_session_entry_points_preserve_return_contract",
+          "dill/tests/test_session_regressions.py::test_implicit_main_returns_none",
+          "dill/tests/test_session_regressions.py::test_asdict_function_globals_identity",
+          "dill/tests/test_session_regressions.py::test_load_supported_import_alias_identity",
+          "dill/tests/test_session_regressions.py::test_asdict_supported_import_alias_identity",
+          "dill/tests/test_session_regressions.py::test_load_does_not_expand_import_alias_set",
+          "dill/tests/test_session_regressions.py::test_asdict_does_not_expand_import_alias_set",
+          "dill/tests/test_session_regressions.py::test_load_failure_after_registration_cleans_runtime",
+          "dill/tests/test_session_regressions.py::test_borrowed_writer_success_remains_open",
+          "dill/tests/test_session_regressions.py::test_borrowed_writer_failure_remains_open",
+          "dill/tests/test_session_regressions.py::test_load_borrowed_peek_reader_remains_open",
+          "dill/tests/test_session_regressions.py::test_asdict_borrowed_peek_reader_remains_open",
+          "dill/tests/test_session_regressions.py::test_load_borrowed_seek_reader_remains_open",
+          "dill/tests/test_session_regressions.py::test_asdict_borrowed_seek_reader_remains_open",
+          "dill/tests/test_session_regressions.py::test_load_bufferable_reader_lifecycle",
+          "dill/tests/test_session_regressions.py::test_asdict_bufferable_reader_lifecycle",
+          "dill/tests/test_session_regressions.py::test_owned_dump_closes_after_success",
+          "dill/tests/test_session_regressions.py::test_owned_dump_closes_after_failure",
+          "dill/tests/test_session_regressions.py::test_owned_dump_close_error_overrides_operation_error",
+          "dill/tests/test_session_regressions.py::test_owned_load_closes_after_success",
+          "dill/tests/test_session_regressions.py::test_owned_load_closes_after_failure",
+          "dill/tests/test_session_regressions.py::test_owned_load_close_error_keeps_registration",
+          "dill/tests/test_session_regressions.py::test_owned_load_close_error_overrides_operation_error",
+          "dill/tests/test_session_regressions.py::test_owned_asdict_closes_after_success",
+          "dill/tests/test_session_regressions.py::test_owned_asdict_closes_after_failure",
+          "dill/tests/test_session_regressions.py::test_owned_asdict_close_error_overrides_operation_error",
+          "dill/tests/test_session_regressions.py::test_asdict_runtime_update_requires_prior",
+          "dill/tests/test_session_regressions.py::test_load_borrowed_peek_reader_failure_remains_open",
+          "dill/tests/test_session_regressions.py::test_asdict_borrowed_peek_reader_failure_remains_open",
+          "dill/tests/test_session_regressions.py::test_load_borrowed_seek_reader_failure_remains_open",
+          "dill/tests/test_session_regressions.py::test_asdict_borrowed_seek_reader_failure_remains_open",
+          "dill/tests/test_session_regressions.py::test_load_bufferable_reader_failure_lifecycle",
+          "dill/tests/test_session_regressions.py::test_asdict_bufferable_reader_failure_lifecycle",
+          "dill/tests/test_session_regressions.py::test_owned_dump_close_error_after_success_is_observable",
+          "dill/tests/test_session_regressions.py::test_owned_asdict_close_error_after_success_is_observable",
+          "dill/tests/test_session_regressions.py::test_runtime_function_globals_identity",
+          "dill/tests/test_session_regressions.py::test_asdict_failure_after_registration_cleans_runtime__error_is_value_error",
+          "dill/tests/test_session_regressions.py::test_asdict_failure_after_registration_cleans_runtime__error_message",
+          "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_name",
+          "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_value",
+          "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_is_copy",
+          "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__runtime_module_unchanged",
+          "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__session_recorded",
+          "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__runtime_not_registered",
+          "dill/tests/test_session_regressions.py::test_asdict_runtime_update_preserves_prior_binding",
+          "dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__dump_module",
+          "dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__load_module",
+          "dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__load_module_asdict",
+          "dill/tests/test_session_regressions.py::test_general_module_identity_management_is_refactored__import_module",
+          "dill/tests/test_session_regressions.py::test_general_module_identity_management_is_refactored__save_module"
+        ],
+        "timeout_seconds": 300.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "dill/tests/test_session_regressions.py::test_asdict_failure_after_registration_cleans_runtime__error_is_value_error",
+    "dill/tests/test_session_regressions.py::test_asdict_failure_after_registration_cleans_runtime__error_message",
+    "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_name",
+    "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_value",
+    "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_is_copy",
+    "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__runtime_module_unchanged",
+    "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__session_recorded",
+    "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__runtime_not_registered",
+    "dill/tests/test_session_regressions.py::test_asdict_runtime_update_preserves_prior_binding",
+    "dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__dump_module",
+    "dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__load_module",
+    "dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__load_module_asdict",
+    "dill/tests/test_session_regressions.py::test_general_module_identity_management_is_refactored__import_module",
+    "dill/tests/test_session_regressions.py::test_general_module_identity_management_is_refactored__save_module"
+  ],
+  "gates": [
+    {
+      "id": "P2P-01",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B1"
+      ],
+      "tests": [
+        "dill/tests/test_session.py::test_refimported_imported_as",
+        "dill/tests/test_session_p2p.py::test_imported_alias_reference_identity",
+        "dill/tests/test_session_p2p.py::test_imported_module_reference_identity"
+      ]
+    },
+    {
+      "id": "P2P-02",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B2"
+      ],
+      "tests": [
+        "dill/tests/test_session_p2p.py::test_runtime_registration_cleanup"
+      ]
+    },
+    {
+      "id": "P2P-03",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B2",
+        "REQ-BEH-T3:C2"
+      ],
+      "tests": [
+        "dill/tests/test_session.py::test_runtime_module"
+      ]
+    },
+    {
+      "id": "P2P-04",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B3"
+      ],
+      "tests": [
+        "dill/tests/test_session.py::test_symlink_rejected",
+        "dill/tests/test_session.py::test_symlink_toctou",
+        "dill/tests/test_session_p2p.py::test_symlink_paths_are_rejected"
+      ]
+    },
+    {
+      "id": "P2P-05",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B4"
+      ],
+      "tests": [
+        "dill/tests/test_session_p2p.py::test_incompatible_module_name_is_rejected",
+        "dill/tests/test_session_p2p.py::test_non_module_target_is_rejected"
+      ]
+    },
+    {
+      "id": "P2P-06",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B5",
+        "REQ-BEH-T3:C3"
+      ],
+      "tests": [
+        "dill/tests/test_session_p2p.py::test_asdict_isolated_and_source_recorded"
+      ]
+    },
+    {
+      "id": "P2P-07",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_p2p.py::test_borrowed_stream_remains_open"
+      ]
+    },
+    {
+      "id": "P2P-08",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C1",
+        "REQ-BEH-T3:C2"
+      ],
+      "tests": [
+        "dill/tests/test_session_p2p.py::test_public_roundtrip_return_forms"
+      ]
+    },
+    {
+      "id": "P2P-09",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C2",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "dill/tests/test_session.py::test_session_other"
+      ]
+    },
+    {
+      "id": "P2P-10",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C4"
+      ],
+      "tests": [
+        "dill/tests/test_session.py::test_default_path_warning",
+        "dill/tests/test_session_p2p.py::test_default_path_emits_security_warning",
+        "dill/tests/test_session_p2p.py::test_legacy_aliases_preserve_behavior"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-01",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B5"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_clean_runtime_state"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-02",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B5"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_update_merges_runtime_prior_state"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-03",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B5"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_does_not_mutate_runtime_source"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-04",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C3"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_self_reference_rebinds_to_copy"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-05",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C3"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_namespace_reference_rebinds_to_copy"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-06",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C3"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_records_stream_source"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-07",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B1"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_imported_module_reference_identity"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-08",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B1"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_imported_alias_reference_identity"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-09",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_seekable_borrowed_stream_remains_open"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-10",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B2"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_runtime_failure_removes_registration"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-11",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_close_failure_keeps_close_error"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-12",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C3"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_pathlike_source_roundtrip"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-13",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B1"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_restores_refimported_object_after_cleanup"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-14",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C3"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_asdict_rejects_module_keyword_before_path_open"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-15",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C2"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_load_runtime_name_decodes_and_cleans_registration"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-16",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B4"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_load_rejects_runtime_saved_state_for_imported_target"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-17",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_load_owned_reader_close_error_is_observable"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-18",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_general_unpickle_uses_runtime_registration_key"
+      ]
+    },
+    {
+      "id": "P2P-SESSION-19",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C4"
+      ],
+      "tests": [
+        "dill/tests/test_session_f2p.py::test_legacy_session_entry_points_preserve_return_contract"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-implicit_main_returns_none",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C2"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_implicit_main_returns_none"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-runtime_function_globals_identity",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C3"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_runtime_function_globals_identity"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-asdict_function_globals_identity",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C3"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_function_globals_identity"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-load_supported_import_alias_identity",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B1"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_load_supported_import_alias_identity"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-asdict_supported_import_alias_identity",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B1"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_supported_import_alias_identity"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-load_does_not_expand_import_alias_set",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B1"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_load_does_not_expand_import_alias_set"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-asdict_does_not_expand_import_alias_set",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B1"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_does_not_expand_import_alias_set"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-load_failure_after_registration_cleans_runtime",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B2"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_load_failure_after_registration_cleans_runtime"
+      ]
+    },
+    {
+      "id": "F2P-CONTRACT-asdict_failure_after_registration_cleans_runtime",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T3:B2"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_failure_after_registration_cleans_runtime__error_is_value_error",
+        "dill/tests/test_session_regressions.py::test_asdict_failure_after_registration_cleans_runtime__error_message"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-borrowed_writer_success_remains_open",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_borrowed_writer_success_remains_open"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-borrowed_writer_failure_remains_open",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_borrowed_writer_failure_remains_open"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-load_borrowed_peek_reader_remains_open",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_load_borrowed_peek_reader_remains_open"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-asdict_borrowed_peek_reader_remains_open",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_borrowed_peek_reader_remains_open"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-load_borrowed_seek_reader_remains_open",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_load_borrowed_seek_reader_remains_open"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-asdict_borrowed_seek_reader_remains_open",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_borrowed_seek_reader_remains_open"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-load_bufferable_reader_lifecycle",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_load_bufferable_reader_lifecycle"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-asdict_bufferable_reader_lifecycle",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_bufferable_reader_lifecycle"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-owned_dump_closes_after_success",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_owned_dump_closes_after_success"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-owned_dump_closes_after_failure",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_owned_dump_closes_after_failure"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-owned_dump_close_error_overrides_operation_error",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_owned_dump_close_error_overrides_operation_error"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-owned_load_closes_after_success",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_owned_load_closes_after_success"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-owned_load_closes_after_failure",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_owned_load_closes_after_failure"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-owned_load_close_error_keeps_registration",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B2"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_owned_load_close_error_keeps_registration"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-owned_load_close_error_overrides_operation_error",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_owned_load_close_error_overrides_operation_error"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-owned_asdict_closes_after_success",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_owned_asdict_closes_after_success"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-owned_asdict_closes_after_failure",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_owned_asdict_closes_after_failure"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-owned_asdict_close_error_overrides_operation_error",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_owned_asdict_close_error_overrides_operation_error"
+      ]
+    },
+    {
+      "id": "F2P-CONTRACT-asdict_unregistered_runtime_clean_state",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T3:B5"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_name",
+        "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_value",
+        "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_is_copy",
+        "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__runtime_module_unchanged",
+        "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__session_recorded",
+        "dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__runtime_not_registered"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-asdict_runtime_update_requires_prior",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B5"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_runtime_update_requires_prior"
+      ]
+    },
+    {
+      "id": "F2P-CONTRACT-asdict_runtime_update_preserves_prior_binding",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T3:B5"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_runtime_update_preserves_prior_binding"
+      ]
+    },
+    {
+      "id": "F2P-CONTRACT-session_state_management_is_refactored",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__dump_module",
+        "dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__load_module",
+        "dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__load_module_asdict"
+      ]
+    },
+    {
+      "id": "F2P-CONTRACT-general_module_identity_management_is_refactored",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_general_module_identity_management_is_refactored__import_module",
+        "dill/tests/test_session_regressions.py::test_general_module_identity_management_is_refactored__save_module"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-load_borrowed_peek_reader_failure_remains_open",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_load_borrowed_peek_reader_failure_remains_open"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-asdict_borrowed_peek_reader_failure_remains_open",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_borrowed_peek_reader_failure_remains_open"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-load_borrowed_seek_reader_failure_remains_open",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_load_borrowed_seek_reader_failure_remains_open"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-asdict_borrowed_seek_reader_failure_remains_open",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_borrowed_seek_reader_failure_remains_open"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-load_bufferable_reader_failure_lifecycle",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_load_bufferable_reader_failure_lifecycle"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-asdict_bufferable_reader_failure_lifecycle",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_asdict_bufferable_reader_failure_lifecycle"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-owned_dump_close_error_after_success_is_observable",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_owned_dump_close_error_after_success_is_observable"
+      ]
+    },
+    {
+      "id": "P2P-CONTRACT-owned_asdict_close_error_after_success_is_observable",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "dill/tests/test_session_regressions.py::test_owned_asdict_close_error_after_success_is_observable"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "3a8e42540801436da37f5ab3b9c9bdcf8e5955c592de47d2e03f1bbe1d475dba",
+    "test_patch_sha256": "3c5106587daabe02f1260e11db20318aa30f6e9a4999ff6968a45ef0bb08724e"
+  },
+  "node_relations": [],
+  "p2p": [
+    "dill/tests/test_session.py::test_refimported_imported_as",
+    "dill/tests/test_session_p2p.py::test_imported_alias_reference_identity",
+    "dill/tests/test_session_p2p.py::test_imported_module_reference_identity",
+    "dill/tests/test_session_p2p.py::test_runtime_registration_cleanup",
+    "dill/tests/test_session.py::test_runtime_module",
+    "dill/tests/test_session.py::test_symlink_rejected",
+    "dill/tests/test_session.py::test_symlink_toctou",
+    "dill/tests/test_session_p2p.py::test_symlink_paths_are_rejected",
+    "dill/tests/test_session_p2p.py::test_incompatible_module_name_is_rejected",
+    "dill/tests/test_session_p2p.py::test_non_module_target_is_rejected",
+    "dill/tests/test_session_p2p.py::test_asdict_isolated_and_source_recorded",
+    "dill/tests/test_session_p2p.py::test_borrowed_stream_remains_open",
+    "dill/tests/test_session_p2p.py::test_public_roundtrip_return_forms",
+    "dill/tests/test_session.py::test_session_other",
+    "dill/tests/test_session.py::test_default_path_warning",
+    "dill/tests/test_session_p2p.py::test_default_path_emits_security_warning",
+    "dill/tests/test_session_p2p.py::test_legacy_aliases_preserve_behavior",
+    "dill/tests/test_session_f2p.py::test_asdict_clean_runtime_state",
+    "dill/tests/test_session_f2p.py::test_asdict_update_merges_runtime_prior_state",
+    "dill/tests/test_session_f2p.py::test_asdict_does_not_mutate_runtime_source",
+    "dill/tests/test_session_f2p.py::test_asdict_self_reference_rebinds_to_copy",
+    "dill/tests/test_session_f2p.py::test_asdict_namespace_reference_rebinds_to_copy",
+    "dill/tests/test_session_f2p.py::test_asdict_records_stream_source",
+    "dill/tests/test_session_f2p.py::test_asdict_imported_module_reference_identity",
+    "dill/tests/test_session_f2p.py::test_asdict_imported_alias_reference_identity",
+    "dill/tests/test_session_f2p.py::test_asdict_seekable_borrowed_stream_remains_open",
+    "dill/tests/test_session_f2p.py::test_asdict_runtime_failure_removes_registration",
+    "dill/tests/test_session_f2p.py::test_asdict_close_failure_keeps_close_error",
+    "dill/tests/test_session_f2p.py::test_asdict_pathlike_source_roundtrip",
+    "dill/tests/test_session_f2p.py::test_asdict_restores_refimported_object_after_cleanup",
+    "dill/tests/test_session_f2p.py::test_asdict_rejects_module_keyword_before_path_open",
+    "dill/tests/test_session_f2p.py::test_load_runtime_name_decodes_and_cleans_registration",
+    "dill/tests/test_session_f2p.py::test_load_rejects_runtime_saved_state_for_imported_target",
+    "dill/tests/test_session_f2p.py::test_load_owned_reader_close_error_is_observable",
+    "dill/tests/test_session_f2p.py::test_general_unpickle_uses_runtime_registration_key",
+    "dill/tests/test_session_f2p.py::test_legacy_session_entry_points_preserve_return_contract",
+    "dill/tests/test_session_regressions.py::test_implicit_main_returns_none",
+    "dill/tests/test_session_regressions.py::test_asdict_function_globals_identity",
+    "dill/tests/test_session_regressions.py::test_load_supported_import_alias_identity",
+    "dill/tests/test_session_regressions.py::test_asdict_supported_import_alias_identity",
+    "dill/tests/test_session_regressions.py::test_load_does_not_expand_import_alias_set",
+    "dill/tests/test_session_regressions.py::test_asdict_does_not_expand_import_alias_set",
+    "dill/tests/test_session_regressions.py::test_load_failure_after_registration_cleans_runtime",
+    "dill/tests/test_session_regressions.py::test_borrowed_writer_success_remains_open",
+    "dill/tests/test_session_regressions.py::test_borrowed_writer_failure_remains_open",
+    "dill/tests/test_session_regressions.py::test_load_borrowed_peek_reader_remains_open",
+    "dill/tests/test_session_regressions.py::test_asdict_borrowed_peek_reader_remains_open",
+    "dill/tests/test_session_regressions.py::test_load_borrowed_seek_reader_remains_open",
+    "dill/tests/test_session_regressions.py::test_asdict_borrowed_seek_reader_remains_open",
+    "dill/tests/test_session_regressions.py::test_load_bufferable_reader_lifecycle",
+    "dill/tests/test_session_regressions.py::test_asdict_bufferable_reader_lifecycle",
+    "dill/tests/test_session_regressions.py::test_owned_dump_closes_after_success",
+    "dill/tests/test_session_regressions.py::test_owned_dump_closes_after_failure",
+    "dill/tests/test_session_regressions.py::test_owned_dump_close_error_overrides_operation_error",
+    "dill/tests/test_session_regressions.py::test_owned_load_closes_after_success",
+    "dill/tests/test_session_regressions.py::test_owned_load_closes_after_failure",
+    "dill/tests/test_session_regressions.py::test_owned_load_close_error_keeps_registration",
+    "dill/tests/test_session_regressions.py::test_owned_load_close_error_overrides_operation_error",
+    "dill/tests/test_session_regressions.py::test_owned_asdict_closes_after_success",
+    "dill/tests/test_session_regressions.py::test_owned_asdict_closes_after_failure",
+    "dill/tests/test_session_regressions.py::test_owned_asdict_close_error_overrides_operation_error",
+    "dill/tests/test_session_regressions.py::test_asdict_runtime_update_requires_prior",
+    "dill/tests/test_session_regressions.py::test_load_borrowed_peek_reader_failure_remains_open",
+    "dill/tests/test_session_regressions.py::test_asdict_borrowed_peek_reader_failure_remains_open",
+    "dill/tests/test_session_regressions.py::test_load_borrowed_seek_reader_failure_remains_open",
+    "dill/tests/test_session_regressions.py::test_asdict_borrowed_seek_reader_failure_remains_open",
+    "dill/tests/test_session_regressions.py::test_load_bufferable_reader_failure_lifecycle",
+    "dill/tests/test_session_regressions.py::test_asdict_bufferable_reader_failure_lifecycle",
+    "dill/tests/test_session_regressions.py::test_owned_dump_close_error_after_success_is_observable",
+    "dill/tests/test_session_regressions.py::test_owned_asdict_close_error_after_success_is_observable",
+    "dill/tests/test_session_regressions.py::test_runtime_function_globals_identity"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": false,
+  "restoration_paths": [
+    "dill/tests/test_session.py"
+  ],
+  "reward_mode": "VERIFIER_ONLY",
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-dill-module-identity-01",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "dill/tests/test_session_p2p.py",
+    "dill/tests/p2p_runner.py",
+    "dill/tests/test_session_f2p.py",
+    "dill/tests/f2p_runner.py",
+    "dill/tests/test_session_regressions.py"
+  ],
+  "timeout_seconds": 300,
+  "verifier": "/tests/verifier/verifier.py"
+}

@@ -1,0 +1,61 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+[task]
+name = "tikiai/cknd-stackprinter-20260919134409-f34e9b"
+description = "Separate Stackprinter configuration, styling, exception rendering, and trace formatting."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "cknd-stackprinter-20260919134409-f34e9b"
+display_title = "Stackprinter formatting pipeline decomposition"
+category = "module_boundary"
+language = "Python"
+repository_url = "https://github.com/cknd/stackprinter"
+base_commit_hash = "7a07a51a806e70c273a96071c87d19289bc0c69e"
+
+[tests]
+fail_to_pass_count = 76
+pass_to_pass_count = 82
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+network_mode = "public"
+environment_mode = "separate"
+user = "root"
+timeout_sec = 3600.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:cknd-stackprinter-20260919134409-f34e9b-verifier-image-20261125"
+image_digest = "sha256:4e1cd118ac249f8adf5b0e3fad29f9ce902931121196bc36181b3e08a2621bc6"
+network_mode = "public"
+build_timeout_sec = 1800.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "cd /workspace/repo && mkdir -p /logs/artifacts && git add -A && (git -c user.name=\"capture\" -c user.email=\"capture@local\" commit --no-verify -m \"Capture candidate workspace\" >/dev/null 2>&1 || true) && git diff --binary 7a07a51a806e70c273a96071c87d19289bc0c69e HEAD > /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+network_mode = "public"
+timeout_sec = 5400.0
+user = "agent"
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:cknd-stackprinter-20260919134409-f34e9b-task-image-20261125"
+image_digest = "sha256:e18c708941db1f58343828080d79eb7ca24fd0bb107548b0db417fa570d4f5d0"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+
+[verifier.env]
+[solution.env]

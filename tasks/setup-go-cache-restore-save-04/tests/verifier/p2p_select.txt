@@ -1,0 +1,64 @@
+__tests__/p2p/cache-restore-p2p.test.mjs::restore passes the unfiltered discovered cache folder paths to the cache service
+__tests__/p2p/cache-restore-p2p.test.mjs::restore discards a failed discovery command and keeps the successful cache folder path
+__tests__/p2p/cache-restore-p2p.test.mjs::restore throws Could not get cache folder paths when every discovery command fails
+__tests__/p2p/cache-restore-p2p.test.mjs::restore rejects an unknown package manager with the existing message
+__tests__/p2p/cache-restore-p2p.test.mjs::restore throws when dependency hashing resolves nothing
+__tests__/p2p/cache-restore-p2p.test.mjs::restore reports the missing default dependency file with the workspace and supported pattern
+__tests__/p2p/cache-restore-p2p.test.mjs::restore derives the primary key from platform, architecture, Linux ImageOS and hash in order
+__tests__/p2p/cache-restore-p2p.test.mjs::restore omits the ImageOS component on non-Linux runners
+__tests__/p2p/cache-restore-p2p.test.mjs::restore writes CACHE_KEY before requesting the restore
+__tests__/p2p/cache-restore-p2p.test.mjs::restore publishes a cache miss as cache-hit false and logs the existing message
+__tests__/p2p/cache-restore-p2p.test.mjs::restore publishes a cache hit as cache-hit true and saves CACHE_RESULT with the restored key
+__tests__/p2p/cache-restore-p2p.test.mjs::restore resolves to undefined without a meaningful return value
+__tests__/p2p/cache-restore-p2p.test.mjs::restore uses the provided dependency file path instead of the workspace default
+__tests__/p2p/cache-restore-p2p.test.mjs::restore writes only the cross-step state names CACHE_KEY and CACHE_RESULT
+__tests__/p2p/cache-restore-p2p.test.mjs::restore entry point loads with only the frozen runtime dependencies
+__tests__/p2p/cache-save-p2p.test.mjs::save skips discovery and saving when the cache input is disabled
+__tests__/p2p/cache-save-p2p.test.mjs::save warns and stops when every discovered cache folder is missing on disk
+__tests__/p2p/cache-save-p2p.test.mjs::save warns about a partially missing folder and still passes the complete path list to the cache service
+__tests__/p2p/cache-save-p2p.test.mjs::save stops without saving when the primary key state is missing
+__tests__/p2p/cache-save-p2p.test.mjs::save stops without saving when the primary key matches the restored key
+__tests__/p2p/cache-save-p2p.test.mjs::save treats a -1 cache id as a non-failure without reporting success
+__tests__/p2p/cache-save-p2p.test.mjs::save warns about a cache service failure and keeps the workflow successful
+__tests__/p2p/cache-save-p2p.test.mjs::save warns and keeps the workflow successful when cache folder discovery fails entirely
+__tests__/p2p/cache-save-p2p.test.mjs::save logs the existing success message after a successful save
+__tests__/p2p/cache-save-p2p.test.mjs::save reads the cross-state names CACHE_KEY and CACHE_RESULT
+__tests__/p2p/cache-save-p2p.test.mjs::save discovers the cache folders through the package manager command list
+__tests__/p2p/cache-save-p2p.test.mjs::save terminates the post step right after a successful save decision when early exit is requested
+__tests__/p2p/cache-save-p2p.test.mjs::save does not terminate the process when the early-exit flag is not requested
+__tests__/p2p/cache-save-p2p.test.mjs::save does not terminate the process when the cache input is disabled even with the early-exit flag
+__tests__/p2p/cache-save-p2p.test.mjs::save logs an unhandled toolkit exception as a warning instead of crashing
+__tests__/cache-utils.test.ts::should return trimmed stdout in case of successful exit code
+__tests__/cache-utils.test.ts::should return error in case of unsuccessful exit code
+__tests__/cache-utils.test.ts::should return package manager info in case of valid package manager name
+__tests__/cache-utils.test.ts::should throw the error in case of invalid package manager name
+__tests__/cache-utils.test.ts::should return path to the cache folders which specified package manager uses
+__tests__/cache-utils.test.ts::should return path to the cache folder if one command return empty str
+__tests__/cache-utils.test.ts::should throw if the both commands return empty str
+__tests__/cache-utils.test.ts::should throw if the specified package name is invalid
+__tests__/cache-utils.test.ts::should return true when cache feature is available
+__tests__/cache-utils.test.ts::should warn when cache feature is unavailable and GHES is not used
+__tests__/cache-utils.test.ts::should return false when cache feature is unavailable
+__tests__/cache-utils.test.ts::should warn when cache feature is unavailable and GHES is used
+__tests__/cache-utils.test.ts::returns false when the GITHUB_SERVER_URL environment variable is not defined
+__tests__/cache-utils.test.ts::returns false when the GITHUB_SERVER_URL environment variable is set to github.com
+__tests__/cache-utils.test.ts::returns false when the GITHUB_SERVER_URL environment variable is set to a GitHub Enterprise Cloud-style URL
+__tests__/cache-utils.test.ts::returns false when the GITHUB_SERVER_URL environment variable has a .localhost suffix
+__tests__/cache-utils.test.ts::returns true when the GITHUB_SERVER_URL environment variable is set to some other URL
+__tests__/cache-restore.test.ts::should throw if dependency file path is not valid
+__tests__/cache-restore.test.ts::should inform if cache hit is not occurred
+__tests__/cache-restore.test.ts::should set output if cache hit is occurred
+__tests__/cache-restore.test.ts::should throw if dependency file is not found in workspace
+__tests__/cache-save.test.ts::does not save cache when the cache input is false
+__tests__/cache-save.test.ts::does not save cache when there are no cache folders on the disk
+__tests__/cache-save.test.ts::does not save cache when the primary key was not generated
+__tests__/cache-save.test.ts::does not save cache when a cache hit occurred on the primary key
+__tests__/cache-save.test.ts::saves cache when the primary key differs from the matched key
+__tests__/cache-save.test.ts::save with -1 cacheId , should not fail workflow
+__tests__/cache-save.test.ts::saves with error from toolkit, should not fail workflow
+__tests__/p2p/cache-restore-p2p.test.mjs::restore passes every line of an explicit dependency path unchanged to hashing
+__tests__/p2p/cache-restore-p2p.test.mjs::restore hashes the existing default dependency file inside the workspace
+__tests__/p2p/main-cache-p2p.test.mjs::main skips restore when the cache input is disabled
+__tests__/p2p/main-cache-p2p.test.mjs::main skips restore when caching is enabled but the feature is unavailable
+__tests__/p2p/main-cache-p2p.test.mjs::main restores only when caching is enabled and the feature is available
+__tests__/p2p/main-cache-p2p.test.mjs::main warns on a restore failure and completes the workflow outputs

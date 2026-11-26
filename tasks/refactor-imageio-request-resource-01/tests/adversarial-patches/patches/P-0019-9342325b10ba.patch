@@ -1,0 +1,996 @@
+--- a/imageio/core/__init__.py
++++ b/imageio/core/__init__.py
+@@ -12,5 +12,5 @@
+ from .util import get_platform, appdata_dir, resource_dirs, has_module
+ from .findlib import load_lib
+ from .fetching import get_remote_file, InternetNotAllowedError, NeedDownloadError
+-from .request import Request, read_n_bytes, RETURN_BYTES
++from .request import Request, read_n_bytes, RETURN_BYTES, ResourceKind
+ from .format import Format, FormatManager
+--- a/imageio/core/imopen.py
++++ b/imageio/core/imopen.py
+@@ -5,7 +5,7 @@
+ from ..config.extensions import known_extensions
+ from .request import (
+     SPECIAL_READ_URIS,
+-    URI_FILENAME,
++    ResourceKind,
+     InitializationError,
+     IOMode,
+     Request,
+@@ -212,7 +212,7 @@
+     # error out for directories
+     # this is a bit hacky and should be cleaned once we decide
+     # how to gracefully handle DICOM
+-    if request._uri_type == URI_FILENAME and Path(request.raw_uri).is_dir():
++    if request.resource_kind is ResourceKind.FILENAME and Path(request.raw_uri).is_dir():
+         request.finish()
+         err_type = ValueError if legacy_mode else IOError
+         err_msg = (
+--- a/imageio/core/request.py
++++ b/imageio/core/request.py
+@@ -28,6 +28,185 @@
+ URI_ZIPPED = 4
+ URI_HTTP = 5
+ URI_FTP = 6
++
++
++class ResourceKind(str, enum.Enum):
++    """The kind of resource that a Request points to."""
++
++    BYTES = "bytes"
++    FILE = "file"
++    FILENAME = "filename"
++    ZIPPED = "zipped"
++    HTTP = "http"
++    FTP = "ftp"
++
++
++_URI_TYPE_TO_KIND = {
++    URI_BYTES: ResourceKind.BYTES,
++    URI_FILE: ResourceKind.FILE,
++    URI_FILENAME: ResourceKind.FILENAME,
++    URI_ZIPPED: ResourceKind.ZIPPED,
++    URI_HTTP: ResourceKind.HTTP,
++    URI_FTP: ResourceKind.FTP,
++}
++
++
++class _Resource:
++    """Base class for polymorphic resource handling."""
++
++    kind: ResourceKind
++    caller_owns_file: bool = False
++
++    def __init__(self, request: "Request") -> None:
++        self.request = request
++        if request.mode.io_mode is IOMode.write:
++            fd, unused = tempfile.mkstemp()
++            os.close(fd)
++            os.remove(unused)
++
++    def get_file(self):
++        raise NotImplementedError
++
++    def get_local_filename(self) -> str:
++        # Default temporary file creation and content copy
++        request = self.request
++        if request.extension is not None:
++            ext = request.extension
++        else:
++            ext = os.path.splitext(request._filename)[1]
++        fd, request._filename_local = tempfile.mkstemp(ext, "imageio_")
++        os.close(fd)
++        if request.mode.io_mode == IOMode.read:
++            with open(request._filename_local, "wb") as file:
++                shutil.copyfileobj(request.get_file(), file)
++        return request._filename_local
++
++    def collect_write_bytes(self) -> Optional[bytes]:
++        request = self.request
++        data = None
++        if request._filename_local:
++            data = Path(request._filename_local).read_bytes()
++        elif request._file_is_local:
++            request._file_is_local = False
++            data = request._file.getvalue()
++        return data
++
++    def write_back(self, data: bytes) -> None:
++        pass
++
++    def finish(self) -> None:
++        request = self.request
++        if request.mode.io_mode == IOMode.write:
++            data = self.collect_write_bytes()
++            if data is not None:
++                self.write_back(data)
++
++        # Close open files that we know of and are responsible for
++        if request._file is not None and not self.caller_owns_file:
++            request._file.close()
++            request._file = None
++
++        if request._zipfile is not None:
++            request._zipfile.close()
++            request._zipfile = None
++
++        # Remove temp file
++        if request._filename_local is not None:
++            try:
++                os.remove(request._filename_local)
++            except Exception:  # pragma: no cover
++                warnings.warn(
++                    "Failed to delete the temporary file at "
++                    f"`{request._filename_local}`. Please report this issue."
++                )
++            request._filename_local = None
++
++        # Detach so gc can clean even if a reference of self lingers
++        request._bytes = None
++
++
++class _BytesResource(_Resource):
++    kind = ResourceKind.BYTES
++
++    def get_file(self):
++        request = self.request
++        if request.mode.io_mode is IOMode.write:
++            request._file = BytesIO()
++            request._file_is_local = True
++        else:
++            request._file = BytesIO(request._bytes)
++        return request._file
++
++    def write_back(self, data: bytes) -> None:
++        self.request._result = data
++
++
++class _FileResource(_Resource):
++    kind = ResourceKind.FILE
++    caller_owns_file = True
++
++    def get_file(self):
++        return self.request._file
++
++    def write_back(self, data: bytes) -> None:
++        self.request._file.write(data)
++
++
++class _FilenameResource(_Resource):
++    kind = ResourceKind.FILENAME
++
++    def get_file(self):
++        request = self.request
++        if request.mode.io_mode is IOMode.write:
++            request._file = open(request.filename, "wb")
++        else:
++            request._file = open(request.filename, "rb")
++        return request._file
++
++    def get_local_filename(self) -> str:
++        return self.request._filename
++
++
++class _ZippedResource(_Resource):
++    kind = ResourceKind.ZIPPED
++
++    def get_file(self):
++        request = self.request
++        filename, name = request._filename_zip
++        if request.mode.io_mode is IOMode.write:
++            request._file = BytesIO()
++            request._file_is_local = True
++        else:
++            request._zipfile = zipfile.ZipFile(filename, "r")
++            request._file = request._zipfile.open(name, "r")
++            request._file = SeekableFileObject(request._file)
++        return request._file
++
++    def write_back(self, data: bytes) -> None:
++        zf = zipfile.ZipFile(self.request._filename_zip[0], "a")
++        zf.writestr(self.request._filename_zip[1], data)
++        zf.close()
++
++
++class _HttpResource(_Resource):
++    kind = ResourceKind.HTTP
++
++    def get_file(self):
++        request = self.request
++        assert request.mode.io_mode is not IOMode.write
++        timeout = os.getenv("IMAGEIO_REQUEST_TIMEOUT")
++        if timeout is None or not timeout.isdigit():
++            timeout = 5
++        request._file = urlopen(request.filename, timeout=float(timeout))
++        request._file = SeekableFileObject(request._file)
++        return request._file
++
++
++class _FtpResource(_Resource):
++    kind = ResourceKind.FTP
++
++    def get_file(self):
++        return None
+ 
+ 
+ class IOMode(str, enum.Enum):
+@@ -221,6 +400,7 @@
+         # General
+         self.raw_uri = uri
+         self._uri_type = None
++        self._resource = None
+         self._filename = None
+         self._extension = None
+         self._format_hint = None
+@@ -419,6 +599,17 @@
+                         errno.ENOENT, "The directory does not exist", dn
+                     )
+ 
++        # Create polymorphic resource object
++        kind_to_resource = {
++            URI_BYTES: _BytesResource,
++            URI_FILE: _FileResource,
++            URI_FILENAME: _FilenameResource,
++            URI_ZIPPED: _ZippedResource,
++            URI_HTTP: _HttpResource,
++            URI_FTP: _FtpResource,
++        }
++        self._resource = kind_to_resource[self._uri_type](self)
++
+     @property
+     def filename(self):
+         """Name of the ImageResource.
+@@ -464,6 +655,11 @@
+         """The dict of keyword arguments supplied by the user."""
+         return self._kwargs
+ 
++    @property
++    def resource_kind(self) -> ResourceKind:
++        """The ResourceKind enum member representing this request's resource type."""
++        return self._resource.kind
++
+     # For obtaining data
+ 
+     def get_file(self):
+@@ -477,50 +673,10 @@
+         format cannot handle file-like objects, they should use
+         ``get_local_filename()``.
+         """
+-        want_to_write = self.mode.io_mode is IOMode.write
+-
+-        # Is there already a file?
+-        # Either _uri_type == URI_FILE, or we already opened the file,
+-        # e.g. by using firstbytes
+         if self._file is not None:
+             return self._file
+ 
+-        if self._uri_type == URI_BYTES:
+-            if want_to_write:
+-                # Create new file object, we catch the bytes in finish()
+-                self._file = BytesIO()
+-                self._file_is_local = True
+-            else:
+-                self._file = BytesIO(self._bytes)
+-
+-        elif self._uri_type == URI_FILENAME:
+-            if want_to_write:
+-                self._file = open(self.filename, "wb")
+-            else:
+-                self._file = open(self.filename, "rb")
+-
+-        elif self._uri_type == URI_ZIPPED:
+-            # Get the correct filename
+-            filename, name = self._filename_zip
+-            if want_to_write:
+-                # Create new file object, we catch the bytes in finish()
+-                self._file = BytesIO()
+-                self._file_is_local = True
+-            else:
+-                # Open zipfile and open new file object for specific file
+-                self._zipfile = zipfile.ZipFile(filename, "r")
+-                self._file = self._zipfile.open(name, "r")
+-                self._file = SeekableFileObject(self._file)
+-
+-        elif self._uri_type in [URI_HTTP or URI_FTP]:
+-            assert not want_to_write  # This should have been tested in init
+-            timeout = os.getenv("IMAGEIO_REQUEST_TIMEOUT")
+-            if timeout is None or not timeout.isdigit():
+-                timeout = 5
+-            self._file = urlopen(self.filename, timeout=float(timeout))
+-            self._file = SeekableFileObject(self._file)
+-
+-        return self._file
++        return self._resource.get_file()
+ 
+     def get_local_filename(self):
+         """get_local_filename()
+@@ -528,22 +684,7 @@
+         that. Otherwise a temporary file is created on the local file
+         system which can be used by the format to read from or write to.
+         """
+-
+-        if self._uri_type == URI_FILENAME:
+-            return self._filename
+-        else:
+-            # Get filename
+-            if self.extension is not None:
+-                ext = self.extension
+-            else:
+-                ext = os.path.splitext(self._filename)[1]
+-            fd, self._filename_local = tempfile.mkstemp(ext, "imageio_")
+-            os.close(fd)
+-            # Write stuff to it?
+-            if self.mode.io_mode == IOMode.read:
+-                with open(self._filename_local, "wb") as file:
+-                    shutil.copyfileobj(self.get_file(), file)
+-            return self._filename_local
++        return self._resource.get_local_filename()
+ 
+     def finish(self) -> None:
+         """Wrap up this request.
+@@ -551,50 +692,7 @@
+         Finishes any pending reads or writes, closes any open files and frees
+         any resources allocated by this request.
+         """
+-
+-        if self.mode.io_mode == IOMode.write:
+-            # See if we "own" the data and must put it somewhere
+-            bytes = None
+-            if self._filename_local:
+-                bytes = Path(self._filename_local).read_bytes()
+-            elif self._file_is_local:
+-                self._file_is_local = False
+-                bytes = self._file.getvalue()
+-
+-            # Put the data in the right place
+-            if bytes is not None:
+-                if self._uri_type == URI_BYTES:
+-                    self._result = bytes  # Picked up by imread function
+-                elif self._uri_type == URI_FILE:
+-                    self._file.write(bytes)
+-                elif self._uri_type == URI_ZIPPED:
+-                    zf = zipfile.ZipFile(self._filename_zip[0], "a")
+-                    zf.writestr(self._filename_zip[1], bytes)
+-                    zf.close()
+-                # elif self._uri_type == URI_FILENAME: -> is always direct
+-                # elif self._uri_type == URI_FTP/HTTP: -> write not supported
+-
+-        # Close open files that we know of (and are responsible for)
+-        if self._file and self._uri_type != URI_FILE:
+-            self._file.close()
+-            self._file = None
+-        if self._zipfile:
+-            self._zipfile.close()
+-            self._zipfile = None
+-
+-        # Remove temp file
+-        if self._filename_local:
+-            try:
+-                os.remove(self._filename_local)
+-            except Exception:  # pragma: no cover
+-                warnings.warn(
+-                    "Failed to delete the temporary file at "
+-                    f"`{self._filename_local}`. Please report this issue."
+-                )
+-            self._filename_local = None
+-
+-        # Detach so gc can clean even if a reference of self lingers
+-        self._bytes = None
++        return self._resource.finish()
+ 
+     def get_result(self):
+         """For internal use. In some situations a write action can have
+@@ -640,7 +738,7 @@
+                 # Prevent get_file() from reusing the file
+                 self._file = None
+                 # If the given URI was a file object, we have a problem,
+-                if self._uri_type == URI_FILE:
++                if self.resource_kind is ResourceKind.FILE:
+                     raise IOError("Cannot seek back after getting firstbytes!")
+ 
+ 
+--- a/imageio/core/request.pyi
++++ b/imageio/core/request.pyi
+@@ -1,4 +1,4 @@
+-from typing import BinaryIO, Optional, Dict, Any, Sequence, overload, Literal
++from typing import BinaryIO, Optional, Dict, Any, Sequence, Tuple, overload, Literal
+ from ..typing import ImageResource
+ import enum
+ 
+@@ -10,6 +10,14 @@
+ URI_ZIPPED = 4
+ URI_HTTP = 5
+ URI_FTP = 6
++
++class ResourceKind(str, enum.Enum):
++    BYTES = "bytes"
++    FILE = "file"
++    FILENAME = "filename"
++    ZIPPED = "zipped"
++    HTTP = "http"
++    FTP = "ftp"
+ 
+ class IOMode(str, enum.Enum):
+     read = "r"
+@@ -44,8 +52,18 @@
+ 
+ class InitializationError(Exception): ...
+ 
++class _Resource:
++    kind: ResourceKind
++    caller_owns_file: bool
++    def __init__(self, request: Request) -> None: ...
++    def get_file(self) -> Optional[BinaryIO]: ...
++    def get_local_filename(self) -> str: ...
++    def finish(self) -> None: ...
++    def write_back(self, data: bytes) -> None: ...
++
+ class Request(object):
+     _uri_type: int
++    _filename_zip: Optional[Tuple[str, str]]
+     raw_uri: ImageResource
+ 
+     @property
+@@ -62,6 +80,8 @@
+     def kwargs(self) -> Dict[str, Any]: ...
+     @property
+     def firstbytes(self) -> bytes: ...
++    @property
++    def resource_kind(self) -> ResourceKind: ...
+     def __init__(
+         self,
+         uri: ImageResource,
+--- a/imageio/plugins/opencv.py
++++ b/imageio/plugins/opencv.py
+@@ -38,7 +38,7 @@
+ import numpy as np
+ 
+ from ..core import Request
+-from ..core.request import URI_BYTES, InitializationError, IOMode
++from ..core.request import InitializationError, IOMode, ResourceKind
+ from ..core.v3_plugin_api import ImageProperties, PluginV3
+ from ..typing import ArrayLike
+ 
+@@ -48,7 +48,7 @@
+         super().__init__(request)
+ 
+         self.file_handle = request.get_local_filename()
+-        if request._uri_type is URI_BYTES:
++        if request.resource_kind is ResourceKind.BYTES:
+             self.filename = "<bytes>"
+         else:
+             self.filename = request.raw_uri
+@@ -224,7 +224,7 @@
+             # it can occur theoretically.
+             raise IOError("OpenCV failed to write.")  # pragma: no cover
+ 
+-        if self.request._uri_type == URI_BYTES:
++        if self.request.resource_kind is ResourceKind.BYTES:
+             return Path(self.file_handle).read_bytes()
+ 
+     def properties(
+--- a/imageio/plugins/pillow.py
++++ b/imageio/plugins/pillow.py
+@@ -37,7 +37,7 @@
+ from PIL import ExifTags, GifImagePlugin, Image, ImageSequence, UnidentifiedImageError
+ from PIL import __version__ as pil_version  # type: ignore
+ 
+-from ..core.request import URI_BYTES, InitializationError, IOMode, Request
++from ..core.request import ResourceKind, InitializationError, IOMode, Request
+ from ..core.v3_plugin_api import ImageProperties, PluginV3
+ from ..typing import ArrayLike
+ 
+@@ -108,7 +108,7 @@
+                 # compatible pillow plugin (ref: the pillow docs).
+                 image = Image.open(request.get_file())
+             except UnidentifiedImageError:
+-                if request._uri_type == URI_BYTES:
++                if request.resource_kind is ResourceKind.BYTES:
+                     raise InitializationError(
+                         "Pillow can not read the provided bytes."
+                     ) from None
+@@ -469,7 +469,7 @@
+ 
+         # when writing to `bytes` we flush instantly
+         result = None
+-        if self._request._uri_type == URI_BYTES:
++        if self._request.resource_kind is ResourceKind.BYTES:
+             self._flush_writer()
+             file = cast(BytesIO, self._request.get_file())
+             result = file.getvalue()
+--- a/imageio/plugins/pillow_legacy.py
++++ b/imageio/plugins/pillow_legacy.py
+@@ -171,7 +171,7 @@
+ import numpy as np
+ 
+ from ..core import Format, image_as_uint
+-from ..core.request import URI_FILE, URI_BYTES
++from ..core.request import ResourceKind
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -266,10 +266,10 @@
+ 
+     def _can_write(self, request):
+         Image = self._init_pillow()
+-        if request.extension in self.extensions or request._uri_type in [
+-            URI_FILE,
+-            URI_BYTES,
+-        ]:
++        if request.extension in self.extensions or request.resource_kind in (
++            ResourceKind.FILE,
++            ResourceKind.BYTES,
++        ):
+             if self.plugin_id in Image.SAVE:
+                 return True
+ 
+--- a/imageio/plugins/pyav.py
++++ b/imageio/plugins/pyav.py
+@@ -186,7 +186,7 @@
+ from numpy.lib.stride_tricks import as_strided
+ 
+ from ..core import Request
+-from ..core.request import URI_BYTES, InitializationError, IOMode
++from ..core.request import InitializationError, IOMode, ResourceKind
+ from ..core.v3_plugin_api import ImageProperties, PluginV3
+ 
+ 
+@@ -332,7 +332,7 @@
+         if request.mode.io_mode == IOMode.read:
+             self._next_idx = 0
+             try:
+-                if request._uri_type == 5:  # 5 is the value of URI_HTTP
++                if request.resource_kind is ResourceKind.HTTP:
+                     # pyav should read from HTTP by itself. This enables reading
+                     # HTTP-based streams like DASH. Note that solving streams
+                     # like this is temporary until the new request object gets
+@@ -678,7 +678,7 @@
+         for img in ndimage:
+             self.write_frame(img, pixel_format=in_pixel_format)
+ 
+-        if self.request._uri_type == URI_BYTES:
++        if self.request.resource_kind is ResourceKind.BYTES:
+             # bytes are immutuable, so we have to flush immediately
+             # and can't support appending
+             self._flush_writer()
+--- a/imageio/plugins/rawpy.py
++++ b/imageio/plugins/rawpy.py
+@@ -8,7 +8,7 @@
+ import rawpy
+ import numpy as np
+ 
+-from ..core.request import URI_BYTES, InitializationError, IOMode, Request
++from ..core.request import InitializationError, IOMode, Request, ResourceKind
+ from ..core.v3_plugin_api import ImageProperties, PluginV3
+ from ..typing import ArrayLike
+ 
+@@ -46,7 +46,7 @@
+                 rawpy.LibRawFileUnsupportedError,
+                 rawpy.LibRawIOError,
+             ):
+-                if request._uri_type == URI_BYTES:
++                if request.resource_kind is ResourceKind.BYTES:
+                     raise InitializationError(
+                         "RawPy can not read the provided bytes."
+                     ) from None
+--- a/imageio/plugins/tifffile.py
++++ b/imageio/plugins/tifffile.py
+@@ -177,7 +177,7 @@
+ import datetime
+ 
+ from ..core import Format
+-from ..core.request import URI_BYTES, URI_FILE
++from ..core.request import ResourceKind
+ 
+ import numpy as np
+ import warnings
+@@ -403,7 +403,7 @@
+         return True
+ 
+     def _can_write(self, request):
+-        if request._uri_type in [URI_FILE, URI_BYTES]:
++        if request.resource_kind in (ResourceKind.FILE, ResourceKind.BYTES):
+             pass  # special URI
+         elif request.extension not in self.extensions:
+             return False
+--- a/imageio/plugins/tifffile_v3.py
++++ b/imageio/plugins/tifffile_v3.py
+@@ -50,7 +50,7 @@
+ import numpy as np
+ import tifffile
+ 
+-from ..core.request import URI_BYTES, InitializationError, Request
++from ..core.request import InitializationError, Request, ResourceKind
+ from ..core.v3_plugin_api import ImageProperties, PluginV3
+ from ..typing import ArrayLike
+ 
+@@ -239,7 +239,7 @@
+                 write_kwargs.setdefault("planarconfig", "separate")
+             self._fh.write(image, **write_kwargs)
+ 
+-        if self._request._uri_type == URI_BYTES:
++        if self._request.resource_kind is ResourceKind.BYTES:
+             self._fh.close()
+             file = cast(BytesIO, self._request.get_file())
+             return file.getvalue()
+--- a/tests/test_core.py
++++ b/tests/test_core.py
+@@ -245,10 +245,15 @@
+                 if file_or_filename == 0:
+                     all_bytes = R.get_file().read()
+                 else:
+-                    with open(R.get_local_filename(), "rb") as f:
++                    loc_name = R.get_local_filename()
++                    with open(loc_name, "rb") as f:
+                         all_bytes = f.read()
+-                R.finish()
++                assert R.finish() is None
+                 assert bytes == all_bytes
++                if file_or_filename != 0 and R.resource_kind != core.request.ResourceKind.FILENAME:
++                    assert not os.path.exists(loc_name)
++                if hasattr(uri, "read") and hasattr(uri, "close"):
++                    assert not uri.closed
+                 if check_first_bytes:
+                     assert len(first_bytes) > 0
+                     assert all_bytes.startswith(first_bytes)
+@@ -285,16 +290,26 @@
+             R = Request(uri, "wi")
+             if file_or_filename == 0:
+                 R.get_file().write(bytes)  # via file
++                loc_name = None
+             else:
+-                with open(R.get_local_filename(), "wb") as f:
++                loc_name = R.get_local_filename()
++                with open(loc_name, "wb") as f:
+                     f.write(bytes)  # via local
+-            R.finish()
++            assert R.finish() is None
++            if loc_name is not None and R.resource_kind != core.request.ResourceKind.FILENAME:
++                assert not os.path.exists(loc_name)
++            if R.resource_kind != core.request.ResourceKind.FILE:
++                assert R._file is None
+             res = R.get_result()
++            assert R.get_result() is None
++            if uri != iio.RETURN_BYTES:
++                assert res is None
+         # Test four results
+         with open(filename2, "rb") as f:
+             assert f.read() == bytes
+         with ZipFile(zipfilename2, "r") as zf:
+             assert zf.open(fname2).read() == bytes
++        assert not file2.closed
+         assert file2.getvalue() == bytes
+         assert res == bytes
+ 
+@@ -370,6 +385,281 @@
+     R = Request(File(), "ri")
+     with raises(IOError):
+         R.firstbytes
++
++
++def test_request_resource_kind(tmp_path):
++    cases = [
++        (bytes(600), "ri", core.request.ResourceKind.BYTES, core.request.URI_BYTES),
++        (
++            memoryview(bytes(600)),
++            "ri",
++            core.request.ResourceKind.BYTES,
++            core.request.URI_BYTES,
++        ),
++        ("<video0>", "rI", core.request.ResourceKind.BYTES, core.request.URI_BYTES),
++        (
++            iio.RETURN_BYTES,
++            "wi",
++            core.request.ResourceKind.BYTES,
++            core.request.URI_BYTES,
++        ),
++        (BytesIO(), "ri", core.request.ResourceKind.FILE, core.request.URI_FILE),
++        (BytesIO(), "wi", core.request.ResourceKind.FILE, core.request.URI_FILE),
++        (
++            str(tmp_path / "test.png"),
++            "wi",
++            core.request.ResourceKind.FILENAME,
++            core.request.URI_FILENAME,
++        ),
++        (
++            Path(tmp_path / "test.png"),
++            "wi",
++            core.request.ResourceKind.FILENAME,
++            core.request.URI_FILENAME,
++        ),
++        (
++            str(tmp_path / "archive.zip/member.png"),
++            "wi",
++            core.request.ResourceKind.ZIPPED,
++            core.request.URI_ZIPPED,
++        ),
++        (
++            "http://example.com/test.png",
++            "ri",
++            core.request.ResourceKind.HTTP,
++            core.request.URI_HTTP,
++        ),
++        (
++            "https://example.com/test.png",
++            "ri",
++            core.request.ResourceKind.HTTP,
++            core.request.URI_HTTP,
++        ),
++        (
++            "ftp://example.com/test.png",
++            "ri",
++            core.request.ResourceKind.FTP,
++            core.request.URI_FTP,
++        ),
++        (
++            "ftps://example.com/test.png",
++            "ri",
++            core.request.ResourceKind.FTP,
++            core.request.URI_FTP,
++        ),
++    ]
++    kinds_seen = set()
++    types_seen = set()
++    for uri, mode, expected_kind, expected_uri_type in cases:
++        req = Request(uri, mode)
++        assert req.resource_kind == expected_kind
++        assert req.resource_kind is expected_kind
++        assert req._uri_type == expected_uri_type
++        # check read-only
++        with pytest.raises(AttributeError):
++            req.resource_kind = expected_kind
++        # check accessing resource_kind does not open file
++        if expected_kind is not core.request.ResourceKind.FILE:
++            assert req._file is None
++        kinds_seen.add(expected_kind)
++        types_seen.add(expected_uri_type)
++        assert req.finish() is None
++        # readable after finish
++        assert req.resource_kind is expected_kind
++
++    assert len(kinds_seen) == 6
++    assert len(types_seen) == 6
++
++
++def test_request_legacy_compat_surface(tmp_path):
++    assert core.request.URI_BYTES == 1
++    assert core.request.URI_FILE == 2
++    assert core.request.URI_FILENAME == 3
++    assert core.request.URI_ZIPPED == 4
++    assert core.request.URI_HTTP == 5
++    assert core.request.URI_FTP == 6
++
++    zip_req = Request(str(tmp_path / "foo.zip/bar.png"), "wi")
++    assert zip_req._filename_zip == (
++        os.path.abspath(str(tmp_path / "foo.zip")),
++        "bar.png",
++    )
++    zip_req.finish()
++
++    pyi_path = Path(imageio.core.request.__file__).with_suffix(".pyi")
++    content = pyi_path.read_text(encoding="utf-8")
++    assert "URI_BYTES = 1" in content
++    assert "URI_FTP = 6" in content
++    assert "_uri_type: int" in content
++    assert "_filename_zip" in content
++    assert "resource_kind" in content
++
++
++def test_request_ftp_is_not_opened(monkeypatch):
++    def boom(*args, **kwargs):
++        raise AssertionError("urlopen should never be called for FTP!")
++
++    monkeypatch.setattr(imageio.core.request, "urlopen", boom)
++
++    for uri in ("ftp://example.com/test.png", "ftps://example.com/test.png"):
++        req = Request(uri, "ri")
++        assert req.resource_kind is core.request.ResourceKind.FTP
++        assert req._uri_type == core.request.URI_FTP
++        assert req.get_file() is None
++        assert req._file is None
++        assert req._filename_local is None
++        assert req.finish() is None
++
++
++def test_request_directory_error(tmp_path):
++    folder = tmp_path / "some_dir"
++    folder.mkdir()
++
++    expected_msg = (
++        "ImageIO does not generally support reading folders. "
++        "Limited support may be available via specific plugins. "
++        "Specify the plugin explicitly using the `plugin` kwarg, e.g. `plugin='DICOM'`"
++    )
++
++    with pytest.raises(IOError) as exc_info:
++        iio.imopen(str(folder), "r", legacy_mode=False)
++    assert not isinstance(exc_info.value, ValueError)
++    assert str(exc_info.value) == expected_msg
++
++    with pytest.raises(ValueError) as exc_info:
++        iio.imopen(str(folder), "r", legacy_mode=True)
++    assert str(exc_info.value) == expected_msg
++
++
++def test_request_construction_has_no_side_effects(tmp_path, monkeypatch):
++    import builtins
++
++    counts = {"open": 0, "mkstemp": 0, "urlopen": 0}
++
++    real_open = builtins.open
++    real_mkstemp = tempfile.mkstemp
++
++    def counted_open(*args, **kwargs):
++        counts["open"] += 1
++        return real_open(*args, **kwargs)
++
++    def counted_mkstemp(*args, **kwargs):
++        counts["mkstemp"] += 1
++        return real_mkstemp(*args, **kwargs)
++
++    def counted_urlopen(*args, **kwargs):
++        counts["urlopen"] += 1
++        raise AssertionError("urlopen called during construction")
++
++    monkeypatch.setattr(builtins, "open", counted_open)
++    monkeypatch.setattr(tempfile, "mkstemp", counted_mkstemp)
++    monkeypatch.setattr(imageio.core.request, "urlopen", counted_urlopen)
++
++    existing_file = tmp_path / "exist.png"
++    with real_open(existing_file, "wb") as f:
++        f.write(b"data")
++
++    bio = BytesIO()
++
++    cases = [
++        (str(existing_file), "ri"),
++        (Path(existing_file), "ri"),
++        (b"data", "ri"),
++        (memoryview(b"data"), "ri"),
++        ("<video0>", "rI"),
++        (iio.RETURN_BYTES, "wi"),
++        (str(tmp_path / "out.png"), "wi"),
++        (bio, "ri"),
++        (bio, "wi"),
++        ("http://example.com/test.png", "ri"),
++        ("https://example.com/test.png", "ri"),
++        ("ftp://example.com/test.png", "ri"),
++        ("ftps://example.com/test.png", "ri"),
++    ]
++
++    for uri, mode in cases:
++        counts["open"] = 0
++        counts["mkstemp"] = 0
++        counts["urlopen"] = 0
++        req = Request(uri, mode)
++        assert counts["open"] == 0
++        assert counts["mkstemp"] == 0
++        assert counts["urlopen"] == 0
++        assert req._filename_local is None
++        if hasattr(uri, "read") or hasattr(uri, "write"):
++            assert req._file is uri
++        else:
++            assert req._file is None
++        req.finish()
++
++
++def test_request_timeout_env_variable(monkeypatch):
++    getenv_calls = []
++    urlopen_calls = []
++
++    real_getenv = os.getenv
++
++    def fake_getenv(key, default=None):
++        if key == "IMAGEIO_REQUEST_TIMEOUT":
++            getenv_calls.append(key)
++        return real_getenv(key, default)
++
++    def fake_urlopen(url, timeout=None):
++        urlopen_calls.append((url, timeout))
++        return BytesIO(b"data")
++
++    monkeypatch.setattr(os, "getenv", fake_getenv)
++    monkeypatch.setattr(imageio.core.request, "urlopen", fake_urlopen)
++
++    # Non-HTTP construction and get_file: no getenv, no urlopen
++    req_bytes = Request(b"data", "ri")
++    req_bytes.get_file()
++    req_bytes.finish()
++    assert len(getenv_calls) == 0
++    assert len(urlopen_calls) == 0
++
++    # HTTP construction: no getenv, no urlopen
++    req_http = Request("http://example.com/test.png", "ri")
++    assert len(getenv_calls) == 0
++    assert len(urlopen_calls) == 0
++
++    # HTTP get_file(): getenv called once, urlopen with 5.0 default
++    req_http.get_file()
++    assert len(getenv_calls) == 1
++    assert len(urlopen_calls) == 1
++    assert urlopen_calls[0] == ("http://example.com/test.png", 5.0)
++    req_http.finish()
++
++    # HTTP with IMAGEIO_REQUEST_TIMEOUT="10"
++    monkeypatch.setenv("IMAGEIO_REQUEST_TIMEOUT", "10")
++    req_http2 = Request("http://example.com/test2.png", "ri")
++    req_http2.get_file()
++    assert urlopen_calls[-1] == ("http://example.com/test2.png", 10.0)
++    req_http2.finish()
++
++
++def test_request_finish_does_not_close_caller_file(tmp_path):
++    # Read mode with real file object
++    filepath = tmp_path / "sample.txt"
++    filepath.write_bytes(b"hello world")
++    with open(filepath, "rb") as fh:
++        req = Request(fh, "ri")
++        req.get_local_filename()
++        assert req.finish() is None
++        assert not fh.closed
++        fh.seek(0)
++        assert fh.read() == b"hello world"
++
++    # Write mode with BytesIO
++    buf = BytesIO()
++    req_w = Request(buf, "wi")
++    loc = req_w.get_local_filename()
++    with open(loc, "wb") as f:
++        f.write(b"written bytes")
++    assert req_w.finish() is None
++    assert not buf.closed
++    assert buf.getvalue() == b"written bytes"
++    assert not os.path.exists(loc)
+ 
+ 
+ def test_util_image():
+--- a/tests/test_pyav.py
++++ b/tests/test_pyav.py
+@@ -624,3 +624,46 @@
+     if not output.poll(timeout=5):
+         proc.kill()
+         raise TimeoutError("Test Subprocess failed to respond in time.")
++
++
++def test_http_uri_is_passed_to_av_open(monkeypatch):
++    import av
++    from imageio.plugins.pyav import PyAVPlugin
++    from imageio.core import Request
++
++    recorded = []
++
++    class DummyContainer:
++        def __init__(self):
++            self.streams = type("Streams", (), {"video": [type("Stream", (), {})()]})()
++
++        def decode(self, **kwargs):
++            return iter([])
++
++        def close(self):
++            pass
++
++    def fake_open(target, **kwargs):
++        recorded.append(target)
++        return DummyContainer()
++
++    monkeypatch.setattr(av, "open", fake_open)
++
++    # HTTP request
++    req_http = Request("http://example.com/video.mp4", "r")
++    plugin_http = PyAVPlugin(req_http)
++    assert recorded[-1] == "http://example.com/video.mp4"
++
++    # HTTPS request
++    req_https = Request("https://example.com/video.mp4", "r")
++    plugin_https = PyAVPlugin(req_https)
++    assert recorded[-1] == "https://example.com/video.mp4"
++
++    # Non-HTTP request (e.g. bytes)
++    req_bytes = Request(b"\x00" * 100, "r", extension=".mp4")
++    plugin_bytes = PyAVPlugin(req_bytes)
++    assert recorded[-1] is req_bytes.get_file()
++
++    plugin_http.close()
++    plugin_https.close()
++    plugin_bytes.close()

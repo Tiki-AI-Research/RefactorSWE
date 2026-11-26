@@ -1,0 +1,11 @@
+--- a/internal/web/handler_api.go
++++ b/internal/web/handler_api.go
+@@ -261,7 +261,7 @@
+ 	switch {
+ 	case errors.Is(err, cmgr.ErrMetricsDisabled):
+ 		return echo.NewHTTPError(http.StatusServiceUnavailable, err.Error())
+-	case errors.Is(err, ms.ErrTruncateNotConfirmed):
++	case err == ms.ErrTruncateNotConfirmed:
+ 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+ 	default:
+ 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())

@@ -1,0 +1,62 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+[task]
+name = "tikiai/refactor-go-yaml-ast-convert-01"
+description = "Let YAML AST nodes expose their children, locate their first token, and accept visitors through a common interface."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "refactor-go-yaml-ast-convert-01"
+repository_url = "https://github.com/goccy/go-yaml"
+base_commit_hash = "edee2f91616c6d73112a13e7c0dbde72ce938877"
+display_title = "Polymorphic YAML syntax tree traversal"
+category = "polymorphism_extension"
+language = "Go"
+
+[tests]
+fail_to_pass_count = 22
+pass_to_pass_count = 71
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+user = "root"
+network_mode = "public"
+environment_mode = "separate"
+timeout_sec = 1800.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:refactor-go-yaml-ast-convert-01-verifier-image-20261125"
+image_digest = "sha256:fcffb082292d20992c61f47226739c68b7bce1b54bc9e00204eba5ec0335d9b9"
+network_mode = "public"
+build_timeout_sec = 3600.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "set -eu\nmkdir -p /logs/artifacts\nrm -f /logs/artifacts/model.patch\ncollect_tmp=$(mktemp -d /logs/artifacts/.collect.XXXXXX)\ntrap 'rm -rf \"$collect_tmp\"' EXIT\nexport GIT_INDEX_FILE=\"$collect_tmp/index\"\nattributes_file=\"$collect_tmp/attributes\"\nprintf '* -diff\\n' > \"$attributes_file\"\ngit -C /workspace/repo rev-parse --verify 'edee2f91616c6d73112a13e7c0dbde72ce938877^{commit}' >/dev/null\ngit -C /workspace/repo read-tree edee2f91616c6d73112a13e7c0dbde72ce938877\ngit -C /workspace/repo add -A -- .\ngit -c core.attributesFile=\"$attributes_file\" -C /workspace/repo diff --cached --binary --full-index --no-ext-diff --no-textconv edee2f91616c6d73112a13e7c0dbde72ce938877 -- > \"$collect_tmp/model.patch\"\nmv \"$collect_tmp/model.patch\" /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+user = "agent"
+network_mode = "public"
+timeout_sec = 7200.0
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:refactor-go-yaml-ast-convert-01-task-image-20261125"
+image_digest = "sha256:d4bec8c8fddcd2636d0f11a7671139c3b940bf371ebbe8f383a58c6ae1f2ca7c"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[verifier.env]
+
+[solution.env]

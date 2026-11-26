@@ -1,0 +1,3529 @@
+diff --git a/tests/test_refactor.py b/tests/test_refactor.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..eaec8b940b4b33918ce3d9844207bda9570b927d
+--- /dev/null
++++ b/tests/test_refactor.py
+@@ -0,0 +1,276 @@
++from __future__ import annotations
++
++import json
++import os
++import re
++import subprocess
++import sys
++from functools import lru_cache
++from pathlib import Path
++
++import pytest
++
++sys.path.insert(0, '/tests/verifier')
++from candidate_runtime import run_go
++
++REPOSITORY = Path(__file__).resolve().parents[1]
++
++
++GO_TEST_GROUPS = {
++    "./verifier_tests": r"^Test",
++    "./verifier_tests_refactor": r"^Test",
++    "./verifier_architecture": r"^Test",
++    "./test": (
++        r"^(?:TestProtyleExportMd|TestSpinBlockDOM|TestMd2BlockDOM|"
++        r"TestInlineMd2BlockDOM|TestBlockDOM2StdMd|TestMd2VditorDOM|"
++        r"TestVditorDOM2Md|TestInlineMath)$"
++    ),
++}
++
++
++@lru_cache(maxsize=None)
++def _run_go_test_group(package: str) -> tuple[dict[str, str], str]:
++    env = os.environ.copy()
++    tmpdir = Path(env.get("TMPDIR", "/tmp"))
++    env["GOCACHE"] = str(tmpdir / "go-build-cache")
++    try:
++        completed = run_go(
++            ["go", "test", "-json", package, "-run", GO_TEST_GROUPS[package], "-count=1"],
++            cwd=REPOSITORY, env=env, text=True, stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT, timeout=240, check=False,
++        )
++    except (OSError, subprocess.TimeoutExpired) as exc:
++        pytest.skip(f"Go test infrastructure unavailable: {exc}")
++
++    statuses: dict[str, str] = {}
++    for line in completed.stdout.splitlines():
++        try:
++            event = json.loads(line)
++        except ValueError:
++            continue
++        name = event.get("Test")
++        action = event.get("Action")
++        if name and action in {"pass", "fail", "skip"}:
++            statuses[name] = action
++    return statuses, completed.stdout
++
++
++@lru_cache(maxsize=None)
++def _run_go_test_single(package: str, test_name: str) -> tuple[str | None, str]:
++    env = os.environ.copy()
++    tmpdir = Path(env.get("TMPDIR", "/tmp"))
++    env["GOCACHE"] = str(tmpdir / "go-build-cache")
++    try:
++        completed = run_go(
++            ["go", "test", "-json", package, "-run", f"^{test_name}$", "-count=1"],
++            cwd=REPOSITORY, env=env, text=True, stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT, timeout=240, check=False,
++        )
++    except (OSError, subprocess.TimeoutExpired) as exc:
++        pytest.skip(f"Go test infrastructure unavailable: {exc}")
++
++    for line in completed.stdout.splitlines():
++        try:
++            event = json.loads(line)
++        except ValueError:
++            continue
++        if event.get("Test") == test_name and event.get("Action") in {"pass", "fail", "skip"}:
++            return str(event["Action"]), completed.stdout
++    return None, completed.stdout
++
++
++def go_test(name_or_package: str, expression: str | None = None) -> None:
++    if expression is None:
++        # F2P nodes live in the refactor-only package so the baseline-compatible
++        # P2P package still compiles before the editor AST module exists.
++        package = "./verifier_tests_refactor"
++    elif name_or_package.startswith("./verifier_tests/"):
++        package = "./verifier_tests"
++    else:
++        package = name_or_package
++    test_name = (
++        re.fullmatch(r"\^([A-Za-z0-9_]+)\$", expression).group(1)
++        if expression is not None
++        else name_or_package
++    )
++    statuses, group_output = _run_go_test_group(package)
++    if test_name in statuses:
++        status, output = statuses[test_name], group_output
++    else:
++        # An unrecovered panic aborts the shared `go test` binary, so any test
++        # ordered after the panicking test never emits a status. Re-run this
++        # node in isolation so a single panic cannot cascade into false
++        # failures for the nodes that follow it.
++        status, output = _run_go_test_single(package, test_name)
++    if status is None or status == "skip":
++        pytest.skip(f"Go test did not produce a completed result: {test_name}\n{output}")
++    if status != "pass":
++        pytest.fail(f"{test_name} did not pass:\n{output}")
++
++
++def test_p2p_1_public_api_and_in_place_mutation() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PPublicAPIAndInPlaceMutation$")
++
++def test_p2p_2_01_code_span_mapping() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PCodeSpanMapping$")
++def test_p2p_2_02_tag_mapping() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PTagMapping$")
++def test_p2p_2_03_inline_math_mapping() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PInlineMathMapping$")
++def test_p2p_2_04_emphasis_mapping() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PEmphasisMapping$")
++def test_p2p_2_05_strong_mapping() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PStrongMapping$")
++def test_p2p_2_06_strikethrough_mapping() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PStrikethroughMapping$")
++def test_p2p_2_07_mark_mapping() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PMarkMapping$")
++def test_p2p_2_08_underline_mapping() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PUnderlineMapping$")
++def test_p2p_2_09_sub_mapping() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PSubMapping$")
++def test_p2p_2_10_sup_mapping() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PSupMapping$")
++def test_p2p_2_11_kbd_mapping() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PKbdMapping$")
++def test_p2p_2_12_link_mapping() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PLinkMapping$")
++def test_p2p_2_13_nested_hierarchy() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PNestedHierarchy$")
++def test_p2p_2_14_inline_attributes() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PInlineAttributes$")
++def test_p2p_2_15_link_metadata() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PLinkMetadata$")
++def test_p2p_2_16_textmark_sup() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PTextMarkSup$")
++def test_p2p_2_17_textmark_sub() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PTextMarkSub$")
++def test_p2p_2_18_textmark_emphasis() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PTextMarkEmphasis$")
++def test_p2p_2_19_textmark_strong() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PTextMarkStrong$")
++def test_p2p_2_20_textmark_mark() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PTextMarkMark$")
++def test_p2p_2_21_textmark_strikethrough() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PTextMarkStrikethrough$")
++def test_p2p_2_22_unsupported_textmark_noop() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PUnsupportedTextMarkNoop$")
++def test_p2p_2_23_flashcard_textmark_noop() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PFlashcardTextMarkNoop$")
++def test_p2p_2_24_unclosed_boundary() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PUnclosedBoundary$")
++
++def test_p2p_3_01_table_math_normal() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PTableMathNormal$")
++def test_p2p_3_02_table_math_export() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PTableMathExport$")
++def test_p2p_3_03_backslash_normal() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PBackslashNormal$")
++def test_p2p_3_04_backslash_hybrid() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PBackslashHybrid$")
++def test_p2p_3_05_protyle_dom_protocol() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PProtyleDOMProtocol$")
++def test_p2p_3_06_block_dom_round_trip() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PBlockDOMRoundTrip$")
++def test_p2p_3_07_vditor_dom_protocol() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PVditorDOMProtocol$")
++def test_p2p_3_08_vditor_round_trip() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PVditorRoundTrip$")
++
++def test_p2p_4_01_cross_tree_isolation() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PCrossTreeIsolation$")
++def test_p2p_4_02_parser_option_unchanged() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PParserOptionUnchanged$")
++def test_p2p_4_03_deterministic_result() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PDeterministicResult$")
++
++def test_p2p_5_01_protyle_export_md() -> None:
++    go_test("./test", "^TestProtyleExportMd$")
++def test_p2p_5_02_spin_block_dom() -> None:
++    go_test("./test", "^TestSpinBlockDOM$")
++def test_p2p_5_03_md2_block_dom() -> None:
++    go_test("./test", "^TestMd2BlockDOM$")
++def test_p2p_5_04_inline_md2_block_dom() -> None:
++    go_test("./test", "^TestInlineMd2BlockDOM$")
++def test_p2p_5_05_block_dom2_std_md() -> None:
++    go_test("./test", "^TestBlockDOM2StdMd$")
++def test_p2p_5_06_md2_vditor_dom() -> None:
++    go_test("./test", "^TestMd2VditorDOM$")
++def test_p2p_5_07_vditor_dom2_md() -> None:
++    go_test("./test", "^TestVditorDOM2Md$")
++def test_p2p_5_08_inline_math() -> None:
++    go_test("./test", "^TestInlineMath$")
++
++def test_p2p_6_01_contain_text_mark_wrapper() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PContainTextMarkWrapper$")
++def test_p2p_6_02_style_value_wrapper() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PStyleValueWrapper$")
++def test_p2p_6_03_set_span_ial_wrapper() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PSetSpanIALWrapper$")
++def test_p2p_6_04_set_text_mark_node_wrapper() -> None:
++    go_test("./verifier_tests/p2p_behavior_test.go", "^TestP2PSetTextMarkNodeWrapper$")
++
++def test_p2p_8_001_regular_flatten_semantics(): go_test("./verifier_tests_refactor", "^TestRegularFlattenSemantics$")
++def test_p2p_8_002_hybrid_flatten_semantics(): go_test("./verifier_tests_refactor", "^TestHybridFlattenSemantics$")
++def test_p2p_8_003_table_math_normal(): go_test("./verifier_tests_refactor", "^TestTableMathNormal$")
++def test_p2p_8_004_table_math_export(): go_test("./verifier_tests_refactor", "^TestTableMathExport$")
++def test_p2p_8_005_normal_block_ref_fields(): go_test("./verifier_tests_refactor", "^TestNormalBlockRefFields$")
++def test_f2p_006_nil_regular_root(): go_test("./verifier_tests_refactor", "^TestNilRegularRoot$")
++def test_f2p_007_nil_hybrid_root(): go_test("./verifier_tests_refactor", "^TestNilHybridRoot$")
++def test_p2p_8_008_malformed_block_ref_id(): go_test("./verifier_tests_refactor", "^TestMalformedBlockRefIDSafe$")
++def test_p2p_8_009_malformed_block_ref(): go_test("./verifier_tests_refactor", "^TestMalformedBlockRefSafe$")
++def test_p2p_8_010_style_value_normalization(): go_test("./verifier_tests_refactor", "^TestStyleValueNormalization$")
++def test_f2p_011_contain_text_mark(): go_test("./verifier_tests_refactor", "^TestContainTextMark$")
++def test_f2p_012_regular_transform_delegated(): go_test("./verifier_architecture", "^TestRegularTransformDelegated$")
++def test_f2p_013_hybrid_transform_delegated(): go_test("./verifier_architecture", "^TestHybridTransformDelegated$")
++def test_f2p_014_text_mark_transform_delegated(): go_test("./verifier_architecture", "^TestTextMarkTransformDelegated$")
++def test_f2p_015_set_span_ial_delegated(): go_test("./verifier_architecture", "^TestSetSpanIALDelegated$")
++def test_f2p_016_contain_text_mark_delegated(): go_test("./verifier_architecture", "^TestContainTextMarkDelegated$")
++def test_f2p_017_set_text_mark_node_delegated(): go_test("./verifier_architecture", "^TestSetTextMarkNodeDelegated$")
++def test_f2p_018_style_value_delegated(): go_test("./verifier_architecture", "^TestStyleValueDelegated$")
++
++def test_p2p_9_01_no_retained_invocation_state(): go_test("./verifier_architecture", "^TestInvocationStateNotRetained$")
++def test_p2p_9_02_concurrent_isolation(): go_test("./verifier_tests_refactor", "^TestConcurrentInvocationIsolation$")
++def test_p2p_9_03_tag_attribute(): go_test("./verifier_tests_refactor", "^TestTagAttributeContract$")
++def test_p2p_9_04_attribute_name(): go_test("./verifier_tests_refactor", "^TestAttributeNameContract$")
++def test_p2p_9_05_attribute_value(): go_test("./verifier_tests_refactor", "^TestAttributeValueContract$")
++
++def test_p2p_9_06_text_mark_nil_options_plain_span(): go_test("./verifier_tests", "^TestP2PTextMarkNilOptionsPlainSpan$")
++
++def test_f2p_022_nil_regular_tree_root(): go_test("./verifier_tests_refactor", "^TestNilRegularTreeRoot$")
++
++def test_f2p_023_nil_hybrid_tree_root(): go_test("./verifier_tests_refactor", "^TestNilHybridTreeRoot$")
++
++def test_f2p_024_regular_flatten_owned_by_editor(): go_test("./verifier_architecture", "^TestRegularFlattenOwnedByEditor$")
++
++def test_f2p_025_hybrid_flatten_owned_by_editor(): go_test("./verifier_architecture", "^TestHybridFlattenOwnedByEditor$")
++
++def test_f2p_026_no_parser_textmark_conversion(): go_test("./verifier_architecture", "^TestNoParserTextMarkConversion$")
++
++def test_f2p_027_no_parser_style_conversion(): go_test("./verifier_architecture", "^TestNoParserStyleConversion$")
++
++def test_f2p_028_inline_textmark_conversion_delegated(): go_test("./verifier_architecture", "^TestInlineTextMarkConversionDelegated$")
++
++def test_f2p_029_inline_image_conversion_delegated(): go_test("./verifier_architecture", "^TestInlineImageConversionDelegated$")
++
++def test_p2p_9_07_nil_options_option_free_textmark(): go_test("./verifier_tests", "^TestNilOptionsOptionFreeTextMark$")
++
++
++def test_f2p_030_stable_span_custom_attributes() -> None:
++    go_test("./verifier_tests", "^TestF2PStableSpanCustomAttributes$")
++
++
++def test_f2p_031_stable_paragraph_custom_attributes() -> None:
++    go_test("./verifier_tests", "^TestF2PStableParagraphCustomAttributes$")
++
++
++def test_f2p_032_stable_heading_custom_attributes() -> None:
++    go_test("./verifier_tests", "^TestF2PStableHeadingCustomAttributes$")
++
++
++def test_p2p_10_01_regular_link_reference_ast() -> None:
++    go_test("./verifier_tests", "^TestP2PRegularLinkReferenceAST$")
++
++
++def test_p2p_10_02_hybrid_link_reference_ast() -> None:
++    go_test("./verifier_tests", "^TestP2PHybridLinkReferenceAST$")
+diff --git a/verifier_architecture/inline_html_ownership_test.go b/verifier_architecture/inline_html_ownership_test.go
+new file mode 100644
+--- /dev/null
++++ b/verifier_architecture/inline_html_ownership_test.go
+@@ -0,0 +1,11 @@
++package verifier_architecture
++
++import "testing"
++
++func TestInlineTextMarkConversionDelegated(t *testing.T) {
++	requireInlineConversionDelegation(t, "TestInlineTextMarkConversion", "textmark")
++}
++
++func TestInlineImageConversionDelegated(t *testing.T) {
++	requireInlineConversionDelegation(t, "TestInlineImageConversion", "image-node", "image-style")
++}
+diff --git a/verifier_architecture/architecture_test.go b/verifier_architecture/architecture_test.go
+new file mode 100644
+--- /dev/null
++++ b/verifier_architecture/architecture_test.go
+@@ -0,0 +1,878 @@
++package verifier_architecture
++
++// These checks use historical parse APIs and disable editor implementations to
++// test delegation independently of new function names and signatures.
++import (
++	"bytes"
++	"encoding/json"
++	"fmt"
++	"go/ast"
++	"go/build"
++	"go/format"
++	"go/importer"
++	"go/parser"
++	"go/token"
++	"go/types"
++	"io"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++)
++
++func repository(t *testing.T) string {
++	t.Helper()
++	_, file, _, ok := runtime.Caller(0)
++	if !ok {
++		t.Fatal("cannot locate repository")
++	}
++	return filepath.Dir(filepath.Dir(file))
++}
++
++// New packages belong to the migration regardless of directory spelling. Existing
++// editor packages remain part of the boundary; baseline parser services are not.
++func componentDirs(root string) ([]string, error) {
++	dirs := map[string]bool{}
++	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
++		if err != nil {
++			return err
++		}
++		rel, _ := filepath.Rel(root, path)
++		if entry.IsDir() {
++			if strings.HasPrefix(entry.Name(), ".") || entry.Name() == "vendor" || strings.HasPrefix(rel, "verifier_") || rel == "tests" || rel == "test" {
++				return filepath.SkipDir
++			}
++			return nil
++		}
++		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
++			return nil
++		}
++		dir := filepath.Dir(rel)
++		if dir == "." || dir == "parse" {
++			return nil
++		}
++		if dir == "editor" || strings.HasPrefix(dir, "editor/") {
++			dirs[filepath.Dir(path)] = true
++			return nil
++		}
++		old, err := exec.Command("git", "-C", root, "ls-tree", "-r", "--name-only", "8928f1866da3269aed613288afb3554985df94e1", "--", dir).Output()
++		if err != nil {
++			return err
++		}
++		if len(bytes.TrimSpace(old)) == 0 {
++			dirs[filepath.Dir(path)] = true
++		}
++		return nil
++	})
++	out := []string{}
++	for dir := range dirs {
++		out = append(out, dir)
++	}
++	return out, err
++}
++
++var disabledEditor struct {
++	sync.Once
++	path string
++	dir  string
++	err  error
++}
++
++func TestMain(m *testing.M) {
++	code := m.Run()
++	if disabledEditor.dir != "" {
++		os.RemoveAll(disabledEditor.dir)
++	}
++	os.Exit(code)
++}
++
++// Compile an overlay with editor function bodies disabled. Keeping the original
++// body unreachable preserves imports and local declarations. No candidate files
++// are changed, and no editor package, function name or signature is prescribed.
++func editorOverlay(root, dir string) (string, error) {
++	replacements := map[string]string{}
++	dirs, err := componentDirs(root)
++	if err != nil {
++		return "", err
++	}
++	for _, componentDir := range dirs {
++		err = filepath.WalkDir(componentDir, func(path string, entry os.DirEntry, err error) error {
++			if err == nil && entry.IsDir() && path != componentDir {
++				return filepath.SkipDir
++			}
++			if err != nil {
++				return err
++			}
++			if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
++				return nil
++			}
++			fset := token.NewFileSet()
++			file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
++			if err != nil {
++				return err
++			}
++			type function struct {
++				typ  *ast.FuncType
++				body *ast.BlockStmt
++			}
++			var functions []function
++			ast.Inspect(file, func(node ast.Node) bool {
++				switch fn := node.(type) {
++				case *ast.FuncDecl:
++					if fn.Body != nil && fn.Name.Name != "init" {
++						functions = append(functions, function{fn.Type, fn.Body})
++					}
++				case *ast.FuncLit:
++					functions = append(functions, function{fn.Type, fn.Body})
++				}
++				return true
++			})
++			for _, fn := range functions {
++				body := &ast.BlockStmt{}
++				ret := &ast.ReturnStmt{}
++				if fn.typ.Results != nil {
++					for _, field := range fn.typ.Results.List {
++						count := len(field.Names)
++						if count == 0 {
++							count = 1
++						}
++						for i := 0; i < count; i++ {
++							name := ast.NewIdent(fmt.Sprintf("auditZero%d", len(ret.Results)))
++							body.List = append(body.List, &ast.DeclStmt{Decl: &ast.GenDecl{Tok: token.VAR, Specs: []ast.Spec{
++								&ast.ValueSpec{Names: []*ast.Ident{name}, Type: field.Type},
++							}}})
++							ret.Results = append(ret.Results, name)
++						}
++					}
++				}
++				body.List = append(body.List, ret)
++				fn.body.List = append([]ast.Stmt{&ast.IfStmt{Cond: ast.NewIdent("true"), Body: body}}, fn.body.List...)
++			}
++			var output bytes.Buffer
++			if err := format.Node(&output, fset, file); err != nil {
++				return err
++			}
++			replacement := filepath.Join(dir, fmt.Sprintf("editor-%d.go", len(replacements)))
++			if err := os.WriteFile(replacement, output.Bytes(), 0600); err != nil {
++				return err
++			}
++			replacements[path] = replacement
++			return nil
++		})
++		if err != nil {
++			return "", err
++		}
++	}
++	data, err := json.Marshal(map[string]any{"Replace": replacements})
++	if err != nil {
++		return "", err
++	}
++	path := filepath.Join(dir, "overlay.json")
++	return path, os.WriteFile(path, data, 0600)
++}
++
++func requireDelegation(t *testing.T, name, probe string) {
++	t.Helper()
++	cmd := exec.Command("go", "test", "-count=1", "./verifier_tests", "./verifier_tests_refactor", "-run", "^"+probe+"$")
++	cmd.Dir = repository(t)
++	output, err := boundedInlineGo(cmd.Dir, os.Environ(), cmd.Args[1:]...)
++	if err != nil {
++		t.Fatalf("public contract probe failed: %v\n%s", err, output)
++	}
++	disabledEditor.Do(func() {
++		dir, err := os.MkdirTemp("", "lute-editor-intervention-")
++		if err != nil {
++			disabledEditor.err = err
++			return
++		}
++		disabledEditor.dir = dir
++		disabledEditor.path, disabledEditor.err = editorOverlay(repository(t), dir)
++		if disabledEditor.err != nil {
++			return
++		}
++		cmd := exec.Command("go", "test", "-vet=off", "-overlay", disabledEditor.path, "./verifier_tests", "./verifier_tests_refactor", "-run", "^$")
++		cmd.Dir = repository(t)
++		if out, err := boundedInlineGo(cmd.Dir, os.Environ(), cmd.Args[1:]...); err != nil {
++			disabledEditor.err = fmt.Errorf("editor intervention cannot compile: %v: %s", err, out)
++		}
++	})
++	if disabledEditor.err != nil {
++		t.Fatal(disabledEditor.err)
++	}
++	cmd = exec.Command("go", "test", "-json", "-vet=off", "-count=1", "-overlay", disabledEditor.path, "./verifier_tests", "./verifier_tests_refactor", "-run", "^"+probe+"$")
++	cmd.Dir = repository(t)
++	output, err = boundedInlineGo(cmd.Dir, os.Environ(), cmd.Args[1:]...)
++	for _, line := range bytes.Split(output, []byte("\n")) {
++		var event struct{ Test, Action string }
++		if json.Unmarshal(line, &event) == nil && event.Test == probe && event.Action == "fail" {
++			return
++		}
++	}
++	t.Fatalf("parse.%s contract survives disabled editor transformations (or probe did not complete): %v\n%s", name, err, output)
++}
++
++func TestRegularTransformDelegated(t *testing.T) {
++	requireDelegation(t, "NestedInlines2FlattedSpans", "TestRegularFlattenSemantics")
++}
++func TestHybridTransformDelegated(t *testing.T) {
++	requireDelegation(t, "NestedInlines2FlattedSpansHybrid", "TestHybridFlattenSemantics")
++}
++func TestTextMarkTransformDelegated(t *testing.T) {
++	requireDelegation(t, "TextMarks2Inlines", "TestP2PTextMarkStrong")
++}
++func TestSetSpanIALDelegated(t *testing.T) {
++	requireDelegation(t, "SetSpanIAL", "TestP2PSetSpanIALWrapper")
++}
++func TestContainTextMarkDelegated(t *testing.T) {
++	requireDelegation(t, "ContainTextMark", "TestP2PContainTextMarkWrapper")
++}
++func TestSetTextMarkNodeDelegated(t *testing.T) {
++	requireDelegation(t, "SetTextMarkNode", "TestP2PSetTextMarkNodeWrapper")
++}
++func TestStyleValueDelegated(t *testing.T) {
++	requireDelegation(t, "StyleValue", "TestStyleValueNormalization")
++	dir := t.TempDir()
++	overlay := parserMutationOverlay(t, repository(t), dir)
++	cmd := exec.Command("go", "test", "-vet=off", "-count=1", "-overlay", overlay, "./verifier_tests_refactor", "-run", "^TestStyleValueNormalization$")
++	cmd.Dir = repository(t)
++	if out, err := cmd.CombinedOutput(); err != nil {
++		t.Fatalf("normalization still executes in parse: %v\n%s", err, out)
++	}
++}
++
++// Package variables initialized once and used as lookup constants are allowed.
++// Reject writes and address escapes from invocation code, including selectors,
++// indexes and globals declared in another file. Local shadowing is resolved by
++// go/ast objects; constants and locals are never classified as package state.
++func TestInvocationStateNotRetained(t *testing.T) {
++	root := repository(t)
++	dirs := map[string]bool{filepath.Join(root, "parse"): true}
++	components, err := componentDirs(root)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, dir := range components {
++		dirs[dir] = true
++	}
++	for dir := range dirs {
++		packages, err := parser.ParseDir(token.NewFileSet(), dir, func(info os.FileInfo) bool { return !strings.HasSuffix(info.Name(), "_test.go") }, 0)
++		if err != nil {
++			t.Fatal(err)
++		}
++		// Existing parser services outside this migration may own state.
++		// Compare normalized declarations against the frozen baseline, rather
++		// than exempting names that a candidate could reuse.
++		unchanged := map[string]bool{}
++		if filepath.Base(dir) == "parse" {
++			paths, _ := filepath.Glob(filepath.Join(dir, "*.go"))
++			for _, path := range paths {
++				old, err := exec.Command("git", "-C", root, "show", "8928f1866da3269aed613288afb3554985df94e1:parse/"+filepath.Base(path)).Output()
++				if err != nil {
++					continue
++				}
++				f, err := parser.ParseFile(token.NewFileSet(), "baseline.go", old, 0)
++				if err != nil {
++					t.Fatal(err)
++				}
++				for _, d := range f.Decls {
++					if fn, ok := d.(*ast.FuncDecl); ok {
++						var b bytes.Buffer
++						format.Node(&b, token.NewFileSet(), fn)
++						unchanged[b.String()] = true
++					}
++				}
++			}
++		}
++		for _, pkg := range packages {
++			globals := map[string]bool{}
++			stateWriters := map[string]map[string]bool{}
++			for _, f := range pkg.Files {
++				imports := map[string]string{}
++				for _, spec := range f.Imports {
++					path, err := strconv.Unquote(spec.Path.Value)
++					if err != nil {
++						t.Fatal(err)
++					}
++					alias := filepath.Base(path)
++					if spec.Name != nil {
++						alias = spec.Name.Name
++					}
++					imports[alias] = path
++				}
++				var storageType func(ast.Expr) string
++				storageType = func(expr ast.Expr) string {
++					switch e := expr.(type) {
++					case *ast.SelectorExpr:
++						if pkg, ok := e.X.(*ast.Ident); ok && imports[pkg.Name] != "" {
++							return imports[pkg.Name] + "." + e.Sel.Name
++						}
++					case *ast.StarExpr:
++						return storageType(e.X)
++					case *ast.ParenExpr:
++						return storageType(e.X)
++					case *ast.UnaryExpr:
++						return storageType(e.X)
++					case *ast.CompositeLit:
++						return storageType(e.Type)
++					case *ast.IndexExpr:
++						return storageType(e.X)
++					case *ast.CallExpr:
++						if id, ok := e.Fun.(*ast.Ident); ok && id.Name == "new" && len(e.Args) == 1 {
++							return storageType(e.Args[0])
++						}
++					}
++					return ""
++				}
++				for _, decl := range f.Decls {
++					gen, ok := decl.(*ast.GenDecl)
++					if !ok || gen.Tok != token.VAR {
++						continue
++					}
++					for _, raw := range gen.Specs {
++						spec := raw.(*ast.ValueSpec)
++						for i, name := range spec.Names {
++							globals[name.Name] = true
++							typ := storageType(spec.Type)
++							if typ == "" && i < len(spec.Values) {
++								typ = storageType(spec.Values[i])
++							}
++							methods := ""
++							if typ == "sync.Map" {
++								methods = "Clear CompareAndDelete CompareAndSwap Delete LoadOrStore Store Swap"
++							} else if strings.HasPrefix(typ, "sync/atomic.") {
++								methods = "Add And CompareAndSwap Or Store Swap"
++							}
++							if methods != "" {
++								stateWriters[name.Name] = map[string]bool{}
++								for _, method := range strings.Fields(methods) {
++									stateWriters[name.Name][method] = true
++								}
++							}
++						}
++					}
++				}
++			}
++			effects := packageEffects(pkg)
++			for _, f := range pkg.Files {
++				for _, decl := range f.Decls {
++					fn, ok := decl.(*ast.FuncDecl)
++					if !ok || fn.Body == nil || fn.Name.Name == "init" {
++						continue
++					}
++					var normalized bytes.Buffer
++					format.Node(&normalized, token.NewFileSet(), fn)
++					if unchanged[normalized.String()] {
++						continue
++					}
++					// Objects defined by package-level ValueSpecs are distinct from local vars.
++					globalObjects := map[*ast.Object]bool{}
++					for _, other := range pkg.Files {
++						for name := range globals {
++							if obj := other.Scope.Lookup(name); obj != nil {
++								globalObjects[obj] = true
++							}
++						}
++					}
++					taintedObjects := map[*ast.Object]bool{}
++					var globalBase func(ast.Expr) bool
++					globalBase = func(e ast.Expr) bool {
++						switch e := e.(type) {
++						case *ast.Ident:
++							if e.Obj != nil {
++								return globalObjects[e.Obj] || taintedObjects[e.Obj]
++							}
++							return globals[e.Name]
++						case *ast.SelectorExpr:
++							return globalBase(e.X)
++						case *ast.IndexExpr:
++							return globalBase(e.X)
++						case *ast.IndexListExpr:
++							return globalBase(e.X)
++						case *ast.SliceExpr:
++							return globalBase(e.X)
++						case *ast.StarExpr:
++							return globalBase(e.X)
++						case *ast.ParenExpr:
++							return globalBase(e.X)
++						}
++						return false
++					}
++
++					// A plain local assignment only rebinds a local variable. It is
++					// the later indexed/field/dereference write that mutates backing
++					// storage. Scalar, struct and array copies are not aliases.
++					var referenceType func(ast.Expr) bool
++					referenceType = func(e ast.Expr) bool {
++						switch e := e.(type) {
++						case *ast.ArrayType:
++							return e.Len == nil
++						case *ast.MapType, *ast.StarExpr, *ast.ChanType:
++							return true
++						case *ast.ParenExpr:
++							return referenceType(e.X)
++						}
++						return false
++					}
++					var referenceValue func(ast.Expr) bool
++					referenceValue = func(e ast.Expr) bool {
++						switch e := e.(type) {
++						case *ast.ParenExpr:
++							return referenceValue(e.X)
++						case *ast.SliceExpr:
++							return globalBase(e.X)
++						case *ast.UnaryExpr:
++							return e.Op == token.AND && globalBase(e.X)
++						case *ast.Ident:
++							if e.Obj != nil && taintedObjects[e.Obj] {
++								return true
++							}
++							if !globalBase(e) {
++								return false
++							}
++							for _, file := range pkg.Files {
++								obj := file.Scope.Lookup(e.Name)
++								if obj == nil {
++									continue
++								}
++								if spec, ok := obj.Decl.(*ast.ValueSpec); ok {
++									if referenceType(spec.Type) {
++										return true
++									}
++									for _, v := range spec.Values {
++										switch v := v.(type) {
++										case *ast.CompositeLit:
++											if referenceType(v.Type) {
++												return true
++											}
++										case *ast.UnaryExpr:
++											if v.Op == token.AND {
++												return true
++											}
++										case *ast.CallExpr:
++											if id, ok := v.Fun.(*ast.Ident); ok && (id.Name == "make" || id.Name == "new") {
++												return true
++											}
++										}
++									}
++								}
++							}
++						}
++						return false
++					}
++					writesGlobal := func(e ast.Expr) bool {
++						for {
++							p, ok := e.(*ast.ParenExpr)
++							if !ok {
++								break
++							}
++							e = p.X
++						}
++						if id, ok := e.(*ast.Ident); ok {
++							return globals[id.Name] && (id.Obj == nil || globalObjects[id.Obj])
++						}
++						return globalBase(e)
++					}
++
++					// Resolve local aliases to package storage to a fixed point so
++					// chained assignments are covered regardless of lexical order.
++					for changed := true; changed; {
++						changed = false
++						ast.Inspect(fn.Body, func(n ast.Node) bool {
++							switch n := n.(type) {
++							case *ast.AssignStmt:
++								for i, lhs := range n.Lhs {
++									id, ok := lhs.(*ast.Ident)
++									if !ok || id.Obj == nil || globalObjects[id.Obj] || i >= len(n.Rhs) {
++										continue
++									}
++									if referenceValue(n.Rhs[i]) && !taintedObjects[id.Obj] {
++										taintedObjects[id.Obj] = true
++										changed = true
++									}
++								}
++							case *ast.DeclStmt:
++								gen, ok := n.Decl.(*ast.GenDecl)
++								if !ok || gen.Tok != token.VAR {
++									break
++								}
++								for _, spec := range gen.Specs {
++									valueSpec := spec.(*ast.ValueSpec)
++									for i, id := range valueSpec.Names {
++										if id.Obj == nil || globalObjects[id.Obj] || i >= len(valueSpec.Values) {
++											continue
++										}
++										if referenceValue(valueSpec.Values[i]) && !taintedObjects[id.Obj] {
++											taintedObjects[id.Obj] = true
++											changed = true
++										}
++									}
++								}
++							}
++							return true
++						})
++					}
++
++					ast.Inspect(fn.Body, func(n ast.Node) bool {
++						switch n := n.(type) {
++						case *ast.AssignStmt:
++							for _, lhs := range n.Lhs {
++								if writesGlobal(lhs) {
++									t.Errorf("%s.%s writes package state", pkg.Name, fn.Name.Name)
++								}
++							}
++						case *ast.IncDecStmt:
++							if writesGlobal(n.X) {
++								t.Errorf("%s.%s mutates package state", pkg.Name, fn.Name.Name)
++							}
++						case *ast.CallExpr:
++							name, args := effectCall(n)
++							for idx, arg := range args {
++								if effects[name][idx] && globalAddress(arg, globalBase) {
++									t.Errorf("%s.%s writes shared storage through call %s", pkg.Name, fn.Name.Name, name)
++								}
++							}
++							// These standard-library methods mutate receiver storage
++							// without an explicit assignment or address operation in the caller.
++							if sel, ok := n.Fun.(*ast.SelectorExpr); ok && globalBase(sel.X) {
++								ast.Inspect(sel.X, func(part ast.Node) bool {
++									if id, ok := part.(*ast.Ident); ok && stateWriters[id.Name][sel.Sel.Name] {
++										t.Errorf("%s.%s mutates shared storage through %s", pkg.Name, fn.Name.Name, sel.Sel.Name)
++									}
++									return true
++								})
++							}
++							if id, ok := n.Fun.(*ast.Ident); ok && (id.Name == "delete" || id.Name == "clear" || id.Name == "copy") && len(n.Args) > 0 && globalBase(n.Args[0]) {
++								t.Errorf("%s.%s mutates package storage", pkg.Name, fn.Name.Name)
++							}
++						}
++						return true
++					})
++				}
++			}
++		}
++	}
++}
++
++// parserMutationOverlay disables only functions that directly mutate AST node
++// storage in parse. Type information, rather than candidate helper names or
++// filenames, identifies operations. Pure forwarding and read-only context
++// adapters remain executable. These probes perform flattening of an existing
++// tree, so they do not require the parser's legitimate Markdown construction.
++// String operations alone do not establish conversion ownership; the style
++// corpus probes that behavior separately with editor implementations disabled.
++func parserMutationOverlay(t *testing.T, root, dir string) string {
++	t.Helper()
++	cmd := exec.Command("go", "list", "-export", "-json", "-deps", "./parse")
++	cmd.Dir = root
++	output, err := cmd.Output()
++	if err != nil {
++		t.Fatalf("load parse types: %v", err)
++	}
++	exports := map[string]string{}
++	decoder := json.NewDecoder(bytes.NewReader(output))
++	for decoder.More() {
++		var pkg struct{ ImportPath, Export string }
++		if err := decoder.Decode(&pkg); err != nil {
++			t.Fatal(err)
++		}
++		exports[pkg.ImportPath] = pkg.Export
++	}
++	fset := token.NewFileSet()
++	packages, err := parser.ParseDir(fset, filepath.Join(root, "parse"), func(info os.FileInfo) bool {
++		matched, err := build.Default.MatchFile(filepath.Join(root, "parse"), info.Name())
++		return err == nil && matched && !strings.HasSuffix(info.Name(), "_test.go")
++	}, 0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	pkg := packages["parse"]
++	if pkg == nil {
++		t.Fatal("public parse package unavailable")
++	}
++	files := []*ast.File{}
++	for _, f := range pkg.Files {
++		files = append(files, f)
++	}
++	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
++	config := types.Config{Importer: importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) { return os.Open(exports[path]) })}
++	if _, err := config.Check("github.com/88250/lute/parse", fset, files, info); err != nil {
++		t.Fatalf("type-check parse intervention: %v", err)
++	}
++	isNode := func(typ types.Type) bool {
++		if p, ok := typ.(*types.Pointer); ok {
++			typ = p.Elem()
++		}
++		n, ok := typ.(*types.Named)
++		return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "github.com/88250/lute/ast" && n.Obj().Name() == "Node"
++	}
++	var writesNode func(ast.Expr) bool
++	writesNode = func(expr ast.Expr) bool {
++		switch e := expr.(type) {
++		case *ast.SelectorExpr:
++			return isNode(info.TypeOf(e.X)) || writesNode(e.X)
++		case *ast.IndexExpr:
++			return writesNode(e.X)
++		case *ast.StarExpr:
++			return isNode(info.TypeOf(e.X))
++		case *ast.ParenExpr:
++			return writesNode(e.X)
++		}
++		return false
++	}
++	// These are existing public AST mutation operations, not implementation names.
++	mutators := map[string]bool{"AppendChild": true, "PrependChild": true, "InsertBefore": true, "InsertAfter": true, "Unlink": true, "SetIALAttr": true, "RemoveIALAttr": true, "AppendTokens": true, "PrependTokens": true, "SetTokens": true, "SortTextMarkDataTypes": true}
++	replacements := map[string]string{}
++	for path, f := range pkg.Files {
++		ast.Inspect(f, func(node ast.Node) bool {
++			var body *ast.BlockStmt
++			switch fn := node.(type) {
++			case *ast.FuncDecl:
++				body = fn.Body
++			case *ast.FuncLit:
++				body = fn.Body
++			}
++			if body == nil {
++				return true
++			}
++			mutates := false
++			ast.Inspect(body, func(n ast.Node) bool {
++				if _, nested := n.(*ast.FuncLit); nested {
++					return false
++				}
++				switch e := n.(type) {
++				case *ast.AssignStmt:
++					for _, lhs := range e.Lhs {
++						if writesNode(lhs) {
++							mutates = true
++						}
++					}
++				case *ast.IncDecStmt:
++					if writesNode(e.X) {
++						mutates = true
++					}
++				case *ast.CompositeLit:
++					if isNode(info.TypeOf(e)) {
++						mutates = true
++					}
++				case *ast.CallExpr:
++					if sel, ok := e.Fun.(*ast.SelectorExpr); ok && isNode(info.TypeOf(sel.X)) && mutators[sel.Sel.Name] {
++						mutates = true
++					}
++				}
++				return true
++			})
++			if mutates {
++				body.List = append([]ast.Stmt{&ast.IfStmt{Cond: ast.NewIdent("true"), Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ExprStmt{X: &ast.CallExpr{Fun: ast.NewIdent("panic"), Args: []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: strconv.Quote("parser owns AST conversion during editor flattening")}}}}}}}}, body.List...)
++			}
++			return true
++		})
++		var out bytes.Buffer
++		if err := format.Node(&out, fset, f); err != nil {
++			t.Fatal(err)
++		}
++		replacement := filepath.Join(dir, fmt.Sprintf("parse-%d.go", len(replacements)))
++		if err := os.WriteFile(replacement, out.Bytes(), 0600); err != nil {
++			t.Fatal(err)
++		}
++		replacements[path] = replacement
++	}
++	data, err := json.Marshal(map[string]any{"Replace": replacements})
++	if err != nil {
++		t.Fatal(err)
++	}
++	overlay := filepath.Join(dir, "parser-overlay.json")
++	if err := os.WriteFile(overlay, data, 0600); err != nil {
++		t.Fatal(err)
++	}
++	return overlay
++}
++
++var parserIntervention struct {
++	sync.Once
++	path string
++}
++
++func requireEditorOwnsFlatten(t *testing.T, probe string) {
++	t.Helper()
++	parserIntervention.Do(func() {
++		dir, err := os.MkdirTemp("", "lute-parser-intervention-")
++		if err != nil {
++			t.Fatal(err)
++		}
++		parserIntervention.path = parserMutationOverlay(t, repository(t), dir)
++	})
++	if parserIntervention.path == "" {
++		t.Fatal("parser intervention failed to initialize")
++	}
++	cmd := exec.Command("go", "test", "-json", "-vet=off", "-count=1", "-overlay", parserIntervention.path, "./verifier_tests_refactor", "-run", "^"+probe+"$")
++	cmd.Dir = repository(t)
++	output, err := cmd.CombinedOutput()
++	if err != nil {
++		t.Fatalf("flattening still needs parser-owned AST construction or mutation: %v\n%s", err, output)
++	}
++	for _, line := range bytes.Split(output, []byte("\n")) {
++		var event struct{ Test, Action string }
++		if json.Unmarshal(line, &event) == nil && event.Test == probe && event.Action == "pass" {
++			return
++		}
++	}
++	t.Fatalf("ownership probe did not run: %s", output)
++}
++func TestRegularFlattenOwnedByEditor(t *testing.T) {
++	requireEditorOwnsFlatten(t, "TestRegularFlattenSemantics")
++}
++func TestHybridFlattenOwnedByEditor(t *testing.T) {
++	requireEditorOwnsFlatten(t, "TestHybridFlattenSemantics")
++}
++
++// Effects are propagated to a fixed point through local helper/receiver calls.
++// An address used only for reading does not constitute retained invocation state.
++func globalAddress(e ast.Expr, base func(ast.Expr) bool) bool {
++	if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
++		return globalAddress(u.X, base)
++	}
++	if p, ok := e.(*ast.ParenExpr); ok {
++		return globalAddress(p.X, base)
++	}
++	return base(e)
++}
++func effectCall(c *ast.CallExpr) (string, []ast.Expr) {
++	if id, ok := c.Fun.(*ast.Ident); ok {
++		return id.Name, c.Args
++	}
++	if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
++		return sel.Sel.Name, append([]ast.Expr{sel.X}, c.Args...)
++	}
++	return "", nil
++}
++func packageEffects(pkg *ast.Package) map[string]map[int]bool {
++	effects := map[string]map[int]bool{}
++	funcs := []*ast.FuncDecl{}
++	for _, f := range pkg.Files {
++		for _, d := range f.Decls {
++			if fn, ok := d.(*ast.FuncDecl); ok && fn.Body != nil {
++				funcs = append(funcs, fn)
++				if effects[fn.Name.Name] == nil {
++					effects[fn.Name.Name] = map[int]bool{}
++				}
++			}
++		}
++	}
++	for changed := true; changed; {
++		changed = false
++		for _, fn := range funcs {
++			origins := map[*ast.Object]map[int]bool{}
++			index := 0
++			add := func(fields *ast.FieldList) {
++				if fields != nil {
++					for _, field := range fields.List {
++						for _, id := range field.Names {
++							origins[id.Obj] = map[int]bool{index: true}
++							index++
++						}
++					}
++				}
++			}
++			add(fn.Recv)
++			add(fn.Type.Params)
++			var sources func(ast.Expr) map[int]bool
++			sources = func(e ast.Expr) map[int]bool {
++				switch x := e.(type) {
++				case *ast.Ident:
++					return origins[x.Obj]
++				case *ast.SelectorExpr:
++					return sources(x.X)
++				case *ast.IndexExpr:
++					return sources(x.X)
++				case *ast.SliceExpr:
++					return sources(x.X)
++				case *ast.StarExpr:
++					return sources(x.X)
++				case *ast.UnaryExpr:
++					return sources(x.X)
++				case *ast.ParenExpr:
++					return sources(x.X)
++				}
++				return nil
++			}
++			mark := func(e ast.Expr) {
++				for i := range sources(e) {
++					if !effects[fn.Name.Name][i] {
++						effects[fn.Name.Name][i] = true
++						changed = true
++					}
++				}
++			}
++			for again := true; again; {
++				again = false
++				ast.Inspect(fn.Body, func(n ast.Node) bool {
++					if a, ok := n.(*ast.AssignStmt); ok {
++						for i, lhs := range a.Lhs {
++							if i >= len(a.Rhs) {
++								continue
++							}
++							if id, ok := lhs.(*ast.Ident); ok && id.Obj != nil {
++								if origins[id.Obj] == nil {
++									origins[id.Obj] = map[int]bool{}
++								}
++								for k := range sources(a.Rhs[i]) {
++									if !origins[id.Obj][k] {
++										origins[id.Obj][k] = true
++										again = true
++									}
++								}
++							}
++						}
++					}
++					return true
++				})
++			}
++			ast.Inspect(fn.Body, func(n ast.Node) bool {
++				switch x := n.(type) {
++				case *ast.AssignStmt:
++					for _, lhs := range x.Lhs {
++						if _, local := lhs.(*ast.Ident); !local {
++							mark(lhs)
++						}
++					}
++				case *ast.IncDecStmt:
++					if _, local := x.X.(*ast.Ident); !local {
++						mark(x.X)
++					}
++				case *ast.CallExpr:
++					name, args := effectCall(x)
++					for i, arg := range args {
++						if effects[name][i] {
++							mark(arg)
++						}
++					}
++					if (name == "copy" || name == "delete" || name == "clear") && len(x.Args) > 0 {
++						mark(x.Args[0])
++					}
++				}
++				return true
++			})
++		}
++	}
++	return effects
++}
++
++// F2P-026 follows value producers across the parser/editor boundary.
++func TestNoParserTextMarkConversion(t *testing.T) {
++	root := repository(t)
++	dirs, err := componentDirs(root)
++	if err != nil {
++		t.Fatal(err)
++	}
++	issues, err := parserTextMarkIssues(root, dirs)
++	if err != nil {
++		t.Fatalf("TextMark ownership analysis unavailable: %v", err)
++	}
++	for _, issue := range issues {
++		t.Error(issue)
++	}
++}
+diff --git a/verifier_architecture/style_ownership_test.go b/verifier_architecture/style_ownership_test.go
+new file mode 100644
+index 0000000..119658b
+--- /dev/null
++++ b/verifier_architecture/style_ownership_test.go
+@@ -0,0 +1,145 @@
++package verifier_architecture
++
++import (
++	"bytes"
++	"encoding/json"
++	"fmt"
++	"go/ast"
++	"go/build"
++	"go/format"
++	"go/parser"
++	"go/token"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++// Probe private as well as public helpers with the editor disabled. An unused
++// parser copy still normalizes the corpus; a forwarding helper cannot do so.
++func TestNoParserStyleConversion(t *testing.T) {
++	root, dir := repository(t), t.TempDir()
++	overlay, err := editorOverlay(root, dir)
++	if err != nil {
++		t.Fatal(err)
++	}
++	data, err := os.ReadFile(overlay)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var mapping struct{ Replace map[string]string }
++	if err := json.Unmarshal(data, &mapping); err != nil {
++		t.Fatal(err)
++	}
++	paths, err := filepath.Glob(filepath.Join(root, "parse", "*.go"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	encode := func(fn *ast.FuncDecl) string {
++		var b bytes.Buffer
++		if err := format.Node(&b, token.NewFileSet(), fn); err != nil {
++			t.Fatal(err)
++		}
++		return b.String()
++	}
++	baseline := map[string]bool{}
++	for _, path := range paths {
++		old, err := exec.Command("git", "-C", root, "show", "8928f1866da3269aed613288afb3554985df94e1:parse/"+filepath.Base(path)).Output()
++		if err != nil {
++			continue
++		}
++		f, err := parser.ParseFile(token.NewFileSet(), path, old, 0)
++		if err != nil {
++			t.Fatal(err)
++		}
++		for _, decl := range f.Decls {
++			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name != "StyleValue" {
++				baseline[encode(fn)] = true
++			}
++		}
++	}
++	stringField := func(fields *ast.FieldList) bool {
++		if fields == nil || len(fields.List) != 1 || len(fields.List[0].Names) > 1 {
++			return false
++		}
++		id, ok := fields.List[0].Type.(*ast.Ident)
++		return ok && id.Name == "string"
++	}
++	var source strings.Builder
++	source.WriteString("package parse\nimport \"testing\"\nfunc TestVerifierStyleOwnership(t *testing.T) {\n")
++	for _, path := range paths {
++		matched, err := build.Default.MatchFile(filepath.Dir(path), filepath.Base(path))
++		if err != nil {
++			t.Fatal(err)
++		}
++		if !matched || strings.HasSuffix(path, "_test.go") {
++			continue
++		}
++		f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
++		if err != nil {
++			t.Fatal(err)
++		}
++		for _, decl := range f.Decls {
++			fn, ok := decl.(*ast.FuncDecl)
++			if !ok || fn.Body == nil || !stringField(fn.Type.Params) || !stringField(fn.Type.Results) || baseline[encode(fn)] {
++				continue
++			}
++			call := fn.Name.Name
++			if fn.Recv != nil {
++				receiver := fn.Recv.List[0].Type
++				if pointer, ok := receiver.(*ast.StarExpr); ok {
++					receiver = pointer.X
++				}
++				name, ok := receiver.(*ast.Ident)
++				if !ok {
++					// Generic receivers need concrete type arguments before invocation.
++					continue
++				}
++				// A fresh receiver avoids requiring constructors or retained state.
++				// Pointer method sets also include methods with value receivers.
++				call = "new(" + name.Name + ")." + fn.Name.Name
++			}
++			fmt.Fprintf(&source, "t.Run(%q, func(t *testing.T) {\n", call)
++			source.WriteString("matches := true\nfunc() { defer func() { if recover() != nil { matches = false } }()\n")
++			for _, sample := range []struct{ input, want string }{
++				{" color: red; ", "color: red;"},
++				{"color:\nred", "color:red"},
++				{" \tfont-size:  12px;\tcolor: blue;\n ", "font-size: 12px; color: blue;"},
++				{"a\r\nb\tc", "a b c"},
++				{"\u2003color:\u00a0red\u3000", "color: red"},
++				{"\n\t ", ""},
++			} {
++				fmt.Fprintf(&source, "if %s(%q) != %q { matches = false; return }\n", call, sample.input, sample.want)
++			}
++			source.WriteString("}()\nif matches { t.Fatal(\"parser retains editor style normalization without editor implementation\") }\n})\n")
++		}
++	}
++	source.WriteString("}\n")
++	probe := filepath.Join(dir, "style_probe_test.go")
++	if err := os.WriteFile(probe, []byte(source.String()), 0600); err != nil {
++		t.Fatal(err)
++	}
++	// Overlay an existing same-package test file so private helpers are callable.
++	mapping.Replace[filepath.Join(root, "parse", "inline_attribute_list_test.go")] = probe
++	data, err = json.Marshal(mapping)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(overlay, data, 0600); err != nil {
++		t.Fatal(err)
++	}
++	cmd := exec.Command("go", "test", "-json", "-vet=off", "-count=1", "-overlay", overlay, "./parse", "-run", "^TestVerifierStyleOwnership$")
++	cmd.Dir = root
++	out, err := cmd.CombinedOutput()
++	if err != nil {
++		t.Fatalf("parser style ownership: %v\n%s", err, out)
++	}
++	for _, line := range bytes.Split(out, []byte("\n")) {
++		var event struct{ Test, Action string }
++		if json.Unmarshal(line, &event) == nil && event.Test == "TestVerifierStyleOwnership" && event.Action == "pass" {
++			return
++		}
++	}
++	t.Fatalf("style ownership probe did not run: %s", out)
++}
+diff --git a/verifier_tests/p2p_behavior_test.go b/verifier_tests/p2p_behavior_test.go
+new file mode 100644
+index 0000000..ffdf20b
+--- /dev/null
++++ b/verifier_tests/p2p_behavior_test.go
+@@ -0,0 +1,371 @@
++package verifier_tests
++
++import (
++	"reflect"
++	"strings"
++	"testing"
++
++	"github.com/88250/lute"
++	"github.com/88250/lute/ast"
++	"github.com/88250/lute/html"
++	"github.com/88250/lute/parse"
++)
++
++var (
++	_ func(*parse.Tree, bool) = parse.NestedInlines2FlattedSpansHybrid
++	_ func(*parse.Tree, bool) = parse.NestedInlines2FlattedSpans
++	_ func(*parse.Tree)       = parse.TextMarks2Inlines
++)
++
++func treeWithParagraph() (*parse.Tree, *ast.Node) {
++	root := &ast.Node{Type: ast.NodeDocument}
++	paragraph := &ast.Node{Type: ast.NodeParagraph}
++	root.AppendChild(paragraph)
++	return &parse.Tree{Root: root, Context: &parse.Context{ParseOption: parse.NewOptions()}}, paragraph
++}
++
++func containerWithText(typ ast.NodeType, textType ast.NodeType, content string) *ast.Node {
++	container := &ast.Node{Type: typ}
++	container.AppendChild(&ast.Node{Type: textType, Tokens: []byte(content)})
++	return container
++}
++
++func TestP2PPublicAPIAndInPlaceMutation(t *testing.T) {
++	tree, paragraph := treeWithParagraph()
++	root := tree.Root
++	unrelated := &ast.Node{Type: ast.NodeText, Tokens: []byte("untouched")}
++	paragraph.AppendChild(unrelated)
++	paragraph.AppendChild(containerWithText(ast.NodeStrong, ast.NodeText, "changed"))
++	parse.NestedInlines2FlattedSpans(tree, false)
++	if tree.Root != root || paragraph.FirstChild != unrelated || unrelated.TokensStr() != "untouched" {
++		t.Fatal("public transformation did not preserve the supplied tree")
++	}
++	mark := unrelated.Next
++	if mark == nil || mark.Type != ast.NodeTextMark || mark.TextMarkType != "strong" || mark.TextMarkTextContent != "changed" {
++		t.Fatalf("public entry point did not mutate the target in place: %#v", mark)
++	}
++}
++
++func assertP2PTag(t *testing.T, typ, textType ast.NodeType, expected string) {
++	t.Helper()
++	tree, paragraph := treeWithParagraph()
++	paragraph.AppendChild(containerWithText(typ, textType, "value"))
++	parse.NestedInlines2FlattedSpansHybrid(tree, false)
++	mark := paragraph.FirstChild
++	if mark == nil || mark.Type != ast.NodeTextMark || mark.TextMarkType != expected {
++		t.Fatalf("tag mapping %q was not preserved: %#v", expected, mark)
++	}
++}
++
++func TestP2PCodeSpanMapping(t *testing.T) {
++	assertP2PTag(t, ast.NodeCodeSpan, ast.NodeCodeSpanContent, "code")
++}
++func TestP2PTagMapping(t *testing.T) { assertP2PTag(t, ast.NodeTag, ast.NodeText, "tag") }
++func TestP2PInlineMathMapping(t *testing.T) {
++	assertP2PTag(t, ast.NodeInlineMath, ast.NodeInlineMathContent, "inline-math")
++}
++func TestP2PEmphasisMapping(t *testing.T) { assertP2PTag(t, ast.NodeEmphasis, ast.NodeText, "em") }
++func TestP2PStrongMapping(t *testing.T)   { assertP2PTag(t, ast.NodeStrong, ast.NodeText, "strong") }
++func TestP2PStrikethroughMapping(t *testing.T) {
++	assertP2PTag(t, ast.NodeStrikethrough, ast.NodeText, "s")
++}
++func TestP2PMarkMapping(t *testing.T)      { assertP2PTag(t, ast.NodeMark, ast.NodeText, "mark") }
++func TestP2PUnderlineMapping(t *testing.T) { assertP2PTag(t, ast.NodeUnderline, ast.NodeText, "u") }
++func TestP2PSubMapping(t *testing.T)       { assertP2PTag(t, ast.NodeSub, ast.NodeText, "sub") }
++func TestP2PSupMapping(t *testing.T)       { assertP2PTag(t, ast.NodeSup, ast.NodeText, "sup") }
++func TestP2PKbdMapping(t *testing.T)       { assertP2PTag(t, ast.NodeKbd, ast.NodeText, "kbd") }
++func TestP2PLinkMapping(t *testing.T)      { assertP2PTag(t, ast.NodeLink, ast.NodeLinkText, "a") }
++
++func TestP2PNestedHierarchy(t *testing.T) {
++	tree, paragraph := treeWithParagraph()
++	strong := &ast.Node{Type: ast.NodeStrong}
++	em := &ast.Node{Type: ast.NodeEmphasis}
++	em.AppendChild(&ast.Node{Type: ast.NodeTextMark, TextMarkType: "em text u", TextMarkTextContent: "nested"})
++	strong.AppendChild(em)
++	paragraph.AppendChild(strong)
++	parse.NestedInlines2FlattedSpansHybrid(tree, false)
++	if paragraph.FirstChild.TextMarkType != "strong em u" {
++		t.Fatalf("outer-to-inner hierarchy changed: %q", paragraph.FirstChild.TextMarkType)
++	}
++}
++
++func TestP2PInlineAttributes(t *testing.T) {
++	tree, paragraph := treeWithParagraph()
++	strong := &ast.Node{Type: ast.NodeStrong, KramdownIAL: [][]string{{"style", "color: red"}}}
++	strong.AppendChild(&ast.Node{Type: ast.NodeText, Tokens: []byte("value")})
++	paragraph.AppendChild(strong)
++	parse.NestedInlines2FlattedSpansHybrid(tree, false)
++	if !reflect.DeepEqual(paragraph.FirstChild.KramdownIAL, [][]string{{"style", "color: red"}}) {
++		t.Fatalf("inline attributes were not retained: %#v", paragraph.FirstChild.KramdownIAL)
++	}
++}
++
++func TestP2PLinkMetadata(t *testing.T) {
++	tree, paragraph := treeWithParagraph()
++	link := &ast.Node{Type: ast.NodeLink}
++	link.AppendChild(&ast.Node{Type: ast.NodeOpenBracket})
++	link.AppendChild(&ast.Node{Type: ast.NodeLinkText, Tokens: []byte("Lute")})
++	link.AppendChild(&ast.Node{Type: ast.NodeCloseBracket})
++	link.AppendChild(&ast.Node{Type: ast.NodeOpenParen})
++	link.AppendChild(&ast.Node{Type: ast.NodeLinkDest, Tokens: []byte("https://b3log.org/lute")})
++	link.AppendChild(&ast.Node{Type: ast.NodeLinkSpace, Tokens: []byte(" ")})
++	link.AppendChild(&ast.Node{Type: ast.NodeLinkTitle, Tokens: []byte("title")})
++	link.AppendChild(&ast.Node{Type: ast.NodeCloseParen})
++	paragraph.AppendChild(link)
++	parse.NestedInlines2FlattedSpans(tree, false)
++	mark := paragraph.FirstChild
++	if mark == nil || mark.TextMarkType != "a" || mark.TextMarkAHref != "https://b3log.org/lute" || mark.TextMarkATitle != "title" {
++		t.Fatalf("link metadata changed: %#v", mark)
++	}
++}
++
++func assertP2PTextMark(t *testing.T, markType string, nodeType, openType, closeType ast.NodeType) {
++	t.Helper()
++	tree, paragraph := treeWithParagraph()
++	mark := &ast.Node{Type: ast.NodeTextMark, TextMarkType: markType, TextMarkTextContent: "*nested* text"}
++	paragraph.AppendChild(mark)
++	parse.TextMarks2Inlines(tree)
++	if mark.Type != nodeType || mark.FirstChild == nil || mark.FirstChild.Type != openType || mark.LastChild == nil || mark.LastChild.Type != closeType {
++		t.Fatalf("marker boundary changed for %q: %#v", markType, mark)
++	}
++	if inner := mark.FirstChild.Next; inner == nil || inner.Type != ast.NodeEmphasis || inner.Next == nil || inner.Next.TokensStr() != " text" {
++		t.Fatalf("parsed child expansion order changed for %q", markType)
++	}
++}
++
++func TestP2PTextMarkSup(t *testing.T) {
++	assertP2PTextMark(t, "sup", ast.NodeSup, ast.NodeSupOpenMarker, ast.NodeSupCloseMarker)
++}
++func TestP2PTextMarkSub(t *testing.T) {
++	assertP2PTextMark(t, "sub", ast.NodeSub, ast.NodeSubOpenMarker, ast.NodeSubCloseMarker)
++}
++func TestP2PTextMarkEmphasis(t *testing.T) {
++	assertP2PTextMark(t, "em", ast.NodeEmphasis, ast.NodeEmA6kOpenMarker, ast.NodeEmA6kCloseMarker)
++}
++func TestP2PTextMarkStrong(t *testing.T) {
++	assertP2PTextMark(t, "strong", ast.NodeStrong, ast.NodeStrongA6kOpenMarker, ast.NodeStrongA6kCloseMarker)
++}
++func TestP2PTextMarkMark(t *testing.T) {
++	assertP2PTextMark(t, "mark", ast.NodeMark, ast.NodeMark2OpenMarker, ast.NodeMark2CloseMarker)
++}
++func TestP2PTextMarkStrikethrough(t *testing.T) {
++	assertP2PTextMark(t, "s", ast.NodeStrikethrough, ast.NodeStrikethrough2OpenMarker, ast.NodeStrikethrough2CloseMarker)
++}
++
++func TestP2PUnsupportedTextMarkNoop(t *testing.T) {
++	tree, paragraph := treeWithParagraph()
++	mark := &ast.Node{Type: ast.NodeTextMark, TextMarkType: "code", TextMarkTextContent: "raw"}
++	paragraph.AppendChild(mark)
++	parse.TextMarks2Inlines(tree)
++	if paragraph.FirstChild != mark || mark.Type != ast.NodeTextMark {
++		t.Fatal("unsupported text mark changed")
++	}
++}
++
++func TestP2PFlashcardTextMarkNoop(t *testing.T) {
++	tree, paragraph := treeWithParagraph()
++	mark := &ast.Node{Type: ast.NodeTextMark, TextMarkType: "strong", TextMarkTextContent: "answer", TextMarkFlashcardOcclusionID: "card"}
++	paragraph.AppendChild(mark)
++	parse.TextMarks2Inlines(tree)
++	if paragraph.FirstChild != mark || mark.Type != ast.NodeTextMark {
++		t.Fatal("flashcard text mark changed")
++	}
++}
++
++func TestP2PUnclosedBoundary(t *testing.T) {
++	tree, paragraph := treeWithParagraph()
++	unclosed := &ast.Node{Type: ast.NodeStrong}
++	unclosed.AppendChild(&ast.Node{Type: ast.NodeStrongA6kOpenMarker})
++	unclosed.AppendChild(&ast.Node{Type: ast.NodeText, Tokens: []byte("unclosed")})
++	paragraph.AppendChild(unclosed)
++	parse.NestedInlines2FlattedSpans(tree, false)
++	if mark := paragraph.FirstChild; mark == nil || mark.Type != ast.NodeTextMark || mark.TextMarkTextContent != "unclosed" {
++		t.Fatalf("unclosed inline boundary was not handled safely: %#v", mark)
++	}
++}
++
++func p2pTableMathCell() (*parse.Tree, *ast.Node) {
++	tree := &parse.Tree{Root: &ast.Node{Type: ast.NodeDocument}}
++	cell := &ast.Node{Type: ast.NodeTableCell}
++	tree.Root.AppendChild(cell)
++	cell.AppendChild(containerWithText(ast.NodeInlineMath, ast.NodeInlineMathContent, `a\|b`))
++	return tree, cell
++}
++
++func TestP2PTableMathNormal(t *testing.T) {
++	tree, cell := p2pTableMathCell()
++	parse.NestedInlines2FlattedSpans(tree, false)
++	if got := cell.FirstChild.TextMarkInlineMathContent; got != "a|b" {
++		t.Fatalf("normal table math escaping changed: %q", got)
++	}
++}
++
++func TestP2PTableMathExport(t *testing.T) {
++	tree, cell := p2pTableMathCell()
++	parse.NestedInlines2FlattedSpans(tree, true)
++	if got := cell.FirstChild.TextMarkInlineMathContent; got != `a\|b` {
++		t.Fatalf("export table math escaping changed: %q", got)
++	}
++}
++
++func p2pBackslashTree() (*parse.Tree, *ast.Node) {
++	tree, paragraph := treeWithParagraph()
++	strong := &ast.Node{Type: ast.NodeStrong}
++	backslash := &ast.Node{Type: ast.NodeBackslash}
++	backslash.AppendChild(&ast.Node{Type: ast.NodeBackslashContent, Tokens: []byte("*")})
++	strong.AppendChild(backslash)
++	paragraph.AppendChild(strong)
++	return tree, paragraph
++}
++
++func TestP2PBackslashNormal(t *testing.T) {
++	tree, paragraph := p2pBackslashTree()
++	parse.NestedInlines2FlattedSpans(tree, false)
++	mark := paragraph.FirstChild
++	if mark == nil || mark.Type != ast.NodeTextMark || mark.TextMarkTextContent != "*" || mark.TextMarkType != "strong" {
++		t.Fatalf("normal backslash semantics changed: %#v", mark)
++	}
++}
++
++func TestP2PBackslashHybrid(t *testing.T) {
++	tree, paragraph := p2pBackslashTree()
++	parse.NestedInlines2FlattedSpansHybrid(tree, false)
++	mark := paragraph.FirstChild
++	if mark == nil || mark.Type != ast.NodeTextMark || mark.TextMarkTextContent != "*" || mark.TextMarkType != "strong" {
++		t.Fatalf("hybrid backslash semantics changed: %#v", mark)
++	}
++}
++
++func TestP2PProtyleDOMProtocol(t *testing.T) {
++	engine := lute.New()
++	engine.SetProtyleWYSIWYG(true)
++	engine.SetKramdownIAL(true)
++	markdown := "**bold *nested*** and [link](https://example.com \"t\") and $a\\|b$"
++	blockDOM := engine.Md2BlockDOM(markdown, false)
++	if !strings.Contains(blockDOM, `data-type="strong em"`) || !strings.Contains(blockDOM, `data-type="a"`) || !strings.Contains(blockDOM, `data-href="https://example.com"`) {
++		t.Fatalf("Protyle DOM protocol changed: %q", blockDOM)
++	}
++}
++
++func TestP2PBlockDOMRoundTrip(t *testing.T) {
++	engine := lute.New()
++	engine.SetProtyleWYSIWYG(true)
++	engine.SetKramdownIAL(true)
++	markdown := "**bold *nested*** and [link](https://example.com \"t\") and $a\\|b$"
++	standard := engine.BlockDOM2StdMd(engine.Md2BlockDOM(markdown, false))
++	if !strings.Contains(standard, "**bold** ***nested***") || !strings.Contains(standard, "[link](https://example.com") {
++		t.Fatalf("exported Markdown protocol changed: %q", standard)
++	}
++}
++
++func TestP2PVditorDOMProtocol(t *testing.T) {
++	engine := lute.New()
++	markdown := "**bold *nested*** and [link](https://example.com \"t\") and $a\\|b$"
++	vditorDOM := engine.Md2VditorDOM(markdown)
++	if !strings.Contains(vditorDOM, "<strong ") || !strings.Contains(vditorDOM, "<em ") || !strings.Contains(vditorDOM, `href="https://example.com"`) {
++		t.Fatalf("Vditor DOM protocol changed: %q", vditorDOM)
++	}
++}
++
++func TestP2PVditorRoundTrip(t *testing.T) {
++	engine := lute.New()
++	markdown := "**bold *nested*** and [link](https://example.com \"t\") and $a\\|b$"
++	roundTrip := engine.VditorDOM2Md(engine.Md2VditorDOM(markdown))
++	if !strings.Contains(roundTrip, "**bold *nested***") || !strings.Contains(roundTrip, "[link](https://example.com") {
++		t.Fatalf("Vditor Markdown protocol changed: %q", roundTrip)
++	}
++}
++
++func TestP2PCrossTreeIsolation(t *testing.T) {
++	options := parse.NewOptions()
++	firstTree, firstParagraph := treeWithParagraph()
++	firstTree.Context.ParseOption = options
++	firstParagraph.AppendChild(&ast.Node{Type: ast.NodeTextMark, TextMarkType: "strong", TextMarkTextContent: "one"})
++	secondTree, secondParagraph := treeWithParagraph()
++	secondTree.Context.ParseOption = options
++	secondMark := &ast.Node{Type: ast.NodeTextMark, TextMarkType: "strong", TextMarkTextContent: "two"}
++	secondParagraph.AppendChild(secondMark)
++	parse.TextMarks2Inlines(firstTree)
++	if secondMark.Type != ast.NodeTextMark || secondMark.FirstChild != nil {
++		t.Fatal("transforming one tree mutated a different tree")
++	}
++	_ = secondTree
++}
++
++func TestP2PParserOptionUnchanged(t *testing.T) {
++	options := parse.NewOptions()
++	before := *options
++	tree, paragraph := treeWithParagraph()
++	tree.Context.ParseOption = options
++	paragraph.AppendChild(&ast.Node{Type: ast.NodeTextMark, TextMarkType: "strong", TextMarkTextContent: "value"})
++	parse.TextMarks2Inlines(tree)
++	if !reflect.DeepEqual(before, *options) {
++		t.Fatal("the transformation mutated caller parser configuration")
++	}
++}
++
++func TestP2PDeterministicResult(t *testing.T) {
++	options := parse.NewOptions()
++	first, firstParagraph := treeWithParagraph()
++	first.Context.ParseOption = options
++	firstParagraph.AppendChild(&ast.Node{Type: ast.NodeTextMark, TextMarkType: "strong", TextMarkTextContent: "same"})
++	second, secondParagraph := treeWithParagraph()
++	second.Context.ParseOption = options
++	secondParagraph.AppendChild(&ast.Node{Type: ast.NodeTextMark, TextMarkType: "strong", TextMarkTextContent: "same"})
++	parse.TextMarks2Inlines(first)
++	parse.TextMarks2Inlines(second)
++	if first.Root.Text() != second.Root.Text() {
++		t.Fatalf("identical invocations were nondeterministic: %q != %q", first.Root.Text(), second.Root.Text())
++	}
++}
++
++func p2pHtmlNode(t *testing.T, raw string) *html.Node {
++	t.Helper()
++	root := &html.Node{Type: html.ElementNode}
++	nodes, err := html.ParseFragment(strings.NewReader(raw), root)
++	if nil != err || 1 != len(nodes) {
++		t.Fatalf("invalid html fixture: %s", raw)
++	}
++	return nodes[0]
++}
++
++func TestP2PContainTextMarkWrapper(t *testing.T) {
++	node := &ast.Node{Type: ast.NodeTextMark, TextMarkType: "strong em"}
++	if !parse.ContainTextMark(node, "em") || parse.ContainTextMark(node, "kbd") {
++		t.Fatal("parse.ContainTextMark behavior changed")
++	}
++	if !parse.ContainTextMark(&ast.Node{Type: ast.NodeText, TextMarkType: "strong em"}, "em") {
++		t.Fatal("parse.ContainTextMark must preserve membership for other node types")
++	}
++}
++
++func TestP2PStyleValueWrapper(t *testing.T) {
++	if got := parse.StyleValue("  color :  red ;\n font-size: 12px  "); got != "color : red ; font-size: 12px" {
++		t.Fatalf("parse.StyleValue behavior changed: %q", got)
++	}
++}
++
++func TestP2PSetSpanIALWrapper(t *testing.T) {
++	node := &ast.Node{Type: ast.NodeTextMark}
++	parse.SetSpanIAL(node, p2pHtmlNode(t, `<span style="color: red" custom-data="v">x</span>`))
++	if node.IALAttr("style") != "color: red" || node.IALAttr("custom-data") != "v" {
++		t.Fatalf("parse.SetSpanIAL behavior changed: %v", node.KramdownIAL)
++	}
++}
++
++func TestP2PSetTextMarkNodeWrapper(t *testing.T) {
++	node := &ast.Node{}
++	parse.SetTextMarkNode(node, p2pHtmlNode(t, `<span data-type="a" data-href="https://x" data-title="t">label</span>`), parse.NewOptions())
++	if node.Type != ast.NodeTextMark || node.TextMarkType != "a" || node.TextMarkTextContent != "label" || node.TextMarkAHref != "https://x" || node.TextMarkATitle != "t" {
++		t.Fatalf("parse.SetTextMarkNode behavior changed: type=%q tm=%q content=%q", node.Type, node.TextMarkType, node.TextMarkTextContent)
++	}
++}
++
++func TestP2PTextMarkNilOptionsPlainSpan(t *testing.T) {
++	dom := p2pHtmlNode(t, `<span>plain &amp; text</span>`)
++	node := &ast.Node{Type: ast.NodeText, Tokens: []byte("old")}
++	parse.SetTextMarkNode(node, dom, nil)
++	if node.Type != ast.NodeTextMark || node.TextMarkType != "text" || node.TextMarkTextContent != "plain &amp; text" || node.Tokens != nil {
++		t.Fatalf("plain span with nil options changed: type=%s mark=%q content=%q tokens=%q", node.Type, node.TextMarkType, node.TextMarkTextContent, node.Tokens)
++	}
++}
+diff --git a/verifier_tests_refactor/refactor_behavior_test.go b/verifier_tests_refactor/refactor_behavior_test.go
+new file mode 100644
+index 0000000..2d0bcb0
+--- /dev/null
++++ b/verifier_tests_refactor/refactor_behavior_test.go
+@@ -0,0 +1,176 @@
++package verifier_tests_refactor
++
++import (
++	"fmt"
++	"strings"
++	"testing"
++
++	"github.com/88250/lute/ast"
++	"github.com/88250/lute/parse"
++)
++
++func documentWithParagraph() (*ast.Node, *ast.Node) {
++	root := &ast.Node{Type: ast.NodeDocument}
++	paragraph := &ast.Node{Type: ast.NodeParagraph}
++	root.AppendChild(paragraph)
++	return root, paragraph
++}
++
++func inline(typ, contentType ast.NodeType, content string) *ast.Node {
++	node := &ast.Node{Type: typ}
++	node.AppendChild(&ast.Node{Type: contentType, Tokens: []byte(content)})
++	return node
++}
++
++func TestRegularFlattenSemantics(t *testing.T) {
++	root, paragraph := documentWithParagraph()
++	strong := &ast.Node{Type: ast.NodeStrong, KramdownIAL: [][]string{{"color", "red"}}}
++	strong.AppendChild(inline(ast.NodeEmphasis, ast.NodeText, `a "quote" & b`))
++	paragraph.AppendChild(strong)
++	parse.NestedInlines2FlattedSpans(&parse.Tree{Root: root}, false)
++	mark := paragraph.FirstChild
++	if mark == nil || mark != paragraph.LastChild || mark.Type != ast.NodeTextMark ||
++		mark.TextMarkType != "strong em" || mark.TextMarkTextContent != `a &quot;quote&quot; &amp; b` ||
++		mark.IALAttr("color") != "red" {
++		t.Fatalf("regular flatten semantics changed: type=%v marks=%q content=%q", mark.Type, mark.TextMarkType, mark.TextMarkTextContent)
++	}
++}
++
++func TestHybridFlattenSemantics(t *testing.T) {
++	root, paragraph := documentWithParagraph()
++	strong := &ast.Node{Type: ast.NodeStrong}
++	strong.AppendChild(&ast.Node{Type: ast.NodeTextMark, TextMarkType: "em strong text a", TextMarkTextContent: "content", TextMarkAHref: "https://b3log.org"})
++	paragraph.AppendChild(strong)
++	parse.NestedInlines2FlattedSpansHybrid(&parse.Tree{Root: root}, false)
++	mark := paragraph.FirstChild
++	if mark == nil || mark.Type != ast.NodeTextMark || mark.TextMarkType != "strong em a" || mark.TextMarkAHref != "https://b3log.org" {
++		t.Fatalf("hybrid flatten semantics changed: type=%v marks=%q href=%q", mark.Type, mark.TextMarkType, mark.TextMarkAHref)
++	}
++}
++
++func tableMathTree() (*ast.Node, *ast.Node) {
++	root := &ast.Node{Type: ast.NodeDocument}
++	cell := &ast.Node{Type: ast.NodeTableCell}
++	root.AppendChild(cell)
++	cell.AppendChild(inline(ast.NodeInlineMath, ast.NodeInlineMathContent, `a\|b`))
++	return root, cell
++}
++
++func TestTableMathNormal(t *testing.T) {
++	root, cell := tableMathTree()
++	parse.NestedInlines2FlattedSpans(&parse.Tree{Root: root}, false)
++	if got := cell.FirstChild.TextMarkInlineMathContent; got != "a|b" {
++		t.Fatalf("normal table math escaping changed: %q", got)
++	}
++}
++
++func TestTableMathExport(t *testing.T) {
++	root, cell := tableMathTree()
++	parse.NestedInlines2FlattedSpans(&parse.Tree{Root: root}, true)
++	if got := cell.FirstChild.TextMarkInlineMathContent; got != `a\|b` {
++		t.Fatalf("export table math escaping changed: %q", got)
++	}
++}
++
++func TestNormalBlockRefFields(t *testing.T) {
++	root, paragraph := documentWithParagraph()
++	ref := &ast.Node{Type: ast.NodeBlockRef}
++	ref.AppendChild(&ast.Node{Type: ast.NodeBlockRefID, Tokens: []byte("20260913000000-abcdefg")})
++	ref.AppendChild(&ast.Node{Type: ast.NodeBlockRefDynamicText, Tokens: []byte("label")})
++	paragraph.AppendChild(ref)
++	parse.NestedInlines2FlattedSpans(&parse.Tree{Root: root}, false)
++	mark := paragraph.FirstChild
++	if mark == nil || mark.TextMarkType != "block-ref" || mark.TextMarkBlockRefID != "20260913000000-abcdefg" ||
++		mark.TextMarkBlockRefSubtype != "d" || mark.TextMarkTextContent != "label" {
++		t.Fatalf("normal block-ref fields changed: %#v", mark)
++	}
++}
++
++func TestNilRegularRoot(t *testing.T) { parse.NestedInlines2FlattedSpans(nil, false) }
++func TestNilHybridRoot(t *testing.T)  { parse.NestedInlines2FlattedSpansHybrid(nil, false) }
++
++func TestMalformedBlockRefIDSafe(t *testing.T) {
++	root, paragraph := documentWithParagraph()
++	before := &ast.Node{Type: ast.NodeText, Tokens: []byte("before")}
++	id := &ast.Node{Type: ast.NodeBlockRefID, Tokens: []byte("broken")}
++	after := &ast.Node{Type: ast.NodeText, Tokens: []byte("after")}
++	paragraph.AppendChild(before)
++	paragraph.AppendChild(id)
++	paragraph.AppendChild(after)
++	parse.NestedInlines2FlattedSpans(&parse.Tree{Root: root}, false)
++	if paragraph.FirstChild != before || before.Next != id || id.Previous != before || id.Next != after || after.Previous != id || paragraph.LastChild != after || id.Parent != paragraph {
++		t.Fatal("malformed block-ref ID partially changed tree links")
++	}
++}
++
++func TestMalformedBlockRefSafe(t *testing.T) {
++	root, paragraph := documentWithParagraph()
++	before := &ast.Node{Type: ast.NodeText, Tokens: []byte("before")}
++	ref := &ast.Node{Type: ast.NodeBlockRef}
++	after := &ast.Node{Type: ast.NodeText, Tokens: []byte("after")}
++	paragraph.AppendChild(before)
++	paragraph.AppendChild(ref)
++	paragraph.AppendChild(after)
++	parse.NestedInlines2FlattedSpans(&parse.Tree{Root: root}, false)
++	if paragraph.FirstChild != before || before.Next != after || after.Previous != before || paragraph.LastChild != after {
++		t.Fatal("malformed block-ref damaged surrounding siblings")
++	}
++}
++
++func TestStyleValueNormalization(t *testing.T) {
++	for _, space := range []string{" ", "\t", "\r", "\v", "\f", "\u0085", "\u00a0", "\u1680", "\u2000", "\u2003", "\u2028", "\u2029", "\u202f", "\u205f", "\u3000"} {
++		for _, input := range []string{space + "color:" + space + "red" + space, "font:" + space + space + "12px", space, "a\nb" + space + "c"} {
++			want := strings.Join(strings.Fields(strings.ReplaceAll(strings.TrimSpace(input), "\n", "")), " ")
++			if got := parse.StyleValue(input); got != want {
++				t.Fatalf("StyleValue(%q)=%q, want %q", input, got, want)
++			}
++		}
++	}
++}
++
++func TestContainTextMark(t *testing.T) {
++	node := &ast.Node{Type: ast.NodeTextMark, TextMarkType: "block-ref a"}
++	if !parse.ContainTextMark(node, "a") || !parse.ContainTextMark(node, "strong", "block-ref") || parse.ContainTextMark(node, "strong") || parse.ContainTextMark(nil, "a") {
++		t.Fatal("ContainTextMark contract changed")
++	}
++}
++
++func TestTagAttributeContract(t *testing.T) {
++	valid, rest, _, name, val := parse.TagAttr([]byte(` title="a b" tail`))
++	if !valid || string(rest) != " tail" || string(name) != "title" || string(val) != "a b" {
++		t.Fatalf("attribute contract: %v %q %q %q", valid, rest, name, val)
++	}
++}
++func TestAttributeNameContract(t *testing.T) {
++	valid, _, _, name, _ := parse.TagAttr([]byte(` data-custom_1="value"`))
++	if !valid || string(name) != "data-custom_1" {
++		t.Fatalf("attribute name: %v %q", valid, name)
++	}
++}
++func TestAttributeValueContract(t *testing.T) {
++	valid, _, _, _, val := parse.TagAttr([]byte(` key='a b'`))
++	if !valid || string(val) != "a b" {
++		t.Fatalf("attribute value: %v %q", valid, val)
++	}
++}
++
++func TestConcurrentInvocationIsolation(t *testing.T) {
++	for i := 0; i < 16; i++ {
++		t.Run(fmt.Sprint(i), func(t *testing.T) {
++			t.Parallel()
++			for j := 0; j < 20; j++ {
++				root, p := documentWithParagraph()
++				p.AppendChild(inline(ast.NodeStrong, ast.NodeText, "isolated"))
++				parse.NestedInlines2FlattedSpans(&parse.Tree{Root: root}, j%2 == 0)
++				if p.FirstChild.Type != ast.NodeTextMark || p.FirstChild.TextMarkTextContent != "isolated" {
++					t.Fatal("cross-call tree contamination")
++				}
++			}
++		})
++	}
++}
++
++func TestNilRegularTreeRoot(t *testing.T) { parse.NestedInlines2FlattedSpans(&parse.Tree{}, false) }
++func TestNilHybridTreeRoot(t *testing.T) {
++	parse.NestedInlines2FlattedSpansHybrid(&parse.Tree{}, false)
++}
+diff --git a/verifier_tests_refactor/inline_html_ownership_test.go b/verifier_tests_refactor/inline_html_ownership_test.go
+new file mode 100644
+--- /dev/null
++++ b/verifier_tests_refactor/inline_html_ownership_test.go
+@@ -0,0 +1,48 @@
++package verifier_tests_refactor
++
++import (
++	intervention "github.com/88250/lute/verifier_intervention"
++	"os"
++	"testing"
++
++	"github.com/88250/lute/ast"
++	"github.com/88250/lute/parse"
++)
++
++func TestInlineTextMarkConversion(t *testing.T) {
++	hit := intervention.Observe([]string{"textmark"}, func() {
++		tree := parse.Inline("", []byte(`<span data-type="a" data-href="/target">label</span>`), &parse.Options{
++			ProtyleWYSIWYG:   true,
++			HTMLTag2TextMark: true,
++		})
++		if tree == nil || tree.Root == nil || tree.Root.FirstChild == nil || tree.Root.FirstChild.FirstChild == nil {
++			t.Fatal("inline text-mark conversion produced no node")
++		}
++		node := tree.Root.FirstChild.FirstChild
++		if node.Type != ast.NodeTextMark || node.TextMarkType != "a" || node.TextMarkAHref != "/target" {
++			t.Fatalf("unexpected inline text-mark conversion: type=%v mark=%q href=%q", node.Type, node.TextMarkType, node.TextMarkAHref)
++		}
++	})
++	if hit {
++		t.Run("VerifiedIntervention_"+os.Getenv("LUTE_INTERVENTION_KIND")+"_"+os.Getenv("LUTE_INTERVENTION_NONCE"), func(t *testing.T) {})
++	}
++}
++
++func TestInlineImageConversion(t *testing.T) {
++	hit := intervention.Observe([]string{"image-node", "image-style"}, func() {
++		tree := parse.Inline("", []byte(`<img alt="alt" src="/target" width="12">`), &parse.Options{
++			ProtyleWYSIWYG:   true,
++			HTMLTag2TextMark: true,
++		})
++		if tree == nil || tree.Root == nil || tree.Root.FirstChild == nil || tree.Root.FirstChild.FirstChild == nil {
++			t.Fatal("inline image conversion produced no node")
++		}
++		node := tree.Root.FirstChild.FirstChild
++		if node.Type != ast.NodeImage || node.IALAttr("style") != "width: 12px;" {
++			t.Fatalf("unexpected inline image conversion: type=%v style=%q", node.Type, node.IALAttr("style"))
++		}
++	})
++	if hit {
++		t.Run("VerifiedIntervention_"+os.Getenv("LUTE_INTERVENTION_KIND")+"_"+os.Getenv("LUTE_INTERVENTION_NONCE"), func(t *testing.T) {})
++	}
++}
+diff --git a/verifier_tests/p2p_nil_options_test.go b/verifier_tests/p2p_nil_options_test.go
+new file mode 100644
+index 0000000..a6d45f2
+--- /dev/null
++++ b/verifier_tests/p2p_nil_options_test.go
+@@ -0,0 +1,27 @@
++package verifier_tests
++
++import (
++	"testing"
++
++	"github.com/88250/lute/ast"
++	"github.com/88250/lute/html"
++	"github.com/88250/lute/html/atom"
++	"github.com/88250/lute/parse"
++)
++
++func TestNilOptionsOptionFreeTextMark(t *testing.T) {
++	dom := &html.Node{
++		Type:     html.ElementNode,
++		DataAtom: atom.Span,
++		Data:     "span",
++		Attr: []*html.Attribute{
++			{Key: "data-type", Val: "a"},
++			{Key: "data-href", Val: "/target"},
++		},
++	}
++	node := &ast.Node{Type: ast.NodeText, Tokens: []byte("old")}
++	parse.SetTextMarkNode(node, dom, nil)
++	if node.Type != ast.NodeTextMark || node.TextMarkType != "a" || node.TextMarkAHref != "/target" || node.Tokens != nil {
++		t.Fatalf("nil options changed option-free conversion: type=%v mark=%q href=%q tokens=%q", node.Type, node.TextMarkType, node.TextMarkAHref, node.Tokens)
++	}
++}
+diff --git a/verifier_unit_adapter/main.go b/verifier_unit_adapter/main.go
+new file mode 100644
+index 0000000..aec298f
+--- /dev/null
++++ b/verifier_unit_adapter/main.go
+@@ -0,0 +1,133 @@
++// Adapt trusted upstream table loops into subtests without changing assertions.
++package main
++
++import (
++	"bytes"
++	"encoding/json"
++	"fmt"
++	"go/ast"
++	"go/format"
++	"go/parser"
++	"go/token"
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++)
++
++func main() {
++	root, out := os.Args[1], os.Args[2]
++	if err := os.MkdirAll(out, 0700); err != nil {
++		panic(err)
++	}
++	replacements := map[string]string{}
++	for _, pkg := range []string{"parse", "test"} {
++		paths, err := filepath.Glob(filepath.Join(root, pkg, "*_test.go"))
++		if err != nil {
++			panic(err)
++		}
++		for _, path := range paths {
++			fset := token.NewFileSet()
++			file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
++			if err != nil {
++				panic(err)
++			}
++			changed := false
++			for _, decl := range file.Decls {
++				fn, ok := decl.(*ast.FuncDecl)
++				if !ok || !strings.HasPrefix(fn.Name.Name, "Test") || fn.Body == nil {
++					continue
++				}
++				for index, stmt := range fn.Body.List {
++					loop, ok := stmt.(*ast.RangeStmt)
++					if !ok {
++						continue
++					}
++					// Keep fixture-selection guards in the loop, outside the subtest.
++					prefixEnd := 0
++					for i, statement := range loop.Body.List {
++						hasContinue := false
++						ast.Inspect(statement, func(n ast.Node) bool {
++							if branch, ok := n.(*ast.BranchStmt); ok && branch.Tok == token.CONTINUE {
++								hasContinue = true
++							}
++							return true
++						})
++						if hasContinue {
++							prefixEnd = i + 1
++						}
++					}
++					prefixStmts := append([]ast.Stmt(nil), loop.Body.List[:prefixEnd]...)
++					body := &ast.BlockStmt{List: loop.Body.List[prefixEnd:]}
++					already, assertion, unsafe := false, false, false
++					ast.Inspect(body, func(node ast.Node) bool {
++						if _, ok := node.(*ast.FuncLit); ok {
++							return false
++						}
++						if call, ok := node.(*ast.CallExpr); ok {
++							if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
++								if id, ok := sel.X.(*ast.Ident); ok && id.Name == "t" {
++									already = already || sel.Sel.Name == "Run"
++									assertion = assertion || sel.Sel.Name == "Fatalf" || sel.Sel.Name == "Fatal" || sel.Sel.Name == "Errorf" || sel.Sel.Name == "Error"
++								}
++							}
++						}
++						if _, ok := node.(*ast.BranchStmt); ok {
++							unsafe = true
++						}
++						return true
++					})
++					if already || !assertion {
++						continue
++					}
++					if unsafe {
++						panic(fmt.Sprintf("table loop has branch needing explicit adaptation: %s:%s", path, fn.Name.Name))
++					}
++					key := loop.Key
++					if id, ok := key.(*ast.Ident); key == nil || (ok && id.Name == "_") {
++						key = ast.NewIdent("verifierCaseIndex")
++						loop.Key = key
++						loop.Tok = token.DEFINE
++					}
++					prefix := fmt.Sprintf("table_%02d_", index)
++					snippet, err := parser.ParseFile(token.NewFileSet(), "wrapper.go", "package p\nfunc f(){ t.Run(\"\", func(t *testing.T){}) }", 0)
++					if err != nil {
++						panic(err)
++					}
++					call := snippet.Decls[0].(*ast.FuncDecl).Body.List[0].(*ast.ExprStmt).X.(*ast.CallExpr)
++					call.Args[0] = &ast.BinaryExpr{X: &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(prefix)}, Op: token.ADD,
++						Y: &ast.CallExpr{Fun: ast.NewIdent("verifierUnitCaseName"), Args: []ast.Expr{key}}}
++					call.Args[1].(*ast.FuncLit).Body = body
++					loop.Body = &ast.BlockStmt{List: append(prefixStmts, &ast.ExprStmt{X: call})}
++					changed = true
++				}
++			}
++			if !changed {
++				continue
++			}
++			var data bytes.Buffer
++			if err := format.Node(&data, fset, file); err != nil {
++				panic(err)
++			}
++			replacement := filepath.Join(out, pkg+"-"+filepath.Base(path))
++			if err := os.WriteFile(replacement, data.Bytes(), 0600); err != nil {
++				panic(err)
++			}
++			replacements[path] = replacement
++		}
++		// Go overlays discover new files in existing package directories.
++		helper := filepath.Join(out, pkg+"-helper_test.go")
++		code := fmt.Sprintf("package %s\nimport \"fmt\"\nfunc verifierUnitCaseName(key interface{}) string { if n, ok := key.(int); ok { return fmt.Sprintf(\"case_%%04d\", n) }; return fmt.Sprintf(\"key_%%x\", []byte(fmt.Sprint(key))) }\n", pkg)
++		if err := os.WriteFile(helper, []byte(code), 0600); err != nil {
++			panic(err)
++		}
++		replacements[filepath.Join(root, pkg, "verifier_unit_cases_test.go")] = helper
++	}
++	data, err := json.Marshal(map[string]interface{}{"Replace": replacements})
++	if err != nil {
++		panic(err)
++	}
++	if err := os.WriteFile(filepath.Join(out, "overlay.json"), data, 0600); err != nil {
++		panic(err)
++	}
++}
+diff --git a/verifier_architecture/textmark_ownership_test.go b/verifier_architecture/textmark_ownership_test.go
+new file mode 100644
+--- /dev/null
++++ b/verifier_architecture/textmark_ownership_test.go
+@@ -0,0 +1,491 @@
++package verifier_architecture
++
++// This analyzer follows TextMark value producers, not the spelling or age of a
++// helper. Component results may be wired by parse, but parse must not compute
++// the values, including values passed to component functions that just store them.
++import (
++	"fmt"
++	"go/ast"
++	"go/build"
++	"go/parser"
++	"go/token"
++	"path/filepath"
++	"sort"
++	"strconv"
++	"strings"
++)
++
++type markBinding struct {
++	expr        ast.Expr
++	part        int
++	conditional bool
++}
++
++type markFunction struct {
++	key, pkg                    string
++	fn                          *ast.FuncDecl
++	imports                     map[string]string
++	bindings                    map[*ast.Object][]markBinding
++	params                      []*ast.Ident
++	sinks                       map[int]bool
++	readObjects, mutatedObjects map[*ast.Object]bool
++	callSites                   []*ast.CallExpr
++}
++
++func markFieldName(name string) bool {
++	// Options.TextMark is a parser mode flag, not ast.Node representation state.
++	return name != "TextMark" && strings.HasPrefix(name, "TextMark")
++}
++
++func markFunctions(root string, componentDirs []string) (map[string]*markFunction, error) {
++	functions := map[string]*markFunction{}
++	dirs := append([]string{filepath.Join(root, "parse")}, componentDirs...)
++	for _, dir := range dirs {
++		paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
++		if err != nil {
++			return nil, err
++		}
++		rel, err := filepath.Rel(root, dir)
++		if err != nil {
++			return nil, err
++		}
++		pkg := "github.com/88250/lute/" + filepath.ToSlash(rel)
++		for _, path := range paths {
++			matched, err := build.Default.MatchFile(dir, filepath.Base(path))
++			if err != nil {
++				return nil, err
++			}
++			if !matched || strings.HasSuffix(path, "_test.go") {
++				continue
++			}
++			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
++			if err != nil {
++				return nil, err
++			}
++			imports := map[string]string{}
++			for _, imp := range file.Imports {
++				value, err := strconv.Unquote(imp.Path.Value)
++				if err != nil {
++					return nil, err
++				}
++				name := filepath.Base(value)
++				if imp.Name != nil {
++					name = imp.Name.Name
++				}
++				if name == "." {
++					return nil, fmt.Errorf("unresolved dot import in %s", path)
++				}
++				imports[name] = value
++			}
++			for _, decl := range file.Decls {
++				fn, ok := decl.(*ast.FuncDecl)
++				if !ok || fn.Body == nil {
++					continue
++				}
++				key := pkg + "." + fn.Name.Name
++				if fn.Recv != nil {
++					var receiver ast.Expr = fn.Recv.List[0].Type
++					if ptr, ok := receiver.(*ast.StarExpr); ok {
++						receiver = ptr.X
++					}
++					id, ok := receiver.(*ast.Ident)
++					if !ok {
++						return nil, fmt.Errorf("unsupported receiver in %s", path)
++					}
++					key = pkg + "." + id.Name + "." + fn.Name.Name
++				}
++				f := &markFunction{key: key, pkg: pkg, fn: fn, imports: imports, bindings: map[*ast.Object][]markBinding{}, sinks: map[int]bool{}}
++				for _, field := range fn.Type.Params.List {
++					f.params = append(f.params, field.Names...)
++				}
++				ancestors := []bool{}
++				conditionalDepth := 0
++				ast.Inspect(fn.Body, func(n ast.Node) bool {
++					if n == nil {
++						if ancestors[len(ancestors)-1] {
++							conditionalDepth--
++						}
++						ancestors = ancestors[:len(ancestors)-1]
++						return false
++					}
++					conditional := false
++					switch n.(type) {
++					case *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt, *ast.FuncLit:
++						conditional = true
++					}
++					ancestors = append(ancestors, conditional)
++					if conditional {
++						conditionalDepth++
++					}
++					add := func(names []ast.Expr, values []ast.Expr, compound bool) {
++						for i, name := range names {
++							id, ok := name.(*ast.Ident)
++							if !ok || id.Obj == nil {
++								continue
++							}
++							b := markBinding{conditional: conditionalDepth > 0}
++							if !compound && i < len(values) {
++								b.expr = values[i]
++							}
++							if !compound && len(values) == 1 && len(names) > 1 {
++								b.expr, b.part = values[0], i
++							}
++							f.bindings[id.Obj] = append(f.bindings[id.Obj], b)
++						}
++					}
++					switch x := n.(type) {
++					case *ast.AssignStmt:
++						add(x.Lhs, x.Rhs, x.Tok != token.ASSIGN && x.Tok != token.DEFINE)
++					case *ast.ValueSpec:
++						if len(x.Values) > 0 {
++							names := []ast.Expr{}
++							for _, id := range x.Names {
++								names = append(names, id)
++							}
++							add(names, x.Values, false)
++						}
++					}
++					return true
++				})
++				functions[key] = f
++			}
++		}
++	}
++	return functions, nil
++}
++
++func markCallee(f *markFunction, call *ast.CallExpr, functions map[string]*markFunction) *markFunction {
++	switch x := call.Fun.(type) {
++	case *ast.Ident:
++		return functions[f.pkg+"."+x.Name]
++	case *ast.SelectorExpr:
++		if id, ok := x.X.(*ast.Ident); ok {
++			if path := f.imports[id.Name]; path != "" {
++				return functions[path+"."+x.Sel.Name]
++			}
++			if f.fn.Recv != nil {
++				for _, name := range f.fn.Recv.List[0].Names {
++					if id.Obj == name.Obj {
++						return functions[strings.TrimSuffix(f.key, f.fn.Name.Name)+x.Sel.Name]
++					}
++				}
++			}
++		}
++	}
++	return nil
++}
++
++// Only identity/alias forwarding propagates a component parameter to a sink.
++// DOM field extraction or a computation in the component is component-owned.
++func markParameterSources(f *markFunction, expr ast.Expr, seen map[*ast.Object]bool) map[int]bool {
++	out := map[int]bool{}
++	if p, ok := expr.(*ast.ParenExpr); ok {
++		return markParameterSources(f, p.X, seen)
++	}
++	id, ok := expr.(*ast.Ident)
++	if !ok || id.Obj == nil || seen[id.Obj] {
++		return out
++	}
++	seen[id.Obj] = true
++	defer delete(seen, id.Obj)
++	overwritten := false
++	for _, b := range f.bindings[id.Obj] {
++		if !b.conditional {
++			overwritten = true
++		}
++	}
++	for i, param := range f.params {
++		if param.Obj == id.Obj && !overwritten {
++			out[i] = true
++		}
++	}
++	for _, b := range f.bindings[id.Obj] {
++		for i := range markParameterSources(f, b.expr, seen) {
++			out[i] = true
++		}
++	}
++	return out
++}
++
++func markWrites(fn *ast.FuncDecl, visit func(string, ast.Expr, bool)) {
++	ast.Inspect(fn.Body, func(n ast.Node) bool {
++		switch x := n.(type) {
++		case *ast.AssignStmt:
++			for i, lhs := range x.Lhs {
++				if field, ok := lhs.(*ast.SelectorExpr); ok && markFieldName(field.Sel.Name) {
++					var rhs ast.Expr
++					if i < len(x.Rhs) {
++						rhs = x.Rhs[i]
++					}
++					visit(field.Sel.Name, rhs, x.Tok == token.ASSIGN)
++				}
++			}
++		case *ast.KeyValueExpr:
++			if id, ok := x.Key.(*ast.Ident); ok && markFieldName(id.Name) {
++				visit(id.Name, x.Value, true)
++			}
++		}
++		return true
++	})
++}
++
++// Correlate representation reads and mutations on the same object, including
++// aliases. Merely reading a mark while constructing an unrelated parser node is
++// not evidence that parse owns a TextMark-to-inline conversion.
++func markObjectRoots(f *markFunction, expr ast.Expr, seen map[*ast.Object]bool) map[*ast.Object]bool {
++	out := map[*ast.Object]bool{}
++	switch x := expr.(type) {
++	case *ast.Ident:
++		if x.Obj == nil || seen[x.Obj] {
++			return out
++		}
++		seen[x.Obj] = true
++		defer delete(seen, x.Obj)
++		for _, b := range f.bindings[x.Obj] {
++			for obj := range markObjectRoots(f, b.expr, seen) {
++				out[obj] = true
++			}
++		}
++		if len(out) == 0 {
++			out[x.Obj] = true
++		}
++	case *ast.SelectorExpr:
++		return markObjectRoots(f, x.X, seen)
++	case *ast.IndexExpr:
++		return markObjectRoots(f, x.X, seen)
++	case *ast.ParenExpr:
++		return markObjectRoots(f, x.X, seen)
++	case *ast.UnaryExpr:
++		return markObjectRoots(f, x.X, seen)
++	case *ast.StarExpr:
++		return markObjectRoots(f, x.X, seen)
++	}
++	return out
++}
++
++// A result remains delegated through aliases, selectors, and local forwarding
++// functions. Any parser-side calculation invalidates that result's provenance.
++func markEditorValue(f *markFunction, expr ast.Expr, part int, functions map[string]*markFunction, components map[string]bool, args map[*ast.Object]bool, seen map[any]bool) bool {
++	switch x := expr.(type) {
++	case *ast.ParenExpr:
++		return markEditorValue(f, x.X, part, functions, components, args, seen)
++	case *ast.SelectorExpr:
++		return markEditorValue(f, x.X, 0, functions, components, args, seen)
++	case *ast.Ident:
++		if x.Obj == nil || seen[x.Obj] {
++			return false
++		}
++		if value, ok := args[x.Obj]; ok && len(f.bindings[x.Obj]) == 0 {
++			return value
++		}
++		bindings := f.bindings[x.Obj]
++		if len(bindings) == 0 {
++			return false
++		}
++		seen[x.Obj] = true
++		defer delete(seen, x.Obj)
++		for _, b := range bindings {
++			if !markEditorValue(f, b.expr, b.part, functions, components, args, seen) {
++				return false
++			}
++		}
++		return true
++	case *ast.CallExpr:
++		if sel, ok := x.Fun.(*ast.SelectorExpr); ok {
++			if id, ok := sel.X.(*ast.Ident); ok && id.Obj == nil && components[f.imports[id.Name]] {
++				return true
++			}
++		}
++		callee := markCallee(f, x, functions)
++		if callee == nil || seen[callee] {
++			return false
++		}
++		seen[callee] = true
++		defer delete(seen, callee)
++		values := map[*ast.Object]bool{}
++		for i, param := range callee.params {
++			values[param.Obj] = i < len(x.Args) && markEditorValue(f, x.Args[i], 0, functions, components, args, seen)
++		}
++		found, valid := false, true
++		ast.Inspect(callee.fn.Body, func(n ast.Node) bool {
++			if _, nested := n.(*ast.FuncLit); nested {
++				return false
++			}
++			if ret, ok := n.(*ast.ReturnStmt); ok {
++				found = true
++				if part >= len(ret.Results) || !markEditorValue(callee, ret.Results[part], 0, functions, components, values, seen) {
++					valid = false
++				}
++			}
++			return true
++		})
++		return found && valid
++	}
++	return false
++}
++
++func parserTextMarkIssues(root string, dirs []string) ([]string, error) {
++	functions, err := markFunctions(root, dirs)
++	if err != nil {
++		return nil, err
++	}
++	components := map[string]bool{}
++	for _, dir := range dirs {
++		rel, err := filepath.Rel(root, dir)
++		if err != nil {
++			return nil, err
++		}
++		components["github.com/88250/lute/"+filepath.ToSlash(rel)] = true
++	}
++	// Resolve component parameters stored into TextMark fields, including
++	// forwarding through component helpers, to a fixed point.
++	for changed := true; changed; {
++		changed = false
++		for _, f := range functions {
++			if !components[f.pkg] {
++				continue
++			}
++			add := func(expr ast.Expr) {
++				for i := range markParameterSources(f, expr, map[*ast.Object]bool{}) {
++					if !f.sinks[i] {
++						f.sinks[i], changed = true, true
++					}
++				}
++			}
++			markWrites(f.fn, func(_ string, expr ast.Expr, _ bool) { add(expr) })
++			ast.Inspect(f.fn.Body, func(n ast.Node) bool {
++				if call, ok := n.(*ast.CallExpr); ok {
++					if callee := markCallee(f, call, functions); callee != nil {
++						for i := range callee.sinks {
++							if i < len(call.Args) {
++								add(call.Args[i])
++							}
++						}
++					}
++				}
++				return true
++			})
++		}
++	}
++	issues := map[string]bool{}
++	for _, f := range functions {
++		if components[f.pkg] {
++			continue
++		}
++		f.readObjects, f.mutatedObjects = map[*ast.Object]bool{}, map[*ast.Object]bool{}
++		addObjects := func(target map[*ast.Object]bool, expr ast.Expr) {
++			for obj := range markObjectRoots(f, expr, map[*ast.Object]bool{}) {
++				target[obj] = true
++			}
++		}
++		safe := func(expr ast.Expr) bool {
++			return markEditorValue(f, expr, 0, functions, components, nil, map[any]bool{})
++		}
++		markWrites(f.fn, func(field string, value ast.Expr, plain bool) {
++			if !plain || !safe(value) {
++				issues[f.key+" computes/writes "+field+" in parser"] = true
++			}
++		})
++		written := map[*ast.SelectorExpr]bool{}
++		ast.Inspect(f.fn.Body, func(n ast.Node) bool {
++			if assignment, ok := n.(*ast.AssignStmt); ok {
++				for _, lhs := range assignment.Lhs {
++					if sel, ok := lhs.(*ast.SelectorExpr); ok && assignment.Tok == token.ASSIGN {
++						written[sel] = true
++					}
++				}
++			}
++			return true
++		})
++		ast.Inspect(f.fn.Body, func(n ast.Node) bool {
++			switch x := n.(type) {
++			case *ast.SelectorExpr:
++				if !written[x] && markFieldName(x.Sel.Name) && !safe(x.X) {
++					addObjects(f.readObjects, x.X)
++				}
++			case *ast.AssignStmt:
++				for _, lhs := range x.Lhs {
++					if sel, ok := lhs.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Type" || sel.Sel.Name == "Tokens") {
++						addObjects(f.mutatedObjects, sel.X)
++					}
++				}
++			case *ast.CallExpr:
++				if sel, ok := x.Fun.(*ast.SelectorExpr); ok {
++					switch sel.Sel.Name {
++					case "AppendChild", "PrependChild", "InsertBefore", "InsertAfter", "Unlink":
++						addObjects(f.mutatedObjects, sel.X)
++					}
++				}
++				if callee := markCallee(f, x, functions); callee != nil && !components[callee.pkg] {
++					f.callSites = append(f.callSites, x)
++				}
++				if callee := markCallee(f, x, functions); callee != nil && components[callee.pkg] {
++					for i := range callee.sinks {
++						if i >= len(x.Args) {
++							continue
++						}
++						// Empty string requests component-side inference; it is not
++						// a parser-computed type or attribute value.
++						if literal, ok := x.Args[i].(*ast.BasicLit); ok && literal.Kind == token.STRING && literal.Value == `""` {
++							continue
++						}
++						if !safe(x.Args[i]) {
++							issues[f.key+" supplies parser-owned TextMark value to "+callee.key] = true
++						}
++					}
++				}
++			}
++			return true
++		})
++	}
++	for changed := true; changed; {
++		changed = false
++		for _, f := range functions {
++			if components[f.pkg] {
++				continue
++			}
++			for _, call := range f.callSites {
++				callee := markCallee(f, call, functions)
++				propagate := func(param *ast.Ident, arg ast.Expr) {
++					for _, pair := range []struct{ from, to map[*ast.Object]bool }{{callee.readObjects, f.readObjects}, {callee.mutatedObjects, f.mutatedObjects}} {
++						if !pair.from[param.Obj] {
++							continue
++						}
++						for obj := range markObjectRoots(f, arg, map[*ast.Object]bool{}) {
++							if !pair.to[obj] {
++								pair.to[obj], changed = true, true
++							}
++						}
++					}
++				}
++				for i, param := range callee.params {
++					if i < len(call.Args) {
++						propagate(param, call.Args[i])
++					}
++				}
++				if callee.fn.Recv != nil {
++					if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
++						for _, param := range callee.fn.Recv.List[0].Names {
++							propagate(param, sel.X)
++						}
++					}
++				}
++			}
++		}
++	}
++	for _, f := range functions {
++		if !components[f.pkg] {
++			for obj := range f.readObjects {
++				if f.mutatedObjects[obj] {
++					issues[f.key+" owns TextMark-to-inline mutation"] = true
++				}
++			}
++		}
++	}
++	out := []string{}
++	for issue := range issues {
++		out = append(out, issue)
++	}
++	sort.Strings(out)
++	return out, nil
++}
+diff --git a/verifier_architecture/delegation_intervention_test.go b/verifier_architecture/delegation_intervention_test.go
+new file mode 100644
+--- /dev/null
++++ b/verifier_architecture/delegation_intervention_test.go
+@@ -0,0 +1,376 @@
++package verifier_architecture
++
++import (
++	"bytes"
++	"context"
++	"crypto/rand"
++	"encoding/hex"
++	"encoding/json"
++	"fmt"
++	"go/ast"
++	"go/build"
++	"go/format"
++	"go/parser"
++	"go/token"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strconv"
++	"strings"
++	"syscall"
++	"testing"
++	"time"
++)
++
++const inlineReceiptPrefix = "LUTE_INTERVENTION_V1 "
++
++// Every nested Go process has an independent deadline and owns a process group.
++// A failed compile, ordinary panic, or timeout is never an intervention witness.
++func boundedInlineGo(root string, env []string, args ...string) ([]byte, error) {
++	return boundedInlineGoDeadline(root, env, 50*time.Second, args...)
++}
++
++func boundedInlineGoDeadline(root string, env []string, limit time.Duration, args ...string) ([]byte, error) {
++	ctx, cancel := context.WithTimeout(context.Background(), limit)
++	defer cancel()
++	cmd := exec.CommandContext(ctx, "go", args...)
++	cmd.Dir, cmd.Env = root, env
++	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
++	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
++	cmd.WaitDelay = 2 * time.Second
++	defer func() {
++		if cmd.Process != nil {
++			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
++		}
++	}()
++	output, err := cmd.CombinedOutput()
++	if ctx.Err() != nil {
++		return output, fmt.Errorf("probe deadline: %w", ctx.Err())
++	}
++	return output, err
++}
++
++func inlineNodeKind(expr ast.Expr, imports map[string]string) string {
++	sel, ok := expr.(*ast.SelectorExpr)
++	if !ok {
++		return ""
++	}
++	id, ok := sel.X.(*ast.Ident)
++	if !ok || id.Obj != nil || imports[id.Name] != "github.com/88250/lute/ast" {
++		return ""
++	}
++	switch sel.Sel.Name {
++	case "NodeTextMark":
++		return "textmark"
++	case "NodeImage", "NodeLinkDest":
++		return "image-node"
++	}
++	return ""
++}
++
++func literalString(expr ast.Expr, value string) bool {
++	lit, ok := expr.(*ast.BasicLit)
++	if !ok || lit.Kind != token.STRING {
++		return false
++	}
++	s, err := strconv.Unquote(lit.Value)
++	return err == nil && s == value
++}
++
++// Instrument the expression that constructs/writes the target representation.
++// No arbitrary editor entry point is disabled. Keeping the original expression
++// as an argument preserves typing; Stop is a typed, immediately recovered abort.
++func inlineInterventionOverlay(root, dir, kind, nonce string, dirs []string) (string, int, error) {
++	replace := map[string]string{}
++	sites := 0
++	for _, component := range dirs {
++		paths, err := filepath.Glob(filepath.Join(component, "*.go"))
++		if err != nil {
++			return "", 0, err
++		}
++		for _, path := range paths {
++			match, err := build.Default.MatchFile(component, filepath.Base(path))
++			if err != nil {
++				return "", 0, err
++			}
++			if !match || strings.HasSuffix(path, "_test.go") {
++				continue
++			}
++			fset := token.NewFileSet()
++			file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
++			if err != nil {
++				return "", 0, err
++			}
++			imports := map[string]string{}
++			for _, imp := range file.Imports {
++				p, err := strconv.Unquote(imp.Path.Value)
++				if err != nil {
++					return "", 0, err
++				}
++				alias := filepath.Base(p)
++				if imp.Name != nil {
++					alias = imp.Name.Name
++				}
++				imports[alias] = p
++			}
++			before := sites
++			stop := func(value ast.Expr) ast.Expr {
++				sites++
++				return &ast.CallExpr{Fun: &ast.SelectorExpr{X: ast.NewIdent("luteVerifierIntervention"), Sel: ast.NewIdent("Stop")}, Args: []ast.Expr{value, &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(kind)}, &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(nonce)}}}
++			}
++			// A multi-result RHS cannot be passed as one generic value. Mark the
++			// executed assignment statement without changing its tuple signature.
++			prefixTupleWrites := func(statements []ast.Stmt) []ast.Stmt {
++				result := []ast.Stmt{}
++				for _, statement := range statements {
++					if assignment, ok := statement.(*ast.AssignStmt); ok && len(assignment.Lhs) > 1 && len(assignment.Rhs) == 1 && kind == "textmark" {
++						for _, lhs := range assignment.Lhs {
++							if sel, ok := lhs.(*ast.SelectorExpr); ok && markFieldName(sel.Sel.Name) {
++								sites++
++								result = append(result, &ast.ExprStmt{X: &ast.CallExpr{Fun: &ast.SelectorExpr{X: ast.NewIdent("luteVerifierIntervention"), Sel: ast.NewIdent("Hit")}, Args: []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(kind)}, &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(nonce)}}}})
++								break
++							}
++						}
++					}
++					result = append(result, statement)
++				}
++				return result
++			}
++			ast.Inspect(file, func(node ast.Node) bool {
++				switch x := node.(type) {
++				case *ast.BlockStmt:
++					x.List = prefixTupleWrites(x.List)
++				case *ast.CaseClause:
++					x.Body = prefixTupleWrites(x.Body)
++				case *ast.CommClause:
++					x.Body = prefixTupleWrites(x.Body)
++				case *ast.KeyValueExpr:
++					if key, ok := x.Key.(*ast.Ident); ok {
++						if key.Name == "Type" && inlineNodeKind(x.Value, imports) == kind {
++							x.Value = stop(x.Value)
++							return false
++						}
++						if kind == "textmark" && markFieldName(key.Name) {
++							x.Value = stop(x.Value)
++							return false
++						}
++					}
++				case *ast.AssignStmt:
++					if len(x.Lhs) > 1 && len(x.Rhs) == 1 {
++						return true
++					}
++					for i, lhs := range x.Lhs {
++						if i >= len(x.Rhs) {
++							continue
++						}
++						if sel, ok := lhs.(*ast.SelectorExpr); ok {
++							if (sel.Sel.Name == "Type" && inlineNodeKind(x.Rhs[i], imports) == kind) || (kind == "textmark" && markFieldName(sel.Sel.Name)) {
++								x.Rhs[i] = stop(x.Rhs[i])
++							}
++						}
++					}
++					return true
++				case *ast.CallExpr:
++					if kind == "image-style" {
++						if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "SetIALAttr" && len(x.Args) == 2 && literalString(x.Args[0], "style") {
++							x.Args[1] = stop(x.Args[1])
++							return false
++						}
++					}
++				}
++				return true
++			})
++			if sites == before {
++				continue
++			}
++			file.Decls = append([]ast.Decl{&ast.GenDecl{Tok: token.IMPORT, Specs: []ast.Spec{&ast.ImportSpec{Name: ast.NewIdent("luteVerifierIntervention"), Path: &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote("github.com/88250/lute/verifier_intervention")}}}}}, file.Decls...)
++			var output bytes.Buffer
++			if err := format.Node(&output, fset, file); err != nil {
++				return "", 0, err
++			}
++			target := filepath.Join(dir, fmt.Sprintf("target-%d.go", len(replace)))
++			if err := os.WriteFile(target, output.Bytes(), 0600); err != nil {
++				return "", 0, err
++			}
++			replace[path] = target
++		}
++	}
++	data, err := json.Marshal(map[string]any{"Replace": replace})
++	if err != nil {
++		return "", 0, err
++	}
++	path := filepath.Join(dir, "overlay.json")
++	return path, sites, os.WriteFile(path, data, 0600)
++}
++
++type inlineProbeResult struct {
++	action     string
++	hits       int
++	unexpected bool
++}
++
++func inlineProbeEvents(output []byte, probe, kind, nonce string) inlineProbeResult {
++	result := inlineProbeResult{}
++	verified := false
++	for _, line := range bytes.Split(output, []byte("\n")) {
++		var event struct{ Test, Action, Output string }
++		if json.Unmarshal(line, &event) != nil {
++			continue
++		}
++		if nonce != "" && event.Test == probe+"/VerifiedIntervention_"+kind+"_"+nonce && event.Action == "pass" {
++			verified = true
++		}
++		if event.Test != probe {
++			continue
++		}
++		if event.Action == "pass" || event.Action == "fail" || event.Action == "skip" {
++			result.action = event.Action
++		}
++		if event.Action == "output" && strings.HasPrefix(event.Output, inlineReceiptPrefix) {
++			var receipt struct{ Kind, Nonce string }
++			if json.Unmarshal([]byte(strings.TrimPrefix(event.Output, inlineReceiptPrefix)), &receipt) != nil || receipt.Kind != kind || receipt.Nonce != nonce {
++				result.unexpected = true
++			} else {
++				result.hits++
++			}
++		}
++	}
++	if nonce != "" && !verified {
++		result.hits = 0
++	}
++	return result
++}
++
++// Forwarded style parameters are traced to prevent parser-side width/IAL
++// computation from hiding behind an editor function that merely stores a string.
++func parserImageStyleIssues(root string, dirs []string) ([]string, error) {
++	functions, err := markFunctions(root, dirs)
++	if err != nil {
++		return nil, err
++	}
++	components := map[string]bool{}
++	for _, dir := range dirs {
++		rel, err := filepath.Rel(root, dir)
++		if err != nil {
++			return nil, err
++		}
++		components["github.com/88250/lute/"+filepath.ToSlash(rel)] = true
++	}
++	styleWrites := func(f *markFunction, visit func(ast.Expr)) {
++		ast.Inspect(f.fn.Body, func(node ast.Node) bool {
++			if call, ok := node.(*ast.CallExpr); ok && len(call.Args) == 2 && literalString(call.Args[0], "style") {
++				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "SetIALAttr" {
++					visit(call.Args[1])
++				}
++			}
++			return true
++		})
++	}
++	for _, f := range functions {
++		f.sinks = map[int]bool{}
++	}
++	for changed := true; changed; {
++		changed = false
++		for _, f := range functions {
++			if !components[f.pkg] {
++				continue
++			}
++			add := func(expr ast.Expr) {
++				for i := range markParameterSources(f, expr, map[*ast.Object]bool{}) {
++					if !f.sinks[i] {
++						f.sinks[i], changed = true, true
++					}
++				}
++			}
++			styleWrites(f, add)
++			ast.Inspect(f.fn.Body, func(node ast.Node) bool {
++				if call, ok := node.(*ast.CallExpr); ok {
++					if callee := markCallee(f, call, functions); callee != nil {
++						for i := range callee.sinks {
++							if i < len(call.Args) {
++								add(call.Args[i])
++							}
++						}
++					}
++				}
++				return true
++			})
++		}
++	}
++	issues := []string{}
++	for _, f := range functions {
++		if components[f.pkg] {
++			continue
++		}
++		safe := func(expr ast.Expr) bool {
++			return markEditorValue(f, expr, 0, functions, components, nil, map[any]bool{})
++		}
++		styleWrites(f, func(expr ast.Expr) {
++			if !safe(expr) {
++				issues = append(issues, f.key+" computes image style in parser")
++			}
++		})
++		ast.Inspect(f.fn.Body, func(node ast.Node) bool {
++			if call, ok := node.(*ast.CallExpr); ok {
++				if callee := markCallee(f, call, functions); callee != nil && components[callee.pkg] {
++					for i := range callee.sinks {
++						if i < len(call.Args) && !safe(call.Args[i]) {
++							issues = append(issues, f.key+" supplies parser-computed style to "+callee.key)
++						}
++					}
++				}
++			}
++			return true
++		})
++	}
++	return issues, nil
++}
++
++func requireInlineConversionDelegation(t *testing.T, probe string, kinds ...string) {
++	t.Helper()
++	root := repository(t)
++	plain, err := boundedInlineGo(root, os.Environ(), "test", "-json", "-count=1", "-timeout=30s", "./verifier_tests_refactor", "-run", "^"+probe+"$")
++	plainResult := inlineProbeEvents(plain, probe, "", "")
++	if plainResult.action == "" || plainResult.action == "skip" || (plainResult.action == "pass" && err != nil) {
++		t.Skipf("public probe unavailable: %v\n%s", err, plain)
++	}
++	if err != nil || plainResult.action != "pass" {
++		t.Fatalf("normal public conversion failed: %v\n%s", err, plain)
++	}
++	dirs, err := componentDirs(root)
++	if err != nil {
++		t.Skipf("intervention unavailable: %v", err)
++	}
++	if len(kinds) == 2 {
++		issues, err := parserImageStyleIssues(root, dirs)
++		if err != nil {
++			t.Skipf("style provenance unavailable: %v", err)
++		}
++		if len(issues) > 0 {
++			t.Fatalf("image conversion remains in parser: %s", strings.Join(issues, "; "))
++		}
++	}
++	for _, kind := range kinds {
++		random := make([]byte, 16)
++		if _, err := rand.Read(random); err != nil {
++			t.Skipf("cannot bind intervention nonce: %v", err)
++		}
++		nonce := hex.EncodeToString(random)
++		overlay, sites, err := inlineInterventionOverlay(root, t.TempDir(), kind, nonce, dirs)
++		if err != nil {
++			t.Skipf("intervention unavailable: %v", err)
++		}
++		if sites == 0 {
++			t.Fatalf("no editor-owned %s transformation sites", kind)
++		}
++		env := append(os.Environ(), "LUTE_INTERVENTION_KIND="+kind, "LUTE_INTERVENTION_NONCE="+nonce)
++		output, err := boundedInlineGo(root, env, "test", "-json", "-vet=off", "-count=1", "-timeout=30s", "-overlay", overlay, "./verifier_tests_refactor", "-run", "^"+probe+"$")
++		result := inlineProbeEvents(output, probe, kind, nonce)
++		if err != nil || result.action != "pass" || result.unexpected {
++			t.Skipf("intervention did not complete normally: %v\n%s", err, output)
++		}
++		if result.hits != 1 {
++			t.Fatalf("public conversion survives without executing editor %s transformation", kind)
++		}
++	}
++}
+diff --git a/verifier_intervention/probe.go b/verifier_intervention/probe.go
+new file mode 100644
+--- /dev/null
++++ b/verifier_intervention/probe.go
+@@ -0,0 +1,45 @@
++package verifier_intervention
++
++import (
++	"encoding/json"
++	"fmt"
++	"os"
++)
++
++// Event is only constructed by the verifier's injected transformation-site
++// expression. Arbitrary panics and failed assertions cannot create a receipt.
++type Event struct{ Kind, Nonce string }
++
++func Hit(kind, nonce string) { panic(Event{Kind: kind, Nonce: nonce}) }
++
++func Stop[T any](value T, kind, nonce string) T {
++	panic(Event{Kind: kind, Nonce: nonce})
++}
++
++func Observe(kinds []string, run func()) (hit bool) {
++	wantKind, nonce := os.Getenv("LUTE_INTERVENTION_KIND"), os.Getenv("LUTE_INTERVENTION_NONCE")
++	defer func() {
++		value := recover()
++		if value == nil {
++			return
++		}
++		event, ok := value.(Event)
++		allowed := false
++		for _, kind := range kinds {
++			if kind == wantKind {
++				allowed = true
++			}
++		}
++		if !ok || !allowed || nonce == "" || event.Kind != wantKind || event.Nonce != nonce {
++			panic(value)
++		}
++		data, err := json.Marshal(event)
++		if err != nil {
++			panic(err)
++		}
++		fmt.Println("LUTE_INTERVENTION_V1 " + string(data))
++		hit = true
++	}()
++	run()
++	return false
++}
+diff --git a/verifier_tests/linkref_fixture.json b/verifier_tests/linkref_fixture.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..3fdf92d877b322c403bd48621dc2ddc080ff6ea3
+--- /dev/null
++++ b/verifier_tests/linkref_fixture.json
+@@ -0,0 +1,338 @@
++{
++  "editor=false/hybrid=false/export=false": {
++    "Children": [
++      {
++        "Children": [
++          {
++            "Children": [],
++            "Data": "",
++            "TextMarkAHref": "https://example.test",
++            "TextMarkATitle": "title",
++            "TextMarkTextContent": "link",
++            "TextMarkType": "a",
++            "Type": "NodeTextMark"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeParagraph"
++      },
++      {
++        "Children": [
++          {
++            "Children": [
++              {
++                "Children": [],
++                "Data": "",
++                "TextMarkAHref": "https://example.test",
++                "TextMarkATitle": "title",
++                "TextMarkTextContent": "ref",
++                "TextMarkType": "a",
++                "Type": "NodeTextMark"
++              }
++            ],
++            "Data": "ref",
++            "Type": "NodeLinkRefDef"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeLinkRefDefBlock"
++      }
++    ],
++    "Data": "",
++    "Type": "NodeDocument"
++  },
++  "editor=false/hybrid=false/export=true": {
++    "Children": [
++      {
++        "Children": [
++          {
++            "Children": [],
++            "Data": "",
++            "TextMarkAHref": "https://example.test",
++            "TextMarkATitle": "title",
++            "TextMarkTextContent": "link",
++            "TextMarkType": "a",
++            "Type": "NodeTextMark"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeParagraph"
++      },
++      {
++        "Children": [
++          {
++            "Children": [
++              {
++                "Children": [],
++                "Data": "",
++                "TextMarkAHref": "https://example.test",
++                "TextMarkATitle": "title",
++                "TextMarkTextContent": "ref",
++                "TextMarkType": "a",
++                "Type": "NodeTextMark"
++              }
++            ],
++            "Data": "ref",
++            "Type": "NodeLinkRefDef"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeLinkRefDefBlock"
++      }
++    ],
++    "Data": "",
++    "Type": "NodeDocument"
++  },
++  "editor=false/hybrid=true/export=false": {
++    "Children": [
++      {
++        "Children": [
++          {
++            "Children": [],
++            "Data": "",
++            "TextMarkAHref": "https://example.test",
++            "TextMarkATitle": "title",
++            "TextMarkTextContent": "link",
++            "TextMarkType": "a",
++            "Type": "NodeTextMark"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeParagraph"
++      },
++      {
++        "Children": [
++          {
++            "Children": [
++              {
++                "Children": [],
++                "Data": "",
++                "TextMarkAHref": "https://example.test",
++                "TextMarkATitle": "title",
++                "TextMarkTextContent": "ref",
++                "TextMarkType": "a",
++                "Type": "NodeTextMark"
++              }
++            ],
++            "Data": "ref",
++            "Type": "NodeLinkRefDef"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeLinkRefDefBlock"
++      }
++    ],
++    "Data": "",
++    "Type": "NodeDocument"
++  },
++  "editor=false/hybrid=true/export=true": {
++    "Children": [
++      {
++        "Children": [
++          {
++            "Children": [],
++            "Data": "",
++            "TextMarkAHref": "https://example.test",
++            "TextMarkATitle": "title",
++            "TextMarkTextContent": "link",
++            "TextMarkType": "a",
++            "Type": "NodeTextMark"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeParagraph"
++      },
++      {
++        "Children": [
++          {
++            "Children": [
++              {
++                "Children": [],
++                "Data": "",
++                "TextMarkAHref": "https://example.test",
++                "TextMarkATitle": "title",
++                "TextMarkTextContent": "ref",
++                "TextMarkType": "a",
++                "Type": "NodeTextMark"
++              }
++            ],
++            "Data": "ref",
++            "Type": "NodeLinkRefDef"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeLinkRefDefBlock"
++      }
++    ],
++    "Data": "",
++    "Type": "NodeDocument"
++  },
++  "editor=true/hybrid=false/export=false": {
++    "Children": [
++      {
++        "Children": [
++          {
++            "Children": [],
++            "Data": "",
++            "TextMarkAHref": "https://example.test",
++            "TextMarkATitle": "title",
++            "TextMarkTextContent": "link",
++            "TextMarkType": "a",
++            "Type": "NodeTextMark"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeParagraph"
++      },
++      {
++        "Children": [
++          {
++            "Children": [
++              {
++                "Children": [],
++                "Data": "",
++                "TextMarkAHref": "https://example.test",
++                "TextMarkATitle": "title",
++                "TextMarkTextContent": "ref",
++                "TextMarkType": "a",
++                "Type": "NodeTextMark"
++              }
++            ],
++            "Data": "ref",
++            "Type": "NodeLinkRefDef"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeLinkRefDefBlock"
++      }
++    ],
++    "Data": "",
++    "Type": "NodeDocument"
++  },
++  "editor=true/hybrid=false/export=true": {
++    "Children": [
++      {
++        "Children": [
++          {
++            "Children": [],
++            "Data": "",
++            "TextMarkAHref": "https://example.test",
++            "TextMarkATitle": "title",
++            "TextMarkTextContent": "link",
++            "TextMarkType": "a",
++            "Type": "NodeTextMark"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeParagraph"
++      },
++      {
++        "Children": [
++          {
++            "Children": [
++              {
++                "Children": [],
++                "Data": "",
++                "TextMarkAHref": "https://example.test",
++                "TextMarkATitle": "title",
++                "TextMarkTextContent": "ref",
++                "TextMarkType": "a",
++                "Type": "NodeTextMark"
++              }
++            ],
++            "Data": "ref",
++            "Type": "NodeLinkRefDef"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeLinkRefDefBlock"
++      }
++    ],
++    "Data": "",
++    "Type": "NodeDocument"
++  },
++  "editor=true/hybrid=true/export=false": {
++    "Children": [
++      {
++        "Children": [
++          {
++            "Children": [],
++            "Data": "",
++            "TextMarkAHref": "https://example.test",
++            "TextMarkATitle": "title",
++            "TextMarkTextContent": "link",
++            "TextMarkType": "a",
++            "Type": "NodeTextMark"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeParagraph"
++      },
++      {
++        "Children": [
++          {
++            "Children": [
++              {
++                "Children": [],
++                "Data": "",
++                "TextMarkAHref": "https://example.test",
++                "TextMarkATitle": "title",
++                "TextMarkTextContent": "ref",
++                "TextMarkType": "a",
++                "Type": "NodeTextMark"
++              }
++            ],
++            "Data": "ref",
++            "Type": "NodeLinkRefDef"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeLinkRefDefBlock"
++      }
++    ],
++    "Data": "",
++    "Type": "NodeDocument"
++  },
++  "editor=true/hybrid=true/export=true": {
++    "Children": [
++      {
++        "Children": [
++          {
++            "Children": [],
++            "Data": "",
++            "TextMarkAHref": "https://example.test",
++            "TextMarkATitle": "title",
++            "TextMarkTextContent": "link",
++            "TextMarkType": "a",
++            "Type": "NodeTextMark"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeParagraph"
++      },
++      {
++        "Children": [
++          {
++            "Children": [
++              {
++                "Children": [],
++                "Data": "",
++                "TextMarkAHref": "https://example.test",
++                "TextMarkATitle": "title",
++                "TextMarkTextContent": "ref",
++                "TextMarkType": "a",
++                "Type": "NodeTextMark"
++              }
++            ],
++            "Data": "ref",
++            "Type": "NodeLinkRefDef"
++          }
++        ],
++        "Data": "",
++        "Type": "NodeLinkRefDefBlock"
++      }
++    ],
++    "Data": "",
++    "Type": "NodeDocument"
++  }
++}
+diff --git a/verifier_tests/contract_completion_test.go b/verifier_tests/contract_completion_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..54d257c95a6109ac608cbb672d964181dd89b6d1
+--- /dev/null
++++ b/verifier_tests/contract_completion_test.go
+@@ -0,0 +1,136 @@
++package verifier_tests
++
++import (
++	_ "embed"
++	"encoding/json"
++	"fmt"
++	"reflect"
++	"strings"
++	"testing"
++
++	"github.com/88250/lute"
++	"github.com/88250/lute/ast"
++	"github.com/88250/lute/parse"
++)
++
++//go:embed linkref_fixture.json
++var linkrefFixture []byte
++
++func contractSnapshot(n *ast.Node) any {
++	if n == nil {
++		return nil
++	}
++	b, err := json.Marshal(n)
++	if err != nil {
++		panic(err)
++	}
++	m := map[string]any{}
++	if err = json.Unmarshal(b, &m); err != nil {
++		panic(err)
++	}
++	m["Type"] = n.Type.String()
++	m["Data"] = string(n.Tokens)
++	children := []any{}
++	for c := n.FirstChild; c != nil; c = c.Next {
++		children = append(children, contractSnapshot(c))
++	}
++	m["Children"] = children
++	return m
++}
++
++func checkLinkReferenceFlatten(t *testing.T, hybrid bool) {
++	t.Helper()
++	wasTesting := ast.Testing
++	ast.Testing = true
++	defer func() { ast.Testing = wasTesting }()
++	var fixtures map[string]any
++	if err := json.Unmarshal(linkrefFixture, &fixtures); err != nil {
++		t.Fatal(err)
++	}
++	for _, editor := range []bool{false, true} {
++		for _, export := range []bool{false, true} {
++			options := parse.NewOptions()
++			options.ProtyleWYSIWYG = editor
++			options.HTMLTag2TextMark = editor
++			tree := parse.Parse("audit", []byte("[link][ref]\n\n[ref]: https://example.test \"title\""), options)
++			root := tree.Root
++			if hybrid {
++				parse.NestedInlines2FlattedSpansHybrid(tree, export)
++			} else {
++				parse.NestedInlines2FlattedSpans(tree, export)
++			}
++			if tree.Root != root {
++				t.Fatal("flatten replaced the caller's root")
++			}
++			key := fmt.Sprintf("editor=%v/hybrid=%v/export=%v", editor, hybrid, export)
++			expected, ok := fixtures[key]
++			if !ok {
++				t.Fatalf("missing frozen baseline observation %s", key)
++			}
++			actual := contractSnapshot(root)
++			if !reflect.DeepEqual(actual, expected) {
++				a, _ := json.Marshal(actual)
++				e, _ := json.Marshal(expected)
++				t.Errorf("link-reference AST changed for %s\nactual=%s\nexpected=%s", key, a, e)
++			}
++		}
++	}
++}
++func TestP2PRegularLinkReferenceAST(t *testing.T) { checkLinkReferenceFlatten(t, false) }
++func TestP2PHybridLinkReferenceAST(t *testing.T)  { checkLinkReferenceFlatten(t, true) }
++
++func TestF2PStableSpanCustomAttributes(t *testing.T) {
++	var first string
++	for i := 0; i < 128; i++ {
++		node := &ast.Node{Type: ast.NodeTextMark}
++		parent := &ast.Node{Type: ast.NodeParagraph}
++		parent.AppendChild(node)
++		parse.SetSpanIAL(node, p2pHtmlNode(t, `<span custom-z="z" custom-a="a" custom-m="m">hello</span>`))
++		for key, value := range map[string]string{"custom-z": "z", "custom-a": "a", "custom-m": "m"} {
++			if node.IALAttr(key) != value {
++				t.Fatalf("custom attribute %s lost or changed", key)
++			}
++		}
++		actual := string(parse.IAL2Tokens(node.KramdownIAL))
++		if i == 0 {
++			first = actual
++		} else if actual != first {
++			t.Fatalf("same span input produced different serialized attribute order: %q vs %q", first, actual)
++		}
++	}
++}
++func checkStableBlockCustomAttributes(t *testing.T, nodeType string) {
++	t.Helper()
++	wasTesting := ast.Testing
++	ast.Testing = true
++	defer func() { ast.Testing = wasTesting }()
++	input := `<div data-node-id="20060102150405-1a2b3c4" data-type="` + nodeType + `" data-subtype="h2" custom-z="z" custom-a="a" custom-m="m"><div contenteditable="true">hello</div></div>`
++	first := map[string]string{}
++	for i := 0; i < 128; i++ {
++		engine := lute.New()
++		outputs := map[string]string{"markdown": engine.BlockDOM2Md(input), "export": engine.BlockDOM2StdMd(input)}
++		for key, actual := range outputs {
++			if !strings.Contains(actual, "hello") {
++				t.Fatalf("%s dropped body text", key)
++			}
++			if key == "markdown" {
++				for _, attr := range []string{`custom-z="z"`, `custom-a="a"`, `custom-m="m"`} {
++					if strings.Count(actual, attr) != 1 {
++						t.Fatalf("%s missing, duplicate or changed in %q", attr, actual)
++					}
++				}
++			}
++			if i == 0 {
++				first[key] = actual
++			} else if actual != first[key] {
++				t.Fatalf("%s %s is nondeterministic: %q vs %q", nodeType, key, first[key], actual)
++			}
++		}
++	}
++}
++func TestF2PStableParagraphCustomAttributes(t *testing.T) {
++	checkStableBlockCustomAttributes(t, "NodeParagraph")
++}
++func TestF2PStableHeadingCustomAttributes(t *testing.T) {
++	checkStableBlockCustomAttributes(t, "NodeHeading")
++}

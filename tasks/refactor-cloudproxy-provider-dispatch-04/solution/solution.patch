@@ -1,0 +1,326 @@
+diff --git a/cloudproxy/main.py b/cloudproxy/main.py
+index ab590be91667d94278845a3186212c79f0cc2ca6..6323f19f2c36be818fc207a54f0fb2d4e868cfd2 100644
+--- a/cloudproxy/main.py
++++ b/cloudproxy/main.py
+@@ -5,7 +5,7 @@ import re
+ import logging
+ import uuid
+ from datetime import datetime, UTC
+-from typing import List, Optional, Set, Dict, Any
++from typing import List, Optional, Set, Dict, Any, Type, Tuple
+ 
+ import uvicorn
+ from loguru import logger
+@@ -357,6 +357,26 @@ class ProviderInstance(BaseModel):
+     display_name: Optional[str] = None
+     project: Optional[str] = None
+ 
++def _get_instance_field(default_inst: Any, key: str) -> Any:
++    if isinstance(default_inst, dict):
++        return default_inst.get(key, "")
++    elif hasattr(default_inst, "model_fields_set"):
++        if key in default_inst.model_fields_set:
++            return getattr(default_inst, key, None)
++        return ""
++    return ""
++
++def _derive_fields_from_default_instance(data: Any, fields: Tuple[str, ...]) -> Any:
++    if isinstance(data, dict) and "instances" in data and data["instances"] is not None:
++        data = dict(data)
++        instances = data["instances"]
++        default_inst = instances.get("default") if isinstance(instances, dict) else None
++        if default_inst is not None:
++            for key in fields:
++                if key not in data:
++                    data[key] = _get_instance_field(default_inst, key)
++    return data
++
+ class BaseProvider(BaseModel):
+     enabled: bool = False
+     ips: List[str] = Field(default_factory=list)
+@@ -366,14 +386,57 @@ class BaseProvider(BaseModel):
+     scaling: ProviderScaling = Field(default_factory=lambda: ProviderScaling())
+     instances: Dict[str, ProviderInstance] = Field(default_factory=dict)
+ 
++
++    @classmethod
++    def from_config(cls, provider_config: Dict):
++        # Extract instances separately from the config to handle it correctly
++        instances_dict = {}
++        if "instances" in provider_config:
++            for instance_name, instance_config in provider_config["instances"].items():
++                # Ensure the scaling is a dict for the instance
++                if isinstance(instance_config.get("scaling"), ProviderScaling):
++                    instance_config["scaling"] = {
++                        "min_scaling": instance_config["scaling"].min_scaling,
++                        "max_scaling": instance_config["scaling"].max_scaling
++                    }
++                instances_dict[instance_name] = ProviderInstance(**instance_config)
++    
++        # Create a shallow copy to avoid modifying the original
++        config_copy = provider_config.copy()
++    
++        # Remove instances from the copy to avoid duplication
++        if "instances" in config_copy:
++            del config_copy["instances"]
++    
++        # Ensure the scaling is a dict
++        if isinstance(config_copy.get("scaling"), ProviderScaling):
++            config_copy["scaling"] = {
++                "min_scaling": config_copy["scaling"].min_scaling,
++                "max_scaling": config_copy["scaling"].max_scaling
++            }
++    
++        return cls(**cls._derive_defaults(dict(config_copy, instances=instances_dict)))
++
++    @classmethod
++    def _derive_defaults(cls, data: Any) -> Any:
++        return data
++
+ class DigitalOceanProvider(BaseProvider):
+     region: str
+ 
++    @classmethod
++    def _derive_defaults(cls, data: Any) -> Any:
++        return _derive_fields_from_default_instance(data, ("region",))
++
+ class AWSProvider(BaseProvider):
+     region: Optional[str] = ""
+     ami: Optional[str] = ""
+     spot: bool = False
+ 
++    @classmethod
++    def _derive_defaults(cls, data: Any) -> Any:
++        return _derive_fields_from_default_instance(data, ("region", "ami"))
++
+ class GCPProvider(BaseProvider):
+     zone: str
+     image_project: str
+@@ -401,64 +464,16 @@ class ProviderInstanceResponse(BaseModel):
+     instance: str
+     config: ProviderInstance
+ 
++PROVIDER_MODEL_TYPES: Dict[str, Type[BaseProvider]] = {
++    "digitalocean": DigitalOceanProvider,
++    "aws": AWSProvider,
++    "gcp": GCPProvider,
++    "hetzner": HetznerProvider,
++}
++
+ def get_provider_model(provider_name: str, provider_config: Dict) -> BaseProvider:
+-    """
+-    Get the appropriate Pydantic model for a provider based on the provider name.
+-    
+-    Args:
+-        provider_name: The name of the provider
+-        provider_config: The provider configuration
+-        
+-    Returns:
+-        A provider model instance
+-    """
+-    # Extract instances separately from the config to handle it correctly
+-    instances_dict = {}
+-    if "instances" in provider_config:
+-        for instance_name, instance_config in provider_config["instances"].items():
+-            # Ensure the scaling is a dict for the instance
+-            if isinstance(instance_config.get("scaling"), ProviderScaling):
+-                instance_config["scaling"] = {
+-                    "min_scaling": instance_config["scaling"].min_scaling,
+-                    "max_scaling": instance_config["scaling"].max_scaling
+-                }
+-            instances_dict[instance_name] = ProviderInstance(**instance_config)
+-    
+-    # Create a shallow copy to avoid modifying the original
+-    config_copy = provider_config.copy()
+-    
+-    # Remove instances from the copy to avoid duplication
+-    if "instances" in config_copy:
+-        del config_copy["instances"]
+-    
+-    # Ensure the scaling is a dict
+-    if isinstance(config_copy.get("scaling"), ProviderScaling):
+-        config_copy["scaling"] = {
+-            "min_scaling": config_copy["scaling"].min_scaling,
+-            "max_scaling": config_copy["scaling"].max_scaling
+-        }
+-    
+-    # Get the appropriate provider model
+-    if provider_name == "digitalocean":
+-        # For DigitalOcean, ensure region is set (required by model)
+-        if "region" not in config_copy and "instances" in provider_config and "default" in provider_config["instances"]:
+-            config_copy["region"] = provider_config["instances"]["default"].get("region", "")
+-        provider_model = DigitalOceanProvider(**config_copy, instances=instances_dict)
+-    elif provider_name == "aws":
+-        # For AWS, ensure region and ami are set (required by model)
+-        if "region" not in config_copy and "instances" in provider_config and "default" in provider_config["instances"]:
+-            config_copy["region"] = provider_config["instances"]["default"].get("region", "")
+-        if "ami" not in config_copy and "instances" in provider_config and "default" in provider_config["instances"]:
+-            config_copy["ami"] = provider_config["instances"]["default"].get("ami", "")
+-        provider_model = AWSProvider(**config_copy, instances=instances_dict)
+-    elif provider_name == "gcp":
+-        provider_model = GCPProvider(**config_copy, instances=instances_dict)
+-    elif provider_name == "hetzner":
+-        provider_model = HetznerProvider(**config_copy, instances=instances_dict)
+-    else:
+-        provider_model = BaseProvider(**config_copy, instances=instances_dict)
+-    
+-    return provider_model
++    model_cls = PROVIDER_MODEL_TYPES.get(provider_name, BaseProvider)
++    return model_cls.from_config(provider_config)
+ 
+ class AuthSettings(BaseModel):
+     username: str
+diff --git a/tests/test_main.py b/tests/test_main.py
+index 53732d94f14c46f9926ef5d6a2994e0482e021a9..92ab03282897da6a15c425bdfcabce01b5d28af9 100644
+--- a/tests/test_main.py
++++ b/tests/test_main.py
+@@ -112,6 +112,7 @@ def test_providers_digitalocean():
+ def test_providers_404():
+     response = client.get("/providers/notaprovider")
+     assert response.status_code == 404
++    assert response.json()["detail"] == "Provider 'notaprovider' not found"
+ 
+ 
+ def test_configure():
+diff --git a/tests/test_main_models.py b/tests/test_main_models.py
+index 3a4690e3a7c2abac0f1e399cbc76d1cb51050ba8..6b47d75a68cc3484dd1691e28ac47bec42f66b58 100644
+--- a/tests/test_main_models.py
++++ b/tests/test_main_models.py
+@@ -316,4 +316,118 @@ def test_provider_update_request_validation():
+     
+     # Invalid: max_scaling less than min_scaling
+     with pytest.raises(ValidationError):
+-        ProviderUpdateRequest(min_scaling=5, max_scaling=2) 
+\ No newline at end of file
++        ProviderUpdateRequest(min_scaling=5, max_scaling=2)
++
++
++def test_provider_type_level_default_derivation():
++    """Test provider type-level region and ami default derivation matrix"""
++    # 1. DigitalOcean derives region from default instance when missing at top level
++    do_inst = {
++        "enabled": True,
++        "ips": [],
++        "scaling": {"min_scaling": 0, "max_scaling": 0},
++        "region": "nyc1",
++    }
++    do_p = DigitalOceanProvider(instances={"default": do_inst})
++    assert do_p.region == "nyc1"
++
++    # 2. AWS derives region and ami from default instance; spot defaults to False
++    aws_inst = {
++        "enabled": True,
++        "ips": [],
++        "scaling": {"min_scaling": 0, "max_scaling": 0},
++        "region": "us-east-1",
++        "ami": "ami-12345",
++        "spot": True,
++    }
++    aws_p = AWSProvider(instances={"default": aws_inst})
++    assert aws_p.region == "us-east-1"
++    assert aws_p.ami == "ami-12345"
++    assert aws_p.spot is False
++
++    # 3. Top-level region/ami takes precedence over default instance
++    do_top = DigitalOceanProvider(region="sfo3", instances={"default": do_inst})
++    assert do_top.region == "sfo3"
++    aws_top = AWSProvider(region="us-west-2", ami="ami-custom", instances={"default": aws_inst})
++    assert aws_top.region == "us-west-2"
++    assert aws_top.ami == "ami-custom"
++
++    # 4. With no default instance, required fields remain required
++    with pytest.raises(ValidationError):
++        DigitalOceanProvider(instances={"prod": do_inst})
++    aws_no_def = AWSProvider(instances={"prod": aws_inst})
++    assert aws_no_def.region == ""
++    assert aws_no_def.ami == ""
++
++    # 5. Missing region/ami key in default instance yields empty string
++    bare_inst = {"enabled": True, "ips": [], "scaling": {"min_scaling": 0, "max_scaling": 0}}
++    do_bare = DigitalOceanProvider(instances={"default": bare_inst})
++    assert do_bare.region == ""
++    aws_bare = AWSProvider(instances={"default": bare_inst})
++    assert aws_bare.region == ""
++    assert aws_bare.ami == ""
++
++    # 6. Direct construction of DigitalOceanProvider with no instances raises ValidationError
++    with pytest.raises(ValidationError):
++        DigitalOceanProvider()
++
++    # 7. BaseProvider, GCPProvider, HetznerProvider do not derive defaults
++    base_p = BaseProvider(instances={"default": do_inst})
++    assert base_p.region == ""
++    gcp_p = GCPProvider(
++        zone="us-central1-a",
++        image_project="debian-cloud",
++        image_family="debian-10",
++        instances={"default": do_inst},
++    )
++    assert gcp_p.region == ""
++    hetzner_p = HetznerProvider(instances={"default": do_inst})
++    assert hetzner_p.region == ""
++
++
++def test_provider_model_factory_dispatch_and_extensibility():
++    """Test factory type dispatch, generic fallback, caller config immutability, and extensibility"""
++    import copy
++    from cloudproxy.main import get_provider_model, PROVIDER_MODEL_TYPES
++
++    inst = {
++        "enabled": True,
++        "ips": [],
++        "scaling": {"min_scaling": 0, "max_scaling": 0},
++        "region": "nyc1",
++        "ami": "ami-1",
++    }
++    cfg = {
++        "instances": {"default": inst},
++        "zone": "us-central1-a",
++        "image_project": "debian-cloud",
++        "image_family": "debian-10",
++    }
++
++    # Verify exact types for all 7 names
++    assert type(get_provider_model("digitalocean", cfg)) is DigitalOceanProvider
++    assert type(get_provider_model("aws", cfg)) is AWSProvider
++    assert type(get_provider_model("gcp", cfg)) is GCPProvider
++    assert type(get_provider_model("hetzner", cfg)) is HetznerProvider
++    assert type(get_provider_model("azure", cfg)) is BaseProvider
++    assert type(get_provider_model("vultr", cfg)) is BaseProvider
++    assert type(get_provider_model("unknown_provider", cfg)) is BaseProvider
++
++    # Verify caller config top-level deep equality before and after
++    cfg_copy = copy.deepcopy(cfg)
++    get_provider_model("aws", cfg)
++    assert cfg == cfg_copy
++    get_provider_model("digitalocean", cfg)
++    assert cfg == cfg_copy
++
++    # Verify extensibility via registration
++    class CustomProvider(BaseProvider):
++        custom_key: str = "default_custom"
++
++    PROVIDER_MODEL_TYPES["custom"] = CustomProvider
++    try:
++        custom_model = get_provider_model("custom", {"custom_key": "custom_value"})
++        assert type(custom_model) is CustomProvider
++        assert custom_model.custom_key == "custom_value"
++    finally:
++        PROVIDER_MODEL_TYPES.pop("custom", None) 
+\ No newline at end of file
+diff --git a/tests/test_main_routes.py b/tests/test_main_routes.py
+index 92a48c1bbf24cbecbeda692b7d242c656780cfbc..3f916eb6c67b720de3b58854a9f96a0882d5d594 100644
+--- a/tests/test_main_routes.py
++++ b/tests/test_main_routes.py
+@@ -234,6 +234,11 @@ def test_providers_get_all(setup_test_data):
+     assert production_instance["display_name"] == "AWS Production"
+     assert production_instance["ips"] == ["11.11.11.11", "12.12.12.12"]
+ 
++    # Verify that each provider entry contains exactly the 7 BaseProvider fields
++    expected_fields = {"enabled", "ips", "region", "size", "image", "scaling", "instances"}
++    for provider_name, provider_data in data["providers"].items():
++        assert set(provider_data.keys()) == expected_fields
++
+ def test_provider_get_specific(setup_test_data):
+     """Test the GET /providers/{provider} endpoint"""
+     response = client.get("/providers/digitalocean")

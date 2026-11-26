@@ -1,0 +1,1295 @@
+diff --git a/dill/tests/f2p_runner.py b/dill/tests/f2p_runner.py
+new file mode 100644
+--- /dev/null
++++ b/dill/tests/f2p_runner.py
+@@ -0,0 +1,68 @@
++#!/usr/bin/env python
++"""Execute the frozen leaf inventory, preserving real typed JUnit failures."""
++import html
++import subprocess
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++SELECTORS = ('dill/tests/test_session.py::test_refimported_imported_as', 'dill/tests/test_session_p2p.py::test_imported_alias_reference_identity', 'dill/tests/test_session_p2p.py::test_imported_module_reference_identity', 'dill/tests/test_session_p2p.py::test_runtime_registration_cleanup', 'dill/tests/test_session.py::test_runtime_module', 'dill/tests/test_session.py::test_symlink_rejected', 'dill/tests/test_session.py::test_symlink_toctou', 'dill/tests/test_session_p2p.py::test_symlink_paths_are_rejected', 'dill/tests/test_session_p2p.py::test_incompatible_module_name_is_rejected', 'dill/tests/test_session_p2p.py::test_non_module_target_is_rejected', 'dill/tests/test_session_p2p.py::test_asdict_isolated_and_source_recorded', 'dill/tests/test_session_p2p.py::test_borrowed_stream_remains_open', 'dill/tests/test_session_p2p.py::test_public_roundtrip_return_forms', 'dill/tests/test_session.py::test_session_other', 'dill/tests/test_session.py::test_default_path_warning', 'dill/tests/test_session_p2p.py::test_default_path_emits_security_warning', 'dill/tests/test_session_p2p.py::test_legacy_aliases_preserve_behavior', 'dill/tests/test_session_f2p.py::test_asdict_clean_runtime_state', 'dill/tests/test_session_f2p.py::test_asdict_update_merges_runtime_prior_state', 'dill/tests/test_session_f2p.py::test_asdict_does_not_mutate_runtime_source', 'dill/tests/test_session_f2p.py::test_asdict_self_reference_rebinds_to_copy', 'dill/tests/test_session_f2p.py::test_asdict_namespace_reference_rebinds_to_copy', 'dill/tests/test_session_f2p.py::test_asdict_records_stream_source', 'dill/tests/test_session_f2p.py::test_asdict_imported_module_reference_identity', 'dill/tests/test_session_f2p.py::test_asdict_imported_alias_reference_identity', 'dill/tests/test_session_f2p.py::test_asdict_seekable_borrowed_stream_remains_open', 'dill/tests/test_session_f2p.py::test_asdict_runtime_failure_removes_registration', 'dill/tests/test_session_f2p.py::test_asdict_close_failure_keeps_close_error', 'dill/tests/test_session_f2p.py::test_asdict_pathlike_source_roundtrip', 'dill/tests/test_session_f2p.py::test_asdict_restores_refimported_object_after_cleanup', 'dill/tests/test_session_f2p.py::test_asdict_rejects_module_keyword_before_path_open', 'dill/tests/test_session_f2p.py::test_load_runtime_name_decodes_and_cleans_registration', 'dill/tests/test_session_f2p.py::test_load_rejects_runtime_saved_state_for_imported_target', 'dill/tests/test_session_f2p.py::test_load_owned_reader_close_error_is_observable', 'dill/tests/test_session_f2p.py::test_general_unpickle_uses_runtime_registration_key', 'dill/tests/test_session_f2p.py::test_legacy_session_entry_points_preserve_return_contract', 'dill/tests/test_session_regressions.py::test_implicit_main_returns_none', 'dill/tests/test_session_regressions.py::test_asdict_function_globals_identity', 'dill/tests/test_session_regressions.py::test_load_supported_import_alias_identity', 'dill/tests/test_session_regressions.py::test_asdict_supported_import_alias_identity', 'dill/tests/test_session_regressions.py::test_load_does_not_expand_import_alias_set', 'dill/tests/test_session_regressions.py::test_asdict_does_not_expand_import_alias_set', 'dill/tests/test_session_regressions.py::test_load_failure_after_registration_cleans_runtime', 'dill/tests/test_session_regressions.py::test_borrowed_writer_success_remains_open', 'dill/tests/test_session_regressions.py::test_borrowed_writer_failure_remains_open', 'dill/tests/test_session_regressions.py::test_load_borrowed_peek_reader_remains_open', 'dill/tests/test_session_regressions.py::test_asdict_borrowed_peek_reader_remains_open', 'dill/tests/test_session_regressions.py::test_load_borrowed_seek_reader_remains_open', 'dill/tests/test_session_regressions.py::test_asdict_borrowed_seek_reader_remains_open', 'dill/tests/test_session_regressions.py::test_load_bufferable_reader_lifecycle', 'dill/tests/test_session_regressions.py::test_asdict_bufferable_reader_lifecycle', 'dill/tests/test_session_regressions.py::test_owned_dump_closes_after_success', 'dill/tests/test_session_regressions.py::test_owned_dump_closes_after_failure', 'dill/tests/test_session_regressions.py::test_owned_dump_close_error_overrides_operation_error', 'dill/tests/test_session_regressions.py::test_owned_load_closes_after_success', 'dill/tests/test_session_regressions.py::test_owned_load_closes_after_failure', 'dill/tests/test_session_regressions.py::test_owned_load_close_error_keeps_registration', 'dill/tests/test_session_regressions.py::test_owned_load_close_error_overrides_operation_error', 'dill/tests/test_session_regressions.py::test_owned_asdict_closes_after_success', 'dill/tests/test_session_regressions.py::test_owned_asdict_closes_after_failure', 'dill/tests/test_session_regressions.py::test_owned_asdict_close_error_overrides_operation_error', 'dill/tests/test_session_regressions.py::test_asdict_runtime_update_requires_prior', 'dill/tests/test_session_regressions.py::test_load_borrowed_peek_reader_failure_remains_open', 'dill/tests/test_session_regressions.py::test_asdict_borrowed_peek_reader_failure_remains_open', 'dill/tests/test_session_regressions.py::test_load_borrowed_seek_reader_failure_remains_open', 'dill/tests/test_session_regressions.py::test_asdict_borrowed_seek_reader_failure_remains_open', 'dill/tests/test_session_regressions.py::test_load_bufferable_reader_failure_lifecycle', 'dill/tests/test_session_regressions.py::test_asdict_bufferable_reader_failure_lifecycle', 'dill/tests/test_session_regressions.py::test_owned_dump_close_error_after_success_is_observable', 'dill/tests/test_session_regressions.py::test_owned_asdict_close_error_after_success_is_observable', 'dill/tests/test_session_regressions.py::test_runtime_function_globals_identity', 'dill/tests/test_session_regressions.py::test_asdict_failure_after_registration_cleans_runtime__error_is_value_error', 'dill/tests/test_session_regressions.py::test_asdict_failure_after_registration_cleans_runtime__error_message', 'dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_name', 'dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_value', 'dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__state_is_copy', 'dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__runtime_module_unchanged', 'dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__session_recorded', 'dill/tests/test_session_regressions.py::test_asdict_unregistered_runtime_clean_state__runtime_not_registered', 'dill/tests/test_session_regressions.py::test_asdict_runtime_update_preserves_prior_binding', 'dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__dump_module', 'dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__load_module', 'dill/tests/test_session_regressions.py::test_session_state_management_is_refactored__load_module_asdict', 'dill/tests/test_session_regressions.py::test_general_module_identity_management_is_refactored__import_module', 'dill/tests/test_session_regressions.py::test_general_module_identity_management_is_refactored__save_module')
++
++def _run_one(selector):
++    path, name = selector.split('::', 1)
++    module = Path(path).stem
++    code = (
++        "import sys, traceback; sys.path.insert(0, 'dill/tests'); "
++        "\ntry:\n"
++        f"    import {module} as test_module\n"
++        "except BaseException:\n"
++        "    traceback.print_exc(); raise SystemExit(20)\n"
++        "try:\n"
++        f"    test_module.{name}()\n"
++        "except ImportError:\n"
++        "    traceback.print_exc(); raise SystemExit(20)\n"
++        "except BaseException as error:\n"
++        "    try:\n"
++        "        if isinstance(error, AssertionError): raise\n"
++        "        raise AssertionError('Unexpected test-body exception: %s: %s' % "
++        "(type(error).__name__, error)) from error\n"
++        "    except AssertionError:\n"
++        "        traceback.print_exc(); raise SystemExit(10)\n"
++    )
++    try:
++        result = subprocess.run([sys.executable, '-B', '-c', code], cwd=str(ROOT),
++                                text=True, capture_output=True, timeout=30)
++    except subprocess.TimeoutExpired as error:
++        return 'error', 'TimeoutExpired', 'process', str(error)
++    output = (result.stdout or '') + (result.stderr or '')
++    if result.returncode == 0:
++        return 'pass', '', 'test', output
++    if result.returncode == 10:
++        return 'failure', 'AssertionError', 'test', output
++    if result.returncode == 20:
++        return 'error', 'CollectionError', 'collection', output
++    return 'error', 'ProcessCrash', 'process', 'runner exit error %s\n%s' % (result.returncode, output)
++
++def main(report, selectors=SELECTORS):
++    records = [(selector, *_run_one(selector)) for selector in selectors]
++    failures = sum(record[1] == 'failure' for record in records)
++    errors = sum(record[1] == 'error' for record in records)
++    body = ['<?xml version="1.0" encoding="UTF-8"?>',
++            '<testsuite name="session-contract" tests="%d" failures="%d" errors="%d">' %
++            (len(records), failures, errors)]
++    for selector, status, outcome_type, phase, output in records:
++        classname, leaf = selector.split('::', 1)
++        body.append('<testcase classname="%s" name="%s">' %
++                    (html.escape(classname, quote=True), html.escape(leaf, quote=True)))
++        if status != 'pass':
++            body.append('<%s type="%s" phase="%s">%s</%s>' %
++                        (status, outcome_type, phase, html.escape(output), status))
++        body.append('</testcase>')
++    body.append('</testsuite>')
++    Path(report).write_text('\n'.join(body) + '\n', encoding='utf-8')
++    return 1 if failures or errors else 0
++
++if __name__ == '__main__':
++    if len(sys.argv) != 3 or sys.argv[1] != '--junit':
++        raise SystemExit('usage: f2p_runner.py --junit REPORT')
++    raise SystemExit(main(sys.argv[2]))
+diff --git a/dill/tests/p2p_runner.py b/dill/tests/p2p_runner.py
+new file mode 100644
+--- /dev/null
++++ b/dill/tests/p2p_runner.py
+@@ -0,0 +1,9 @@
++#!/usr/bin/env python
++"""Execute exactly the frozen P2P selection with the shared typed runner."""
++import sys
++from f2p_runner import main
++SELECTORS = ('dill/tests/test_session.py::test_refimported_imported_as', 'dill/tests/test_session_p2p.py::test_imported_alias_reference_identity', 'dill/tests/test_session_p2p.py::test_imported_module_reference_identity', 'dill/tests/test_session_p2p.py::test_runtime_registration_cleanup', 'dill/tests/test_session.py::test_runtime_module', 'dill/tests/test_session.py::test_symlink_rejected', 'dill/tests/test_session.py::test_symlink_toctou', 'dill/tests/test_session_p2p.py::test_symlink_paths_are_rejected', 'dill/tests/test_session_p2p.py::test_incompatible_module_name_is_rejected', 'dill/tests/test_session_p2p.py::test_non_module_target_is_rejected', 'dill/tests/test_session_p2p.py::test_asdict_isolated_and_source_recorded', 'dill/tests/test_session_p2p.py::test_borrowed_stream_remains_open', 'dill/tests/test_session_p2p.py::test_public_roundtrip_return_forms', 'dill/tests/test_session.py::test_session_other', 'dill/tests/test_session.py::test_default_path_warning', 'dill/tests/test_session_p2p.py::test_default_path_emits_security_warning', 'dill/tests/test_session_p2p.py::test_legacy_aliases_preserve_behavior', 'dill/tests/test_session_f2p.py::test_asdict_clean_runtime_state', 'dill/tests/test_session_f2p.py::test_asdict_update_merges_runtime_prior_state', 'dill/tests/test_session_f2p.py::test_asdict_does_not_mutate_runtime_source', 'dill/tests/test_session_f2p.py::test_asdict_self_reference_rebinds_to_copy', 'dill/tests/test_session_f2p.py::test_asdict_namespace_reference_rebinds_to_copy', 'dill/tests/test_session_f2p.py::test_asdict_records_stream_source', 'dill/tests/test_session_f2p.py::test_asdict_imported_module_reference_identity', 'dill/tests/test_session_f2p.py::test_asdict_imported_alias_reference_identity', 'dill/tests/test_session_f2p.py::test_asdict_seekable_borrowed_stream_remains_open', 'dill/tests/test_session_f2p.py::test_asdict_runtime_failure_removes_registration', 'dill/tests/test_session_f2p.py::test_asdict_close_failure_keeps_close_error', 'dill/tests/test_session_f2p.py::test_asdict_pathlike_source_roundtrip', 'dill/tests/test_session_f2p.py::test_asdict_restores_refimported_object_after_cleanup', 'dill/tests/test_session_f2p.py::test_asdict_rejects_module_keyword_before_path_open', 'dill/tests/test_session_f2p.py::test_load_runtime_name_decodes_and_cleans_registration', 'dill/tests/test_session_f2p.py::test_load_rejects_runtime_saved_state_for_imported_target', 'dill/tests/test_session_f2p.py::test_load_owned_reader_close_error_is_observable', 'dill/tests/test_session_f2p.py::test_general_unpickle_uses_runtime_registration_key', 'dill/tests/test_session_f2p.py::test_legacy_session_entry_points_preserve_return_contract', 'dill/tests/test_session_regressions.py::test_implicit_main_returns_none', 'dill/tests/test_session_regressions.py::test_asdict_function_globals_identity', 'dill/tests/test_session_regressions.py::test_load_supported_import_alias_identity', 'dill/tests/test_session_regressions.py::test_asdict_supported_import_alias_identity', 'dill/tests/test_session_regressions.py::test_load_does_not_expand_import_alias_set', 'dill/tests/test_session_regressions.py::test_asdict_does_not_expand_import_alias_set', 'dill/tests/test_session_regressions.py::test_load_failure_after_registration_cleans_runtime', 'dill/tests/test_session_regressions.py::test_borrowed_writer_success_remains_open', 'dill/tests/test_session_regressions.py::test_borrowed_writer_failure_remains_open', 'dill/tests/test_session_regressions.py::test_load_borrowed_peek_reader_remains_open', 'dill/tests/test_session_regressions.py::test_asdict_borrowed_peek_reader_remains_open', 'dill/tests/test_session_regressions.py::test_load_borrowed_seek_reader_remains_open', 'dill/tests/test_session_regressions.py::test_asdict_borrowed_seek_reader_remains_open', 'dill/tests/test_session_regressions.py::test_load_bufferable_reader_lifecycle', 'dill/tests/test_session_regressions.py::test_asdict_bufferable_reader_lifecycle', 'dill/tests/test_session_regressions.py::test_owned_dump_closes_after_success', 'dill/tests/test_session_regressions.py::test_owned_dump_closes_after_failure', 'dill/tests/test_session_regressions.py::test_owned_dump_close_error_overrides_operation_error', 'dill/tests/test_session_regressions.py::test_owned_load_closes_after_success', 'dill/tests/test_session_regressions.py::test_owned_load_closes_after_failure', 'dill/tests/test_session_regressions.py::test_owned_load_close_error_keeps_registration', 'dill/tests/test_session_regressions.py::test_owned_load_close_error_overrides_operation_error', 'dill/tests/test_session_regressions.py::test_owned_asdict_closes_after_success', 'dill/tests/test_session_regressions.py::test_owned_asdict_closes_after_failure', 'dill/tests/test_session_regressions.py::test_owned_asdict_close_error_overrides_operation_error', 'dill/tests/test_session_regressions.py::test_asdict_runtime_update_requires_prior', 'dill/tests/test_session_regressions.py::test_load_borrowed_peek_reader_failure_remains_open', 'dill/tests/test_session_regressions.py::test_asdict_borrowed_peek_reader_failure_remains_open', 'dill/tests/test_session_regressions.py::test_load_borrowed_seek_reader_failure_remains_open', 'dill/tests/test_session_regressions.py::test_asdict_borrowed_seek_reader_failure_remains_open', 'dill/tests/test_session_regressions.py::test_load_bufferable_reader_failure_lifecycle', 'dill/tests/test_session_regressions.py::test_asdict_bufferable_reader_failure_lifecycle', 'dill/tests/test_session_regressions.py::test_owned_dump_close_error_after_success_is_observable', 'dill/tests/test_session_regressions.py::test_owned_asdict_close_error_after_success_is_observable', 'dill/tests/test_session_regressions.py::test_runtime_function_globals_identity')
++if __name__ == '__main__':
++    if len(sys.argv) != 3 or sys.argv[1] != '--junit':
++        raise SystemExit('usage: p2p_runner.py --junit REPORT')
++    raise SystemExit(main(sys.argv[2], SELECTORS))
+diff --git a/dill/tests/test_session_f2p.py b/dill/tests/test_session_f2p.py
+new file mode 100644
+--- /dev/null
++++ b/dill/tests/test_session_f2p.py
+@@ -0,0 +1,300 @@
++#!/usr/bin/env python
++"""Independent F2P leaves for session persistence."""
++
++import io
++import sys
++import tempfile
++import types
++import warnings
++from pathlib import Path
++
++import dill
++from dill import session
++
++
++def _module(name, imported=False):
++    module = types.ModuleType(name)
++    module.saved = [1, 2, 3]
++    if imported:
++        sys.modules[name] = module
++    return module
++
++
++def _payload(module, **kwargs):
++    stream = io.BytesIO()
++    dill.dump_module(stream, module=module, **kwargs)
++    return stream.getvalue()
++
++
++def _asdict(payload, source=None, **kwargs):
++    """Run asdict while making an unexpected exception an assertion failure."""
++    try:
++        if source is None:
++            return dill.load_module_asdict(io.BytesIO(payload), **kwargs)
++        return dill.load_module_asdict(source, **kwargs)
++    except BaseException as error:
++        assert False, "load_module_asdict raised %s: %s" % (type(error).__name__, error)
++
++
++def test_asdict_clean_runtime_state():
++    """An imported session loads into a clean independent dictionary."""
++    name = "f2p_clean_state"
++    module = _module(name, imported=True)
++    payload = _payload(module)
++    module.extra = "current"
++    try:
++        state = _asdict(payload, update=False)
++    finally:
++        sys.modules.pop(name, None)
++    assert state["__name__"] == name and state["saved"] == [1, 2, 3] and "extra" not in state
++
++
++def test_asdict_update_merges_runtime_prior_state():
++    """update=True includes state from the selected runtime module."""
++    name = "f2p_update_state"
++    module = _module(name)
++    payload = _payload(module)
++    module.extra = object()
++    key = "__runtime__." + name
++    sys.modules[key] = module
++    try:
++        state = _asdict(payload, update=True)
++    finally:
++        sys.modules.pop(key, None)
++    assert state["extra"] is module.extra
++
++
++def test_asdict_does_not_mutate_runtime_source():
++    """An isolated load leaves the caller's module namespace unchanged."""
++    name = "f2p_source_isolation"
++    module = _module(name, imported=True)
++    payload = _payload(module)
++    module.current = object()
++    before = dict(module.__dict__)
++    _asdict(payload)
++    assert module.__dict__ == before
++
++
++def test_asdict_self_reference_rebinds_to_copy():
++    """A self reference in the restored dictionary points at that copy."""
++    module = _module("f2p_self_reference", imported=True)
++    module.selfref = module
++    state = _asdict(_payload(module))
++    assert state["selfref"].__dict__ is state
++
++
++def test_asdict_namespace_reference_rebinds_to_copy():
++    """A saved module namespace reference points at the returned dictionary."""
++    module = _module("f2p_namespace_reference", imported=True)
++    module.namespace = module.__dict__
++    state = _asdict(_payload(module))
++    assert state["namespace"] is state
++
++
++def test_asdict_records_stream_source():
++    """The result records the caller's readable stream source."""
++    module = _module("f2p_stream_source", imported=True)
++    stream = io.BytesIO()
++    dill.dump_module(stream, module=module)
++    stream.seek(0)
++    state = _asdict(None, source=stream)
++    assert state["__session__"].startswith("<_io.BytesIO object at ")
++
++
++def test_asdict_imported_module_reference_identity():
++    """A referenced module is restored as the existing sys.modules object."""
++    module = _module("f2p_ref_module", imported=True)
++    module.calendar = __import__("calendar")
++    state = _asdict(_payload(module, refimported=True))
++    assert state["calendar"] is sys.modules["calendar"]
++
++
++def test_asdict_imported_alias_reference_identity():
++    """A recognized imported alias restores its source attribute identity."""
++    from calendar import Calendar
++    module = _module("f2p_ref_alias", imported=True)
++    module.Calendar = Calendar
++    state = _asdict(_payload(module, refimported=True))
++    assert state["Calendar"] is sys.modules["calendar"].Calendar
++
++
++def test_asdict_seekable_borrowed_stream_remains_open():
++    """A caller-owned readable stream remains open after asdict loading."""
++    module = _module("f2p_borrowed_asdict", imported=True)
++    stream = io.BytesIO(_payload(module))
++    _asdict(None, source=stream)
++    assert not stream.closed
++
++
++def test_asdict_runtime_failure_removes_registration():
++    """A failed runtime dictionary load removes its temporary registry entry."""
++    name = "f2p_failed_asdict"
++    module = _module(name, imported=True)
++    module.bad = type("Bad", (), {"__reduce__": lambda self: (int, ("bad",))})()
++    key = "__runtime__." + name
++    payload = _payload(module)
++    try:
++        try:
++            dill.load_module_asdict(io.BytesIO(payload))
++        except BaseException as error:
++            caught = error
++        else:
++            caught = None
++        present = key in sys.modules
++    finally:
++        sys.modules.pop(key, None)
++    assert isinstance(caught, ValueError) and not present
++
++
++def test_asdict_close_failure_keeps_close_error():
++    """An owned reader close error remains the observable exception."""
++    name = "f2p_asdict_close"
++    payload = _payload(_module(name))
++    key = "__runtime__." + name
++
++    class Reader(io.BytesIO):
++        def close(self):
++            super().close()
++            raise OSError("close failed")
++
++    reader = Reader(payload)
++    original = session._safe_open_for_reading
++    try:
++        session._safe_open_for_reading = lambda path: reader
++        try:
++            dill.load_module_asdict("owned-session")
++        except BaseException as error:
++            caught = error
++        else:
++            caught = None
++        replacement = sys.modules.get(key)
++    finally:
++        session._safe_open_for_reading = original
++        sys.modules.pop(key, None)
++        try:
++            io.BytesIO.close(reader)
++        except Exception:
++            pass
++    assert isinstance(caught, OSError)
++    # The runtime asdict replacement is cleaned by load_module before the
++    # outer reader close; the close exception itself is the observable oracle.
++
++
++def test_asdict_pathlike_source_roundtrip():
++    """A path-like source loads into an isolated runtime dictionary."""
++    name = "f2p_pathlike_asdict"
++    with tempfile.TemporaryDirectory() as directory:
++        path = Path(directory) / "session.pkl"
++        dill.dump_module(path, module=_module(name, imported=True))
++        state = _asdict(None, source=path)
++        sys.modules.pop(name, None)
++    assert state["__name__"] == name and state["saved"] == [1, 2, 3]
++
++
++def test_asdict_restores_refimported_object_after_cleanup():
++    """Reference restoration retains an imported object's identity."""
++    import html.entities
++    module = _module("f2p_ref_object", imported=True)
++    module.html5 = html.entities.html5
++    state = _asdict(_payload(module, refimported=True))
++    assert state["html5"] is html.entities.html5
++
++
++def test_asdict_rejects_module_keyword_before_path_open():
++    """The forbidden module keyword is rejected before opening a source path."""
++    called = []
++    original = session._safe_open_for_reading
++    session._safe_open_for_reading = lambda path: called.append(path)
++    try:
++        try:
++            dill.load_module_asdict("unused", module=types.ModuleType("x"))
++        except BaseException as error:
++            caught = error
++        else:
++            caught = None
++    finally:
++        session._safe_open_for_reading = original
++    assert isinstance(caught, TypeError) and not called
++
++
++def test_load_runtime_name_decodes_and_cleans_registration():
++    """load_module accepts the explicit runtime name form and cleans it."""
++    name = "f2p_load_runtime_name"
++    module = _module(name)
++    payload = _payload(module)
++    key = "__runtime__." + name
++    restored = dill.load_module(io.BytesIO(payload), module=key)
++    assert restored.__name__ == name and key not in sys.modules
++
++
++def test_load_rejects_runtime_saved_state_for_imported_target():
++    """An imported target cannot receive a runtime saved module."""
++    name = "f2p_kind_boundary"
++    payload = _payload(_module(name))
++    target = _module(name, imported=True)
++    try:
++        try:
++            dill.load_module(io.BytesIO(payload), module=target)
++        except ValueError as error:
++            caught = error
++        else:
++            caught = None
++    finally:
++        sys.modules.pop(name, None)
++    assert isinstance(caught, ValueError)
++
++
++def test_load_owned_reader_close_error_is_observable():
++    """An internally owned reader close failure remains the public exception."""
++    name = "f2p_load_close_error"
++    payload = _payload(_module(name))
++
++    class Reader(io.BytesIO):
++        def close(self):
++            super().close()
++            raise OSError("close failed")
++
++    reader = Reader(payload)
++    original = session._safe_open_for_reading
++    try:
++        session._safe_open_for_reading = lambda path: reader
++        try:
++            dill.load_module("owned-session")
++        except BaseException as error:
++            caught = error
++        else:
++            caught = None
++    finally:
++        session._safe_open_for_reading = original
++        sys.modules.pop("__runtime__." + name, None)
++        try:
++            io.BytesIO.close(reader)
++        except Exception:
++            pass
++    assert isinstance(caught, OSError)
++
++
++def test_general_unpickle_uses_runtime_registration_key():
++    """General dill.loads resolves the runtime key emitted by session dumps."""
++    name = "f2p_general_runtime_key"
++    payload = _payload(_module(name))
++    target = _module(name)
++    key = "__runtime__." + name
++    sys.modules[key] = target
++    try:
++        restored = dill.loads(payload)
++    finally:
++        sys.modules.pop(key, None)
++    assert restored is target
++
++
++def test_legacy_session_entry_points_preserve_return_contract():
++    """dump_session and load_session keep their None return contract."""
++    target = _module("f2p_legacy_contract")
++    stream = io.BytesIO()
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore", PendingDeprecationWarning)
++        dumped = dill.dump_session(stream, main=target)
++        stream.seek(0)
++        loaded = dill.load_session(stream)
++    assert dumped is None and loaded is None and target.saved == [1, 2, 3]
+diff --git a/dill/tests/test_session_p2p.py b/dill/tests/test_session_p2p.py
+new file mode 100644
+--- /dev/null
++++ b/dill/tests/test_session_p2p.py
+@@ -0,0 +1,177 @@
++#!/usr/bin/env python
++"""Small, independent session persistence regression leaves.
++
++These checks exercise contract edges that are not covered by the baseline
++session smoke tests.  They intentionally use only the public session API.
++"""
++
++import os
++import sys
++import tempfile
++import types
++import warnings
++from io import BytesIO
++from pathlib import Path
++
++import dill
++
++
++def _payload(module, refimported=False):
++    stream = BytesIO()
++    assert dill.dump_module(stream, module=module, refimported=refimported) is None
++    return stream.getvalue()
++
++
++def test_public_roundtrip_return_forms():
++    target = types.ModuleType("p2p_public_roundtrip")
++    target.value = 17
++    data = _payload(target)
++    restored = dill.load_module(BytesIO(data))
++    assert restored.__name__ == target.__name__
++    assert restored.value == 17
++    destination = types.ModuleType(target.__name__)
++    assert dill.load_module(BytesIO(data), module=destination) is None
++    assert destination.value == 17
++
++
++def test_runtime_registration_cleanup():
++    target = types.ModuleType("p2p_runtime_cleanup")
++    target.value = 23
++    data = _payload(target)
++    key = "__runtime__." + target.__name__
++    assert key not in sys.modules
++    restored = dill.load_module(BytesIO(data))
++    assert restored.value == 23
++    assert key not in sys.modules
++
++
++def test_asdict_isolated_and_source_recorded():
++    target = types.ModuleType("p2p_asdict_isolated")
++    target.saved = object()
++    sys.modules[target.__name__] = target
++    try:
++        data = _payload(target)
++        before = dict(target.__dict__)
++        state = dill.load_module_asdict(BytesIO(data))
++    finally:
++        sys.modules.pop(target.__name__, None)
++    assert target.__dict__ == before
++    assert state["__name__"] == target.__name__
++    assert state["__session__"].startswith("<_io.BytesIO object at ")
++    assert state["saved"] is not target.saved
++
++
++def test_imported_module_reference_identity():
++    import calendar
++
++    target = types.ModuleType("p2p_imported_module")
++    target.calendar = calendar
++    sys.modules[target.__name__] = target
++    try:
++        state = dill.load_module_asdict(BytesIO(_payload(target, refimported=True)))
++    finally:
++        sys.modules.pop(target.__name__, None)
++    assert state["calendar"] is sys.modules["calendar"]
++
++
++def test_imported_alias_reference_identity():
++    from calendar import Calendar
++
++    target = types.ModuleType("p2p_imported_alias")
++    target.Calendar = Calendar
++    sys.modules[target.__name__] = target
++    try:
++        state = dill.load_module_asdict(BytesIO(_payload(target, refimported=True)))
++    finally:
++        sys.modules.pop(target.__name__, None)
++    assert state["Calendar"] is sys.modules["calendar"].Calendar
++
++
++def test_symlink_paths_are_rejected():
++    target = types.ModuleType("p2p_symlink")
++    with tempfile.TemporaryDirectory() as directory:
++        real = Path(directory) / "real.pkl"
++        link = Path(directory) / "link.pkl"
++        dill.dump_module(real, module=target)
++        link.symlink_to(real)
++        for function, kwargs in (
++            (dill.dump_module, {"module": target}),
++            (dill.load_module, {}),
++            (dill.load_module_asdict, {}),
++        ):
++            try:
++                function(link, **kwargs)
++            except OSError:
++                pass
++            else:
++                raise AssertionError(function.__name__ + " followed a symlink")
++
++
++def test_incompatible_module_name_is_rejected():
++    target = types.ModuleType("p2p_saved_name")
++    data = _payload(target)
++    wrong = types.ModuleType("p2p_other_name")
++    try:
++        dill.load_module(BytesIO(data), module=wrong)
++    except ValueError:
++        pass
++    else:
++        raise AssertionError("incompatible module name was accepted")
++
++
++def test_non_module_target_is_rejected():
++    target = types.ModuleType("p2p_non_module")
++    try:
++        dill.load_module(BytesIO(_payload(target)), module=42)
++    except TypeError:
++        pass
++    else:
++        raise AssertionError("non-module target was accepted")
++
++
++def test_borrowed_stream_remains_open():
++    target = types.ModuleType("p2p_borrowed_stream")
++    stream = BytesIO(_payload(target))
++    dill.load_module(stream)
++    assert not stream.closed
++
++
++def test_legacy_aliases_preserve_behavior():
++    target = types.ModuleType("p2p_legacy")
++    stream = BytesIO()
++    with warnings.catch_warnings(record=True) as seen:
++        warnings.simplefilter("always")
++        assert dill.dump_module(stream, main=target, byref=False) is None
++    assert len(seen) == 2
++    assert all(item.category is PendingDeprecationWarning for item in seen)
++
++    # asdict historically forwards the legacy main alias to load_module.
++    # An explicit None selects the saved module without changing its source.
++    target.value = 17
++    sys.modules[target.__name__] = target
++    try:
++        data = _payload(target)
++        target.value = 99
++        before = dict(target.__dict__)
++        source = BytesIO(data)
++        with warnings.catch_warnings(record=True) as seen:
++            warnings.simplefilter("always")
++            state = dill.load_module_asdict(source, main=None)
++        assert state["value"] == 17 and state is not target.__dict__
++        assert state["__session__"] == str(source)
++        assert target.__dict__ == before and sys.modules[target.__name__] is target
++        assert not source.closed
++        assert len(seen) == 1 and seen[0].category is PendingDeprecationWarning
++        assert "'main' has been renamed 'module'" in str(seen[0].message)
++    finally:
++        sys.modules.pop(target.__name__, None)
++
++
++def test_default_path_emits_security_warning():
++    with warnings.catch_warnings(record=True) as seen:
++        warnings.simplefilter("always")
++        try:
++            dill.load_module()
++        except Exception:
++            pass
++    assert any(item.category is dill.session.SecurityWarning for item in seen)
+diff --git a/dill/tests/test_session_regressions.py b/dill/tests/test_session_regressions.py
+new file mode 100644
+--- /dev/null
++++ b/dill/tests/test_session_regressions.py
+@@ -0,0 +1,716 @@
++"""Task-specific contracts for session state, identity and resource ownership."""
++import ast
++import calendar
++import gc
++import hashlib
++import io
++import sys
++import types
++from contextlib import contextmanager
++from pathlib import Path
++from unittest.mock import patch
++
++import dill
++from dill import session
++
++
++@contextmanager
++def _imported(name):
++    missing = object()
++    old = sys.modules.get(name, missing)
++    module = types.ModuleType(name)
++    module.value = 17
++    sys.modules[name] = module
++    try:
++        yield module
++    finally:
++        if old is missing:
++            sys.modules.pop(name, None)
++        else:
++            sys.modules[name] = old
++
++
++def _runtime(name):
++    module = types.ModuleType(name)
++    module.value = 17
++    assert name not in sys.modules and '__runtime__.' + name not in sys.modules
++    return module
++
++
++def _payload(module, **kwargs):
++    stream = io.BytesIO()
++    assert dill.dump_module(stream, module=module, **kwargs) is None
++    assert not stream.closed
++    return stream.getvalue()
++
++
++def _caught(function):
++    try:
++        function()
++    except BaseException as error:
++        return error
++    return None
++
++
++# ---------------------------------------------------------------------------
++# Independently scored checkpoints
++#
++# A multi-assertion scenario is reported as one F2P selector per checkpoint.
++# The scenario runs once per process and records every checkpoint; each leaf
++# below judges a single checkpoint.  Checkpoints that already hold on the
++# unrefactored baseline are preconditions of every leaf of their scenario, and
++# a scenario that stops before completing fails every leaf, so the leaves pass
++# together exactly when the original combined test passed.
++# ---------------------------------------------------------------------------
++
++
++class _Checkpoints:
++    def __init__(self):
++        self.results = {}
++        self.messages = {}
++        self.preconditions = []
++
++    def check(self, name, condition, message="", precondition=False):
++        if precondition:
++            self.preconditions.append(name)
++        self.messages[name] = message
++        try:
++            self.results[name] = bool(condition())
++        except BaseException:
++            self.results[name] = False
++            raise
++
++    def record(self, name, value, message="", precondition=False):
++        self.check(name, lambda: value, message, precondition)
++
++
++_SCENARIO_OUTCOMES = {}
++
++
++def _scenario_outcome(scenario):
++    if scenario not in _SCENARIO_OUTCOMES:
++        checkpoints = _Checkpoints()
++        try:
++            scenario(checkpoints)
++        except Exception as exc:  # reported by every leaf of this scenario
++            _SCENARIO_OUTCOMES[scenario] = (checkpoints, exc)
++        else:
++            _SCENARIO_OUTCOMES[scenario] = (checkpoints, None)
++    return _SCENARIO_OUTCOMES[scenario]
++
++
++def _assert_checkpoint(scenario, name):
++    checkpoints, stopped = _scenario_outcome(scenario)
++    for required in checkpoints.preconditions:
++        assert checkpoints.results[required], (
++            "precondition %r failed: %s" % (required, checkpoints.messages[required]))
++    if name in checkpoints.results:
++        assert checkpoints.results[name], (
++            "checkpoint %r failed: %s" % (name, checkpoints.messages[name]))
++    if stopped is not None:
++        if isinstance(stopped, AssertionError):
++            raise AssertionError(
++                "scenario stopped before completing: %s" % (stopped,)) from stopped
++        raise stopped
++    assert name in checkpoints.results, "checkpoint %r was not reached" % (name,)
++
++
++def test_implicit_main_returns_none():
++    main = types.ModuleType('__main__')
++    main.value = 17
++    # Do not serialize the runner's imports, traceback machinery or globals.
++    # Both main-module providers are patched for a genuine implicit main load.
++    with patch.dict(sys.modules, {'__main__': main}), patch.object(session, '_main_module', main), patch.object(dill._dill, '_main_module', main):
++        payload = _payload(main)
++        main.value = 99
++        result = dill.load_module(io.BytesIO(payload))
++        assert main.value == 17
++        assert result is None, 'implicit __main__ updates must return None'
++
++
++def test_runtime_function_globals_identity():
++    for refimported in (False, True):
++        module = _runtime('qc_function_globals')
++        module.selfref = module
++        exec('def local(): return value', module.__dict__)
++        restored = dill.load_module(io.BytesIO(_payload(module, refimported=refimported)))
++        assert restored.selfref is restored
++        assert restored.local() == 17
++        # Baseline binds these globals to the restored runtime namespace only
++        # with refimported=True. The default mode permits separate globals.
++        if refimported:
++            assert restored.local.__globals__ is restored.__dict__
++
++
++def test_asdict_function_globals_identity():
++    with _imported('qc_dictionary_globals') as module:
++        module.selfref = module
++        exec('def local(): return value', module.__dict__)
++        before = dict(module.__dict__)
++        state = dill.load_module_asdict(io.BytesIO(_payload(module)))
++        assert state['local']() == 17
++        assert state['local'].__globals__ is state
++        assert state['selfref'].__dict__ is state
++        assert module.__dict__ == before
++
++
++def _reference_payload(module):
++    module.CalendarAlias = calendar.Calendar
++    module.unsupported_list_alias = calendar.mdays
++    return _payload(module, refimported=True)
++
++
++def test_load_supported_import_alias_identity():
++    module = _runtime('qc_load_reference_alias')
++    restored = dill.load_module(io.BytesIO(_reference_payload(module)))
++    assert restored.CalendarAlias is sys.modules['calendar'].Calendar
++
++
++def test_asdict_supported_import_alias_identity():
++    with _imported('qc_asdict_reference_alias') as module:
++        state = dill.load_module_asdict(io.BytesIO(_reference_payload(module)))
++        assert state['CalendarAlias'] is sys.modules['calendar'].Calendar
++
++
++def test_load_does_not_expand_import_alias_set():
++    module = _runtime('qc_load_nonreference_alias')
++    restored = dill.load_module(io.BytesIO(_reference_payload(module)))
++    assert restored.unsupported_list_alias == calendar.mdays
++    assert restored.unsupported_list_alias is not calendar.mdays
++
++
++def test_asdict_does_not_expand_import_alias_set():
++    with _imported('qc_asdict_nonreference_alias') as module:
++        state = dill.load_module_asdict(io.BytesIO(_reference_payload(module)))
++        assert state['unsupported_list_alias'] == calendar.mdays
++        assert state['unsupported_list_alias'] is not calendar.mdays
++
++
++_registration_events = []
++
++
++def _fail_after_registration(key):
++    _registration_events.append(key in sys.modules)
++    if key not in sys.modules:
++        raise AssertionError('test did not reach registered runtime loading')
++    raise ValueError('registered runtime load failed')
++
++
++class _FailOnLoad:
++    def __init__(self, key):
++        self.key = key
++
++    def __reduce__(self):
++        return _fail_after_registration, (self.key,)
++
++
++def _failing_payload(name):
++    module = _runtime(name)
++    key = '__runtime__.' + name
++    module.failure = _FailOnLoad(key)
++    payload = _payload(module)
++    _registration_events.clear()
++    return module, key, payload
++
++
++def test_load_failure_after_registration_cleans_runtime():
++    module, key, payload = _failing_payload('qc_registered_load_failure')
++    try:
++        error = _caught(lambda: dill.load_module(io.BytesIO(payload), module=module))
++        assert _registration_events == [True]
++        assert isinstance(error, ValueError) and str(error) == 'registered runtime load failed'
++        assert key not in sys.modules
++    finally:
++        sys.modules.pop(key, None)
++
++
++def _scenario_asdict_failure_after_registration_cleans_runtime(checkpoints):
++    module, key, payload = _failing_payload('qc_registered_dictionary_failure')
++    try:
++        error = _caught(lambda: dill.load_module_asdict(io.BytesIO(payload)))
++        checkpoints.check(
++            'registration_observed', lambda: _registration_events == [True],
++            'loading must reach the registered runtime module', precondition=True)
++        checkpoints.check(
++            'error_is_value_error', lambda: isinstance(error, ValueError),
++            'the original ValueError must propagate from load_module_asdict')
++        checkpoints.check(
++            'error_message', lambda: str(error) == 'registered runtime load failed',
++            'the original failure message must be preserved')
++        checkpoints.check(
++            'runtime_unregistered', lambda: key not in sys.modules,
++            'the temporary runtime registration must be removed', precondition=True)
++        checkpoints.check(
++            'failure_state_kept', lambda: 'failure' in module.__dict__,
++            'the runtime module state must not be cleared', precondition=True)
++    finally:
++        sys.modules.pop(key, None)
++
++
++def test_asdict_failure_after_registration_cleans_runtime__error_is_value_error():
++    _assert_checkpoint(_scenario_asdict_failure_after_registration_cleans_runtime,
++                       'error_is_value_error')
++
++
++def test_asdict_failure_after_registration_cleans_runtime__error_message():
++    _assert_checkpoint(_scenario_asdict_failure_after_registration_cleans_runtime,
++                       'error_message')
++
++
++class _Stream(io.BytesIO):
++    def __init__(self, data=b'', close_error=False):
++        super().__init__(data)
++        self.events = []
++        self.close_error = close_error
++
++    def close(self):
++        self.events.append('close')
++        super().close()
++        if self.close_error:
++            raise OSError('owned close failed')
++
++
++class _PeekStream(_Stream):
++    def peek(self, count):
++        return self.getvalue()[self.tell():self.tell() + count]
++
++
++class _Bufferable:
++    """Readable, bufferable input without peek, tell or seek."""
++    def __init__(self, data):
++        self.raw = io.BytesIO(data)
++        self.close_calls = 0
++
++    @property
++    def closed(self):
++        return self.raw.closed
++
++    def readable(self):
++        return True
++
++    def read(self, count=-1):
++        return self.raw.read(count)
++
++    def readinto(self, buffer):
++        return self.raw.readinto(buffer)
++
++    def close(self):
++        self.close_calls += 1
++        self.raw.close()
++
++
++class _BufferableTell(_Bufferable):
++    def tell(self):
++        return self.raw.tell()
++
++
++class _BufferableSeek(_Bufferable):
++    def seek(self, *args):
++        return self.raw.seek(*args)
++
++
++def test_borrowed_writer_success_remains_open():
++    stream = _Stream()
++    assert dill.dump_module(stream, module=_runtime('qc_borrowed_writer')) is None
++    assert not stream.closed and stream.events == []
++    assert stream.getvalue()
++
++
++def test_borrowed_writer_failure_remains_open():
++    stream = _Stream()
++    calls = []
++    def fail(pickler, module):
++        calls.append(True)
++        raise ValueError('dump operation failed')
++    with patch.object(session.Pickler, 'dump', fail):
++        error = _caught(lambda: dill.dump_module(stream, module=_runtime('qc_borrowed_dump_failure')))
++    assert calls == [True] and isinstance(error, ValueError)
++    assert not stream.closed and stream.events == []
++
++
++def _borrowed_reader_contract(stream_class, entrypoint):
++    with _imported('qc_borrowed_reader_' + entrypoint) as module:
++        stream = stream_class(_payload(module))
++        result = (dill.load_module(stream) if entrypoint == 'load'
++                  else dill.load_module_asdict(stream))
++        assert (result.value if entrypoint == 'load' else result['value']) == 17
++        assert not stream.closed and stream.events == []
++
++
++def test_load_borrowed_peek_reader_remains_open():
++    _borrowed_reader_contract(_PeekStream, 'load')
++
++
++def test_asdict_borrowed_peek_reader_remains_open():
++    _borrowed_reader_contract(_PeekStream, 'asdict')
++
++
++def test_load_borrowed_seek_reader_remains_open():
++    _borrowed_reader_contract(_Stream, 'load')
++
++
++def test_asdict_borrowed_seek_reader_remains_open():
++    _borrowed_reader_contract(_Stream, 'asdict')
++
++
++def _bufferable_contract(entrypoint):
++    with _imported('qc_bufferable_reader_' + entrypoint) as module:
++        payload = _payload(module)
++        for stream_class in (_Bufferable, _BufferableTell, _BufferableSeek):
++            stream = stream_class(payload)
++            result = (dill.load_module(stream) if entrypoint == 'load'
++                      else dill.load_module_asdict(stream))
++            assert (result.value if entrypoint == 'load' else result['value']) == 17
++            assert stream.closed and stream.close_calls == 1
++
++
++def test_load_bufferable_reader_lifecycle():
++    _bufferable_contract('load')
++
++
++def test_asdict_bufferable_reader_lifecycle():
++    _bufferable_contract('asdict')
++
++
++def _owned_contract(entrypoint, operation_fails, close_fails):
++    name = 'qc_owned_' + entrypoint
++    module = _runtime(name)
++    key = '__runtime__.' + name
++    if entrypoint == 'asdict':
++        # Ownership is an existing imported-module behavior, independently of
++        # the newly clarified clean-runtime dictionary contract.
++        sys.modules[name] = module
++    stream = _Stream(b'' if entrypoint == 'dump' else _payload(module), close_fails)
++    original = session.Pickler.dump if entrypoint == 'dump' else session.Unpickler.load
++    def operation(serializer, *args):
++        stream.events.append('operation')
++        if entrypoint == 'load':
++            assert sys.modules.get(key) is module, 'loading must reach the temporary registration'
++        if operation_fails:
++            raise ValueError('owned operation failed')
++        return original(serializer, *args)
++    opener = '_safe_open_for_writing' if entrypoint == 'dump' else '_safe_open_for_reading'
++    serializer = session.Pickler if entrypoint == 'dump' else session.Unpickler
++    method = 'dump' if entrypoint == 'dump' else 'load'
++    try:
++        with patch.object(session, opener, lambda filename: stream), patch.object(serializer, method, operation):
++            def call():
++                if entrypoint == 'dump':
++                    return dill.dump_module('owned-session', module=module)
++                if entrypoint == 'load':
++                    return dill.load_module('owned-session', module=module)
++                return dill.load_module_asdict('owned-session')
++            error = _caught(call)
++        assert stream.events == ['operation', 'close'], stream.events
++        assert stream.closed
++        if close_fails:
++            assert isinstance(error, OSError) and str(error) == 'owned close failed'
++            if entrypoint == 'load':
++                assert sys.modules.get(key) is module, 'close failure preserves existing runtime registration'
++        elif operation_fails:
++            assert isinstance(error, ValueError) and str(error) == 'owned operation failed'
++            assert key not in sys.modules
++        else:
++            assert error is None, repr(error)
++            assert key not in sys.modules
++    finally:
++        sys.modules.pop(key, None)
++        if entrypoint == 'asdict':
++            sys.modules.pop(name, None)
++
++
++def test_owned_dump_closes_after_success():
++    _owned_contract('dump', False, False)
++
++
++def test_owned_dump_closes_after_failure():
++    _owned_contract('dump', True, False)
++
++
++def test_owned_dump_close_error_overrides_operation_error():
++    _owned_contract('dump', True, True)
++
++
++def test_owned_load_closes_after_success():
++    _owned_contract('load', False, False)
++
++
++def test_owned_load_closes_after_failure():
++    _owned_contract('load', True, False)
++
++
++def test_owned_load_close_error_keeps_registration():
++    _owned_contract('load', False, True)
++
++
++def test_owned_load_close_error_overrides_operation_error():
++    _owned_contract('load', True, True)
++
++
++def test_owned_asdict_closes_after_success():
++    _owned_contract('asdict', False, False)
++
++
++def test_owned_asdict_closes_after_failure():
++    _owned_contract('asdict', True, False)
++
++
++def test_owned_asdict_close_error_overrides_operation_error():
++    _owned_contract('asdict', True, True)
++
++
++def _scenario_asdict_unregistered_runtime_clean_state(checkpoints):
++    module = _runtime('qc_runtime_clean_state')
++    key = '__runtime__.' + module.__name__
++    before = dict(module.__dict__)
++    state = dill.load_module_asdict(io.BytesIO(_payload(module)), update=False)
++    checkpoints.check('state_name', lambda: state['__name__'] == module.__name__,
++                      'the loaded state must carry the saved module name')
++    checkpoints.check('state_value', lambda: state['value'] == 17,
++                      'the loaded state must carry the saved value')
++    checkpoints.check('state_is_copy', lambda: state is not module.__dict__,
++                      'load_module_asdict must return a separate dictionary')
++    checkpoints.check('runtime_module_unchanged', lambda: module.__dict__ == before,
++                      'the source runtime module must not be mutated')
++    checkpoints.check('session_recorded', lambda: '__session__' in state,
++                      'the loaded state must record its session source')
++    checkpoints.check('runtime_not_registered', lambda: key not in sys.modules,
++                      'no runtime registration may remain after loading')
++
++
++def test_asdict_unregistered_runtime_clean_state__state_name():
++    _assert_checkpoint(_scenario_asdict_unregistered_runtime_clean_state, 'state_name')
++
++
++def test_asdict_unregistered_runtime_clean_state__state_value():
++    _assert_checkpoint(_scenario_asdict_unregistered_runtime_clean_state, 'state_value')
++
++
++def test_asdict_unregistered_runtime_clean_state__state_is_copy():
++    _assert_checkpoint(_scenario_asdict_unregistered_runtime_clean_state, 'state_is_copy')
++
++
++def test_asdict_unregistered_runtime_clean_state__runtime_module_unchanged():
++    _assert_checkpoint(_scenario_asdict_unregistered_runtime_clean_state,
++                       'runtime_module_unchanged')
++
++
++def test_asdict_unregistered_runtime_clean_state__session_recorded():
++    _assert_checkpoint(_scenario_asdict_unregistered_runtime_clean_state, 'session_recorded')
++
++
++def test_asdict_unregistered_runtime_clean_state__runtime_not_registered():
++    _assert_checkpoint(_scenario_asdict_unregistered_runtime_clean_state,
++                       'runtime_not_registered')
++
++
++def test_asdict_runtime_update_requires_prior():
++    module = _runtime('qc_runtime_missing_prior')
++    key = '__runtime__.' + module.__name__
++    payload = _payload(module)
++    error = _caught(lambda: dill.load_module_asdict(io.BytesIO(payload), update=True))
++    assert isinstance(error, KeyError) and error.args == (key,), repr(error)
++    assert key not in sys.modules
++
++
++def test_asdict_runtime_update_preserves_prior_binding():
++    module = _runtime('qc_runtime_existing_prior')
++    key = '__runtime__.' + module.__name__
++    payload = _payload(module)
++    prior = types.ModuleType(module.__name__)
++    prior.value = 99
++    prior.prior_only = []
++    before = dict(prior.__dict__)
++    sys.modules[key] = prior
++    try:
++        state = dill.load_module_asdict(io.BytesIO(payload), update=True)
++        assert state['value'] == 17 and state['prior_only'] is prior.prior_only
++        assert sys.modules[key] is prior and prior.__dict__ == before
++    finally:
++        sys.modules.pop(key, None)
++
++
++# Source comparisons are restricted to reachable production responsibilities,
++# not diff size, identifier spellings, comments, test changes or a helper layout.
++class _ExecutableBody(ast.NodeTransformer):
++    def __init__(self, definition, production_names):
++        bindings = [arg.arg for arg in ast.walk(definition.args) if isinstance(arg, ast.arg)]
++        bindings += [node.id for node in ast.walk(definition) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)]
++        self.locals = {name: '_local_%d' % index for index, name in enumerate(dict.fromkeys(bindings))}
++        self.production_names = production_names
++
++    def visit_Name(self, node):
++        name = self.locals.get(node.id, '_production_callable' if node.id in self.production_names else node.id)
++        return ast.copy_location(ast.Name(id=name, ctx=node.ctx), node)
++
++    def visit_Expr(self, node):
++        return None if isinstance(node.value, ast.Constant) else self.generic_visit(node)
++
++    def visit_Pass(self, node):
++        return None
++
++
++def _source_inventory(root):
++    result = {}
++    for relative in ('dill/session.py', 'dill/_dill.py'):
++        tree = ast.parse((root / relative).read_text())
++        for node in tree.body:
++            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
++                result[node.name] = node
++            elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and node.value.id in result:
++                for target in node.targets:
++                    if isinstance(target, ast.Name):
++                        result[target.id] = result[node.value.id]
++            elif isinstance(node, ast.ClassDef):
++                for method in node.body:
++                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
++                        result[node.name + '.' + method.name] = method
++    return result
++
++
++def _reachable_fingerprints(inventory, root_name):
++    pending, seen, result = [root_name], set(), set()
++    while pending:
++        name = pending.pop()
++        if name in seen or name not in inventory:
++            continue
++        seen.add(name)
++        definition = inventory[name]
++        # Parse a copy because normalization must not change call graph inputs.
++        copied = ast.parse(ast.unparse(definition)).body[0]
++        copied = _ExecutableBody(copied, {key.split('.')[0] for key in inventory}).visit(copied)
++        # The official task runtime is Python 3.10; preparation may use 3.12.
++        # Empty PEP 695 metadata must not count as a production change.
++        for node in ast.walk(copied):
++            if 'type_params' in node._fields:
++                node._fields = tuple(field for field in node._fields if field != 'type_params')
++        body = ast.dump(ast.Module(body=copied.body, type_ignores=[]), include_attributes=False)
++        transparent = (len(copied.body) == 1 and isinstance(copied.body[0], (ast.Return, ast.Expr))
++                       and isinstance(copied.body[0].value, ast.Call))
++        if not transparent:
++            result.add(hashlib.sha256(body.encode()).hexdigest())
++        references = {node.id for node in ast.walk(definition) if isinstance(node, ast.Name)}
++        pending.extend(references.intersection(inventory))
++        # Resolve methods conservatively without prescribing class names or
++        # requiring a particular state representation.
++        attributes = {node.attr for node in ast.walk(definition) if isinstance(node, ast.Attribute)}
++        for candidate in inventory:
++            if '.' in candidate and (candidate.split('.')[0] in references or candidate.rsplit('.', 1)[1] in attributes):
++                pending.append(candidate)
++    return sorted(result)
++
++
++_BASELINE_RESPONSIBILITIES = {'dump_module': ['0634419a59722ec23e831011abc1c5021915f1ea68c41a6f360843a307a26290', '162c554324b1c3826cfcf24e6ddf11427a9adfd31c1af3c20e5d2b1f401cfac9', '1c99fef9f65aba4e22931d9348888b32880da3f0f966c22e31dfaffa210f8f37', '2535acf42f79f2df112a4b669f27c1f90cfe8076a6152b1b764a93413621cd01', '2822f3947d970033e0c6f16d4058e70572ebfbc8adea8eff1091e933657e62e2', '316be8603889a28a6f97e911c36422b34476354d4f0765ec30097f49d03297b5', '3261fca1239dea1bf1e3a24a4f50d74ce073c1965282d2baca7ca34b92c135a2', '49b6338b8e7190a4f012647e28078d0415c2a354314118701bbab72f731c4b0b', '517f7ba644b2737b31f95b5dcd81bce90eace3e21d192eba3ff52af3371eec8b', '56a27aac40700ba9854084b52ed6675c3872039ef393deebdaaa180bdc7ff086', '65fb2361801667e239053153b9380be8f49b00f10e50b316a04b56427c842236', '66a1170d52dc30c9f10af9eec31ceb7f1604c4bcf6e0079b8d7edf4785a25f2b', '7c96df40af42c907c43a2f2fc9a9981df68db212a63930e9988bd3e73d889ccf', '8e861695d7338329596b7690d1180a5d11138c6679acc8eb6b7a63b8edf2cedc', '967dd32de2e1054b53d7b924eedff2096e0b22ce67038cc17eac6d025b6ef482', '9a16312a88e6ec36a35c1455d2fe5657eb8e8f112cf2ed71206a3eef5c6afb53', '9beb98ead1a59f6d3796785b4defa821f5aba804d1c9a98b98e88ae37a4bde36', 'b02bdba14b086642d7cf0d3b795d452e6ed028c23c2e8dd4b8431e78144b4405', 'b2194c6d3496a38b16eec091e48c02347d322d856ed12f21c26fc4c90052c618', 'd1737c6ff9a23e14862c20dbd5a5bd7555acbb1ffa7aebbe056e54c9badfba30', 'd33aad413d424de41097d9b09dab29b0978e288b071b71237522f885cc698751', 'f85bf535591855d2bf75abcfeb47948f2622bbf0d725585d8baec941c275d4ac', 'f93f59fed26e186b9ed923b6bae4c7b6f03205dd0e8e135036d665d1fb7c7763', 'fe8e91120765e47280a3cfcfd7bf30621ac4ccebaba87634e246a2df73f794c1'], 'load_module': ['162c554324b1c3826cfcf24e6ddf11427a9adfd31c1af3c20e5d2b1f401cfac9', '1c99fef9f65aba4e22931d9348888b32880da3f0f966c22e31dfaffa210f8f37', '2535acf42f79f2df112a4b669f27c1f90cfe8076a6152b1b764a93413621cd01', '2822f3947d970033e0c6f16d4058e70572ebfbc8adea8eff1091e933657e62e2', '3261fca1239dea1bf1e3a24a4f50d74ce073c1965282d2baca7ca34b92c135a2', '4111663dfd5f6f331aa9cf4618ba1df8f9d1d606a5fa0051c92b9d50fdbf7806', '517f7ba644b2737b31f95b5dcd81bce90eace3e21d192eba3ff52af3371eec8b', '56a27aac40700ba9854084b52ed6675c3872039ef393deebdaaa180bdc7ff086', '65fb2361801667e239053153b9380be8f49b00f10e50b316a04b56427c842236', '66a1170d52dc30c9f10af9eec31ceb7f1604c4bcf6e0079b8d7edf4785a25f2b', '7c96df40af42c907c43a2f2fc9a9981df68db212a63930e9988bd3e73d889ccf', '8197c05c9260cda4c2c2754a1e33f58fbe2f1e5b8a5f1534d2b736e92f125e5c', '8e861695d7338329596b7690d1180a5d11138c6679acc8eb6b7a63b8edf2cedc', '967dd32de2e1054b53d7b924eedff2096e0b22ce67038cc17eac6d025b6ef482', '9a16312a88e6ec36a35c1455d2fe5657eb8e8f112cf2ed71206a3eef5c6afb53', '9beb98ead1a59f6d3796785b4defa821f5aba804d1c9a98b98e88ae37a4bde36', 'accab0db1948efeedee58d363df8a2ebd86d6445f22e9a83a8d61a7d055ded48', 'ad82939cb2a2e5106924bf464ac0a39a6c87c9c32e77328417f8b4b581df18db', 'b2194c6d3496a38b16eec091e48c02347d322d856ed12f21c26fc4c90052c618', 'd1737c6ff9a23e14862c20dbd5a5bd7555acbb1ffa7aebbe056e54c9badfba30', 'de621479b523c2a97c757e3c08303ca08b349a26fca96cc3049de3c3b092ce3f', 'e16939f963311c5443d183057c5a30271cd383f33f02bd37d4d2b24917dcd5cd', 'e4b58ef223c6df91c08482347e87973aa7fcdcda84016318a929e347d6d3c908', 'f85bf535591855d2bf75abcfeb47948f2622bbf0d725585d8baec941c275d4ac', 'f93f59fed26e186b9ed923b6bae4c7b6f03205dd0e8e135036d665d1fb7c7763', 'ff2838f7dd2802bff1e921eb37317dd23db06459d8f0ea1246b516700f928de5'], 'load_module_asdict': ['162c554324b1c3826cfcf24e6ddf11427a9adfd31c1af3c20e5d2b1f401cfac9', '1c99fef9f65aba4e22931d9348888b32880da3f0f966c22e31dfaffa210f8f37', '2535acf42f79f2df112a4b669f27c1f90cfe8076a6152b1b764a93413621cd01', '2822f3947d970033e0c6f16d4058e70572ebfbc8adea8eff1091e933657e62e2', '3261fca1239dea1bf1e3a24a4f50d74ce073c1965282d2baca7ca34b92c135a2', '3db55e582dba3457806dc6ef3506578582bee717b752b5204e1f473fecc82406', '4111663dfd5f6f331aa9cf4618ba1df8f9d1d606a5fa0051c92b9d50fdbf7806', '517f7ba644b2737b31f95b5dcd81bce90eace3e21d192eba3ff52af3371eec8b', '56a27aac40700ba9854084b52ed6675c3872039ef393deebdaaa180bdc7ff086', '65fb2361801667e239053153b9380be8f49b00f10e50b316a04b56427c842236', '66a1170d52dc30c9f10af9eec31ceb7f1604c4bcf6e0079b8d7edf4785a25f2b', '7c96df40af42c907c43a2f2fc9a9981df68db212a63930e9988bd3e73d889ccf', '8197c05c9260cda4c2c2754a1e33f58fbe2f1e5b8a5f1534d2b736e92f125e5c', '8e861695d7338329596b7690d1180a5d11138c6679acc8eb6b7a63b8edf2cedc', '967dd32de2e1054b53d7b924eedff2096e0b22ce67038cc17eac6d025b6ef482', '9a16312a88e6ec36a35c1455d2fe5657eb8e8f112cf2ed71206a3eef5c6afb53', '9beb98ead1a59f6d3796785b4defa821f5aba804d1c9a98b98e88ae37a4bde36', 'accab0db1948efeedee58d363df8a2ebd86d6445f22e9a83a8d61a7d055ded48', 'ad82939cb2a2e5106924bf464ac0a39a6c87c9c32e77328417f8b4b581df18db', 'b2194c6d3496a38b16eec091e48c02347d322d856ed12f21c26fc4c90052c618', 'd1737c6ff9a23e14862c20dbd5a5bd7555acbb1ffa7aebbe056e54c9badfba30', 'de621479b523c2a97c757e3c08303ca08b349a26fca96cc3049de3c3b092ce3f', 'e16939f963311c5443d183057c5a30271cd383f33f02bd37d4d2b24917dcd5cd', 'e2bb3e5343bd4312e80fcd8e0d177f9153d4538fa9bfa340b41ce2eb413b678d', 'e4b58ef223c6df91c08482347e87973aa7fcdcda84016318a929e347d6d3c908', 'f85bf535591855d2bf75abcfeb47948f2622bbf0d725585d8baec941c275d4ac', 'f93f59fed26e186b9ed923b6bae4c7b6f03205dd0e8e135036d665d1fb7c7763', 'ff2838f7dd2802bff1e921eb37317dd23db06459d8f0ea1246b516700f928de5'], '_import_module': ['3261fca1239dea1bf1e3a24a4f50d74ce073c1965282d2baca7ca34b92c135a2'], 'save_module': ['162c554324b1c3826cfcf24e6ddf11427a9adfd31c1af3c20e5d2b1f401cfac9', '1c99fef9f65aba4e22931d9348888b32880da3f0f966c22e31dfaffa210f8f37', '1f576e836875d8965db0c2b9bd17e3cd930fb07c848e44e90ff53be9b105b79b', '2535acf42f79f2df112a4b669f27c1f90cfe8076a6152b1b764a93413621cd01', '2822f3947d970033e0c6f16d4058e70572ebfbc8adea8eff1091e933657e62e2', '3261fca1239dea1bf1e3a24a4f50d74ce073c1965282d2baca7ca34b92c135a2', '517f7ba644b2737b31f95b5dcd81bce90eace3e21d192eba3ff52af3371eec8b', '56a27aac40700ba9854084b52ed6675c3872039ef393deebdaaa180bdc7ff086', '65fb2361801667e239053153b9380be8f49b00f10e50b316a04b56427c842236', '66a1170d52dc30c9f10af9eec31ceb7f1604c4bcf6e0079b8d7edf4785a25f2b', '7c96df40af42c907c43a2f2fc9a9981df68db212a63930e9988bd3e73d889ccf', '8307db00834133a2bfffab97f87cafa25be97f8452502f6de43fb38adc8c60e1', '967dd32de2e1054b53d7b924eedff2096e0b22ce67038cc17eac6d025b6ef482', '9a16312a88e6ec36a35c1455d2fe5657eb8e8f112cf2ed71206a3eef5c6afb53', '9beb98ead1a59f6d3796785b4defa821f5aba804d1c9a98b98e88ae37a4bde36', 'b2194c6d3496a38b16eec091e48c02347d322d856ed12f21c26fc4c90052c618', 'd1737c6ff9a23e14862c20dbd5a5bd7555acbb1ffa7aebbe056e54c9badfba30', 'e2bb3e5343bd4312e80fcd8e0d177f9153d4538fa9bfa340b41ce2eb413b678d', 'f93f59fed26e186b9ed923b6bae4c7b6f03205dd0e8e135036d665d1fb7c7763', 'fe8e91120765e47280a3cfcfd7bf30621ac4ccebaba87634e246a2df73f794c1']}  # frozen from task.metadata.base_commit_hash
++
++
++def _scenario_session_state_management_is_refactored(checkpoints):
++    inventory = _source_inventory(Path(dill.__file__).resolve().parents[1])
++    for entrypoint in ('dump_module', 'load_module', 'load_module_asdict'):
++        checkpoints.check(
++            entrypoint,
++            lambda: _reachable_fingerprints(inventory, entrypoint) != _BASELINE_RESPONSIBILITIES[entrypoint],
++            entrypoint + ' retains the complete baseline state-management implementation')
++
++
++def test_session_state_management_is_refactored__dump_module():
++    _assert_checkpoint(_scenario_session_state_management_is_refactored, 'dump_module')
++
++
++def test_session_state_management_is_refactored__load_module():
++    _assert_checkpoint(_scenario_session_state_management_is_refactored, 'load_module')
++
++
++def test_session_state_management_is_refactored__load_module_asdict():
++    _assert_checkpoint(_scenario_session_state_management_is_refactored, 'load_module_asdict')
++
++
++def _scenario_general_module_identity_management_is_refactored(checkpoints):
++    inventory = _source_inventory(Path(dill.__file__).resolve().parents[1])
++    for name, entrypoint in (('import_module', '_import_module'), ('save_module', 'save_module')):
++        checkpoints.check(
++            name,
++            lambda: _reachable_fingerprints(inventory, entrypoint) != _BASELINE_RESPONSIBILITIES[entrypoint],
++            entrypoint + ' retains the baseline runtime-name management')
++
++
++def test_general_module_identity_management_is_refactored__import_module():
++    _assert_checkpoint(_scenario_general_module_identity_management_is_refactored, 'import_module')
++
++
++def test_general_module_identity_management_is_refactored__save_module():
++    _assert_checkpoint(_scenario_general_module_identity_management_is_refactored, 'save_module')
++
++
++
++_reader_failure_events = []
++
++
++def _raise_reader_failure():
++    # Reduction executes during the real load, after source probing succeeds.
++    _reader_failure_events.append('load')
++    raise ValueError('borrowed reader load failed')
++
++
++class _ReaderFailure:
++    def __reduce__(self):
++        return _raise_reader_failure, ()
++
++
++def _reader_failure_contract(stream_class, entrypoint, closes):
++    name = 'qc_failed_reader_' + entrypoint + '_' + stream_class.__name__
++    with _imported(name) as module:
++        module.failure = _ReaderFailure()
++        stream = stream_class(_payload(module))
++        _reader_failure_events.clear()
++        try:
++            operation = dill.load_module if entrypoint == 'load' else dill.load_module_asdict
++            error = _caught(lambda: operation(stream))
++            assert _reader_failure_events == ['load'], 'failure must occur in actual loading'
++            assert isinstance(error, ValueError) and str(error) == 'borrowed reader load failed'
++            assert not stream.closed, 'do not close a borrowed source while the failure traceback retains its adapter'
++            # The baseline buffers incomplete readable streams without taking
++            # explicit ownership. Their adapter is retained by the exception
++            # traceback and closes the raw source only when that trace is freed.
++            error.__traceback__ = None
++            gc.collect()
++            assert stream.closed is closes, 'preserve reader lifecycle after releasing the failure traceback'
++            if closes:
++                assert stream.close_calls == 1, 'buffered reader must close its source once'
++            else:
++                assert stream.events == [], 'borrowed peek/seek reader must not be closed'
++        finally:
++            _reader_failure_events.clear()
++
++
++def test_load_borrowed_peek_reader_failure_remains_open():
++    _reader_failure_contract(_PeekStream, 'load', False)
++
++
++def test_asdict_borrowed_peek_reader_failure_remains_open():
++    _reader_failure_contract(_PeekStream, 'asdict', False)
++
++
++def test_load_borrowed_seek_reader_failure_remains_open():
++    _reader_failure_contract(_Stream, 'load', False)
++
++
++def test_asdict_borrowed_seek_reader_failure_remains_open():
++    _reader_failure_contract(_Stream, 'asdict', False)
++
++
++def test_load_bufferable_reader_failure_lifecycle():
++    for stream_class in (_Bufferable, _BufferableTell, _BufferableSeek):
++        _reader_failure_contract(stream_class, 'load', True)
++
++
++def test_asdict_bufferable_reader_failure_lifecycle():
++    for stream_class in (_Bufferable, _BufferableTell, _BufferableSeek):
++        _reader_failure_contract(stream_class, 'asdict', True)
++
++
++def test_owned_dump_close_error_after_success_is_observable():
++    _owned_contract('dump', False, True)
++
++
++def test_owned_asdict_close_error_after_success_is_observable():
++    _owned_contract('asdict', False, True)

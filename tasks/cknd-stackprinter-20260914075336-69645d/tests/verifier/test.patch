@@ -1,0 +1,1541 @@
+diff --git a/tests/test_refactor_cheat.py b/tests/test_refactor_cheat.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_refactor_cheat.py
+@@ -0,0 +1,37 @@
++"""Anti-cheating checks executed by the hard gate."""
++
++import ast
++from pathlib import Path
++
++import stackprinter
++
++
++def _package_files():
++    package = Path(stackprinter.__file__).resolve().parent
++    return sorted(package.glob("*.py"))
++
++
++def test_package_does_not_reference_answer_artifacts():
++    forbidden = ("solution.patch", "/logs/artifacts/model.patch", "test_refactor_cheat")
++    for path in _package_files():
++        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
++        artifact_names = set()
++        for node in ast.walk(tree):
++            value = getattr(node, "value", None)
++            if isinstance(node, ast.Assign) and any(token in ast.unparse(value) for token in forbidden):
++                artifact_names.update(target.id for target in node.targets if isinstance(target, ast.Name))
++            elif (isinstance(node, ast.AnnAssign) and value is not None
++                  and any(token in ast.unparse(value) for token in forbidden)
++                  and isinstance(node.target, ast.Name)):
++                artifact_names.add(node.target.id)
++        for node in ast.walk(tree):
++            if not isinstance(node, ast.Call):
++                continue
++            method = (node.func.id if isinstance(node.func, ast.Name) else
++                      node.func.attr if isinstance(node.func, ast.Attribute) else "")
++            if method not in {"open", "read", "read_text", "read_bytes"}:
++                continue
++            expression = ast.unparse(node)
++            names = {part.id for part in ast.walk(node) if isinstance(part, ast.Name)}
++            assert not (any(token in expression for token in forbidden)
++                        or names.intersection(artifact_names)), path.name
+diff --git a/tests/test_refactor_f2p.py b/tests/test_refactor_f2p.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_refactor_f2p.py
+@@ -0,0 +1,455 @@
++"""Fail-to-pass checks for the requested refactoring behavior rules.
++
++Each node exercises one instruction behavior that the pre-refactor code cannot
++satisfy, so the whole module fails on the baseline and passes on the solution.
++"""
++
++import io
++import re
++import sys
++import threading
++import types
++
++import pytest
++
++import stackprinter
++
++
++@pytest.fixture(autouse=True)
++def _restore_trace_after_test():
++    before = sys.gettrace()
++    yield
++    sys.settrace(before)
++
++
++def _capture_error(message="f2p-error"):
++    try:
++        raise ValueError(message)
++    except ValueError as error:
++        return error
++    raise AssertionError("fixture did not raise")
++
++
++def _render(error, **overrides):
++    options = dict(source_lines=0, show_vals=False, show_signature=False,
++                   add_summary=False)
++    options.update(overrides)
++    return stackprinter.format(error, **options)
++
++
++# --- Tracing activation re-entrancy F2P nodes ---
++
++def test_nested_traceprinters_restore_outer_trace():
++    events = []
++    outer = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"], print_function=events.append)
++    inner = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"], print_function=events.append)
++    with outer:
++        outer_trace = sys.gettrace()
++        assert callable(outer_trace)
++        with inner:
++            inner_trace = sys.gettrace()
++            assert callable(inner_trace)
++            def inner_body():
++                return 1
++            inner_body()
++        assert sys.gettrace() is outer_trace
++
++
++def test_nested_context_on_same_tracer_restores_outer_trace():
++    events = []
++    printer = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"], print_function=events.append)
++    with printer:
++        outer_trace = sys.gettrace()
++        assert callable(outer_trace)
++        with printer:
++            inner_trace = sys.gettrace()
++            assert callable(inner_trace)
++            def inner_body():
++                return 1
++            inner_body()
++        assert sys.gettrace() is outer_trace
++
++def test_nested_context_on_same_tracer_restores_outer_trace_after_exception():
++    previous = sys.gettrace()
++    printer = stackprinter.TracePrinter(
++        style="plaintext", suppressed_paths=[r".*"], print_function=lambda _: None
++    )
++    try:
++        with printer:
++            outer_trace = sys.gettrace()
++            try:
++                with printer:
++                    def inner_body():
++                        raise ValueError("nested-context")
++                    inner_body()
++            except ValueError:
++                pass
++            assert sys.gettrace() is outer_trace
++    finally:
++        sys.settrace(previous)
++
++
++def test_nested_manual_activation_restores_outer_trace():
++    events = []
++    printer = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"], print_function=events.append)
++    printer.enable()
++    outer_trace = sys.gettrace()
++    assert callable(outer_trace)
++    printer.enable()
++    assert callable(sys.gettrace())
++    def body():
++        return 1
++    body()
++    printer.disable()
++    assert sys.gettrace() is outer_trace
++    printer.disable()
++
++
++def _run_recursive_decorator():
++    calls = []
++    @stackprinter.trace(style="plaintext", suppressed_paths=[r".*"], print_function=lambda _: None)
++    def recurse(depth):
++        calls.append(depth)
++        if depth:
++            recurse(depth - 1)
++    recurse(3)
++    return calls
++
++
++def test_trace_decorator_reuse_for_recursive_calls():
++    assert _run_recursive_decorator() == [3, 2, 1, 0]
++
++
++def test_recursive_decorator_restores_original_hook():
++    previous = sys.gettrace()
++    _run_recursive_decorator()
++    assert sys.gettrace() is previous
++
++
++def test_recursive_trace_decorator_restores_outer_hook_after_exception():
++    previous = sys.gettrace()
++
++    @stackprinter.trace(
++        style="plaintext", suppressed_paths=[r".*"], print_function=lambda _: None
++    )
++    def recurse(depth):
++        if depth == 0:
++            raise ValueError("recursive-trace")
++        outer_hook = sys.gettrace()
++        try:
++            recurse(depth - 1)
++        except ValueError:
++            pass
++        assert sys.gettrace() is outer_hook
++
++    try:
++        recurse(1)
++    finally:
++        sys.settrace(previous)
++
++
++def test_recursive_decorator_exception_restores_original_hook():
++    previous = sys.gettrace()
++
++    @stackprinter.trace(
++        style="plaintext", suppressed_paths=[r".*"], print_function=lambda _: None
++    )
++    def recurse(depth):
++        if depth == 0:
++            raise ValueError("recursive-cleanup")
++        recurse(depth - 1)
++
++    try:
++        with pytest.raises(ValueError, match="recursive-cleanup"):
++            recurse(2)
++        assert sys.gettrace() is previous
++    finally:
++        sys.settrace(previous)
++
++
++def test_disabling_inactive_tracer_is_noop():
++    def sentinel(frame, event, arg):
++        return sentinel
++    printer = stackprinter.TracePrinter(style="plaintext")
++    sys.settrace(sentinel)
++    printer.disable()
++    assert sys.gettrace() is sentinel
++
++
++# --- Atomic suppression F2P nodes: format_thread ---
++
++def test_format_thread_suppressed_paths_tuple_accepted():
++    paths = ("caller-entry",)
++    thread = threading.current_thread()
++    rendered = stackprinter.format_thread(
++        thread, suppressed_paths=paths, source_lines=0, show_vals=False
++    )
++    assert rendered
++    assert paths == ("caller-entry",)
++
++
++def test_format_thread_suppressed_paths_list_not_mutated():
++    paths = ["caller-entry"]
++    snapshot = list(paths)
++    thread = threading.current_thread()
++    first = stackprinter.format_thread(
++        thread, suppressed_paths=paths, source_lines=0, show_vals=False
++    )
++    assert first
++    assert paths == snapshot
++
++
++def test_format_thread_suppressed_paths_list_intact_on_exception():
++    paths = ["caller-entry"]
++    snapshot = list(paths)
++    thread = threading.current_thread()
++    with pytest.raises(ValueError):
++        stackprinter.format_thread(
++            thread, suppressed_paths=paths, show_vals=object()
++        )
++    assert paths == snapshot
++
++
++def test_format_thread_suppressed_paths_repeated_no_accumulation():
++    paths = ["caller-entry"]
++    snapshot = list(paths)
++    thread = threading.current_thread()
++    first = stackprinter.format_thread(
++        thread, suppressed_paths=paths, source_lines=0, show_vals=False
++    )
++    assert first
++    assert paths == snapshot
++    second = stackprinter.format_thread(
++        thread, suppressed_paths=paths, source_lines=0, show_vals=False
++    )
++    assert second
++    assert paths == snapshot
++
++
++# --- Atomic suppression F2P nodes: set_excepthook (IPython) ---
++
++def test_set_excepthook_suppressed_paths_tuple_accepted(monkeypatch):
++    original_hook = lambda *args: None
++    mock_ipython = types.ModuleType("IPython")
++    shell = types.SimpleNamespace(
++        InteractiveTB=types.SimpleNamespace(structured_traceback=original_hook)
++    )
++    mock_ipython.get_ipython = lambda: shell
++    monkeypatch.setitem(sys.modules, "IPython", mock_ipython)
++    monkeypatch.setattr(stackprinter, "_is_running_in_ipython", lambda: True)
++
++    original_ipy_tb = getattr(stackprinter, "ipy_tb", None)
++    original_excepthook = sys.excepthook
++    paths = ("caller-entry",)
++    try:
++        stackprinter.set_excepthook(suppressed_paths=paths)
++        assert shell.InteractiveTB.structured_traceback is not original_hook
++        try:
++            raise ValueError("ipy-test")
++        except ValueError:
++            tb = shell.InteractiveTB.structured_traceback(*sys.exc_info())
++        assert paths == ("caller-entry",)
++    finally:
++        stackprinter.remove_excepthook()
++        stackprinter.ipy_tb = original_ipy_tb
++        sys.excepthook = original_excepthook
++
++
++def test_set_excepthook_suppressed_paths_list_not_mutated(monkeypatch):
++    original_hook = lambda *args: None
++    mock_ipython = types.ModuleType("IPython")
++    shell = types.SimpleNamespace(
++        InteractiveTB=types.SimpleNamespace(structured_traceback=original_hook)
++    )
++    mock_ipython.get_ipython = lambda: shell
++    monkeypatch.setitem(sys.modules, "IPython", mock_ipython)
++    monkeypatch.setattr(stackprinter, "_is_running_in_ipython", lambda: True)
++
++    original_ipy_tb = getattr(stackprinter, "ipy_tb", None)
++    original_excepthook = sys.excepthook
++    paths = ["caller-entry"]
++    snapshot = list(paths)
++    try:
++        stackprinter.set_excepthook(suppressed_paths=paths)
++        assert shell.InteractiveTB.structured_traceback is not original_hook
++        try:
++            raise ValueError("ipy-test")
++        except ValueError:
++            tb = shell.InteractiveTB.structured_traceback(*sys.exc_info())
++        assert paths == snapshot
++    finally:
++        stackprinter.remove_excepthook()
++        stackprinter.ipy_tb = original_ipy_tb
++        sys.excepthook = original_excepthook
++
++
++def test_set_excepthook_suppressed_paths_list_intact_on_exception(monkeypatch):
++    mock_ipython = types.ModuleType("IPython")
++    def fail_get_ipython():
++        raise RuntimeError("ipython-failure")
++    mock_ipython.get_ipython = fail_get_ipython
++    monkeypatch.setitem(sys.modules, "IPython", mock_ipython)
++    monkeypatch.setattr(stackprinter, "_is_running_in_ipython", lambda: True)
++
++    paths = ["caller-entry"]
++    snapshot = list(paths)
++    with pytest.raises(RuntimeError):
++        stackprinter.set_excepthook(suppressed_paths=paths)
++    assert paths == snapshot
++
++
++def test_set_excepthook_suppressed_paths_intact_when_handler_format_raises(monkeypatch):
++    original_hook = lambda *args: None
++    mock_ipython = types.ModuleType("IPython")
++    shell = types.SimpleNamespace(
++        InteractiveTB=types.SimpleNamespace(structured_traceback=original_hook)
++    )
++    mock_ipython.get_ipython = lambda: shell
++    monkeypatch.setitem(sys.modules, "IPython", mock_ipython)
++    monkeypatch.setattr(stackprinter, "_is_running_in_ipython", lambda: True)
++
++    original_ipy_tb = getattr(stackprinter, "ipy_tb", None)
++    original_excepthook = sys.excepthook
++    paths = ["caller-entry"]
++    snapshot = list(paths)
++    try:
++        stackprinter.set_excepthook(suppressed_paths=paths)
++        handler = shell.InteractiveTB.structured_traceback
++
++        def fail_format(*args, **kwargs):
++            raise RuntimeError("format-failure")
++
++        monkeypatch.setattr(stackprinter, "format", fail_format)
++        try:
++            raise ValueError("ipy-format-failure")
++        except ValueError:
++            with pytest.raises(RuntimeError, match="format-failure"):
++                handler(*sys.exc_info())
++        assert paths == snapshot
++    finally:
++        stackprinter.remove_excepthook()
++        stackprinter.ipy_tb = original_ipy_tb
++        sys.excepthook = original_excepthook
++
++
++def test_set_excepthook_suppressed_paths_repeated_no_accumulation(monkeypatch):
++    original_hook = lambda *args: None
++    mock_ipython = types.ModuleType("IPython")
++    shell = types.SimpleNamespace(
++        InteractiveTB=types.SimpleNamespace(structured_traceback=original_hook)
++    )
++    mock_ipython.get_ipython = lambda: shell
++    monkeypatch.setitem(sys.modules, "IPython", mock_ipython)
++    monkeypatch.setattr(stackprinter, "_is_running_in_ipython", lambda: True)
++
++    original_ipy_tb = getattr(stackprinter, "ipy_tb", None)
++    original_excepthook = sys.excepthook
++    paths = ["caller-entry"]
++    snapshot = list(paths)
++    try:
++        stackprinter.set_excepthook(suppressed_paths=paths)
++        assert paths == snapshot
++        stackprinter.set_excepthook(suppressed_paths=paths)
++        assert paths == snapshot
++    finally:
++        stackprinter.remove_excepthook()
++        stackprinter.ipy_tb = original_ipy_tb
++        sys.excepthook = original_excepthook
++
++
++# --- Atomic plain alias F2P nodes ---
++
++def test_plain_style_alias_matches_plaintext_single_exception():
++    marker = "\x1b[31mf2p-error\x1b[0m"
++    error = _capture_error(marker)
++    rendered_plain = _render(error, style="plain")
++    rendered_plaintext = _render(error, style="plaintext")
++    assert rendered_plain == rendered_plaintext
++    assert marker in rendered_plain
++    assert not re.search(r"\x1b\[[0-9;]*[a-zA-Z]", rendered_plain.replace(marker, ""))
++
++
++def test_plain_style_alias_matches_plaintext_explicit_cause():
++    cause_marker = "\x1b[31minner-cause\x1b[0m"
++    outer_marker = "\x1b[34mouter-explicit\x1b[0m"
++    try:
++        try:
++            raise ValueError(cause_marker)
++        except ValueError as cause:
++            raise RuntimeError(outer_marker) from cause
++    except RuntimeError as error:
++        err = error
++    rendered_plain = _render(err, style="plain")
++    rendered_plaintext = _render(err, style="plaintext")
++    assert rendered_plain == rendered_plaintext
++    assert cause_marker in rendered_plain and outer_marker in rendered_plain
++    assert "direct cause of the following exception" in rendered_plain
++    unstyled = rendered_plain.replace(cause_marker, "").replace(outer_marker, "")
++    assert not re.search(r"\x1b\[[0-9;]*[a-zA-Z]", unstyled)
++
++
++def test_plain_style_alias_matches_plaintext_implicit_context():
++    context_marker = "\x1b[32minner-context\x1b[0m"
++    outer_marker = "\x1b[35mouter-implicit\x1b[0m"
++    try:
++        try:
++            raise ValueError(context_marker)
++        except ValueError:
++            raise RuntimeError(outer_marker)
++    except RuntimeError as error:
++        err = error
++    rendered_plain = _render(err, style="plain")
++    rendered_plaintext = _render(err, style="plaintext")
++    assert rendered_plain == rendered_plaintext
++    assert context_marker in rendered_plain and outer_marker in rendered_plain
++    assert "While handling the above exception" in rendered_plain
++    unstyled = rendered_plain.replace(context_marker, "").replace(outer_marker, "")
++    assert not re.search(r"\x1b\[[0-9;]*[a-zA-Z]", unstyled)
++
++
++@pytest.mark.parametrize("with_traceback", [True, False], ids=["traceback", "no_traceback"])
++def test_plain_style_alias_matches_plaintext_show_stream_output(with_traceback):
++    marker = "\x1b[31mraw-value\x1b[0m"
++    error = _capture_error(marker) if with_traceback else ValueError(marker)
++    streams = {}
++    for style in ("plain", "plaintext"):
++        stream = io.StringIO()
++        assert stackprinter.show(error, file=stream, style=style,
++                                 source_lines=0, show_vals=False) is None
++        streams[style] = stream.getvalue()
++    expected = stackprinter.format(error, style="plaintext", source_lines=0,
++                                   show_vals=False) + "\n"
++    assert streams["plain"] == streams["plaintext"] == expected
++    assert streams["plain"].endswith("\n")
++    assert "ValueError:" in streams["plain"]
++    assert marker in streams["plain"]
++    assert not re.search(r"\x1b\[[0-9;]*[a-zA-Z]",
++                         streams["plain"].replace(marker, ""))
++
++
++@pytest.mark.parametrize("location", ["function", "caller"])
++def test_fresh_raise_after_caught_inner_exception_stops_outer(location):
++    def raise_error(error):
++        raise error
++    outer = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"],
++                                      print_function=lambda _: None)
++    inner = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"],
++                                      print_function=lambda _: None)
++    error = ValueError("reused-exception")
++    with outer:
++        outer_hook = sys.gettrace()
++        try:
++            with inner:
++                raise_error(error)
++        except ValueError:
++            pass
++        # Reachability guard: premature outer shutdown must not satisfy this test.
++        assert sys.gettrace() is outer_hook and outer_hook is not None
++        try:
++            if location == "function":
++                raise_error(error)
++            else:
++                raise error
++        except ValueError:
++            pass
++        assert sys.gettrace() is None
+diff --git a/tests/test_refactor_p2p.py b/tests/test_refactor_p2p.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_refactor_p2p.py
+@@ -0,0 +1,857 @@
++import threading
++import types
++"""Additional atomic compatibility checks for the refactoring task."""
++
++import io
++import re
++import sys
++
++import pytest
++
++import stackprinter
++
++
++def _raise_value_error():
++    raise ValueError("compatibility-error")
++
++
++def _nested_raise():
++    _raise_value_error()
++
++
++def _capture_error():
++    try:
++        _nested_raise()
++    except ValueError as error:
++        return error
++    raise AssertionError("fixture did not raise")
++
++
++def _render(error, **kwargs):
++    options = dict(source_lines=0, show_vals=False, show_signature=False,
++                   add_summary=False)
++    options.update(kwargs)
++    return stackprinter.format(error, **options)
++
++
++def test_format_accepts_exception_instance():
++    message = _render(_capture_error())
++    assert message.endswith("ValueError: compatibility-error")
++
++
++def test_format_accepts_exception_information_tuple():
++    error = _capture_error()
++    message = _render((type(error), error, error.__traceback__))
++    assert message.endswith("ValueError: compatibility-error")
++
++
++def test_format_accepts_frame_object():
++    frame = sys._getframe()
++    message = stackprinter.format(frame, source_lines=0, show_vals=False)
++    assert "test_format_accepts_frame_object" in message
++
++
++def test_format_current_stack_uses_caller_frame():
++    message = stackprinter.format_current_stack(source_lines=0, show_vals=False)
++    assert "test_format_current_stack_uses_caller_frame" in message
++
++
++def test_format_current_exception_uses_active_exception():
++    try:
++        _raise_value_error()
++    except ValueError:
++        message = stackprinter.format_current_exception(
++            source_lines=0, show_vals=False, show_signature=False,
++            add_summary=False
++        )
++    assert message.endswith("ValueError: compatibility-error")
++
++
++def test_show_current_exception_writes_one_newline():
++    destination = io.StringIO()
++    try:
++        _raise_value_error()
++    except ValueError:
++        stackprinter.show_current_exception(
++            file=destination, source_lines=0, show_vals=False,
++            show_signature=False, add_summary=False
++        )
++    assert destination.getvalue().endswith("ValueError: compatibility-error\n")
++
++
++def test_show_current_exception_returns_none():
++    destination = io.StringIO()
++    try:
++        _raise_value_error()
++    except ValueError:
++        result = stackprinter.show_current_exception(
++            file=destination, source_lines=0, show_vals=False,
++            show_signature=False, add_summary=False
++        )
++    assert result is None
++
++
++def test_show_current_stack_writes_to_stderr_by_default(monkeypatch):
++    destination = io.StringIO()
++    monkeypatch.setattr(sys, "stderr", destination)
++    stackprinter.show_current_stack(source_lines=0, show_vals=False)
++    assert "test_show_current_stack_writes_to_stderr_by_default" in destination.getvalue()
++
++
++def test_show_current_stack_returns_none(monkeypatch):
++    destination = io.StringIO()
++    monkeypatch.setattr(sys, "stderr", destination)
++    result = stackprinter.show_current_stack(source_lines=0, show_vals=False)
++    assert result is None
++
++
++def test_show_accepts_stdout_alias(monkeypatch):
++    destination = io.StringIO()
++    monkeypatch.setattr(sys, "stdout", destination)
++    stackprinter.show(_capture_error(), file="stdout", source_lines=0,
++                      show_vals=False, show_signature=False, add_summary=False)
++    assert destination.getvalue().endswith("ValueError: compatibility-error\n")
++
++
++def test_none_exception_information_is_rendered():
++    assert stackprinter.format((None, None, None)) == "NoneType: None"
++
++
++def test_none_exception_value_is_rendered():
++    assert stackprinter.format((TypeError, None, None)) == "TypeError: None"
++
++
++def test_exception_without_traceback_is_rendered():
++    assert stackprinter.format(ValueError("no traceback"), source_lines=0).endswith(
++        "ValueError: no traceback"
++    )
++
++
++def test_explicit_cause_has_standard_separator():
++    cause = ValueError("compat-cause")
++    error = RuntimeError("compat-main")
++    error.__cause__ = cause
++    message = _render(error)
++    assert "The above exception was the direct cause of the following exception:" in message
++
++
++def test_implicit_context_has_standard_separator():
++    context = ValueError("compat-context")
++    error = RuntimeError("compat-main")
++    error.__context__ = context
++    message = _render(error)
++    assert "While handling the above exception, another exception occurred:" in message
++
++
++def test_suppressed_context_is_not_rendered():
++    error = RuntimeError("compat-main")
++    error.__context__ = ValueError("hidden-context")
++    error.__suppress_context__ = True
++    message = _render(error)
++    assert "hidden-context" not in message
++    assert message == "RuntimeError: compat-main"
++
++
++def test_named_color_style_contains_ansi_codes():
++    message = _render(_capture_error(), style="darkbg")
++    assert "\x1b[" in message
++
++
++def test_named_color_style_preserves_plaintext_order():
++    error = _capture_error()
++    plain = _render(error)
++    colored = _render(error, style="darkbg2")
++    assert re.sub(r"\x1b\[[0-9;]*m", "", colored) == plain
++
++
++def test_reverse_places_exception_message_first():
++    message = _render(_capture_error(), reverse=True)
++    assert message.startswith("ValueError: compatibility-error")
++
++
++def test_reverse_reverses_frame_order():
++    error = _capture_error()
++    normal = _render(error)
++    reverse = _render(error, reverse=True)
++    normal_frames = [line for line in normal.splitlines() if line.startswith('File "')]
++    reverse_frames = [line for line in reverse.splitlines() if line.startswith('File "')]
++    assert reverse_frames == list(reversed(normal_frames))
++
++
++def test_summary_disabled_has_no_summary_marker():
++    message = _render(_capture_error(), add_summary=False)
++    assert "---- (full traceback" not in message
++
++
++def test_summary_enabled_has_summary_marker():
++    message = _render(_capture_error(), add_summary=True)
++    assert "---- (full traceback above) ----" in message
++
++
++def test_short_auto_summary_is_omitted():
++    message = _render(_capture_error(), add_summary="auto")
++    assert "---- (full traceback" not in message
++
++
++def test_source_lines_zero_keeps_frame_headline():
++    message = _render(_capture_error(), source_lines=0)
++    assert 'File "' in message
++
++
++def test_show_vals_false_hides_assignments():
++    error = _capture_error()
++    message = stackprinter.format(error, source_lines="all", show_vals=False,
++                                   show_signature=True, add_summary=False)
++    assert "error =" not in message
++
++
++def test_suppressed_variable_is_censored():
++    def local_failure():
++        private_value = "compat-secret"
++        raise RuntimeError("redaction")
++    try:
++        local_failure()
++    except RuntimeError as error:
++        message = stackprinter.format(error, source_lines="all", show_vals="all",
++                                      suppressed_vars=["private_value"], add_summary=False)
++    assert "private_value = *****" in message
++
++
++@pytest.mark.parametrize("entry", ["format", "format_exc_info", "empty_stack"])
++def test_suppressed_vars_sequence_is_caller_owned(entry):
++    paths = ["private_value"]
++    snapshot = list(paths)
++    error = _capture_error()
++    for _ in range(2):
++        if entry == "format":
++            stackprinter.format(error, suppressed_vars=paths)
++        elif entry == "format_exc_info":
++            stackprinter.formatting.format_exc_info(type(error), error, error.__traceback__, suppressed_vars=paths)
++        else:
++            stackprinter.formatting.format_stack([], suppressed_vars=paths)
++        assert paths == snapshot
++
++
++def test_suppressed_path_keeps_traceback_headline():
++    error = _capture_error()
++    message = stackprinter.format(error, source_lines="all", show_vals="all",
++                                  suppressed_paths=[re.escape(__file__)],
++                                  add_summary=False)
++    assert any(line.endswith("in _raise_value_error")
++               for line in message.splitlines() if line.startswith('File "'))
++
++
++def test_suppressed_exception_uses_compact_message():
++    error = _capture_error()
++    message = stackprinter.format(error, source_lines="all", show_vals="all",
++                                  suppressed_exceptions=[ValueError],
++                                  add_summary=False)
++    assert message.endswith("ValueError: compatibility-error")
++    assert "private_value" not in message
++
++
++def test_trace_decorator_preserves_result_identity():
++    result = object()
++
++    @stackprinter.trace(style="plaintext", suppressed_paths=[r".*"])
++    def identity(value):
++        return value
++
++    assert identity(result) is result
++
++
++def test_trace_decorator_preserves_keyword_arguments():
++    received = []
++
++    @stackprinter.trace(style="plaintext", suppressed_paths=[r".*"])
++    def target(first, *, second):
++        received.append((first, second))
++        return second
++
++    assert target("a", second="b") == "b"
++    assert received == [("a", "b")]
++
++
++def test_trace_context_restores_trace_after_normal_exit():
++    previous = sys.gettrace()
++    printer = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"])
++    with printer:
++        assert callable(sys.gettrace())
++    assert sys.gettrace() is previous
++
++
++def test_trace_context_restores_trace_after_exception():
++    previous = sys.gettrace()
++    printer = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"])
++    with pytest.raises(ValueError):
++        with printer:
++            raise ValueError("trace-context")
++    assert sys.gettrace() is previous
++
++
++def test_trace_printer_uses_configured_sink():
++    messages = []
++    printer = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"],
++                                        print_function=messages.append)
++    with printer:
++        pass
++    assert all(message for message in messages)
++
++
++def test_dead_thread_has_no_frames_message():
++    class DeadThread:
++        ident = 999999999
++
++        def __repr__(self):
++            return "<DeadThread>"
++
++    assert stackprinter.format_thread(DeadThread()) == "<DeadThread>: no frames found"
++
++
++def test_match_keeps_regex_search_semantics():
++    from stackprinter.utils import match
++
++    assert match("prefix-target-suffix", [r"target"])
++
++
++def test_match_accepts_compiled_regex():
++    from stackprinter.utils import match
++
++    assert match("prefix-target-suffix", [re.compile(r"target")])
++
++
++def test_unsupported_format_input_raises_value_error():
++    with pytest.raises(ValueError):
++        stackprinter.format(object())
++
++
++def test_exception_tuple_with_non_exception_value_raises_value_error():
++    with pytest.raises(ValueError):
++        stackprinter.format((ValueError, "not-an-exception", None))
++
++
++def test_exception_tuple_with_wrong_length_raises_value_error():
++    with pytest.raises(ValueError):
++        stackprinter.format((ValueError, ValueError("missing-tb")))
++
++
++def test_exception_tuple_with_non_exception_type_raises_value_error():
++    with pytest.raises(ValueError):
++        stackprinter.format((int, ValueError("bad-type"), None))
++
++
++def test_public_formatter_subclass_relationship_preserved():
++    from stackprinter.frame_formatting import FrameFormatter, ColorfulFrameFormatter
++
++    assert issubclass(ColorfulFrameFormatter, FrameFormatter)
++    assert isinstance(ColorfulFrameFormatter("darkbg", source_lines=0), FrameFormatter)
++
++
++def test_remove_excepthook_restores_default():
++    original = sys.excepthook
++    try:
++        stackprinter.set_excepthook()
++        stackprinter.remove_excepthook()
++        assert sys.excepthook is sys.__excepthook__
++    finally:
++        sys.excepthook = original
++
++def test_remove_excepthook_restores_ipython_hook(monkeypatch):
++    original_hook = lambda *args: None
++    mock_ipython = types.ModuleType("IPython")
++    shell = types.SimpleNamespace(
++        InteractiveTB=types.SimpleNamespace(structured_traceback=original_hook)
++    )
++    mock_ipython.get_ipython = lambda: shell
++    monkeypatch.setitem(sys.modules, "IPython", mock_ipython)
++    monkeypatch.setattr(stackprinter, "_is_running_in_ipython", lambda: True)
++    original_ipy_tb = getattr(stackprinter, "ipy_tb", None)
++    original_excepthook = sys.excepthook
++    try:
++        stackprinter.set_excepthook()
++        installed_hook = shell.InteractiveTB.structured_traceback
++        assert installed_hook is not original_hook
++        stackprinter.remove_excepthook()
++        assert shell.InteractiveTB.structured_traceback is original_hook
++    finally:
++        stackprinter.ipy_tb = original_ipy_tb
++        sys.excepthook = original_excepthook
++
++
++@pytest.mark.parametrize("kind", ["standard", "ipython"])
++def test_set_excepthook_failure_preserves_hook_identity(kind, monkeypatch):
++    original_sys_hook = sys.excepthook
++    original_ipy_tb = stackprinter.ipy_tb
++    original_ipy_hook = lambda *args: ["original-ipython-hook"]
++    shell = types.SimpleNamespace(
++        InteractiveTB=types.SimpleNamespace(structured_traceback=original_ipy_hook)
++    )
++    mock_ipython = types.ModuleType("IPython")
++    mock_ipython.get_ipython = lambda: shell
++    if kind == "ipython":
++        monkeypatch.setitem(sys.modules, "IPython", mock_ipython)
++    monkeypatch.setattr(stackprinter, "_is_running_in_ipython", lambda: kind == "ipython")
++
++    failure = RuntimeError("excepthook-sink-failure")
++
++    class FailingSink:
++        def write(self, _message):
++            raise failure
++
++    try:
++        stackprinter.ipy_tb = None
++        stackprinter.set_excepthook(file=FailingSink())
++        if kind == "standard":
++            installed_hook = sys.excepthook
++            with pytest.raises(RuntimeError) as caught:
++                installed_hook(RuntimeError, failure, None)
++            assert caught.value is failure
++            assert sys.excepthook is installed_hook
++        else:
++            installed_hook = shell.InteractiveTB.structured_traceback
++            assert installed_hook is not original_ipy_hook
++
++            def fail_format(*_args, **_kwargs):
++                return FailingSink().write("rendered traceback")
++
++            monkeypatch.setattr(stackprinter, "format", fail_format)
++            with pytest.raises(RuntimeError) as caught:
++                installed_hook(RuntimeError, failure, None)
++            assert caught.value is failure
++            assert shell.InteractiveTB.structured_traceback is installed_hook
++
++        stackprinter.remove_excepthook()
++        assert sys.excepthook is sys.__excepthook__
++        if kind == "ipython":
++            assert shell.InteractiveTB.structured_traceback is original_ipy_hook
++    finally:
++        stackprinter.remove_excepthook()
++        stackprinter.ipy_tb = original_ipy_tb
++        sys.excepthook = original_sys_hook
++
++
++def test_enable_force_restores_preexisting_trace_hook():
++    previous = sys.gettrace()
++
++    def sentinel(frame, event, arg):
++        return sentinel
++
++    printer = stackprinter.TracePrinter(
++        style="plaintext", suppressed_paths=[r".*"], print_function=lambda _: None
++    )
++    try:
++        sys.settrace(sentinel)
++        printer.enable(force=True)
++        assert sys.gettrace() is not sentinel
++        printer.disable()
++        assert sys.gettrace() is sentinel
++    finally:
++        sys.settrace(previous)
++
++
++def test_repeated_rendering_does_not_mutate_frameinfo():
++    from stackprinter import extraction as ex
++    from stackprinter.frame_formatting import FrameFormatter, ColorfulFrameFormatter
++
++    def capture_frameinfo():
++        stable_local = {"key": "value"}
++        return ex.get_info(sys._getframe())
++
++    info = capture_frameinfo()
++    source_snapshot = [(ln, [tuple(tok) for tok in toks])
++                       for ln, toks in info.source_map.items()]
++    assignments_snapshot = list(info.assignments.items())
++    line2names_snapshot = {ln: list(names) for ln, names in info.line2names.items()}
++    name2lines_snapshot = {name: list(lns) for name, lns in info.name2lines.items()}
++    head_snapshot = list(info.head_lns)
++
++    first = FrameFormatter(source_lines="all", show_vals="all")(info)
++    second = FrameFormatter(source_lines="all", show_vals="all")(info)
++    ColorfulFrameFormatter(source_lines="all", show_vals="all")(info)
++
++    assert first == second
++    assert [(ln, [tuple(tok) for tok in toks])
++            for ln, toks in info.source_map.items()] == source_snapshot
++    assert list(info.assignments.items()) == assignments_snapshot
++    assert {ln: list(names) for ln, names in info.line2names.items()} == line2names_snapshot
++    assert {name: list(lns) for name, lns in info.name2lines.items()} == name2lines_snapshot
++    assert list(info.head_lns) == head_snapshot
++
++
++def test_report_and_trace_select_same_variables():
++    def target():
++        selected_value = "selection-marker"
++        return sys._getframe()
++
++    frame = target()
++    report = stackprinter.format(frame, source_lines="all", show_vals="all",
++                                 add_summary=False)
++    assert "selected_value = 'selection-marker'" in report
++
++    messages = []
++    printer = stackprinter.TracePrinter(style="plaintext", source_lines="all",
++                                        show_vals="all", suppressed_paths=[],
++                                        print_function=messages.append)
++    printer.enable()
++    try:
++        target()
++    finally:
++        printer.disable()
++    assert "selected_value = 'selection-marker'" in "".join(messages)
++
++
++def test_trace_sink_failure_restores_trace_and_config():
++    previous = sys.gettrace()
++
++    def failing_sink(_message):
++        raise RuntimeError("sink-failure")
++
++    printer = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"],
++                                        print_function=failing_sink, depth_limit=7)
++    config_before = (list(printer.suppressed_paths), printer.emit,
++                     printer.depth_limit, printer.stop_on_exception)
++    printer.enable()
++    caught = None
++    try:
++        def body():
++            return 1
++        body()
++    except RuntimeError as error:
++        caught = error
++    assert caught is not None
++    assert sys.gettrace() is previous
++    assert (list(printer.suppressed_paths), printer.emit,
++            printer.depth_limit, printer.stop_on_exception) == config_before
++
++
++def test_rendering_leaves_active_trace_hook_untouched():
++    previous = sys.gettrace()
++    stackprinter.format(_capture_error(), source_lines=0, show_vals=False)
++    assert sys.gettrace() is previous
++
++
++def test_trace_printer_rejects_unrelated_hook_without_force():
++    previous = sys.gettrace()
++
++    def sentinel(frame, event, arg):
++        return sentinel
++
++    printer = stackprinter.TracePrinter(
++        style="plaintext", suppressed_paths=[r".*"]
++    )
++    sys.settrace(sentinel)
++    try:
++        with pytest.raises(Exception):
++            printer.enable()
++        assert sys.gettrace() is sentinel
++    finally:
++        sys.settrace(previous)
++
++
++def test_traceprinter_default_constructor_raises_type_error():
++    with pytest.raises(TypeError):
++        stackprinter.TracePrinter()
++
++
++def test_plain_style_alias_matches_plaintext_summary():
++    import inspect
++    import stackprinter.extraction as ex
++    marker = "\x1b[31muser-source.py\x1b[0m"
++    fi = ex.get_info(inspect.currentframe())._replace(filename=marker)
++    summary_plain = stackprinter.formatting.format_summary([fi], style="plain")
++    summary_plaintext = stackprinter.formatting.format_summary([fi], style="plaintext")
++    assert summary_plain == summary_plaintext
++    assert marker in summary_plain
++    assert not re.search(r"\x1b\[[0-9;]*[a-zA-Z]", summary_plain.replace(marker, ""))
++
++
++def _source_blocks(rendered, filename):
++    blocks = re.split(r'(?=^\s*File ")', rendered, flags=re.MULTILINE)
++    return [block for block in blocks if block.lstrip().startswith('File "')
++            and filename in block.splitlines()[0]]
++
++
++def _source_line_count(block):
++    lines = block.splitlines()
++    indent = len(lines[0]) - len(lines[0].lstrip())
++    return sum(bool(line.strip()) and len(line) - len(line.lstrip()) > indent
++               for line in lines[1:])
++
++
++def _park_worker():
++    import time
++    ready, release = threading.Event(), threading.Event()
++    def worker():
++        ready.set()
++        release.wait()
++    thread = threading.Thread(target=worker)
++    thread.start()
++    assert ready.wait(5)
++    deadline = time.monotonic() + 5
++    while True:
++        frame = sys._current_frames()[thread.ident]
++        if frame.f_code.co_name == "wait" and frame.f_back.f_code.co_name == "wait":
++            break
++        assert time.monotonic() < deadline, "worker did not reach its stable wait"
++        time.sleep(.005)
++    return thread, release
++
++
++def test_format_thread_internal_suppression_pattern_effective():
++    thread, release = _park_worker()
++    try:
++        out = stackprinter.format_thread(thread, suppressed_paths=["caller-no-match"],
++                source_lines="all", show_vals=False, show_signature=False)
++        blocks = _source_blocks(out, "threading.py")
++        assert len(blocks) >= 2, out
++        assert all(_source_line_count(block) == 1 for block in blocks), out
++    finally:
++        release.set()
++        thread.join(5)
++
++
++def test_format_thread_caller_pattern_precedes_internal_pattern():
++    # Both caller rules must remain effective, independently of internal regex representation.
++    thread, release = _park_worker()
++    try:
++        out = stackprinter.format_thread(thread,
++                suppressed_paths=["caller-no-match", re.compile(re.escape(__file__))],
++                source_lines="all", show_vals=False, show_signature=False)
++        blocks = _source_blocks(out, __file__)
++        assert blocks and all(_source_line_count(block) == 1 for block in blocks), out
++    finally:
++        release.set()
++        thread.join(5)
++
++
++def _ipython_render(monkeypatch, tmp_path, caller_patterns):
++    import importlib.util
++    filename = tmp_path / "site-packages" / "IPython" / "audit_frame.py"
++    filename.parent.mkdir(parents=True)
++    filename.write_text("def application():\n    marker = 'internal-source'\n    extra = 17\n    raise ValueError(marker)\n")
++    spec = importlib.util.spec_from_file_location("audit_ipython_frame", filename)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    original_hook = lambda *args: None
++    shell = types.SimpleNamespace(InteractiveTB=types.SimpleNamespace(structured_traceback=original_hook))
++    mock = types.ModuleType("IPython")
++    mock.get_ipython = lambda: shell
++    monkeypatch.setitem(sys.modules, "IPython", mock)
++    # Simulate the public IPython marker, without binding the detector helper.
++    monkeypatch.setattr(stackprinter, "__IPYTHON__", True, raising=False)
++    old_sys, old_ipy = sys.excepthook, getattr(stackprinter, "ipy_tb", None)
++    try:
++        assert stackprinter.set_excepthook(suppressed_paths=caller_patterns,
++                 source_lines="all", show_vals=False, show_signature=False, add_summary=False) is None
++        try:
++            module.application()
++        except ValueError:
++            rendered = shell.InteractiveTB.structured_traceback(*sys.exc_info())
++        assert isinstance(rendered, list) and len(rendered) == 1
++        return rendered[0], str(filename)
++    finally:
++        stackprinter.remove_excepthook()
++        stackprinter.ipy_tb = old_ipy
++        sys.excepthook = old_sys
++
++
++def test_set_excepthook_internal_suppression_pattern_effective(monkeypatch, tmp_path):
++    out, filename = _ipython_render(monkeypatch, tmp_path, ["caller-no-match"])
++    blocks = _source_blocks(out, filename)
++    assert blocks and all(_source_line_count(block) == 1 for block in blocks), out
++
++
++def test_set_excepthook_caller_pattern_precedes_internal_pattern(monkeypatch, tmp_path):
++    out, _ = _ipython_render(monkeypatch, tmp_path,
++              ["caller-no-match", re.compile(re.escape(__file__))])
++    blocks = _source_blocks(out, __file__)
++    assert blocks and all(_source_line_count(block) == 1 for block in blocks), out
++
++
++def test_lightbg_preserves_plaintext_content():
++    error = _capture_error()
++    colored = _render(error, style="lightbg")
++    plain = _render(error, style="plaintext")
++    assert re.sub(r"\x1b\[[0-9;]*m", "", colored) == plain
++
++
++def test_plaintext_preserves_ansi_in_user_content():
++    marker = "\x1b[31mraw-value\x1b[0m"
++    assert marker in _render(ValueError(marker), style="plaintext")
++
++
++def test_import_preserves_process_hooks():
++    import os
++    import subprocess
++    code = """import sys
++def sentinel(frame, event, arg): return sentinel
++sys.settrace(sentinel)
++old_hook = sys.excepthook
++import stackprinter
++assert sys.gettrace() is sentinel
++assert sys.excepthook is old_hook
++"""
++    completed = subprocess.run([sys.executable, "-c", code], capture_output=True,
++             text=True, timeout=10, env={**os.environ, "PYTHONPATH": str(__import__('pathlib').Path.cwd())})
++    assert completed.returncode == 0, completed.stderr
++
++
++def test_public_formatting_entrypoints_return_strings():
++    import inspect
++    import stackprinter.extraction as extraction
++    frame = inspect.currentframe()
++    info = extraction.get_info(frame)
++    assert isinstance(stackprinter.formatting.format_stack([info]), str)
++    assert isinstance(stackprinter.formatting.format_summary([info]), str)
++    assert isinstance(stackprinter.formatting.format_stack_from_frame(frame), str)
++    error = _capture_error()
++    assert isinstance(stackprinter.formatting.format_exc_info(type(error), error, error.__traceback__), str)
++
++
++@pytest.mark.parametrize("public_name", [
++    "format", "show", "format_thread", "formatting.format_stack",
++    "formatting.format_summary", "formatting.format_stack_from_frame",
++    "formatting.format_exc_info", "formatting.get_formatter", "TracePrinter",
++    "TracePrinter.enable", "frame_formatting.ColorfulFrameFormatter"])
++def test_public_callable_signatures_preserved(public_name):
++    import inspect
++    expected = {
++        "format": {"thing": None},
++        "show": {"thing": None, "file": "stderr"},
++        "format_thread": {"thread": inspect.Parameter.empty, "add_summary": False},
++        "formatting.format_stack": {"frames": inspect.Parameter.empty, "style": "plaintext", "source_lines": 5, "reverse": False},
++        "formatting.format_summary": {"frames": inspect.Parameter.empty, "style": "plaintext", "source_lines": 1},
++        "formatting.format_stack_from_frame": {"fr": inspect.Parameter.empty, "add_summary": False},
++        "formatting.format_exc_info": {"etype": inspect.Parameter.empty, "evalue": inspect.Parameter.empty, "tb": inspect.Parameter.empty, "style": "plaintext"},
++        "formatting.get_formatter": {"style": inspect.Parameter.empty},
++        "TracePrinter": {"depth_limit": 20, "print_function": print, "stop_on_exception": True},
++        "TracePrinter.enable": {"force": False, "current_depth": None},
++        "frame_formatting.ColorfulFrameFormatter": {"style": "darkbg"},
++    }[public_name]
++    function = stackprinter
++    for part in public_name.split('.'):
++        function = getattr(function, part)
++    actual = inspect.signature(function).parameters
++    assert {name: actual[name].default for name in expected} == expected
++
++
++@pytest.mark.parametrize("kind", ["positional", "unknown_keyword"])
++def test_colorful_formatter_rejects_invalid_arguments(kind):
++    from stackprinter.frame_formatting import ColorfulFrameFormatter
++    with pytest.raises(TypeError):
++        if kind == "positional":
++            ColorfulFrameFormatter("darkbg", 0)
++        else:
++            ColorfulFrameFormatter(style="darkbg", unknown_option=True)
++
++
++def test_colorful_formatter_keyword_configuration_supported():
++    import inspect
++    from stackprinter.frame_formatting import ColorfulFrameFormatter
++    formatter = ColorfulFrameFormatter("darkbg", source_lines=0, show_vals=False)
++    assert callable(formatter)
++    rendered = formatter(inspect.currentframe())
++    assert isinstance(rendered, str)
++    assert rendered
++
++
++def test_single_activation_stops_on_exception():
++    import os
++    import subprocess
++    code = """import sys, stackprinter
++p = stackprinter.TracePrinter(style='plaintext', suppressed_paths=['.*'], print_function=lambda _: None)
++def body(): raise ValueError('stop-check')
++p.enable()
++try:
++    body()
++except ValueError:
++    hook = sys.gettrace()
++    sys.settrace(None)
++assert hook is None
++"""
++    completed = subprocess.run([sys.executable, "-c", code], capture_output=True,
++            text=True, timeout=10, env={**os.environ, "PYTHONPATH": str(__import__('pathlib').Path.cwd())})
++    assert completed.returncode == 0, completed.stderr
++
++
++@pytest.mark.parametrize("style", ["plain", "plaintext"])
++def test_show_returns_none(style):
++    stream = io.StringIO()
++    assert stackprinter.show(ValueError("return"), style=style, file=stream) is None
++
++
++def test_show_plaintext_writes_formatted_text_and_newline():
++    error = _capture_error()
++    stream = io.StringIO()
++    stackprinter.show(error, style="plaintext", source_lines=0, show_vals=False, file=stream)
++    assert stream.getvalue() == stackprinter.format(error, style="plaintext", source_lines=0, show_vals=False) + "\n"
++
++
++@pytest.mark.parametrize("style", ["plain", "plaintext"])
++def test_show_preserves_user_ansi(style):
++    marker = "\x1b[31mraw-value\x1b[0m"
++    stream = io.StringIO()
++    stackprinter.show(ValueError(marker), style=style, file=stream)
++    assert marker in stream.getvalue()
++
++
++@pytest.mark.parametrize("style", ["plain", "plaintext"])
++def test_show_does_not_add_ansi(style):
++    stream = io.StringIO()
++    stackprinter.show(ValueError("unstyled"), style=style, file=stream)
++    assert not re.search(r"\x1b\[[0-9;]*[a-zA-Z]", stream.getvalue())
++
++
++@pytest.mark.parametrize("value", [None, "pattern", ("pattern",)], ids=["none", "string", "tuple"])
++def test_traceprinter_rejects_nonlist_suppressed_paths(value):
++    with pytest.raises(AssertionError):
++        stackprinter.TracePrinter(style="plaintext", suppressed_paths=value)
++
++
++def test_completed_trace_does_not_retain_application_objects():
++    import gc
++    import weakref
++    class Payload:
++        pass
++    def raise_error(error):
++        raise error
++    printer = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"], print_function=lambda _: None)
++    def episode():
++        payload = Payload()
++        reference = weakref.ref(payload)
++        with printer:
++            try:
++                raise_error(ValueError("lifetime"))
++            except ValueError:
++                pass
++        return reference
++    before = sys.gettrace()
++    try:
++        reference = episode()
++        gc.collect()
++        assert reference() is None
++    finally:
++        sys.settrace(before)
++
++
++@pytest.mark.parametrize("kind", ["context", "decorator"])
++def test_sink_exception_identity_is_preserved(kind):
++    error = RuntimeError("sink-identity")
++    def sink(message):
++        raise error
++    def body():
++        return 1
++    before = sys.gettrace()
++    try:
++        caught = None
++        try:
++            if kind == "context":
++                with stackprinter.TracePrinter(style="plaintext", print_function=sink, suppressed_paths=[r".*"]):
++                    body()
++            else:
++                stackprinter.trace(style="plaintext", print_function=sink, suppressed_paths=[r".*"])(body)()
++        except RuntimeError as observed:
++            caught = observed
++        assert caught is error
++    finally:
++        sys.settrace(before)
+diff --git a/tests/test_refactor_recovery.py b/tests/test_refactor_recovery.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_refactor_recovery.py
+@@ -0,0 +1,143 @@
++"""Sink-failure recovery checks (public behavior only)."""
++
++import sys
++import threading
++import pytest
++
++import stackprinter
++
++
++def _sentinel():
++    def sentinel(frame, event, arg):
++        return sentinel
++    return sentinel
++
++
++def test_manual_activation_restores_predecessor_after_sink_failure():
++    previous = sys.gettrace()
++    sentinel = _sentinel()
++    failure = RuntimeError("manual-sink-failure")
++
++    def sink(message):
++        raise failure
++
++    printer = stackprinter.TracePrinter(
++        style="plaintext", suppressed_paths=[r".*"],
++        print_function=sink, depth_limit=7,
++    )
++    caught = None
++    try:
++        sys.settrace(sentinel)
++        try:
++            printer.enable(force=True)
++
++            def body():
++                return 1
++
++            body()
++        except RuntimeError as error:
++            caught = error
++        assert caught is not None  # Guard: exercise the failure path.
++        printer.disable()
++        assert sys.gettrace() is sentinel
++    finally:
++        sys.settrace(previous)
++
++
++@pytest.mark.parametrize("boundary", ["outer", "original"])
++def test_nested_context_restores_outer_hook_after_sink_failure(boundary):
++    previous = sys.gettrace()
++    failure = RuntimeError("nested-context-sink-failure")
++
++    def sink(message):
++        raise failure
++
++    messages = []
++    outer = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"],
++                                      print_function=messages.append)
++    inner = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"],
++                                      print_function=sink)
++    caught = None
++    try:
++        assert sys.gettrace() is previous
++        with outer:
++            outer_hook = sys.gettrace()
++            assert callable(outer_hook) and outer_hook is not previous
++            try:
++                with inner:
++
++                    def body():
++                        return 1
++
++                    body()
++            except RuntimeError as error:
++                caught = error
++            assert caught is not None  # Guard: exercise the failure path.
++            if boundary == "outer":
++                assert sys.gettrace() is outer_hook
++        if boundary == "original":
++            assert sys.gettrace() is previous
++    finally:
++        sys.settrace(previous)
++
++
++def test_overlapping_thread_activations_restore_each_thread_hook():
++    printer = stackprinter.TracePrinter(
++        style="plaintext", suppressed_paths=[r".*"],
++        print_function=lambda _message: None, stop_on_exception=False,
++    )
++    a_enabled = threading.Event()
++    b_enabled = threading.Event()
++    a_finished = threading.Event()
++    restored = []
++    failures = []
++
++    def worker_a():
++        def sentinel(frame, event, arg):
++            return sentinel
++
++        sys.settrace(sentinel)
++        try:
++            printer.enable(force=True)
++            a_enabled.set()
++            assert b_enabled.wait(timeout=5)
++            printer.disable()
++            restored.append(("a", sys.gettrace() is sentinel))
++        except BaseException as error:
++            failures.append(("a", error))
++        finally:
++            a_finished.set()
++            sys.settrace(None)
++
++    def worker_b():
++        def sentinel(frame, event, arg):
++            return sentinel
++
++        try:
++            assert a_enabled.wait(timeout=5)
++            sys.settrace(sentinel)
++            printer.enable(force=True)
++            b_enabled.set()
++            assert a_finished.wait(timeout=5)
++            printer.disable()
++            restored.append(("b", sys.gettrace() is sentinel))
++        except BaseException as error:
++            failures.append(("b", error))
++        finally:
++            b_enabled.set()
++            sys.settrace(None)
++
++    threads = [threading.Thread(target=worker_a), threading.Thread(target=worker_b)]
++    for thread in threads:
++        thread.start()
++    for thread in threads:
++        thread.join(timeout=10)
++    assert all(not thread.is_alive() for thread in threads)
++    assert not failures, failures
++    assert sorted(restored) == [("a", True), ("b", True)]
++
++
++@pytest.mark.parametrize("boundary", ["outer", "original"])
++def test_nested_decorator_restores_outer_hook_after_sink_failure(boundary):
++    previous = sys.gettrace()
++    failure = RuntimeError("nested-decorator-sink-failure")
++
++    def sink(message):
++        raise failure
++
++    def body():
++        return 1
++
++    messages = []
++    outer = stackprinter.TracePrinter(style="plaintext", suppressed_paths=[r".*"],
++                                      print_function=messages.append)
++    decorated = stackprinter.trace(style="plaintext", suppressed_paths=[r".*"],
++                                   print_function=sink)(body)
++    caught = None
++    try:
++        assert sys.gettrace() is previous
++        with outer:
++            outer_hook = sys.gettrace()
++            assert callable(outer_hook) and outer_hook is not previous
++            try:
++                decorated()
++            except RuntimeError as error:
++                caught = error
++            assert caught is not None  # Guard: exercise the failure path.
++            if boundary == "outer":
++                assert sys.gettrace() is outer_hook
++        if boundary == "original":
++            assert sys.gettrace() is previous
++    finally:
++        sys.settrace(previous)

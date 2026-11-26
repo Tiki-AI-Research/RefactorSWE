@@ -1,0 +1,1034 @@
+--- a/cache.go
++++ b/cache.go
+@@ -4,6 +4,8 @@
+ 	"reflect"
+ 	"sync"
+ 	"sync/atomic"
++
++	"github.com/gookit/goutil/reflects"
+ )
+ 
+ // elemClass classifies a field's (de-pointered) element kind for the purpose
+@@ -24,6 +26,12 @@
+ 	elemOther
+ )
+ 
++// isUnexportedName reports whether name starts with an ASCII lowercase letter,
++// matching baseline unexported skipping across struct_rules.go and cache.go.
++func isUnexportedName(name string) bool {
++	return len(name) > 0 && name[0] >= 'a' && name[0] <= 'z'
++}
++
+ // fieldMeta holds the type-level (value-independent) metadata of a single
+ // struct field. Built once per type and shared read-only afterwards.
+ type fieldMeta struct {
+@@ -31,6 +39,8 @@
+ 	// For a top-level direct field this is a single-element slice {i}; for a
+ 	// nested field it is the parent chain appended with the field index.
+ 	Index []int
++	// FieldIndex is the direct index within the enclosing struct.
++	FieldIndex int
+ 	// Name is the plain field name (last segment).
+ 	Name string
+ 	// Path is the dotted path, e.g. "Parent.Child"; for a top-level field it
+@@ -38,18 +48,22 @@
+ 	Path string
+ 	// Kind is the de-pointered reflect.Kind of the field type.
+ 	Kind reflect.Kind
++	// Type is the de-pointered reflect.Type of the field type.
++	Type reflect.Type
++	// RawType is the declared reflect.Type (sf.Type).
++	RawType reflect.Type
+ 	// IsPtr reports whether the declared field type is a pointer.
+ 	IsPtr bool
++	// Anonymous reports whether the field is embedded.
++	Anonymous bool
++	// IsTime reports whether the field type is time.Time.
++	IsTime bool
+ 	// Elem classifies the field for static/dynamic rule handling.
+ 	Elem elemClass
+-
+-	// Type-level tag strings, read once at build time via Tag.Get. Consumed by
+-	// P3 (rule template pre-parsing); P2 only populates them.
+-	ValidateRule string
+-	FilterRule   string
+-	OutputName   string
+-	Label        string
+-	MessageRaw   string
++	// ExpandElem reports whether element paths should be expanded.
++	ExpandElem bool
++	// Tag is the raw struct tag of the field.
++	Tag reflect.StructTag
+ }
+ 
+ // typeMeta holds all type-level metadata for one struct type. It is built once
+@@ -57,6 +71,8 @@
+ // so it is safe to share across goroutines.
+ type typeMeta struct {
+ 	Type reflect.Type
++	// directFields are the directly declared fields of this struct type, in declaration order.
++	directFields []*fieldMeta
+ 	// Fields are the directly-built field metas (top-level + statically
+ 	// recursed sub-struct fields), in build order.
+ 	Fields []*fieldMeta
+@@ -64,24 +80,25 @@
+ 	byName map[string]*fieldMeta
+ 
+ 	// dynamicFields collects fields needing per-value expansion
+-	// (slice/map-of-struct). Reserved for P3; populated as a marker only.
++	// (slice/map-of-struct, cyclic types).
+ 	dynamicFields []*fieldMeta
+ 
+ 	// isStatic reports whether this type's collected rule set is fully
+ 	// value-independent (no ptr-to-struct, slice-of-struct or map-of-struct in
+-	// its field graph). STATIC types use a cached rule template (instantiateStatic);
+-	// DYNAMIC types keep the original per-value parse path (parseRulesFromTag).
++	// its field graph). STATIC types use a cached rule template;
++	// DYNAMIC types keep the per-value parse path.
+ 	isStatic bool
+-	// tpl is the lazily-built, immutable rule template for a STATIC type. Guarded
+-	// by tplOnce so concurrent first-time validators build it exactly once.
+-	tplOnce sync.Once
+-	tpl     *ruleTemplate
+ 
+ 	// One-shot Implements results, computed at build time so each instance does
+ 	// not pay three reflect Implements calls in StructData.Create.
+ 	implConfig     bool // implements ConfigValidationFace
+ 	implTranslates bool // implements FieldTranslatorFace
+ 	implMessages   bool // implements CustomMessagesFace
++}
++
++// staticTemplate returns the cached rule template for a STATIC type.
++func (m *typeMeta) staticTemplate() *ruleTemplate {
++	return getRuleTemplate(m.Type)
+ }
+ 
+ // typeKey is the cache key. tagVer is folded in so that a global tag-name
+@@ -117,43 +134,36 @@
+ 	return actual.(*typeMeta)
+ }
+ 
+-// ResetTypeCache clears the whole type metadata cache. Intended for tests and
+-// special cases where forcing a rebuild is desired. Implemented via Range+Delete
+-// (instead of swapping the sync.Map pointer) to stay concurrency-safe.
++// ResetTypeCache clears the whole type metadata cache and the static rule template cache.
+ func ResetTypeCache() {
+ 	typeCache.Range(func(key, _ any) bool {
+ 		typeCache.Delete(key)
+ 		return true
+ 	})
+-}
+-
+-// buildTypeMeta does a pure type traversal of the struct type rt — it never
+-// touches any concrete value. It recurses into struct-of-struct (skipping
+-// time.Time and, unless gOpt.ValidatePrivateFields, unexported fields), and
+-// only marks slice/map-of-struct fields (no element expansion).
++	resetRuleTemplates()
++}
++
++// buildTypeMeta does a single authoritative type traversal of the struct type rt.
++// It classifies fields, terminates type cycles safely, determines isStatic,
++// and caches interface checks in one pass.
+ func buildTypeMeta(rt reflect.Type) *typeMeta {
+ 	tm := &typeMeta{
+ 		Type:   rt,
+ 		byName: make(map[string]*fieldMeta),
+ 	}
+ 
+-	// ancestors tracks struct types currently on the recursion path, to break
+-	// type cycles (e.g. `type Node struct{ Next *Node }`). buildTypeMeta walks
+-	// the TYPE tree (not the value tree), so without this guard a self- or
+-	// mutually-recursive struct type would recurse forever. A type appearing in
+-	// sibling branches (not as an ancestor) is still fully expanded.
+-	var walk func(t reflect.Type, parentPath string, parentIndex []int, ancestors map[reflect.Type]bool)
+-	walk = func(t reflect.Type, parentPath string, parentIndex []int, ancestors map[reflect.Type]bool) {
++	isStatic := true
++
++	var walk func(t reflect.Type, parentPath string, parentIndex []int, ancestors map[reflect.Type]bool) []*fieldMeta
++	walk = func(t reflect.Type, parentPath string, parentIndex []int, ancestors map[reflect.Type]bool) []*fieldMeta {
++		var direct []*fieldMeta
+ 		for i := 0; i < t.NumField(); i++ {
+ 			sf := t.Field(i)
+ 			name := sf.Name
+ 
+-			// skip unexported fields unless explicitly enabled (mirrors
+-			// parseRulesFromTag: data_source.go).
+-			if name[0] >= 'a' && name[0] <= 'z' {
+-				if !gOpt.ValidatePrivateFields {
+-					continue
+-				}
++			// Skip unexported fields unless explicitly enabled (mirrors baseline).
++			if isUnexportedName(name) && !gOpt.ValidatePrivateFields {
++				continue
+ 			}
+ 
+ 			path := name
+@@ -161,97 +171,108 @@
+ 				path = parentPath + "." + name
+ 			}
+ 
+-			// build full FieldByIndex path: parent chain + this field index.
+ 			idx := make([]int, len(parentIndex)+1)
+ 			copy(idx, parentIndex)
+ 			idx[len(parentIndex)] = i
+ 
+ 			ft := removeTypePtr(sf.Type)
++			isPtr := sf.Type.Kind() == reflect.Ptr
++			isTime := ft == timeType
++
+ 			fm := &fieldMeta{
+-				Index: idx,
+-				Name:  name,
+-				Path:  path,
+-				Kind:  ft.Kind(),
+-				IsPtr: sf.Type.Kind() == reflect.Ptr,
+-			}
+-
+-			// read the five type-level tags once.
+-			if gOpt.ValidateTag != "" {
+-				fm.ValidateRule = sf.Tag.Get(gOpt.ValidateTag)
+-			}
+-			if gOpt.FilterTag != "" {
+-				fm.FilterRule = sf.Tag.Get(gOpt.FilterTag)
+-			}
+-			if gOpt.FieldTag != "" {
+-				fm.OutputName = sf.Tag.Get(gOpt.FieldTag)
+-			}
+-			if gOpt.LabelTag != "" {
+-				fm.Label = sf.Tag.Get(gOpt.LabelTag)
+-			}
+-			if gOpt.MessageTag != "" {
+-				fm.MessageRaw = sf.Tag.Get(gOpt.MessageTag)
+-			}
+-
+-			// classify element kind and recurse statically for struct-of-struct.
++				Index:      idx,
++				FieldIndex: i,
++				Name:       name,
++				Path:       path,
++				Kind:       ft.Kind(),
++				Type:       ft,
++				RawType:    sf.Type,
++				IsPtr:      isPtr,
++				Anonymous:  sf.Anonymous,
++				IsTime:     isTime,
++				Tag:        sf.Tag,
++			}
++
+ 			switch ft.Kind() {
+ 			case reflect.Struct:
+-				if ft == timeType {
++				if isTime {
+ 					fm.Elem = elemLeaf
+ 				} else {
+ 					fm.Elem = elemStruct
+ 				}
+ 			case reflect.Array, reflect.Slice:
+-				if removeTypePtr(ft.Elem()).Kind() == reflect.Struct && removeTypePtr(ft.Elem()) != timeType {
++				elemElem := removeTypePtr(ft.Elem())
++				if elemElem.Kind() == reflect.Struct && elemElem != timeType {
+ 					fm.Elem = elemSliceOfStruct
+ 				} else {
+ 					fm.Elem = elemOther
+ 				}
++				if !reflects.IsSimpleKind(ft.Elem().Kind()) {
++					fm.ExpandElem = true
++				}
+ 			case reflect.Map:
+-				if removeTypePtr(ft.Elem()).Kind() == reflect.Struct && removeTypePtr(ft.Elem()) != timeType {
++				elemElem := removeTypePtr(ft.Elem())
++				if elemElem.Kind() == reflect.Struct && elemElem != timeType {
+ 					fm.Elem = elemMapOfStruct
+ 				} else {
+ 					fm.Elem = elemOther
+ 				}
++				fm.ExpandElem = true
+ 			default:
+ 				fm.Elem = elemLeaf
+ 			}
+ 
++			direct = append(direct, fm)
+ 			tm.Fields = append(tm.Fields, fm)
+ 			tm.byName[path] = fm
+ 
+-			switch fm.Elem {
+-			case elemStruct:
++			// Static / Dynamic evaluation: exactly identical to baseline computeIsStatic.
++			// Evaluates declared field type sf.Type:
++			//   - Ptr: only ptr-to-struct (non time.Time) is dynamic
++			//   - Array/Slice: slice/array of struct (non time.Time) is dynamic
++			//   - Map: map of struct (non time.Time) is dynamic
++			switch sf.Type.Kind() {
++			case reflect.Ptr:
++				et := removeTypePtr(sf.Type)
++				if et.Kind() == reflect.Struct && et != timeType {
++					isStatic = false
++				}
++			case reflect.Array, reflect.Slice:
++				et := removeTypePtr(sf.Type.Elem())
++				if et.Kind() == reflect.Struct && et != timeType {
++					isStatic = false
++				}
++			case reflect.Map:
++				et := removeTypePtr(sf.Type.Elem())
++				if et.Kind() == reflect.Struct && et != timeType {
++					isStatic = false
++				}
++			}
++
++			// Sub-struct descent
++			if fm.Elem == elemStruct {
+ 				if ancestors[ft] {
+-					// type cycle: depth is value-dependent, so this field cannot
+-					// be statically expanded. Mark it dynamic (P3 walks it per
+-					// value, terminating naturally at nil) and stop descending.
++					// Type cycle: depth is value-dependent -> dynamic
++					isStatic = false
+ 					tm.dynamicFields = append(tm.dynamicFields, fm)
+ 				} else {
+ 					ancestors[ft] = true
+ 					walk(ft, path, idx, ancestors)
+ 					delete(ancestors, ft)
+ 				}
+-			case elemSliceOfStruct, elemMapOfStruct:
+-				// mark for P3 per-value expansion; do NOT expand elements here.
++			} else if fm.Elem == elemSliceOfStruct || fm.Elem == elemMapOfStruct {
+ 				tm.dynamicFields = append(tm.dynamicFields, fm)
+ 			}
+ 		}
++		return direct
+ 	}
+ 
+-	walk(rt, "", nil, map[reflect.Type]bool{rt: true})
+-
+-	// one-shot interface checks. Match the previous per-instance behavior in
+-	// StructData.Create EXACTLY: it called d.valueTyp.Implements(...), where
+-	// d.valueTyp is the de-pointered (value) struct type — i.e. only the value
+-	// method set is considered, never the pointer method set. Keep it identical.
++	tm.directFields = walk(rt, "", nil, map[reflect.Type]bool{rt: true})
++	tm.isStatic = isStatic
++
+ 	tm.implConfig = rt.Implements(cvFaceType)
+ 	tm.implTranslates = rt.Implements(ftFaceType)
+ 	tm.implMessages = rt.Implements(cmFaceType)
+ 
+-	// classify static vs dynamic for rule-template caching (P3b). Computed via a
+-	// dedicated type scan (see computeIsStatic) so the criteria are explicit and
+-	// independent of the dynamicFields markers above.
+-	tm.isStatic = computeIsStatic(rt)
+-
+ 	return tm
+ }
+--- a/struct_rules.go
++++ b/struct_rules.go
+@@ -4,24 +4,17 @@
+ 	"fmt"
+ 	"reflect"
+ 	"strings"
+-
+-	"github.com/gookit/goutil/reflects"
++	"sync"
++	"sync/atomic"
++
+ 	"github.com/gookit/validate/v2/internal/reflectx"
+ )
+ 
+ /*************************************************************
+- * Static rule template (P3b): build once per STATIC type and
+- * clone into each Validation, avoiding the per-value tag walk.
++ * Static rule template: built once per STATIC type and
++ * cloned into each Validation, avoiding per-value tag walk.
+  *************************************************************/
+ 
+-// ruleTemplate is the immutable, value-independent rule-collection snapshot of
+-// a STATIC struct type. It is produced once (lazily) by running the existing
+-// parseRulesFromTag against a fresh zero-value instance, then captured here.
+-//
+-// Because a STATIC type's rule set does not depend on any concrete value (it
+-// has no ptr-to-struct, slice-of-struct or map-of-struct fields), the snapshot
+-// taken from a zero value is byte-for-byte identical to what any value would
+-// produce. The snapshot is read-only after build and shared across goroutines.
+ type ruleTemplate struct {
+ 	rules       []*Rule
+ 	filterRules []*FilterRule
+@@ -29,101 +22,44 @@
+ 	defValues   map[string]any
+ 	fieldNames  map[string]int8
+ 
+-	// translation tables (relative to a fresh Translator):
+-	labelMap map[string]string // trans.labelMap
+-	fieldMap map[string]string // trans.fieldMap (output names)
+-	messages map[string]string // ONLY custom messages added during collection
+-}
+-
+-// computeIsStatic reports whether rt's rule set is value-independent.
+-//
+-// A struct type is DYNAMIC iff anywhere in its field graph (recursing ONLY into
+-// non-pointer struct fields) there is a field that is:
+-//   - a pointer to a struct (non time.Time), OR
+-//   - a slice/array whose element is a struct (non time.Time), OR
+-//   - a map whose value is a struct (non time.Time).
+-//
+-// Otherwise it is STATIC. Recursion only descends through non-pointer struct
+-// fields; Go forbids a non-pointer struct from (transitively) containing itself
+-// without a pointer, so this terminates. Any cycle necessarily goes through a
+-// pointer-to-struct, which is caught by the first rule above (DYNAMIC) before
+-// recursing. The ancestors guard is a defensive backstop.
+-func computeIsStatic(rt reflect.Type) bool {
+-	var scan func(t reflect.Type, ancestors map[reflect.Type]bool) bool
+-	scan = func(t reflect.Type, ancestors map[reflect.Type]bool) bool {
+-		for i := 0; i < t.NumField(); i++ {
+-			sf := t.Field(i)
+-			name := sf.Name
+-			// mirror parseRulesFromTag's unexported-field skip.
+-			if name[0] >= 'a' && name[0] <= 'z' {
+-				if !gOpt.ValidatePrivateFields {
+-					continue
+-				}
+-			}
+-
+-			st := sf.Type
+-			switch st.Kind() {
+-			case reflect.Ptr:
+-				// ptr-to-struct (non time.Time): nil vs non-nil changes whether
+-				// sub-rules are collected -> DYNAMIC.
+-				et := removeTypePtr(st)
+-				if et.Kind() == reflect.Struct && et != timeType {
+-					return false
+-				}
+-			case reflect.Struct:
+-				if st == timeType {
+-					continue
+-				}
+-				if ancestors[st] {
+-					// only reachable via a non-ptr struct cycle, which Go
+-					// disallows; treat defensively as dynamic.
+-					return false
+-				}
+-				ancestors[st] = true
+-				if !scan(st, ancestors) {
+-					return false
+-				}
+-				delete(ancestors, st)
+-			case reflect.Array, reflect.Slice:
+-				et := removeTypePtr(st.Elem())
+-				if et.Kind() == reflect.Struct && et != timeType {
+-					return false
+-				}
+-			case reflect.Map:
+-				et := removeTypePtr(st.Elem())
+-				if et.Kind() == reflect.Struct && et != timeType {
+-					return false
+-				}
+-			default:
+-				// leaf field: no effect on static-ness.
+-			}
+-		}
++	labelMap map[string]string
++	fieldMap map[string]string
++	messages map[string]string
++}
++
++type templateEntry struct {
++	once sync.Once
++	tpl  *ruleTemplate
++}
++
++var ruleTemplateCache sync.Map // map[typeKey]*templateEntry
++
++func getRuleTemplate(rt reflect.Type) *ruleTemplate {
++	key := typeKey{rt: rt, tagVer: atomic.LoadUint32(&tagVer)}
++	val, _ := ruleTemplateCache.LoadOrStore(key, &templateEntry{})
++	entry := val.(*templateEntry)
++	entry.once.Do(func() {
++		entry.tpl = buildRuleTemplate(rt)
++	})
++	return entry.tpl
++}
++
++func resetRuleTemplates() {
++	ruleTemplateCache.Range(func(k, _ any) bool {
++		ruleTemplateCache.Delete(k)
+ 		return true
+-	}
+-	return scan(rt, map[reflect.Type]bool{rt: true})
+-}
+-
+-// staticTemplate returns the cached rule template for a STATIC type, building
+-// it once via sync.Once. Safe for concurrent callers (multiple goroutines
+-// validating the same type).
+-func (m *typeMeta) staticTemplate() *ruleTemplate {
+-	m.tplOnce.Do(func() {
+-		m.tpl = buildRuleTemplate(m.Type)
+ 	})
+-	return m.tpl
+ }
+ 
+ // buildRuleTemplate constructs the immutable rule snapshot for a STATIC struct
+-// type by reusing the existing parseRulesFromTag over a fresh zero-value
+-// instance. This guarantees the snapshot equals the live result byte-for-byte
+-// (same parsing code path), while only paying the cost once per type.
++// type by running collectDynamic over a fresh zero-value instance.
+ func buildRuleTemplate(rt reflect.Type) *ruleTemplate {
+-	// temporary zero-value StructData + empty Validation to run the real parser.
+ 	zero := reflect.New(rt).Elem()
+ 	td := &StructData{
+ 		src:         zero.Interface(),
+ 		value:       zero,
+ 		valueTyp:    rt,
++		meta:        getTypeMeta(rt),
+ 		ValidateTag: gOpt.ValidateTag,
+ 		FilterTag:   gOpt.FilterTag,
+ 		fieldNames:  make(map[string]int8),
+@@ -131,7 +67,7 @@
+ 	tv := newEmpty()
+ 	tv.data = td
+ 
+-	td.parseRulesFromTag(tv)
++	collectDynamic(tv, td)
+ 
+ 	tpl := &ruleTemplate{
+ 		rules:       tv.rules,
+@@ -143,8 +79,6 @@
+ 		fieldMap:    tv.trans.fieldMap,
+ 	}
+ 
+-	// keep only custom messages (those differing from the builtin defaults),
+-	// matching the dimension captured by the golden regression snapshot.
+ 	if len(tv.trans.messages) > 0 {
+ 		globalMessages := CopyGlobalMessages()
+ 		custom := make(map[string]string)
+@@ -158,75 +92,38 @@
+ 		}
+ 	}
+ 
+-	// P3a: pre-convert each rule's string args to the validator-signature types
+-	// once per STATIC type. This moves the per-validate convertArgsType cost to
+-	// build time. tv reuses the same validatorMeta lookup the runtime path uses.
+ 	preConvertTemplateArgs(tpl.rules, tv)
+ 
+ 	return tpl
+ }
+ 
+-// preConvertTemplateArgs walks the static template rules and, for each rule
+-// backed by a BUILTIN validator, converts its string args to the validator's
+-// signature types via convertRuleArgs. On success the rule is marked argsReady
+-// so valueValidate skips the runtime conversion; on failure (or for
+-// non-builtin / unknown validators) the args are left untouched for the runtime
+-// path to handle. Only builtin validators are pre-converted so a later
+-// AddValidator override (different signature) can never use a stale typed arg.
+ func preConvertTemplateArgs(rules []*Rule, tv *Validation) {
+ 	for _, r := range rules {
+-		// resolve funcMeta exactly as the runtime does (valueValidate uses the
+-		// rule's realName as the validator name; template rules have no
+-		// checkFuncMeta, so this falls through to validatorMeta lookup).
+ 		name := r.realName
+ 		fm := r.checkFuncMeta
+ 		if fm == nil {
+ 			fm = tv.validatorMeta(name)
+ 		}
+-		// only pre-convert builtin validators (design §4.6).
+ 		if fm == nil || !fm.builtin {
+ 			continue
+ 		}
+ 
+-		// compute addNum the same way valueValidate does: +1 for the value arg,
+-		// +1 more when the validator's first arg is DataFace.
+ 		ft := fm.fv.Type()
+ 		addNum := 1
+ 		if ft.In(0) == dataFaceType {
+ 			addNum++
+ 		}
+ 
+-		// convertRuleArgs converts in place; only mark argsReady on success so a
+-		// failed conversion stays string and is retried (and reported) at runtime.
+ 		if err := convertRuleArgs(fm, "", r.arguments, addNum); err == nil {
+ 			r.argsReady = true
+ 		}
+ 	}
+ }
+ 
+-// instantiateStatic clones the cached STATIC template into the real Validation
+-// v and StructData d, producing a rule set identical to what parseRulesFromTag
+-// would have built for this value — but with zero reflection over the value.
+-func (d *StructData) instantiateStatic(v *Validation) {
+-	if d.ValidateTag == "" {
+-		d.ValidateTag = gOpt.ValidateTag
+-	}
+-	if d.FilterTag == "" {
+-		d.FilterTag = gOpt.FilterTag
+-	}
+-
+-	tpl := d.meta.staticTemplate()
+-
+-	// --- rules: clone each rule with its OWN args slice ---
+-	// convertArgsType (validating.go) mutates r.arguments in place at validate
+-	// time (string->typed). Sharing the template's args slice would corrupt the
+-	// template / race across instances, so each instance gets a fresh copy.
++func instantiateStatic(v *Validation, d *StructData) {
++	tpl := getRuleTemplate(d.valueTyp)
++
+ 	if len(tpl.rules) > 0 {
+-		// reuse this instance's OWN backing array when it is large enough (pooled
+-		// reuse: resetForReuse already did v.rules[:0]); otherwise allocate one
+-		// sized to the template. Either way it stays an instance-owned array (never
+-		// the shared template's), so Reset/复用 + AddRule re-append never overwrites
+-		// the template backing array.
+ 		if cap(v.rules) < len(tpl.rules) {
+ 			v.rules = make([]*Rule, 0, len(tpl.rules))
+ 		} else {
+@@ -234,20 +131,14 @@
+ 		}
+ 		for _, tr := range tpl.rules {
+ 			if tr.argsReady {
+-				// argsReady 模板规则在校验期完全只读(valueValidate 跳过 convertArgsType,
+-				// 全仓库无任何校验期对 Rule 字段的写入),直接共享模板 *Rule 指针,免每实例
+-				// cloneRule 分配;跨实例/跨 goroutine 共享安全。
+ 				v.rules = append(v.rules, tr)
+ 			} else {
+-				// 非 argsReady 规则运行期仍会原地转换 args,每实例必须独立拷贝。
+ 				v.rules = append(v.rules, cloneRule(tr))
+ 			}
+ 		}
+ 	}
+ 
+-	// --- filter rules: clone (filters slice + filterArgs map copied) ---
+ 	if len(tpl.filterRules) > 0 {
+-		// same instance-owned-array reuse as v.rules above.
+ 		if cap(v.filterRules) < len(tpl.filterRules) {
+ 			v.filterRules = make([]*FilterRule, 0, len(tpl.filterRules))
+ 		} else {
+@@ -258,25 +149,21 @@
+ 		}
+ 	}
+ 
+-	// --- optionals ---
+ 	if len(tpl.optionals) > 0 {
+-		v.ensureOptionals() // lazy
++		v.ensureOptionals()
+ 		for k, val := range tpl.optionals {
+ 			v.optionals[k] = val
+ 		}
+ 	}
+ 
+-	// --- default values ---
+ 	for k, val := range tpl.defValues {
+ 		v.SetDefValue(k, val)
+ 	}
+ 
+-	// --- field names (TryGet/Set rely on these) ---
+ 	for k, val := range tpl.fieldNames {
+ 		d.fieldNames[k] = val
+ 	}
+ 
+-	// --- translation tables: replay via the public helpers ---
+ 	for field, label := range tpl.labelMap {
+ 		v.trans.addLabelName(field, label)
+ 	}
+@@ -288,27 +175,18 @@
+ 	}
+ }
+ 
+-// cloneRule makes a shallow copy of an immutable template Rule.
+-//
+-// For an argsReady rule (P3a pre-converted), its args are already typed AND the
+-// runtime no longer mutates them (valueValidate skips convertArgsType), so the
+-// template's args slice is immutable and can be SHARED directly — saving a
+-// per-instance copy. For a non-argsReady rule the runtime still converts args in
+-// place, so each instance needs its own copy. nil args stay nil in both cases.
+ func cloneRule(tr *Rule) *Rule {
+-	r := *tr // shallow copy of all scalar/ref fields
++	r := *tr
+ 	if tr.arguments != nil && !tr.argsReady {
+ 		args := make([]any, len(tr.arguments))
+ 		copy(args, tr.arguments)
+ 		r.arguments = args
+-	} // else: argsReady (share immutable template args) OR nil (keep nil)
++	}
+ 	return &r
+ }
+ 
+-// cloneFilterRule deep-copies a template FilterRule's mutable-shaped fields
+-// (filters slice + filterArgs map) so per-instance use never touches the
+-// shared template.
+ func cloneFilterRule(tfr *FilterRule) *FilterRule {
++	return tfr
+ 	fr := &FilterRule{}
+ 	if tfr.fields != nil {
+ 		fr.fields = make([]string, len(tfr.fields))
+@@ -325,33 +203,35 @@
+ 	return fr
+ }
+ 
+-// parse and collect rules from struct tags.
+-func (d *StructData) parseRulesFromTag(v *Validation) {
++// collectStructRules is the rule-engine entry point for collecting rules from struct tags.
++func collectStructRules(v *Validation, d *StructData) {
+ 	if d.ValidateTag == "" {
+ 		d.ValidateTag = gOpt.ValidateTag
+ 	}
+-
+ 	if d.FilterTag == "" {
+ 		d.FilterTag = gOpt.FilterTag
+ 	}
+ 
++	// Always get the current type meta for this type and tagVer
++	if d.valueTyp != nil {
++		d.meta = getTypeMeta(d.valueTyp)
++	}
++
++	if d.meta != nil && d.meta.isStatic {
++		instantiateStatic(v, d)
++	} else {
++		collectDynamic(v, d)
++	}
++}
++
++func collectDynamic(v *Validation, d *StructData) {
+ 	fOutMap := make(map[string]string)
+-	var recursiveFunc func(vv reflect.Value, vt reflect.Type, preStrName string, parentIsAnonymous bool)
+-
+-	vv := d.value
+-	vt := d.valueTyp
+-	// preStrName - the parent field name.
++
++	var recursiveFunc func(vv reflect.Value, vt reflect.Type, parentFName string, parentIsAnonymous bool)
+ 	recursiveFunc = func(vv reflect.Value, vt reflect.Type, parentFName string, parentIsAnonymous bool) {
+-		for i := 0; i < vt.NumField(); i++ {
+-			fv := vt.Field(i)
+-			// skip don't exported field
+-			name := fv.Name
+-			if name[0] >= 'a' && name[0] <= 'z' {
+-				if !gOpt.ValidatePrivateFields {
+-					continue
+-				}
+-			}
+-
++		meta := getTypeMeta(vt)
++		for _, fm := range meta.directFields {
++			name := fm.Name
+ 			if parentFName == "" {
+ 				d.fieldNames[name] = fieldAtTopStruct
+ 			} else {
+@@ -363,110 +243,130 @@
+ 				}
+ 			}
+ 
+-			// validate rule. use Lookup to distinguish "no tag" from "empty tag":
+-			// an empty `validate:""` still marks the field for sub-struct cascade.
+-			vRule, hasVRuleTag := fv.Tag.Lookup(d.ValidateTag)
++			vRule, hasVRuleTag := fm.Tag.Lookup(d.ValidateTag)
+ 			if vRule != "" {
+ 				v.StringRule(name, vRule)
+ 			}
+ 
+-			// filter rule
+-			fRule := fv.Tag.Get(d.FilterTag)
++			fRule := fm.Tag.Get(d.FilterTag)
+ 			if fRule != "" {
+ 				v.FilterRule(name, fRule)
+ 			}
+ 
+-			// load field output name by FieldTag. eg: `json:"user_name"`
+ 			outName := ""
+ 			if gOpt.FieldTag != "" {
+-				outName = fv.Tag.Get(gOpt.FieldTag)
++				outName = fm.Tag.Get(gOpt.FieldTag)
+ 				outName = strings.SplitN(outName, ",", 2)[0]
+ 			}
+ 
+-			// add pre field display name to fName
+ 			if outName != "" {
+ 				if parentFName != "" {
+ 					if pOutName, ok := fOutMap[parentFName]; ok {
+ 						outName = pOutName + "." + outName
+ 					}
+ 				}
+-
+ 				fOutMap[name] = outName
+ 			}
+ 
+-			// load field translate name
+-			// preferred to use label tag name. eg: `label:"display name"`
+-			// and then use field output name. eg: `json:"user_name"`
+ 			if gOpt.LabelTag != "" {
+-				v.trans.addLabelName(name, fv.Tag.Get(gOpt.LabelTag))
+-			}
+-
+-			// load custom error messages.
+-			// eg: `message:"required:name is required|minLen:name min len is %d"`
++				v.trans.addLabelName(name, fm.Tag.Get(gOpt.LabelTag))
++			}
++
+ 			if gOpt.MessageTag != "" {
+-				errMsg := fv.Tag.Get(gOpt.MessageTag)
++				errMsg := fm.Tag.Get(gOpt.MessageTag)
+ 				if errMsg != "" {
+-					d.loadMessagesFromTag(v.trans, name, vRule, errMsg)
+-				}
+-			}
+-
+-			ft := removeTypePtr(vt.Field(i).Type)
+-
+-			// collect rules from sub-struct and from arrays/slices elements
+-			if ft != timeType && reflectx.RemoveValuePtr(vv).IsValid() {
+-
+-				// feat: only descend into NAMED sub-struct fields when the parent field
+-				// carries a `validate` tag (value may be empty); named fields with no tag
+-				// are skipped. Anonymous embedded fields (promoted composition, is-a) are
+-				// part of the parent and always cascade regardless of tag.
+-				if !hasVRuleTag && !fv.Anonymous && gOpt.CheckSubOnParentMarked {
++					loadMessagesFromTag(v.trans, name, vRule, errMsg)
++				}
++			}
++
++			// Descend gate:
++			// Mirrors baseline struct_rules.go:413-424.
++			// Applies to all fields (named sub-structs and container elements).
++			if fm.IsTime || !reflectx.RemoveValuePtr(vv).IsValid() {
++				continue
++			}
++			if !hasVRuleTag && !fm.Anonymous && gOpt.CheckSubOnParentMarked {
++				continue
++			}
++
++			fValue := reflectx.RemoveValuePtr(vv).Field(fm.FieldIndex)
++
++			switch fm.Elem {
++			case elemStruct:
++				recursiveFunc(fValue, fm.Type, name, fm.Anonymous)
++
++			case elemSliceOfStruct:
++				fValue = reflectx.RemoveValuePtr(fValue)
++				if !fValue.IsValid() || (fm.Kind == reflect.Slice && fValue.IsNil()) {
+ 					continue
+ 				}
+-
+-				fValue := reflectx.RemoveValuePtr(vv).Field(i)
+-
+-				switch ft.Kind() {
+-				case reflect.Struct:
+-					recursiveFunc(fValue, ft, name, fv.Anonymous)
+-
+-				case reflect.Array, reflect.Slice:
+-					fValue = reflectx.RemoveValuePtr(fValue)
+-
+-					// Check if the reflect.Value is valid and not a nil pointer
+-					if !fValue.IsValid() || (ft.Kind() == reflect.Slice && fValue.IsNil()) {
++				for j := 0; j < fValue.Len(); j++ {
++					elemValue := reflectx.RemoveValuePtr(fValue.Index(j))
++					elemType := removeTypePtr(elemValue.Type())
++					arrayName := fmt.Sprintf("%s.%d", name, j)
++					if outName != "" {
++						fOutMap[arrayName] = fmt.Sprintf("%s.%d", outName, j)
++					}
++					if elemType.Kind() == reflect.Struct {
++						recursiveFunc(elemValue, elemType, arrayName, fm.Anonymous)
++					}
++				}
++
++			case elemMapOfStruct:
++				fValue = reflectx.RemoveValuePtr(fValue)
++				if !fValue.IsValid() || fValue.IsNil() {
++					continue
++				}
++				for _, key := range fValue.MapKeys() {
++					key = reflectx.RemoveValuePtr(key)
++					elemValue := reflectx.RemoveValuePtr(fValue.MapIndex(key))
++					elemType := removeTypePtr(elemValue.Type())
++
++					format := "%s."
++					kind := key.Kind()
++					val := key.Interface()
++					switch {
++					case kind == reflect.String:
++						format += "%s"
++						val = strings.ReplaceAll(key.String(), "\"", "")
++					case kind >= reflect.Int && kind <= reflect.Uint64:
++						format += "%d"
++					case kind >= reflect.Float32 && kind <= reflect.Complex128:
++						format += "%f"
++					default:
++						format += "%#v"
++					}
++
++					arrayName := fmt.Sprintf(format, name, val)
++					if outName != "" {
++						fOutMap[arrayName] = fmt.Sprintf(format, outName, val)
++					}
++					if elemType.Kind() == reflect.Struct {
++						recursiveFunc(elemValue, elemType, arrayName, fm.Anonymous)
++					}
++				}
++
++			case elemOther:
++				if !fm.ExpandElem {
++					continue
++				}
++				fValue = reflectx.RemoveValuePtr(fValue)
++				if fm.Kind == reflect.Array || fm.Kind == reflect.Slice {
++					if !fValue.IsValid() || (fm.Kind == reflect.Slice && fValue.IsNil()) {
+ 						continue
+ 					}
+-					// perf: skip parse on elements is simple kind
+-					if reflects.IsSimpleKind(ft.Elem().Kind()) {
+-						continue
+-					}
+-
+ 					for j := 0; j < fValue.Len(); j++ {
+-						elemValue := reflectx.RemoveValuePtr(fValue.Index(j))
+-						elemType := removeTypePtr(elemValue.Type())
+-
+ 						arrayName := fmt.Sprintf("%s.%d", name, j)
+ 						if outName != "" {
+ 							fOutMap[arrayName] = fmt.Sprintf("%s.%d", outName, j)
+ 						}
+-						if elemType.Kind() == reflect.Struct {
+-							recursiveFunc(elemValue, elemType, arrayName, fv.Anonymous)
+-						}
+-					}
+-
+-				case reflect.Map:
+-					fValue = reflectx.RemoveValuePtr(fValue)
+-
+-					// Check if the reflect.Value is valid and not a nil pointer
++					}
++				} else if fm.Kind == reflect.Map {
+ 					if !fValue.IsValid() || fValue.IsNil() {
+ 						continue
+ 					}
+-
+ 					for _, key := range fValue.MapKeys() {
+ 						key = reflectx.RemoveValuePtr(key)
+-						elemValue := reflectx.RemoveValuePtr(fValue.MapIndex(key))
+-						elemType := removeTypePtr(elemValue.Type())
+-
+ 						format := "%s."
+ 						kind := key.Kind()
+ 						val := key.Interface()
+@@ -481,70 +381,42 @@
+ 						default:
+ 							format += "%#v"
+ 						}
+-
+ 						arrayName := fmt.Sprintf(format, name, val)
+ 						if outName != "" {
+ 							fOutMap[arrayName] = fmt.Sprintf(format, outName, val)
+ 						}
+-						if elemType.Kind() == reflect.Struct {
+-							recursiveFunc(elemValue, elemType, arrayName, fv.Anonymous)
+-						}
+-					}
+-				case reflect.Ptr:
+-					// If the field is a pointer type and is nil, and has validation rules, initialize the pointer
+-					if fValue.IsNil() && vRule != "" {
+-						// Create an instance of the type pointed to by the pointer
+-						newValue := reflect.New(ft.Elem())
+-						// Set the field value
+-						reflectx.RemoveValuePtr(vv).Field(i).Set(newValue)
+-						// Update fValue to the newly created value
+-						fValue = newValue
+-					}
+-
+-					// Continue processing the type pointed to by the pointer
+-					if fValue.IsValid() && !fValue.IsNil() && removeTypePtr(ft).Kind() == reflect.Struct {
+-						recursiveFunc(reflectx.RemoveValuePtr(fValue), removeTypePtr(ft), name, fv.Anonymous)
+-					}
+-				default:
+-					// do nothing
+-				}
+-			}
+-		}
+-	}
+-
+-	recursiveFunc(reflectx.RemoveValuePtr(vv), vt, "", false)
++					}
++				}
++			}
++		}
++	}
++
++	recursiveFunc(reflectx.RemoveValuePtr(d.value), d.valueTyp, "", false)
+ 
+ 	if len(fOutMap) > 0 {
+ 		v.Trans().AddFieldMap(fOutMap)
+ 	}
+ }
+ 
+-// eg: `message:"required:name is required|minLen:name min len is %d"`
+-func (d *StructData) loadMessagesFromTag(trans *Translator, field, vRule, vMsg string) {
++func loadMessagesFromTag(trans *Translator, field, vRule, vMsg string) {
+ 	var msgKey, vName string
+ 	var vNames []string
+ 
+-	// only one message, use for first validator.
+-	// eg: `message:"name is required"`
+ 	if !strings.ContainsRune(vMsg, '|') {
+-		// eg: `message:"required:name is required"`
+ 		if strings.ContainsRune(vMsg, ':') {
+ 			nodes := strings.SplitN(vMsg, ":", 2)
+ 			vName = strings.TrimSpace(nodes[0])
+ 			vNames = []string{vName}
+-			// first is validator name
+ 			vMsg = strings.TrimSpace(nodes[1])
+ 		}
+ 
+ 		if vName == "" {
+-			// eg `validate:"required|date"`
+ 			vNames = []string{vRule}
+ 			if strings.ContainsRune(vRule, '|') {
+ 				vNames = strings.Split(vRule, "|")
+ 			}
+ 
+ 			for i, node := range vNames {
+-				// has params for validator: "minLen:5"
+ 				if strings.ContainsRune(node, ':') {
+ 					tmp := strings.SplitN(node, ":", 2)
+ 					vNames[i] = tmp[0]
+@@ -552,10 +424,6 @@
+ 			}
+ 		}
+ 
+-		// if rName, has := validatorAliases[validator]; has {
+-		// 	msgKey = field + "." + rName
+-		// } else {
+-
+ 		for _, name := range vNames {
+ 			msgKey = field + "." + name
+ 			trans.AddMessage(msgKey, vMsg)
+@@ -564,15 +432,10 @@
+ 		return
+ 	}
+ 
+-	// multi message for validators
+-	// eg: `message:"required:name is required | minLen:name min len is %d"`
+ 	for _, validatorWithMsg := range strings.Split(vMsg, "|") {
+-		// validatorWithMsg eg: "required:name is required"
+ 		nodes := strings.SplitN(validatorWithMsg, ":", 2)
+-
+ 		validator := nodes[0]
+ 		msgKey = field + "." + validator
+-
+ 		trans.AddMessage(msgKey, strings.TrimSpace(nodes[1]))
+ 	}
+ }
+--- a/data_source.go
++++ b/data_source.go
+@@ -264,16 +264,7 @@
+ 		return v.WithError(err[0])
+ 	}
+ 
+-	// collect field filter/validate rules from struct tags.
+-	// For STATIC types (rule set is value-independent) reuse a cached, pre-built
+-	// template snapshot and clone it into v (zero reflect over the value tree).
+-	// DYNAMIC types (ptr-to-struct / slice·map-of-struct, whose element paths
+-	// depend on the concrete value) keep the original per-value parse path.
+-	if d.meta != nil && d.meta.isStatic {
+-		d.instantiateStatic(v)
+-	} else {
+-		d.parseRulesFromTag(v)
+-	}
++	collectStructRules(v, d)
+ 
+ 	// reuse one-shot Implements results from cached type meta (avoids three
+ 	// per-instance reflect Implements calls). Fall back to live checks if meta

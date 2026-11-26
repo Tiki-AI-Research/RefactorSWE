@@ -1,0 +1,2542 @@
+diff --git a/client_BitComet_f2p_test.go b/client_BitComet_f2p_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..52690685bc8ae223b4c966167d4dbceeaf5222f6
+--- /dev/null
++++ b/client_BitComet_f2p_test.go
+@@ -0,0 +1,685 @@
++package main
++
++// F2P (fail-to-pass) coverage for the BitComet protocol-family split.
++//
++// Every leaf in this file fails on the frozen Baseline, where one BCClient type
++// carries the exported integer version code and branches per operation, and
++// passes once the version code is replaced by two distinct implementations
++// chosen by detection. The leaves only use the frozen public surface
++// (DetectClient, the Client interface, the dispatch entry points and the shared
++// models) plus reflection over the detected implementation values and a scan of
++// the package's declared types, so internal helper names, response structures
++// and the new implementation types stay free to be renamed, moved, merged or
++// split.
++
++import (
++	"go/ast"
++	"go/parser"
++	"go/token"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"reflect"
++	"sort"
++	"strings"
++	"sync"
++	"testing"
++)
++
++const f2pJSONTaskListBody = `{"movie_list":[{"task_id":"task-a","type":"BT","total_size":1000,"leechers_count":3},{"task_id":"task-http","type":"HTTP","total_size":2000,"leechers_count":1}]}`
++
++const f2pLegacyTaskListHTML = `<table><tbody><tr><th>head</th></tr><tr><td>BT</td><td><a href="/panel/task_detail?id=42">task</a></td><td>running</td><td></td><td>1 MB</td><td></td><td></td><td>2 KB/s</td></tr></tbody></table>`
++
++type f2pRequestRecord struct {
++	Method string
++	Path   string
++	Query  string
++}
++
++type f2pRequestLog struct {
++	mutex   sync.Mutex
++	records []f2pRequestRecord
++}
++
++func (log *f2pRequestLog) append(request *http.Request) {
++	log.mutex.Lock()
++	defer log.mutex.Unlock()
++	log.records = append(log.records, f2pRequestRecord{
++		Method: request.Method,
++		Path:   request.URL.Path,
++		Query:  request.URL.RawQuery,
++	})
++}
++
++func (log *f2pRequestLog) snapshot() []f2pRequestRecord {
++	log.mutex.Lock()
++	defer log.mutex.Unlock()
++	result := make([]f2pRequestRecord, len(log.records))
++	copy(result, log.records)
++	return result
++}
++
++func (log *f2pRequestLog) hasRequest(path string, query string) bool {
++	for _, record := range log.snapshot() {
++		if record.Path == path && record.Query == query {
++			return true
++		}
++	}
++	return false
++}
++
++func (log *f2pRequestLog) postRecords(path string) []f2pRequestRecord {
++	var result []f2pRequestRecord
++	for _, record := range log.snapshot() {
++		if record.Path == path && record.Method == http.MethodPost {
++			result = append(result, record)
++		}
++	}
++	return result
++}
++
++// f2pEnvironment points the global client configuration at one local server
++// whose probe answers are switched per scenario.
++type f2pEnvironment struct {
++	server     *httptest.Server
++	log        *f2pRequestLog
++	mutex      sync.Mutex
++	mode       string
++	jsonStatus int
++}
++
++func (env *f2pEnvironment) handle(w http.ResponseWriter, r *http.Request) {
++	env.log.append(r)
++	env.mutex.Lock()
++	mode := env.mode
++	jsonStatus := env.jsonStatus
++	env.mutex.Unlock()
++
++	switch r.URL.Path {
++	case "/api_v2/task_list/get":
++		if mode != "json" {
++			http.NotFound(w, r)
++			return
++		}
++		if r.URL.Query().Get("state_group") == "ACTIVE" {
++			_, _ = w.Write([]byte(f2pJSONTaskListBody))
++			return
++		}
++		if jsonStatus == http.StatusUnauthorized {
++			w.WriteHeader(http.StatusUnauthorized)
++			return
++		}
++		_, _ = w.Write([]byte(f2pJSONTaskListBody))
++	case "/api/task/peers/get":
++		_, _ = w.Write([]byte(`{"peers_connected":[]}`))
++	case "/api/task/peers/ban_ip":
++		_, _ = w.Write([]byte(`{"result":"success"}`))
++	case "/panel/":
++		if mode != "legacy" {
++			http.NotFound(w, r)
++			return
++		}
++		w.Header().Set("WWW-Authenticate", `Basic realm="BitComet"`)
++		w.WriteHeader(http.StatusUnauthorized)
++	case "/panel/task_list":
++		if mode != "legacy" {
++			http.NotFound(w, r)
++			return
++		}
++		_, _ = w.Write([]byte(f2pLegacyTaskListHTML))
++	default:
++		http.NotFound(w, r)
++	}
++}
++
++func f2pInstall(t *testing.T, clientType string) *f2pEnvironment {
++	t.Helper()
++
++	env := &f2pEnvironment{log: &f2pRequestLog{}, mode: "none", jsonStatus: http.StatusOK}
++	env.server = httptest.NewServer(http.HandlerFunc(env.handle))
++
++	oldConfig := *config
++	oldHTTPClient := httpClient
++	oldHTTPClientExternal := httpClientExternal
++	oldClient := currentClient
++	oldClientType := currentClientType
++
++	httpClient = *env.server.Client()
++	httpClientExternal = *env.server.Client()
++
++	testConfig := oldConfig
++	testConfig.ClientType = clientType
++	testConfig.ClientURL = env.server.URL
++	testConfig.UseBasicAuth = false
++	testConfig.UseShadowBan = false
++	testConfig.FetchFailedThreshold = 0
++	testConfig.ExecCommand_FetchFailed = ""
++	config = &testConfig
++	currentClient = nil
++	currentClientType = ""
++
++	t.Cleanup(func() {
++		env.server.Close()
++		restored := oldConfig
++		config = &restored
++		httpClient = oldHTTPClient
++		httpClientExternal = oldHTTPClientExternal
++		currentClient = oldClient
++		currentClientType = oldClientType
++	})
++
++	return env
++}
++
++func (env *f2pEnvironment) setMode(mode string) {
++	env.mutex.Lock()
++	env.mode = mode
++	env.mutex.Unlock()
++}
++
++func (env *f2pEnvironment) setJSONProbeStatus(status int) {
++	env.mutex.Lock()
++	env.jsonStatus = status
++	env.mutex.Unlock()
++}
++
++func (env *f2pEnvironment) modeName() string {
++	env.mutex.Lock()
++	defer env.mutex.Unlock()
++	return env.mode
++}
++
++// f2pDetect runs the frozen dispatch detection for the current probe setup and
++// returns the detected implementation through the Client interface.
++func (env *f2pEnvironment) detect(t *testing.T) Client {
++	t.Helper()
++
++	if !DetectClient() {
++		t.Fatalf("DetectClient() reported failure for the %q probe setup", env.modeName())
++	}
++	if currentClient == nil {
++		t.Fatal("DetectClient() reported success without a client instance")
++	}
++	if currentClientType != "BitComet" {
++		t.Fatalf("detected client type=%q, want BitComet", currentClientType)
++	}
++	return currentClient
++}
++
++// f2pExportedFieldNames lists the exported fields of a value type, including
++// the fields promoted through embedded structs.
++func f2pExportedFieldNames(valueType reflect.Type, visited map[reflect.Type]bool) []string {
++	for valueType.Kind() == reflect.Ptr {
++		valueType = valueType.Elem()
++	}
++	if visited[valueType] {
++		return nil
++	}
++	visited[valueType] = true
++	if valueType.Kind() != reflect.Struct {
++		return nil
++	}
++
++	var names []string
++	for index := 0; index < valueType.NumField(); index++ {
++		field := valueType.Field(index)
++		if field.Anonymous {
++			names = append(names, f2pExportedFieldNames(field.Type, visited)...)
++			continue
++		}
++		if field.PkgPath == "" {
++			names = append(names, field.Name+" "+field.Type.String())
++		}
++	}
++	sort.Strings(names)
++	return names
++}
++
++func f2pExportedMethodNames(valueType reflect.Type) []string {
++	var names []string
++	for index := 0; index < valueType.NumMethod(); index++ {
++		method := valueType.Method(index)
++		if method.PkgPath == "" {
++			names = append(names, method.Name)
++		}
++	}
++	sort.Strings(names)
++	return names
++}
++
++func f2pClientInterfaceMethodNames() []string {
++	interfaceType := reflect.TypeOf((*Client)(nil)).Elem()
++	names := make([]string, 0, interfaceType.NumMethod())
++	for index := 0; index < interfaceType.NumMethod(); index++ {
++		names = append(names, interfaceType.Method(index).Name)
++	}
++	sort.Strings(names)
++	return names
++}
++
++// f2pZeroValue builds the zero value of the detected implementation type
++// through reflection so no internal type name is referenced.
++func f2pZeroValue(t *testing.T, instance Client) Client {
++	t.Helper()
++
++	instanceType := reflect.TypeOf(instance)
++	if instanceType == nil {
++		t.Fatal("detected client instance has no dynamic type")
++	}
++	var zero reflect.Value
++	if instanceType.Kind() == reflect.Ptr {
++		zero = reflect.New(instanceType.Elem())
++	} else {
++		zero = reflect.Zero(instanceType)
++	}
++	zeroClient, ok := zero.Interface().(Client)
++	if !ok {
++		t.Fatalf("zero value of %v does not satisfy the Client interface", instanceType)
++	}
++	return zeroClient
++}
++
++func f2pRequests(records []f2pRequestRecord) string {
++	parts := make([]string, 0, len(records))
++	for _, record := range records {
++		parts = append(parts, record.Method+" "+record.Path+"?"+record.Query)
++	}
++	return strings.Join(parts, ", ")
++}
++
++// Detection MUST return two distinct implementations: the JSON-API family and
++// the legacy panel family may not share one type that carries the version code.
++func TestF2PDetectionReturnsDistinctImplementationTypesPerFamily(t *testing.T) {
++	env := f2pInstall(t, "BitComet")
++
++	env.setMode("json")
++	jsonClient := env.detect(t)
++
++	env.setMode("legacy")
++	legacyClient := env.detect(t)
++
++	jsonType := reflect.TypeOf(jsonClient)
++	legacyType := reflect.TypeOf(legacyClient)
++	if jsonType == legacyType {
++		t.Fatalf("the JSON-API and legacy panel families share implementation type %v; the split requires two distinct implementations", jsonType)
++	}
++}
++
++// The JSON-API implementation type MUST NOT expose the integer version code or
++// an equivalent public discriminator as public state.
++func TestF2PJSONImplementationTypeExposesNoExportedFields(t *testing.T) {
++	env := f2pInstall(t, "BitComet")
++	env.setMode("json")
++	jsonClient := env.detect(t)
++
++	jsonType := reflect.TypeOf(jsonClient)
++	if fields := f2pExportedFieldNames(jsonType, map[reflect.Type]bool{}); len(fields) != 0 {
++		t.Fatalf("JSON-API implementation type %v exposes exported fields %v; the integer version code must not survive as public state", jsonType, fields)
++	}
++}
++
++// The legacy implementation type MUST NOT expose the integer version code or an
++// equivalent public discriminator as public state either.
++func TestF2PLegacyImplementationTypeExposesNoExportedFields(t *testing.T) {
++	env := f2pInstall(t, "BitComet")
++	env.setMode("legacy")
++	legacyClient := env.detect(t)
++
++	legacyType := reflect.TypeOf(legacyClient)
++	if fields := f2pExportedFieldNames(legacyType, map[reflect.Type]bool{}); len(fields) != 0 {
++		t.Fatalf("legacy implementation type %v exposes exported fields %v; the integer version code must not survive as public state", legacyType, fields)
++	}
++}
++
++// The JSON-API implementation MUST expose exactly the frozen Client interface
++// methods: no per-operation version helpers may stay public.
++func TestF2PJSONImplementationExportedMethodSetMatchesClientInterface(t *testing.T) {
++	env := f2pInstall(t, "BitComet")
++	env.setMode("json")
++	jsonClient := env.detect(t)
++
++	got := f2pExportedMethodNames(reflect.TypeOf(jsonClient))
++	want := f2pClientInterfaceMethodNames()
++	if !reflect.DeepEqual(got, want) {
++		t.Fatalf("JSON-API implementation type %v exposes exported methods %v, want the frozen Client interface method set %v", reflect.TypeOf(jsonClient), got, want)
++	}
++}
++
++// The legacy implementation MUST expose exactly the frozen Client interface
++// methods as well.
++func TestF2PLegacyImplementationExportedMethodSetMatchesClientInterface(t *testing.T) {
++	env := f2pInstall(t, "BitComet")
++	env.setMode("legacy")
++	legacyClient := env.detect(t)
++
++	got := f2pExportedMethodNames(reflect.TypeOf(legacyClient))
++	want := f2pClientInterfaceMethodNames()
++	if !reflect.DeepEqual(got, want) {
++		t.Fatalf("legacy implementation type %v exposes exported methods %v, want the frozen Client interface method set %v", reflect.TypeOf(legacyClient), got, want)
++	}
++}
++
++// The untouched default state MUST NOT silently mean the legacy family: the
++// zero value of the JSON-API implementation keeps listing through the JSON API.
++// A zero value that refuses the operation (a panic) is not exempt from the
++// positive observable: it still has to issue the JSON-API listing request.
++func TestF2PJSONImplementationZeroValueStaysInJSONFamily(t *testing.T) {
++	env := f2pInstall(t, "BitComet")
++	env.setMode("json")
++	jsonClient := env.detect(t)
++	zeroClient := f2pZeroValue(t, jsonClient)
++
++	before := len(env.log.snapshot())
++	var panicValue interface{}
++	func() {
++		defer func() { panicValue = recover() }()
++		_, _ = zeroClient.FetchTorrents()
++	}()
++	if panicValue != nil {
++		t.Logf("zero value of %v panicked in FetchTorrents(): %v", reflect.TypeOf(jsonClient), panicValue)
++	}
++	issued := env.log.snapshot()[before:]
++
++	legacyReads := 0
++	jsonListings := 0
++	for _, record := range issued {
++		if record.Path == "/panel/task_list" {
++			legacyReads++
++		}
++		if record.Path == "/api_v2/task_list/get" && record.Query == "state_group=ACTIVE" {
++			jsonListings++
++		}
++	}
++	if legacyReads != 0 {
++		t.Fatalf("zero value of %v read the legacy panel task table; the untouched default state must not silently mean the legacy family", reflect.TypeOf(jsonClient))
++	}
++	if jsonListings == 0 {
++		t.Fatalf("zero value of %v did not list torrents through /api_v2/task_list/get?state_group=ACTIVE (requests: %s)", reflect.TypeOf(jsonClient), f2pRequests(issued))
++	}
++}
++
++// A JSON-API instance MUST keep the JSON-API family when its own Detect() is
++// re-run against a legacy-only panel: the family is bound to the
++// implementation, not to mutable public state.
++func TestF2PJSONInstanceKeepsFamilyAfterLegacyRedetection(t *testing.T) {
++	env := f2pInstall(t, "BitComet")
++	env.setMode("json")
++	jsonClient := env.detect(t)
++
++	env.setMode("legacy")
++	_ = jsonClient.Detect()
++
++	before := len(env.log.snapshot())
++	_, _ = jsonClient.FetchTorrents()
++	issued := env.log.snapshot()[before:]
++
++	for _, record := range issued {
++		if record.Path == "/panel/task_list" {
++			t.Fatalf("JSON-API implementation %v switched to the legacy panel listing after re-detection: %s", reflect.TypeOf(jsonClient), f2pRequests(issued))
++		}
++	}
++	if !env.log.hasRequest("/api_v2/task_list/get", "state_group=ACTIVE") {
++		t.Fatalf("JSON-API implementation %v stopped listing through /api_v2/task_list/get?state_group=ACTIVE after re-detection (requests: %s)", reflect.TypeOf(jsonClient), f2pRequests(issued))
++	}
++}
++
++// A JSON-API instance MUST keep submitting bans through the JSON API after its
++// own Detect() is re-run against a legacy-only panel.
++func TestF2PJSONInstanceKeepsBanSubmissionAfterLegacyRedetection(t *testing.T) {
++	env := f2pInstall(t, "BitComet")
++	env.setMode("json")
++	jsonClient := env.detect(t)
++
++	env.setMode("legacy")
++	_ = jsonClient.Detect()
++
++	accepted := jsonClient.SubmitBlockPeer(map[string]BlockPeerInfoStruct{
++		"192.0.2.9": {InfoHash: "hash-f", Port: map[int]bool{6881: true}},
++	})
++	if !accepted {
++		t.Fatalf("JSON-API implementation %v reported block submission failure after re-detection; the ban path must stay bound to the implementation", reflect.TypeOf(jsonClient))
++	}
++	if posts := env.log.postRecords("/api/task/peers/ban_ip"); len(posts) != 1 {
++		t.Fatalf("JSON-API implementation %v issued %d ban requests after re-detection, want exactly one", reflect.TypeOf(jsonClient), len(posts))
++	}
++}
++
++// A legacy instance MUST keep reading the panel task table when its own
++// Detect() is re-run against a JSON-API server.
++func TestF2PLegacyInstanceKeepsPanelFamilyAfterJSONRedetection(t *testing.T) {
++	env := f2pInstall(t, "BitComet")
++	env.setMode("legacy")
++	legacyClient := env.detect(t)
++
++	env.setMode("json")
++	_ = legacyClient.Detect()
++
++	before := len(env.log.snapshot())
++	_, _ = legacyClient.FetchTorrents()
++	issued := env.log.snapshot()[before:]
++
++	panelListing := false
++	for _, record := range issued {
++		if record.Path == "/api_v2/task_list/get" && record.Query == "state_group=ACTIVE" {
++			t.Fatalf("legacy implementation %v adopted the JSON-API listing after re-detection: %s", reflect.TypeOf(legacyClient), f2pRequests(issued))
++		}
++		if record.Path == "/panel/task_list" {
++			panelListing = true
++		}
++	}
++	if !panelListing {
++		t.Fatalf("legacy implementation %v stopped reading the panel task table after re-detection (requests: %s)", reflect.TypeOf(legacyClient), f2pRequests(issued))
++	}
++}
++
++// The legacy family's unsupported block submission MUST keep failing without
++// any JSON-API request after a JSON-API re-detection.
++func TestF2PLegacyUnsupportedBlockSubmissionSurvivesJSONRedetection(t *testing.T) {
++	env := f2pInstall(t, "BitComet")
++	env.setMode("legacy")
++	legacyClient := env.detect(t)
++
++	env.setMode("json")
++	_ = legacyClient.Detect()
++
++	accepted := legacyClient.SubmitBlockPeer(map[string]BlockPeerInfoStruct{
++		"192.0.2.10": {InfoHash: "hash-g", Port: map[int]bool{6881: true}},
++	})
++	if accepted {
++		t.Fatalf("legacy implementation %v reported block submission success after a JSON-API re-detection", reflect.TypeOf(legacyClient))
++	}
++	if posts := env.log.postRecords("/api/task/peers/ban_ip"); len(posts) != 0 {
++		t.Fatalf("legacy implementation %v issued %d JSON-API ban requests after re-detection", reflect.TypeOf(legacyClient), len(posts))
++	}
++}
++
++// Forced BitComet detection (all probes failing) MUST NOT hand back the
++// JSON-API implementation.
++func TestF2PForcedDetectionDoesNotReturnJSONImplementation(t *testing.T) {
++	env := f2pInstall(t, "BitComet")
++
++	env.setMode("json")
++	jsonClient := env.detect(t)
++
++	env.setMode("none")
++	forcedClient := env.detect(t)
++
++	if reflect.TypeOf(forcedClient) == reflect.TypeOf(jsonClient) {
++		t.Fatalf("forced BitComet detection returned the JSON-API implementation type %v; the forced instance must not be the JSON-API family", reflect.TypeOf(forcedClient))
++	}
++}
++
++// The accepted JSON-API probe status MUST NOT change the chosen implementation:
++// 200 and 401 select the same type, which differs from the legacy challenge
++// type.
++func TestF2PImplementationChoiceIsIndependentOfAcceptedJSONProbeStatus(t *testing.T) {
++	env := f2pInstall(t, "BitComet")
++
++	env.setMode("json")
++	env.setJSONProbeStatus(http.StatusOK)
++	okClient := env.detect(t)
++
++	env.setJSONProbeStatus(http.StatusUnauthorized)
++	unauthorizedClient := env.detect(t)
++
++	env.setMode("legacy")
++	legacyClient := env.detect(t)
++
++	if reflect.TypeOf(okClient) != reflect.TypeOf(unauthorizedClient) {
++		t.Fatalf("accepted JSON-API probe status changed the implementation type: 200 -> %v, 401 -> %v", reflect.TypeOf(okClient), reflect.TypeOf(unauthorizedClient))
++	}
++	if reflect.TypeOf(okClient) == reflect.TypeOf(legacyClient) {
++		t.Fatalf("the JSON-API family and the legacy panel family share implementation type %v", reflect.TypeOf(okClient))
++	}
++}
++
++// No client-family type declared in the package sources may declare exported
++// integer state: the integer version code may not survive as public state on
++// the type that implements the frozen Detect() client method.
++func TestF2PNoClientFamilyTypeDeclaresExportedIntegerState(t *testing.T) {
++	structTypes := f2pStructTypes(t)
++	detectTypes := f2pDetectDeclaringTypes(t)
++	if len(detectTypes) == 0 {
++		// A layout that promotes Detect() from another package declares no
++		// client-family type in this package, so there is no declared public
++		// state to bind here.
++		t.Log("no declared type in this package implements Detect() bool directly; nothing to bind")
++		return
++	}
++
++	integerNames := map[string]bool{
++		"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
++		"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
++		"uintptr": true, "byte": true, "rune": true,
++	}
++
++	var offenders []string
++	for typeName := range detectTypes {
++		for _, fieldName := range f2pExportedIntegerFields(structTypes, typeName, integerNames, map[string]bool{}) {
++			offenders = append(offenders, typeName+"."+fieldName)
++		}
++	}
++	sort.Strings(offenders)
++	if len(offenders) != 0 {
++		t.Fatalf("client-family types still declare exported integer state %v; the integer version code must not survive as public state", offenders)
++	}
++}
++
++func f2pParsePackage(t *testing.T) []*ast.File {
++	t.Helper()
++
++	entries, err := os.ReadDir(".")
++	if err != nil {
++		t.Fatalf("cannot list the package directory: %v", err)
++	}
++	fileSet := token.NewFileSet()
++	var files []*ast.File
++	for _, entry := range entries {
++		name := entry.Name()
++		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
++			continue
++		}
++		parsed, err := parser.ParseFile(fileSet, filepath.Join(".", name), nil, 0)
++		if err != nil {
++			t.Fatalf("cannot parse package source %s: %v", name, err)
++		}
++		files = append(files, parsed)
++	}
++	return files
++}
++
++func f2pStructTypes(t *testing.T) map[string]*ast.StructType {
++	t.Helper()
++
++	result := make(map[string]*ast.StructType)
++	for _, file := range f2pParsePackage(t) {
++		for _, decl := range file.Decls {
++			genDecl, ok := decl.(*ast.GenDecl)
++			if !ok || genDecl.Tok != token.TYPE {
++				continue
++			}
++			for _, spec := range genDecl.Specs {
++				typeSpec, ok := spec.(*ast.TypeSpec)
++				if !ok {
++					continue
++				}
++				if structType, ok := typeSpec.Type.(*ast.StructType); ok {
++					result[typeSpec.Name.Name] = structType
++				}
++			}
++		}
++	}
++	return result
++}
++
++func f2pDetectDeclaringTypes(t *testing.T) map[string]bool {
++	t.Helper()
++
++	found := make(map[string]bool)
++	for _, file := range f2pParsePackage(t) {
++		for _, decl := range file.Decls {
++			funcDecl, ok := decl.(*ast.FuncDecl)
++			if !ok || funcDecl.Recv == nil || funcDecl.Name.Name != "Detect" {
++				continue
++			}
++			if funcDecl.Type.Params != nil && len(funcDecl.Type.Params.List) != 0 {
++				continue
++			}
++			if funcDecl.Type.Results == nil || len(funcDecl.Type.Results.List) != 1 {
++				continue
++			}
++			if ident, ok := funcDecl.Type.Results.List[0].Type.(*ast.Ident); !ok || ident.Name != "bool" {
++				continue
++			}
++			receiverType := funcDecl.Recv.List[0].Type
++			if star, ok := receiverType.(*ast.StarExpr); ok {
++				receiverType = star.X
++			}
++			if ident, ok := receiverType.(*ast.Ident); ok {
++				found[ident.Name] = true
++			}
++		}
++	}
++	return found
++}
++
++func f2pExportedIntegerFields(structTypes map[string]*ast.StructType, typeName string, integerNames map[string]bool, visited map[string]bool) []string {
++	if visited[typeName] {
++		return nil
++	}
++	visited[typeName] = true
++	structType, ok := structTypes[typeName]
++	if !ok {
++		return nil
++	}
++
++	var result []string
++	for _, field := range structType.Fields.List {
++		for _, name := range field.Names {
++			if !ast.IsExported(name.Name) {
++				continue
++			}
++			fieldType := field.Type
++			if star, ok := fieldType.(*ast.StarExpr); ok {
++				fieldType = star.X
++			}
++			if ident, ok := fieldType.(*ast.Ident); ok && integerNames[ident.Name] {
++				result = append(result, name.Name)
++			}
++		}
++	}
++	for _, field := range structType.Fields.List {
++		if len(field.Names) != 0 {
++			continue
++		}
++		fieldType := field.Type
++		if star, ok := fieldType.(*ast.StarExpr); ok {
++			fieldType = star.X
++		}
++		if ident, ok := fieldType.(*ast.Ident); ok {
++			result = append(result, f2pExportedIntegerFields(structTypes, ident.Name, integerNames, visited)...)
++		}
++	}
++	return result
++}
+diff --git a/client_BitComet_p2p_test.go b/client_BitComet_p2p_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..2d7ec105a747a02085366f91a887d5e3c9f989de
+--- /dev/null
++++ b/client_BitComet_p2p_test.go
+@@ -0,0 +1,1071 @@
++package main
++
++// P2P (pass-to-pass) regression coverage for the BitComet client split.
++//
++// These tests only exercise the frozen public surface: the dispatch entry
++// points (DetectClient/Login/FetchTorrents/FetchTorrentPeers/SubmitBlockPeer),
++// the Client interface and the shared torrent/peer/block-peer models. The
++// required split may rename, move or merge internal helpers and the concrete
++// BitComet types, so no test here refers to them.
++
++import (
++	"bytes"
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"reflect"
++	"sort"
++	"strings"
++	"sync"
++	"testing"
++)
++
++const p2pLegacyTaskListHTML = `<table><tbody><tr><th>head</th></tr><tr><td>BT</td><td><a href="/panel/task_detail?id=42">task</a></td><td>running</td><td></td><td>1 MB</td><td></td><td></td><td>2 KB/s</td></tr><tr><td>BT</td><td><a href="/panel/task_detail">task</a></td><td>running</td><td></td><td>1 MB</td><td></td><td></td><td>2 KB/s</td></tr><tr><td>BT</td><td><a href="/panel/task_detail?id=bad">task</a></td><td>running</td><td></td><td>1 MB</td><td></td><td></td><td>2 KB/s</td></tr><tr><td>BT</td><td><a href="/panel/task_detail?id=43">task</a></td><td>running</td><td></td><td>1 XY</td><td></td><td></td><td>2 KB/s</td></tr><tr><td>BT</td><td><a href="/panel/task_detail?id=44">task</a></td><td>running</td><td></td><td>1 MB</td><td></td><td></td><td>1 KB</td></tr><tr><td>HTTP</td></tr></tbody></table>`
++
++const p2pLegacyTaskDetailHTML = `<table><tbody><tr><th>head</th></tr><tr><td>192.0.2.8:6881</td><td>25%</td><td>1 KB/s</td><td>2 KB/s</td><td>3 MB</td><td>4 MB</td><td></td><td></td><td></td><td>LegacyPeer</td></tr><tr><td>myself</td><td>25%</td><td>1 KB/s</td><td>2 KB/s</td><td>3 MB</td><td>4 MB</td><td></td><td></td><td></td><td>Local</td></tr><tr><td>192.0.2.9:6881</td><td>bad%</td><td>1 KB/s</td><td>2 KB/s</td><td>3 MB</td><td>4 MB</td><td></td><td></td><td></td><td>BadPercent</td></tr><tr><td>192.0.2.10:bad</td><td>25%</td><td>1 KB/s</td><td>2 KB/s</td><td>3 MB</td><td>4 MB</td><td></td><td></td><td></td><td>BadPort</td></tr><tr><td>192.0.2.11:6881</td><td>25%</td><td>1 KB</td><td>2 KB/s</td><td>3 MB</td><td>4 MB</td><td></td><td></td><td></td><td>BadSpeed</td></tr><tr><td>192.0.2.12:6881</td><td>25%</td><td>1 KB/s</td><td>2 KB/s</td><td>1 XY</td><td>4 MB</td><td></td><td></td><td></td><td>BadSize</td></tr></tbody></table>`
++
++type p2pRequestRecord struct {
++	Method string
++	Path   string
++	Query  string
++	Body   []byte
++}
++
++type p2pRequestLog struct {
++	mutex   sync.Mutex
++	records []p2pRequestRecord
++}
++
++func (requestLog *p2pRequestLog) append(r *http.Request, body []byte) {
++	requestLog.mutex.Lock()
++	defer requestLog.mutex.Unlock()
++	requestLog.records = append(requestLog.records, p2pRequestRecord{
++		Method: r.Method,
++		Path:   r.URL.Path,
++		Query:  r.URL.RawQuery,
++		Body:   append([]byte(nil), body...),
++	})
++}
++
++func (requestLog *p2pRequestLog) snapshot() []p2pRequestRecord {
++	requestLog.mutex.Lock()
++	defer requestLog.mutex.Unlock()
++	result := make([]p2pRequestRecord, len(requestLog.records))
++	copy(result, requestLog.records)
++	return result
++}
++
++func (requestLog *p2pRequestLog) countPath(path string) int {
++	count := 0
++	for _, record := range requestLog.snapshot() {
++		if record.Path == path {
++			count++
++		}
++	}
++	return count
++}
++
++func (requestLog *p2pRequestLog) hasPathPrefix(prefix string) bool {
++	for _, record := range requestLog.snapshot() {
++		if strings.HasPrefix(record.Path, prefix) {
++			return true
++		}
++	}
++	return false
++}
++
++func (requestLog *p2pRequestLog) hasRequest(path string, query string) bool {
++	for _, record := range requestLog.snapshot() {
++		if record.Path == path && record.Query == query {
++			return true
++		}
++	}
++	return false
++}
++
++func (requestLog *p2pRequestLog) postRecords(path string) []p2pRequestRecord {
++	var result []p2pRequestRecord
++	for _, record := range requestLog.snapshot() {
++		if record.Path == path && record.Method == http.MethodPost {
++			result = append(result, record)
++		}
++	}
++	return result
++}
++
++// p2pInstallClientServer points the global client configuration at a local
++// httptest server and restores every touched global afterwards.
++func p2pInstallClientServer(t *testing.T, clientType string, handler http.HandlerFunc) *p2pRequestLog {
++	t.Helper()
++
++	requestLog := &p2pRequestLog{}
++	oldConfig := *config
++	oldHTTPClient := httpClient
++	oldHTTPClientExternal := httpClientExternal
++	oldClient := currentClient
++	oldClientType := currentClientType
++
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		var body []byte
++		if r.Body != nil {
++			body, _ = io.ReadAll(r.Body)
++			_ = r.Body.Close()
++			r.Body = io.NopCloser(bytes.NewReader(body))
++		}
++		requestLog.append(r, body)
++		handler(w, r)
++	}))
++
++	httpClient = *server.Client()
++	httpClientExternal = *server.Client()
++
++	testConfig := oldConfig
++	testConfig.ClientType = clientType
++	testConfig.ClientURL = server.URL
++	testConfig.UseBasicAuth = false
++	testConfig.UseShadowBan = false
++	testConfig.FetchFailedThreshold = 0
++	testConfig.ExecCommand_FetchFailed = ""
++	config = &testConfig
++	currentClient = nil
++	currentClientType = ""
++
++	t.Cleanup(func() {
++		server.Close()
++		restored := oldConfig
++		config = &restored
++		httpClient = oldHTTPClient
++		httpClientExternal = oldHTTPClientExternal
++		currentClient = oldClient
++		currentClientType = oldClientType
++	})
++
++	return requestLog
++}
++
++func p2pWriteLegacyPanelChallenge(w http.ResponseWriter) {
++	w.Header().Set("WWW-Authenticate", `Basic realm="BitComet"`)
++	w.WriteHeader(http.StatusUnauthorized)
++}
++
++func p2pWriteJSONTaskList(w http.ResponseWriter) {
++	_, _ = w.Write([]byte(`{"movie_list":[{"task_id":"task-a","type":"BT","total_size":1000,"leechers_count":3},{"task_id":"task-http","type":"HTTP","total_size":2000,"leechers_count":1}]}`))
++}
++
++type p2pBanPayload struct {
++	TaskID  string   `json:"task_id"`
++	BanTime string   `json:"ban_time"`
++	IPList  []string `json:"ip_list"`
++}
++
++func p2pDecodeBanPayloads(t *testing.T, requestLog *p2pRequestLog) []p2pBanPayload {
++	t.Helper()
++
++	records := requestLog.postRecords("/api/task/peers/ban_ip")
++	payloads := make([]p2pBanPayload, 0, len(records))
++	for _, record := range records {
++		var payload p2pBanPayload
++		if err := json.Unmarshal(record.Body, &payload); err != nil {
++			t.Fatalf("ban payload %q is not the documented JSON body: %v", string(record.Body), err)
++		}
++		payloads = append(payloads, payload)
++	}
++	return payloads
++}
++
++func p2pSorted(values []string) []string {
++	result := append([]string(nil), values...)
++	sort.Strings(result)
++	return result
++}
++
++func p2pDetectJSONFamily(t *testing.T) {
++	t.Helper()
++	if !DetectClient() {
++		t.Fatal("BitComet detection failed although the JSON API probe answered 200")
++	}
++	if currentClient == nil || currentClientType != "BitComet" {
++		t.Fatalf("detected client=%v type=%q, want the BitComet client", currentClient, currentClientType)
++	}
++}
++
++func p2pCheckJSONFailureResponses(t *testing.T, peers bool) {
++	t.Helper()
++	var mutex sync.Mutex
++	status := http.StatusOK
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path == "/api_v2/task_list/get" && r.URL.Query().Get("state_group") == "" {
++			p2pWriteJSONTaskList(w)
++			return
++		}
++		if r.URL.Path != "/api_v2/task_list/get" && r.URL.Path != "/api/task/peers/get" {
++			http.NotFound(w, r)
++			return
++		}
++		mutex.Lock()
++		currentStatus := status
++		mutex.Unlock()
++		if currentStatus == http.StatusNoContent {
++			w.WriteHeader(currentStatus)
++			return
++		}
++		_, _ = w.Write([]byte("{"))
++	})
++	p2pDetectJSONFamily(t)
++	path := "/api_v2/task_list/get"
++	if peers {
++		path = "/api/task/peers/get"
++	}
++	before := requestLog.countPath(path)
++	if peers {
++		result, err := FetchTorrentPeers(&Torrent{Hash: "task-a"})
++		if result != nil || err == nil {
++			t.Fatalf("malformed JSON peer response: peers=%#v err=%v", result, err)
++		}
++	} else {
++		result, err := FetchTorrents()
++		if result != nil || err == nil {
++			t.Fatalf("malformed JSON torrent response: torrents=%#v err=%v", result, err)
++		}
++	}
++	if requestLog.countPath(path) <= before {
++		t.Fatalf("malformed JSON response was not requested from %s", path)
++	}
++	mutex.Lock()
++	status = http.StatusNoContent
++	mutex.Unlock()
++	before = requestLog.countPath(path)
++	if peers {
++		result, err := FetchTorrentPeers(&Torrent{Hash: "task-a"})
++		if result != nil || err != nil {
++			t.Fatalf("empty JSON peer response: peers=%#v err=%v", result, err)
++		}
++	} else {
++		result, err := FetchTorrents()
++		if result != nil || err != nil {
++			t.Fatalf("empty JSON torrent response: torrents=%#v err=%v", result, err)
++		}
++	}
++	if requestLog.countPath(path) <= before {
++		t.Fatalf("empty JSON response was not requested from %s", path)
++	}
++}
++
++func p2pCheckLegacyNoResults(t *testing.T, peers bool, body string) {
++	t.Helper()
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/panel/":
++			p2pWriteLegacyPanelChallenge(w)
++		case "/panel/task_list", "/panel/task_detail":
++			if body == "" {
++				w.WriteHeader(http.StatusNoContent)
++			} else {
++				_, _ = w.Write([]byte(body))
++			}
++		default:
++			http.NotFound(w, r)
++		}
++	})
++	if !DetectClient() {
++		t.Fatal("legacy BitComet detection failed")
++	}
++	path := "/panel/task_list"
++	if peers {
++		path = "/panel/task_detail"
++	}
++	before := requestLog.countPath(path)
++	if peers {
++		result, err := FetchTorrentPeers(&Torrent{Hash: "42"})
++		if len(result) != 0 || err != nil || (body == "" && result != nil) {
++			t.Fatalf("legacy response must contain no peers: peers=%#v err=%v body=%q", result, err, body)
++		}
++	} else {
++		result, err := FetchTorrents()
++		if len(result) != 0 || err != nil || (body == "" && result != nil) {
++			t.Fatalf("legacy response must contain no torrents: torrents=%#v err=%v body=%q", result, err, body)
++		}
++	}
++	if requestLog.countPath(path) <= before {
++		t.Fatalf("empty legacy response was not requested from %s", path)
++	}
++}
++
++// Detection MUST probe the JSON API first and return the JSON-API
++// implementation when that probe answers 200, even when the legacy panel would
++// also accept the probe.
++func TestP2PDetectionPrefersJSONAPIOn200(t *testing.T) {
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			p2pWriteJSONTaskList(w)
++		case "/panel/":
++			p2pWriteLegacyPanelChallenge(w)
++		case "/panel/task_list":
++			_, _ = w.Write([]byte(p2pLegacyTaskListHTML))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	if !DetectClient() {
++		t.Fatal("BitComet detection failed although the JSON API probe answered 200")
++	}
++	if currentClient == nil || currentClientType != "BitComet" {
++		t.Fatalf("detected client=%v type=%q, want the BitComet client", currentClient, currentClientType)
++	}
++	if got := currentClient.GetClientType(); got != "BitComet" {
++		t.Fatalf("GetClientType()=%q, want BitComet", got)
++	}
++
++	torrents, err := FetchTorrents()
++	if err != nil {
++		t.Fatalf("FetchTorrents() error: %v", err)
++	}
++	if len(torrents) != 1 || torrents[0].Hash != "task-a" {
++		t.Fatalf("FetchTorrents()=%#v, want the JSON API task", torrents)
++	}
++	if !requestLog.hasRequest("/api_v2/task_list/get", "state_group=ACTIVE") {
++		t.Fatal("JSON API torrent listing did not request state_group=ACTIVE")
++	}
++	if requestLog.countPath("/panel/task_list") != 0 {
++		t.Fatal("legacy panel listing was used although the JSON API probe succeeded")
++	}
++}
++
++// Detection MUST also accept 401 from the JSON API probe, and must still
++// prefer the JSON-API implementation over a matching legacy panel probe.
++func TestP2PDetectionAcceptsJSONAPIUnauthorized(t *testing.T) {
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			if r.URL.Query().Get("state_group") == "ACTIVE" {
++				p2pWriteJSONTaskList(w)
++				return
++			}
++			w.WriteHeader(http.StatusUnauthorized)
++		case "/panel/":
++			p2pWriteLegacyPanelChallenge(w)
++		case "/panel/task_list":
++			_, _ = w.Write([]byte(p2pLegacyTaskListHTML))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	if !DetectClient() {
++		t.Fatal("BitComet detection failed although the JSON API probe answered 401")
++	}
++	if currentClient == nil || currentClientType != "BitComet" {
++		t.Fatalf("detected client=%v type=%q, want the BitComet client", currentClient, currentClientType)
++	}
++
++	torrents, err := FetchTorrents()
++	if err != nil {
++		t.Fatalf("FetchTorrents() error: %v", err)
++	}
++	if len(torrents) != 1 || torrents[0].Hash != "task-a" {
++		t.Fatalf("FetchTorrents()=%#v, want the JSON API task", torrents)
++	}
++	if requestLog.countPath("/panel/task_list") != 0 {
++		t.Fatal("legacy panel listing was used although the JSON API probe answered 401")
++	}
++}
++
++// Detection MUST fall back to the legacy implementation only when the JSON
++// probe misses and /panel/ answers 401 with a BitComet challenge.
++func TestP2PDetectionFallsBackToLegacyPanelChallenge(t *testing.T) {
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			http.NotFound(w, r)
++		case "/panel/":
++			p2pWriteLegacyPanelChallenge(w)
++		case "/panel/task_list":
++			_, _ = w.Write([]byte(p2pLegacyTaskListHTML))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	if !DetectClient() {
++		t.Fatal("BitComet detection failed although the panel answered a BitComet challenge")
++	}
++	if currentClient == nil || currentClientType != "BitComet" {
++		t.Fatalf("detected client=%v type=%q, want the BitComet client", currentClient, currentClientType)
++	}
++
++	torrents, err := FetchTorrents()
++	if err != nil {
++		t.Fatalf("FetchTorrents() error: %v", err)
++	}
++	if len(torrents) != 1 {
++		t.Fatalf("FetchTorrents()=%#v, want the legacy panel task", torrents)
++	}
++	if torrents[0].Hash != "42" || torrents[0].Tracker != "Unsupported" || torrents[0].LeechCount != 233 {
++		t.Fatalf("legacy torrent=%#v, want hash 42, placeholder tracker and leech count", torrents[0])
++	}
++	if !requestLog.hasRequest("/panel/task_list", "group=active") {
++		t.Fatal("legacy torrent listing did not request the active panel task table")
++	}
++	if requestLog.hasRequest("/api_v2/task_list/get", "state_group=ACTIVE") {
++		t.Fatal("JSON API listing was used although only the legacy panel probe matched")
++	}
++}
++
++// The challenge-string check MUST stay: a 401 without a BitComet challenge is
++// not a BitComet detection.
++func TestP2PDetectionRejectsPanelWithoutBitCometChallenge(t *testing.T) {
++	p2pInstallClientServer(t, "", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/panel/":
++			w.Header().Set("WWW-Authenticate", `Basic realm="SomeOtherPanel"`)
++			w.WriteHeader(http.StatusUnauthorized)
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	if DetectClient() {
++		t.Fatalf("detection succeeded without a BitComet challenge, client type=%q", currentClientType)
++	}
++	if currentClient != nil {
++		t.Fatalf("detection failure left a client instance: %v", currentClient)
++	}
++}
++
++// The accepted panel status code MUST stay 401: a 200 panel answer is not a
++// BitComet detection.
++func TestP2PDetectionRejectsPanelWhenStatusIsNotUnauthorized(t *testing.T) {
++	p2pInstallClientServer(t, "", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/panel/":
++			w.Header().Set("WWW-Authenticate", `Basic realm="BitComet"`)
++			_, _ = w.Write([]byte("ok"))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	if DetectClient() {
++		t.Fatalf("detection succeeded on a 200 panel answer, client type=%q", currentClientType)
++	}
++	if currentClient != nil {
++		t.Fatalf("detection failure left a client instance: %v", currentClient)
++	}
++}
++
++// The JSON-API implementation MUST list only BT torrents, MUST use the task
++// identifier as the torrent hash and MUST read movie_list from the ACTIVE
++// task-list endpoint.
++func TestP2PJSONAPIFetchTorrentsFiltersBTAndMapsFields(t *testing.T) {
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			p2pWriteJSONTaskList(w)
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	p2pDetectJSONFamily(t)
++
++	torrents, err := FetchTorrents()
++	if err != nil {
++		t.Fatalf("FetchTorrents() error: %v", err)
++	}
++	if len(torrents) != 1 {
++		t.Fatalf("FetchTorrents()=%#v, want only the BT task", torrents)
++	}
++	torrent := torrents[0]
++	if torrent.Hash != "task-a" || torrent.TotalSize != 1000 || torrent.LeechCount != 3 {
++		t.Fatalf("torrent=%#v, want task_id/total_size/leechers_count of the BT task", torrent)
++	}
++	if torrent.Tracker != "BitComet-v2" {
++		t.Fatalf("tracker=%q, want the existing BitComet-v2 placeholder", torrent.Tracker)
++	}
++	if !requestLog.hasRequest("/api_v2/task_list/get", "state_group=ACTIVE") {
++		t.Fatal("torrent listing did not read /api_v2/task_list/get?state_group=ACTIVE")
++	}
++	p2pCheckJSONFailureResponses(t, false)
++}
++
++// The JSON-API implementation MUST read peers_connected from the peer endpoint
++// and MUST convert peer progress from the 0-100 scale to the 0-1 scale.
++func TestP2PJSONAPIFetchTorrentPeersConvertsProgress(t *testing.T) {
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			p2pWriteJSONTaskList(w)
++		case "/api/task/peers/get":
++			_, _ = w.Write([]byte(`{"peers_connected":[{"address":"192.0.2.3","remoteport":6881,"clienttype":"peer-a","progress":50,"downrate":1,"uprate":2,"downsize":3,"upsize":4},{"address":"2001:db8::9","remoteport":51413,"clienttype":"peer-b","progress":100,"downrate":5,"uprate":6,"downsize":7,"upsize":8}]}`))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	p2pDetectJSONFamily(t)
++
++	torrents, err := FetchTorrents()
++	if err != nil || len(torrents) != 1 {
++		t.Fatalf("FetchTorrents()=%#v err=%v", torrents, err)
++	}
++	peers, err := FetchTorrentPeers(torrents[0])
++	if err != nil {
++		t.Fatalf("FetchTorrentPeers() error: %v", err)
++	}
++	if len(peers) != 2 {
++		t.Fatalf("FetchTorrentPeers()=%#v, want both connected peers", peers)
++	}
++	if peers[0].IP != "192.0.2.3" || peers[0].Port != 6881 || peers[0].Client != "peer-a" {
++		t.Fatalf("peer[0]=%#v, want the JSON API peer fields", peers[0])
++	}
++	if peers[0].Progress != 0.5 {
++		t.Fatalf("peer[0].Progress=%v, want 0.5 for a 50 percent report", peers[0].Progress)
++	}
++	if peers[0].DlSpeed != 1 || peers[0].UpSpeed != 2 || peers[0].Downloaded != 3 || peers[0].Uploaded != 4 {
++		t.Fatalf("peer[0]=%#v, want the JSON API traffic fields", peers[0])
++	}
++	if peers[0].ID != "" {
++		t.Fatalf("peer[0].ID=%q, want the empty BitComet peer id", peers[0].ID)
++	}
++	if peers[1].Progress != 1.0 {
++		t.Fatalf("peer[1].Progress=%v, want 1.0 for a 100 percent report", peers[1].Progress)
++	}
++	if !requestLog.hasRequest("/api/task/peers/get", "task_id=task-a&groups=peers_connected") {
++		t.Fatal("peer listing did not read /api/task/peers/get?task_id=<id>&groups=peers_connected")
++	}
++	p2pCheckJSONFailureResponses(t, true)
++}
++
++// The JSON-API login MUST still succeed when the panel endpoint answers 200.
++func TestP2PJSONAPILoginSucceedsOnPanelEndpoint(t *testing.T) {
++	var panelRequests int
++	var mutex sync.Mutex
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			p2pWriteJSONTaskList(w)
++		case "/panel/":
++			mutex.Lock()
++			panelRequests++
++			requestNumber := panelRequests
++			mutex.Unlock()
++			if requestNumber > 1 {
++				w.WriteHeader(http.StatusForbidden)
++				return
++			}
++			_, _ = w.Write([]byte("ok"))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	p2pDetectJSONFamily(t)
++
++	if !Login() {
++		t.Fatal("JSON API login failed although /panel/ answered 200")
++	}
++	if requestLog.countPath("/panel/") == 0 {
++		t.Fatal("login did not use the panel endpoint")
++	}
++	if Login() {
++		t.Fatal("JSON API login succeeded although /panel/ answered 403")
++	}
++}
++
++// Block submission MUST group addresses by info-hash and post task_id,
++// ban_time and ip_list to the ban endpoint.
++func TestP2PJSONAPISubmitBlockPeerGroupsByInfoHash(t *testing.T) {
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			p2pWriteJSONTaskList(w)
++		case "/api/task/peers/ban_ip":
++			_, _ = w.Write([]byte(`{"result":"success"}`))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	p2pDetectJSONFamily(t)
++
++	accepted := SubmitBlockPeer(map[string]BlockPeerInfoStruct{
++		"192.0.2.1": {InfoHash: "hash-a", Port: map[int]bool{6881: true}},
++		"192.0.2.2": {InfoHash: "hash-a", Port: map[int]bool{51413: true}},
++		"192.0.2.3": {InfoHash: "hash-b", Port: map[int]bool{6881: true}},
++	})
++	if !accepted {
++		t.Fatal("block submission reported failure although every ban request was accepted")
++	}
++
++	payloads := p2pDecodeBanPayloads(t, requestLog)
++	if len(payloads) != 2 {
++		t.Fatalf("ban payloads=%#v, want one request per info-hash", payloads)
++	}
++
++	byTask := make(map[string]p2pBanPayload, len(payloads))
++	for _, payload := range payloads {
++		if payload.BanTime != "ban_ip_forever" {
++			t.Fatalf("ban_time=%q, want ban_ip_forever", payload.BanTime)
++		}
++		if _, exists := byTask[payload.TaskID]; exists {
++			t.Fatalf("info-hash %q was submitted twice", payload.TaskID)
++		}
++		byTask[payload.TaskID] = payload
++	}
++	payloadA, existsA := byTask["hash-a"]
++	if !existsA {
++		t.Fatalf("ban payloads=%#v, want a hash-a request", payloads)
++	}
++	if got := p2pSorted(payloadA.IPList); len(got) != 2 || got[0] != "192.0.2.1" || got[1] != "192.0.2.2" {
++		t.Fatalf("hash-a ip_list=%v, want the two grouped addresses", payloadA.IPList)
++	}
++	payloadB, existsB := byTask["hash-b"]
++	if !existsB {
++		t.Fatalf("ban payloads=%#v, want a hash-b request", payloads)
++	}
++	if got := p2pSorted(payloadB.IPList); len(got) != 1 || got[0] != "192.0.2.3" {
++		t.Fatalf("hash-b ip_list=%v, want the single address", payloadB.IPList)
++	}
++}
++
++// Block submission MUST report success only when every ban request is accepted.
++func TestP2PJSONAPISubmitBlockPeerFailsWhenAnyBanRejected(t *testing.T) {
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			p2pWriteJSONTaskList(w)
++		case "/api/task/peers/ban_ip":
++			var payload p2pBanPayload
++			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
++				t.Errorf("decode ban payload: %v", err)
++			}
++			if payload.TaskID == "hash-d" {
++				w.WriteHeader(http.StatusInternalServerError)
++				return
++			}
++			_, _ = w.Write([]byte(`{"result":"success"}`))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	p2pDetectJSONFamily(t)
++
++	accepted := SubmitBlockPeer(map[string]BlockPeerInfoStruct{
++		"192.0.2.4": {InfoHash: "hash-d", Port: map[int]bool{6881: true}},
++	})
++	if accepted {
++		t.Fatal("block submission reported success although the ban request was rejected")
++	}
++	if len(requestLog.postRecords("/api/task/peers/ban_ip")) == 0 {
++		t.Fatal("block submission did not post to the ban endpoint")
++	}
++}
++
++// The legacy implementation MUST read the panel task table, MUST use the
++// numeric panel task identifier as the torrent hash and MUST keep its
++// placeholder tracker and leech values.
++func TestP2PLegacyFetchTorrentsParsesPanelTaskTable(t *testing.T) {
++	t.Run("reject_link_without_task_id", func(t *testing.T) {
++		// Observe malformed-link rejection through the detected legacy client;
++		// the parsing helper may be renamed or moved by the split.
++		body := `<table><tbody><tr><th>head</th></tr><tr><td>BT</td><td><a href="/panel/task_detail">task</a></td><td>running</td><td></td><td>1 MB</td><td></td><td></td><td>2 KB/s</td></tr></tbody></table>`
++		p2pCheckLegacyNoResults(t, false, body)
++	})
++
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			http.NotFound(w, r)
++		case "/panel/":
++			p2pWriteLegacyPanelChallenge(w)
++		case "/panel/task_list":
++			_, _ = w.Write([]byte(p2pLegacyTaskListHTML))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	if !DetectClient() {
++		t.Fatal("legacy BitComet detection failed")
++	}
++
++	beforeListing := len(requestLog.snapshot())
++	torrents, err := FetchTorrents()
++	if err != nil {
++		t.Fatalf("FetchTorrents() error: %v", err)
++	}
++	if len(torrents) != 1 {
++		t.Fatalf("FetchTorrents()=%#v, want only the BT panel row", torrents)
++	}
++	torrent := torrents[0]
++	if torrent.Hash != "42" || torrent.TotalSize != 1048576 {
++		t.Fatalf("torrent=%#v, want the numeric panel task id and parsed size", torrent)
++	}
++	if torrent.Tracker != "Unsupported" || torrent.LeechCount != 233 {
++		t.Fatalf("torrent=%#v, want the existing placeholder tracker and leech values", torrent)
++	}
++	if !requestLog.hasRequest("/panel/task_list", "group=active") {
++		t.Fatal("legacy listing did not read /panel/task_list?group=active")
++	}
++	for _, record := range requestLog.snapshot()[beforeListing:] {
++		if strings.HasPrefix(record.Path, "/api_v2/") || strings.HasPrefix(record.Path, "/api/") {
++			t.Fatalf("legacy torrent listing issued a JSON-API request: %s %s", record.Method, record.Path)
++		}
++	}
++	p2pCheckLegacyNoResults(t, false, "")
++}
++
++// The legacy implementation MUST read the panel task detail table and MUST NOT
++// report a peer that is not a remote address.
++func TestP2PLegacyFetchTorrentPeersSkipsNonRemoteAddress(t *testing.T) {
++	t.Run("reject_invalid_port", func(t *testing.T) {
++		// Keep the malformed-port assertion independent of helper names.
++		body := `<table><tbody><tr><th>head</th></tr><tr><td>192.0.2.1:bad</td><td>25%</td><td>1 KB/s</td><td>2 KB/s</td><td>3 MB</td><td>4 MB</td><td></td><td></td><td></td><td>BadPort</td></tr></tbody></table>`
++		p2pCheckLegacyNoResults(t, true, body)
++	})
++
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			http.NotFound(w, r)
++		case "/panel/":
++			p2pWriteLegacyPanelChallenge(w)
++		case "/panel/task_detail":
++			_, _ = w.Write([]byte(p2pLegacyTaskDetailHTML))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	if !DetectClient() {
++		t.Fatal("legacy BitComet detection failed")
++	}
++
++	beforeListing := len(requestLog.snapshot())
++	peers, err := FetchTorrentPeers(&Torrent{Hash: "42"})
++	if err != nil {
++		t.Fatalf("FetchTorrentPeers() error: %v", err)
++	}
++	if len(peers) != 1 {
++		t.Fatalf("FetchTorrentPeers()=%#v, want only the remote panel peer", peers)
++	}
++	peer := peers[0]
++	if peer.IP != "192.0.2.8" || peer.Port != 6881 || peer.Client != "LegacyPeer" {
++		t.Fatalf("peer=%#v, want the panel peer fields", peer)
++	}
++	if peer.Progress != 25 || peer.DlSpeed != 1024 || peer.UpSpeed != 2048 {
++		t.Fatalf("peer=%#v, want the panel progress and speeds", peer)
++	}
++	if peer.Downloaded != 3145728 || peer.Uploaded != 4194304 {
++		t.Fatalf("peer=%#v, want the panel traffic sizes", peer)
++	}
++	if peer.ID != "" {
++		t.Fatalf("peer.ID=%q, want the empty BitComet peer id", peer.ID)
++	}
++	if !requestLog.hasRequest("/panel/task_detail", "id=42&show=peers") {
++		t.Fatal("legacy peer listing did not read /panel/task_detail?id=<id>&show=peers")
++	}
++	for _, record := range requestLog.snapshot()[beforeListing:] {
++		if strings.HasPrefix(record.Path, "/api_v2/") || strings.HasPrefix(record.Path, "/api/") {
++			t.Fatalf("legacy peer listing issued a JSON-API request: %s %s", record.Method, record.Path)
++		}
++	}
++	p2pCheckLegacyNoResults(t, true, "")
++}
++
++// The legacy implementation MUST keep returning failure for URL setup,
++// block-peer submission and shadow-ban submission and MUST NOT issue any
++// JSON-API request.
++func TestP2PLegacyUnsupportedOperationsKeepFailing(t *testing.T) {
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			http.NotFound(w, r)
++		case "/panel/":
++			p2pWriteLegacyPanelChallenge(w)
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	if !DetectClient() {
++		t.Fatal("legacy BitComet detection failed")
++	}
++	if currentClient == nil {
++		t.Fatal("legacy detection produced no client instance")
++	}
++
++	before := len(requestLog.snapshot())
++	if currentClient.SetURL() {
++		t.Fatal("legacy SetURL() reported success")
++	}
++	if currentClient.ConfigPath() != "" {
++		t.Fatalf("legacy ConfigPath()=%q, want the empty path", currentClient.ConfigPath())
++	}
++	blockPeers := map[string]BlockPeerInfoStruct{
++		"192.0.2.5": {InfoHash: "hash-d", Port: map[int]bool{6881: true}},
++	}
++	if currentClient.SubmitBlockPeer(blockPeers) {
++		t.Fatal("legacy SubmitBlockPeer() reported success")
++	}
++	if currentClient.SubmitShadowBanPeer(blockPeers) {
++		t.Fatal("legacy SubmitShadowBanPeer() reported success")
++	}
++	if SubmitBlockPeer(blockPeers) {
++		t.Fatal("legacy dispatch SubmitBlockPeer() reported success")
++	}
++
++	for _, record := range requestLog.snapshot()[before:] {
++		if strings.HasPrefix(record.Path, "/api_v2/") || strings.HasPrefix(record.Path, "/api/") {
++			t.Fatalf("legacy implementation issued a JSON-API request: %s %s", record.Method, record.Path)
++		}
++	}
++}
++
++// The legacy login MUST still succeed when the panel endpoint answers 200.
++func TestP2PLegacyLoginSucceedsOnPanelEndpoint(t *testing.T) {
++	var panelRequests int
++	var mutex sync.Mutex
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			http.NotFound(w, r)
++		case "/panel/":
++			mutex.Lock()
++			panelRequests++
++			requestNumber := panelRequests
++			mutex.Unlock()
++			if requestNumber == 1 {
++				p2pWriteLegacyPanelChallenge(w)
++				return
++			}
++			if requestNumber > 2 {
++				w.WriteHeader(http.StatusForbidden)
++				return
++			}
++			_, _ = w.Write([]byte("ok"))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	if !DetectClient() {
++		t.Fatal("legacy BitComet detection failed")
++	}
++	if !Login() {
++		t.Fatal("legacy login failed although /panel/ answered 200")
++	}
++	if requestLog.countPath("/panel/") < 2 {
++		t.Fatal("legacy login did not use the panel endpoint")
++	}
++	if Login() {
++		t.Fatal("legacy login succeeded although /panel/ answered 403")
++	}
++}
++
++// When the BitComet client type is configured but probing fails, detection MUST
++// still report success and MUST produce an instance whose unsupported
++// operations keep returning failure, without adopting JSON-API behaviour.
++func TestP2PForcedBitCometDetectionKeepsFailureInstance(t *testing.T) {
++	requestLog := p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		http.NotFound(w, r)
++	})
++
++	if !DetectClient() {
++		t.Fatal("forced BitComet detection did not report success")
++	}
++	if currentClient == nil {
++		t.Fatal("forced BitComet detection produced no client instance")
++	}
++	if currentClientType != "BitComet" || currentClient.GetClientType() != "BitComet" {
++		t.Fatalf("type=%q GetClientType()=%q, want BitComet", currentClientType, currentClient.GetClientType())
++	}
++
++	before := len(requestLog.snapshot())
++	if currentClient.SetURL() {
++		t.Fatal("forced BitComet SetURL() reported success")
++	}
++	blockPeers := map[string]BlockPeerInfoStruct{
++		"192.0.2.6": {InfoHash: "hash-e", Port: map[int]bool{6881: true}},
++	}
++	if SubmitBlockPeer(blockPeers) {
++		t.Fatal("forced BitComet block submission reported success")
++	}
++	if currentClient.SubmitShadowBanPeer(blockPeers) {
++		t.Fatal("forced BitComet shadow-ban submission reported success")
++	}
++	if _, err := FetchTorrents(); err != nil {
++		t.Fatalf("forced BitComet FetchTorrents() error: %v", err)
++	}
++
++	for _, record := range requestLog.snapshot()[before:] {
++		if strings.HasPrefix(record.Path, "/api_v2/") || strings.HasPrefix(record.Path, "/api/") {
++			t.Fatalf("forced BitComet instance adopted JSON-API behaviour: %s %s", record.Method, record.Path)
++		}
++	}
++}
++
++// The client interface used by dispatch MUST keep every existing method with
++// unchanged names, parameters and return shapes.
++func TestP2PClientInterfaceContractPreserved(t *testing.T) {
++	p2pInstallClientServer(t, "BitComet", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api_v2/task_list/get":
++			p2pWriteJSONTaskList(w)
++		case "/api/task/peers/get":
++			_, _ = w.Write([]byte(`{"peers_connected":[]}`))
++		case "/panel/":
++			_, _ = w.Write([]byte("ok"))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	p2pDetectJSONFamily(t)
++
++	var contractClient Client = currentClient
++	if contractClient == nil {
++		t.Fatal("detected client does not satisfy the Client interface")
++	}
++	if contractClient.GetClientType() != "BitComet" {
++		t.Fatalf("GetClientType()=%q, want BitComet", contractClient.GetClientType())
++	}
++	if contractClient.ConfigPath() != "" {
++		t.Fatalf("ConfigPath()=%q, want the empty BitComet path", contractClient.ConfigPath())
++	}
++	if contractClient.SetURL() {
++		t.Fatal("SetURL() reported success for BitComet")
++	}
++	if !contractClient.Login() {
++		t.Fatal("Login() failed although the panel answered 200")
++	}
++	torrents, err := contractClient.FetchTorrents()
++	if err != nil || len(torrents) != 1 {
++		t.Fatalf("FetchTorrents()=%#v err=%v", torrents, err)
++	}
++	peers, err := contractClient.FetchTorrentPeers(torrents[0])
++	if err != nil {
++		t.Fatalf("FetchTorrentPeers() error: %v", err)
++	}
++	_ = peers
++	if !contractClient.SubmitBlockPeer(map[string]BlockPeerInfoStruct{}) {
++		t.Fatal("SubmitBlockPeer() failed for an empty block map")
++	}
++	if contractClient.SubmitShadowBanPeer(map[string]BlockPeerInfoStruct{}) {
++		t.Fatal("SubmitShadowBanPeer() reported success for BitComet")
++	}
++	if !contractClient.Detect() {
++		t.Fatal("Detect() failed although the JSON API probe answers 200")
++	}
++	if !Login() {
++		t.Fatal("dispatch Login() failed")
++	}
++	dispatchTorrents, err := FetchTorrents()
++	if err != nil || len(dispatchTorrents) != 1 {
++		t.Fatalf("dispatch FetchTorrents()=%#v err=%v", dispatchTorrents, err)
++	}
++	dispatchPeers, err := FetchTorrentPeers(dispatchTorrents[0])
++	if err != nil {
++		t.Fatalf("dispatch FetchTorrentPeers()=%#v err=%v", dispatchPeers, err)
++	}
++	if !SubmitBlockPeer(nil) {
++		t.Fatal("dispatch SubmitBlockPeer(nil) must keep returning true")
++	}
++}
++
++// The shared torrent and peer models MUST keep their fields and meanings, and
++// block-peer input MUST stay keyed by peer IP with info-hash and port
++// information.
++func TestP2PSharedModelsPreserved(t *testing.T) {
++	if reflect.TypeOf(Torrent{}).NumField() != 5 || reflect.TypeOf(Peer{}).NumField() != 9 {
++		t.Fatal("shared torrent or peer model fields changed")
++	}
++	peer := &Peer{
++		IP:         "192.0.2.7",
++		Port:       6881,
++		ID:         "peer-id",
++		Client:     "peer-client",
++		DlSpeed:    11,
++		UpSpeed:    22,
++		Progress:   0.25,
++		Downloaded: 33,
++		Uploaded:   44,
++	}
++	torrent := &Torrent{
++		Hash:       "hash-model",
++		Tracker:    "tracker-model",
++		LeechCount: 7,
++		TotalSize:  123456,
++		Peers:      []*Peer{peer},
++	}
++
++	if torrent.Hash != "hash-model" || torrent.Tracker != "tracker-model" ||
++		torrent.LeechCount != 7 || torrent.TotalSize != 123456 || len(torrent.Peers) != 1 {
++		t.Fatalf("torrent model changed: %#v", torrent)
++	}
++	if torrent.Peers[0].IP != "192.0.2.7" || torrent.Peers[0].Port != 6881 ||
++		torrent.Peers[0].ID != "peer-id" || torrent.Peers[0].Client != "peer-client" ||
++		torrent.Peers[0].DlSpeed != 11 || torrent.Peers[0].UpSpeed != 22 ||
++		torrent.Peers[0].Progress != 0.25 || torrent.Peers[0].Downloaded != 33 ||
++		torrent.Peers[0].Uploaded != 44 {
++		t.Fatalf("peer model changed: %#v", torrent.Peers[0])
++	}
++
++	blockInput := map[string]BlockPeerInfoStruct{
++		"192.0.2.7": {
++			InfoHash: "hash-model",
++			Port:     map[int]bool{6881: true, -1: true},
++		},
++	}
++	entry, exists := blockInput["192.0.2.7"]
++	if !exists || entry.InfoHash != "hash-model" || !entry.Port[6881] || !entry.Port[-1] {
++		t.Fatalf("block-peer input model changed: %#v", blockInput)
++	}
++}
++
++// Automatic detection MUST keep selecting qBittorrent when its probe matches.
++func TestP2PConfiguredQBitTorrentStillSelected(t *testing.T) {
++	p2pInstallClientServer(t, "", func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/api/v2/app/webapiVersion", "/v2/app/webapiVersion":
++			_, _ = w.Write([]byte("2.11"))
++		default:
++			http.NotFound(w, r)
++		}
++	})
++
++	if !DetectClient() {
++		t.Fatal("qBittorrent detection failed")
++	}
++	if currentClient == nil || currentClientType != "qBittorrent" {
++		t.Fatalf("detected client=%v type=%q, want qBittorrent", currentClient, currentClientType)
++	}
++	if currentClient.GetClientType() != "qBittorrent" {
++		t.Fatalf("GetClientType()=%q, want qBittorrent", currentClient.GetClientType())
++	}
++}
++
++// Automatic detection MUST keep selecting Transmission when its probe matches.
++func TestP2PConfiguredTransmissionStillSelected(t *testing.T) {
++	p2pInstallClientServer(t, "", func(w http.ResponseWriter, r *http.Request) {
++		if r.Method == http.MethodPost && r.URL.Path == "/" {
++			_, _ = w.Write([]byte(`{"result":"success"}`))
++			return
++		}
++		http.NotFound(w, r)
++	})
++
++	if !DetectClient() {
++		t.Fatal("Transmission detection failed")
++	}
++	if currentClient == nil || currentClientType != "Transmission" {
++		t.Fatalf("detected client=%v type=%q, want Transmission", currentClient, currentClientType)
++	}
++	if currentClient.GetClientType() != "Transmission" {
++		t.Fatalf("GetClientType()=%q, want Transmission", currentClient.GetClientType())
++	}
++}
+diff --git a/tests/f2p_runner.py b/tests/f2p_runner.py
+new file mode 100755
+index 0000000000000000000000000000000000000000..4265cd0a6bdc46664cab51f1c2fd56a4a3cdd158
+--- /dev/null
++++ b/tests/f2p_runner.py
+@@ -0,0 +1,403 @@
++#!/usr/bin/env python3
++"""Summary JUnit report producer for the qBittorrent-ClientBlocker Go package.
++
++The runner is invoked from the repository root by the verifier command:
++
++    python3 tests/f2p_runner.py --report <junit.xml> \
++        --config <config.json> [--select <p2p_select.txt> ...]
++
++It reads the frozen P2P and F2P exact leaf selectors from the ``p2p`` and
++``f2p`` arrays of the pipeline supplied config and, when supplied, the frozen
++P2P selection file, executes exactly those leaves with ``go test -json`` and
++converts the native test events into a conventional JUnit XML report. The
++selection is never replaced by a test file, a broad pattern or the P2P
++original inventory. The runner never installs or downloads anything: only the
++repository and the frozen image toolchain are used.
++"""
++
++import argparse
++import json
++import os
++import re
++import shutil
++import subprocess
++import sys
++import time
++import xml.etree.ElementTree as ET
++
++REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++PACKAGE_DIR = REPO_ROOT
++
++SELECTOR_PATTERN = re.compile(r"(?:([A-Za-z0-9_./\\-]+\.go)::)?\b(Test[A-Za-z0-9_]+)\b")
++CONFIG_KEYS = ("p2p", "f2p")
++INTERNAL_TIMEOUT_SECONDS = 480
++GO_TEST_TIMEOUT_SECONDS = 300
++
++
++def find_go_binary():
++    found = shutil.which("go")
++    if found:
++        return found
++    for candidate in (
++        "/usr/local/go/bin/go",
++        "/usr/lib/go/bin/go",
++        "/opt/envpipe/runtime/bin/go",
++        "/usr/local/bin/go",
++    ):
++        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
++            return candidate
++    return "go"
++
++
++def collect_selectors(text):
++    """Extract exact ``file.go::TestLeaf`` entries from a declaration text."""
++    result = []
++    for match in SELECTOR_PATTERN.finditer(text):
++        result.append((match.group(1) or "", match.group(2)))
++    return result
++
++
++def collect_config_selectors(document):
++    """Collect the selectors declared under the ``p2p`` and ``f2p`` keys."""
++    result = {"p2p": [], "f2p": []}
++
++    def collect(key, value):
++        if isinstance(value, list):
++            for item in value:
++                if isinstance(item, str):
++                    result[key].extend(collect_selectors(item))
++                elif isinstance(item, dict):
++                    for field in ("selector", "test", "id"):
++                        if isinstance(item.get(field), str):
++                            result[key].extend(collect_selectors(item[field]))
++                            break
++        elif isinstance(value, dict):
++            for field in ("tests", "selectors", "test", "selector"):
++                if field in value:
++                    collect(key, value[field])
++
++    def visit(node):
++        if isinstance(node, dict):
++            kind = str(node.get("kind", "")).upper()
++            if kind in ("P2P", "F2P") and "tests" in node:
++                collect(kind.lower(), node["tests"])
++                return
++            for key, value in node.items():
++                if key in CONFIG_KEYS:
++                    collect(key, value)
++                    continue
++                visit(value)
++        elif isinstance(node, list):
++            for item in node:
++                visit(item)
++
++    visit(document)
++    return result
++
++
++def load_config(paths):
++    """Read the frozen P2P/F2P selection arrays from the supplied config."""
++    for path in paths:
++        if not path or path.startswith("{"):
++            continue
++        try:
++            if not os.path.isfile(path):
++                continue
++            with open(path, "r", encoding="utf-8", errors="replace") as handle:
++                document = json.load(handle)
++        except (OSError, ValueError):
++            continue
++        return collect_config_selectors(document)
++    return {"p2p": [], "f2p": []}
++
++
++def load_select_files(paths):
++    selection = []
++    for path in paths:
++        if not path or path.startswith("{"):
++            continue
++        try:
++            if not os.path.isfile(path):
++                continue
++            with open(path, "r", encoding="utf-8", errors="replace") as handle:
++                text = handle.read()
++        except OSError:
++            continue
++        selection.extend(collect_selectors(text))
++    return selection
++
++
++def merge_selection(p2p_entries, f2p_entries):
++    """Deduplicate by Go test leaf, keeping the declared file path and suite."""
++    merged = []
++    index_by_leaf = {}
++    for suite, entries in (("p2p", p2p_entries), ("f2p", f2p_entries)):
++        for file_path, leaf in entries:
++            existing = index_by_leaf.get(leaf)
++            if existing is None:
++                index_by_leaf[leaf] = len(merged)
++                merged.append({"suite": suite, "file": file_path, "leaf": leaf})
++                continue
++            if file_path and not merged[existing]["file"]:
++                merged[existing]["file"] = file_path
++            if suite == "f2p":
++                merged[existing]["suite"] = "f2p"
++    return merged
++
++
++def prepare_environment():
++    env = dict(os.environ)
++    env.setdefault("GO111MODULE", "on")
++    env["GOPROXY"] = "off"
++    if not env.get("HOME"):
++        env["HOME"] = os.environ.get("TMPDIR") or "/tmp"
++    exec_dir = os.environ.get("VERIFIER_EXEC_DIR", "").strip()
++    if exec_dir:
++        try:
++            gocache = os.path.join(exec_dir, "gocache")
++            gotmp = os.path.join(exec_dir, "gotmp")
++            os.makedirs(gocache, exist_ok=True)
++            os.makedirs(gotmp, exist_ok=True)
++            env["GOCACHE"] = gocache
++            env["GOTMPDIR"] = gotmp
++            env["TMPDIR"] = gotmp
++        except OSError:
++            pass
++    if not env.get("GOMODCACHE"):
++        default_cache = os.path.join(os.path.expanduser("~"), "go", "pkg", "mod")
++        if os.path.isdir(default_cache):
++            env["GOMODCACHE"] = default_cache
++    if not os.path.isdir(env.get("GOMODCACHE", "")) and os.path.isdir("/root/go/pkg/mod"):
++        env["GOMODCACHE"] = "/root/go/pkg/mod"
++    return env
++
++
++def run_go_test(leaves, env):
++    run_pattern = "^(?:" + "|".join(sorted(leaves)) + ")$"
++    command = [
++        find_go_binary(),
++        "test",
++        "-count=1",
++        "-vet=off",
++        "-json",
++        "-timeout",
++        "%ds" % GO_TEST_TIMEOUT_SECONDS,
++        "-run",
++        run_pattern,
++        ".",
++    ]
++    started = time.time()
++    try:
++        completed = subprocess.run(
++            command,
++            cwd=PACKAGE_DIR,
++            env=env,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT,
++            text=True,
++            timeout=INTERNAL_TIMEOUT_SECONDS,
++        )
++        return completed.stdout, completed.returncode, time.time() - started, False
++    except subprocess.TimeoutExpired as timeout_error:
++        output = timeout_error.stdout or ""
++        if isinstance(output, bytes):
++            output = output.decode("utf-8", "replace")
++        return output, -1, time.time() - started, True
++    except OSError as os_error:
++        return "runner error: %s" % os_error, -1, time.time() - started, False
++
++
++def parse_go_test_events(output):
++    results = {}
++    outputs = {}
++    saw_test_event = False
++    for line in output.splitlines():
++        line = line.strip()
++        if not line.startswith("{"):
++            continue
++        try:
++            event = json.loads(line)
++        except ValueError:
++            continue
++        if not isinstance(event, dict):
++            continue
++        action = event.get("Action")
++        test_name = event.get("Test")
++        if not test_name:
++            continue
++        saw_test_event = True
++        leaf = test_name.split("/")[0]
++        if action == "output":
++            outputs.setdefault(leaf, []).append(event.get("Output", ""))
++        elif action == "run" and "/" not in test_name:
++            results[leaf] = "running"
++        elif action in ("pass", "fail", "skip") and "/" not in test_name:
++            # Only the completed parent event establishes the selected outcome.
++            results[leaf] = action
++    return results, outputs, saw_test_event
++
++
++def execution_error_attributes(output):
++    """Type operational failures without treating Go crashes as assertions."""
++    if re.search(r"(?m)^panic: test timed out after ", output):
++        return {"type": "TimeoutError", "message": "go test timeout"}
++    if re.search(r"(?m)^(panic:|fatal error:|signal:|runtime:)", output):
++        return {"type": "ProcessCrash", "message": "go test process crash"}
++    if re.search(r"module lookup disabled|missing go.sum entry|no required module provides package", output):
++        return {"type": "SetupError", "phase": "setup", "message": "go test dependency setup error"}
++    if "[build failed]" in output:
++        return {"type": "CompileError", "phase": "compile", "message": "go test compile error"}
++    if output.startswith("runner error:"):
++        return {"type": "ExecutionError", "message": "go test execution error"}
++    if "runner internal timeout after" in output:
++        return {"type": "TimeoutError", "message": "go test timeout"}
++    return {"type": "GoExecutionError", "message": "go test could not execute the node"}
++
++
++def build_report(selection, results, outputs, build_failed, build_output, duration):
++    failures = 0
++    errors = 0
++    skipped = 0
++    suites = {}
++    for entry in selection:
++        outcome = results.get(entry["leaf"])
++        if outcome == "pass":
++            status = "pass"
++        elif outcome == "fail":
++            text = "".join(outputs.get(entry["leaf"], []))
++            crashed = re.search(r"(?m)^(panic:|fatal error:|signal:|runtime:)", text)
++            status = "error" if crashed else "fail"
++        elif outcome in ("running", "error"):
++            status = "error"
++        elif outcome == "skip":
++            status = "skip"
++        else:
++            status = "error" if build_failed else "notrun"
++        if status == "fail":
++            failures += 1
++        elif status == "error":
++            errors += 1
++        elif status in ("skip", "notrun"):
++            skipped += 1
++        suites.setdefault(entry["suite"], []).append((entry, status))
++
++    testsuites = ET.Element(
++        "testsuites",
++        {
++            "name": "verifier",
++            "tests": str(len(selection)),
++            "failures": str(failures),
++            "errors": str(errors),
++            "skipped": str(skipped),
++            "time": "%.3f" % duration,
++        },
++    )
++    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
++    for suite_name in ("p2p", "f2p"):
++        entries = suites.get(suite_name)
++        if not entries:
++            continue
++        suite_failures = sum(1 for _, status in entries if status == "fail")
++        suite_errors = sum(1 for _, status in entries if status == "error")
++        suite_skipped = sum(1 for _, status in entries if status in ("skip", "notrun"))
++        testsuite = ET.SubElement(
++            testsuites,
++            "testsuite",
++            {
++                "name": suite_name,
++                "tests": str(len(entries)),
++                "failures": str(suite_failures),
++                "errors": str(suite_errors),
++                "skipped": str(suite_skipped),
++                "time": "%.3f" % duration,
++                "timestamp": timestamp,
++            },
++        )
++        for entry, status in entries:
++            leaf = entry["leaf"]
++            testcase = ET.SubElement(
++                testsuite,
++                "testcase",
++                {
++                    "classname": entry["file"] or suite_name,
++                    "name": leaf,
++                    "time": "%.3f" % (0.0 if status == "notrun" else 0.001),
++                },
++            )
++            text = "".join(outputs.get(leaf, [])).strip()
++            if status == "fail":
++                failure = ET.SubElement(testcase, "failure", {"type": "AssertionError", "message": "test failed"})
++                failure.text = text or "test failed"
++            elif status == "error":
++                error = ET.SubElement(
++                    testcase, "error", execution_error_attributes(text or build_output)
++                )
++                error.text = (build_output or text or "go test build/exec failure").strip()[:20000]
++            elif status == "skip":
++                skipped_node = ET.SubElement(testcase, "skipped", {"message": "SKIPPED"})
++                skipped_node.text = text
++            elif status == "notrun":
++                skipped_node = ET.SubElement(
++                    testcase, "skipped", {"message": "NOT_RUN: node was not collected by go test"}
++                )
++                skipped_node.text = text
++            if text and status == "pass":
++                system_out = ET.SubElement(testcase, "system-out")
++                system_out.text = text
++    return testsuites
++
++
++def main():
++    parser = argparse.ArgumentParser(description="Verifier P2P+F2P JUnit runner")
++    parser.add_argument("--report", required=True)
++    parser.add_argument("--config", action="append", default=[])
++    parser.add_argument("--select", action="append", default=[])
++    arguments = parser.parse_args()
++
++    config_selection = load_config(list(arguments.config))
++    select_selection = load_select_files(list(arguments.select))
++
++    p2p_entries = list(config_selection["p2p"]) + list(select_selection)
++    f2p_entries = list(config_selection["f2p"])
++    selection = merge_selection(p2p_entries, f2p_entries)
++
++    report_path = os.path.abspath(arguments.report)
++    report_dir = os.path.dirname(report_path)
++    if report_dir:
++        os.makedirs(report_dir, exist_ok=True)
++
++    if not selection:
++        report = build_report([], {}, {}, False, "", 0.0)
++        ET.ElementTree(report).write(report_path, encoding="UTF-8", xml_declaration=True)
++        sys.stderr.write(
++            "f2p_runner: no P2P/F2P selectors were declared by --config/--select, report=%s\n"
++            % report_path
++        )
++        return 0
++
++    leaves = [entry["leaf"] for entry in selection]
++    env = prepare_environment()
++    output, returncode, duration, timed_out = run_go_test(leaves, env)
++    results, outputs, saw_test_event = parse_go_test_events(output)
++    build_failed = (not saw_test_event) and (returncode != 0 or timed_out)
++
++    if timed_out:
++        for leaf in leaves:
++            results.setdefault(leaf, "error")
++            outputs.setdefault(leaf, []).append(
++                "runner internal timeout after %ss\n" % INTERNAL_TIMEOUT_SECONDS
++            )
++
++    report = build_report(selection, results, outputs, build_failed, output, duration)
++    ET.ElementTree(report).write(report_path, encoding="UTF-8", xml_declaration=True)
++
++    passed = sum(1 for leaf in leaves if results.get(leaf) == "pass")
++    sys.stderr.write(
++        "f2p_runner: %d/%d nodes passed, go test exit=%s, report=%s\n"
++        % (passed, len(selection), returncode, report_path)
++    )
++    return int(returncode != 0 or passed != len(selection))
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tests/p2p_runner.py b/tests/p2p_runner.py
+new file mode 100755
+index 0000000000000000000000000000000000000000..96bbd0257443c2598748de226132fbefb0fcdecc
+--- /dev/null
++++ b/tests/p2p_runner.py
+@@ -0,0 +1,359 @@
++#!/usr/bin/env python3
++"""P2P JUnit report producer for the qBittorrent-ClientBlocker Go package.
++
++The runner is invoked from the repository root by the frozen verifier command:
++
++    python3 tests/p2p_runner.py --report <junit.xml> \
++        --select <p2p_select> --config <config.json>
++
++It collects the declared P2P selection (from the pipeline supplied selection
++file when one is readable, otherwise from the declaration below), executes the
++selected Go test leaves with `go test -json` and converts the native test
++events into a conventional JUnit XML report. It never installs or downloads
++anything: only the repository and the frozen image toolchain are used.
++"""
++
++import argparse
++import json
++import os
++import re
++import shutil
++import subprocess
++import sys
++import time
++import xml.etree.ElementTree as ET
++
++REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++PACKAGE_DIR = REPO_ROOT
++
++# Declared P2P selection (exact leaves). Supplemental leaves live in
++# client_BitComet_p2p_test.go, restored Baseline leaves live in client_test.go.
++DECLARED_SELECTION = [
++    ("client_BitComet_p2p_test.go", "TestP2PDetectionPrefersJSONAPIOn200"),
++    ("client_BitComet_p2p_test.go", "TestP2PDetectionAcceptsJSONAPIUnauthorized"),
++    ("client_BitComet_p2p_test.go", "TestP2PDetectionFallsBackToLegacyPanelChallenge"),
++    ("client_BitComet_p2p_test.go", "TestP2PDetectionRejectsPanelWithoutBitCometChallenge"),
++    ("client_BitComet_p2p_test.go", "TestP2PDetectionRejectsPanelWhenStatusIsNotUnauthorized"),
++    ("client_BitComet_p2p_test.go", "TestP2PJSONAPIFetchTorrentsFiltersBTAndMapsFields"),
++    ("client_BitComet_p2p_test.go", "TestP2PJSONAPIFetchTorrentPeersConvertsProgress"),
++    ("client_BitComet_p2p_test.go", "TestP2PJSONAPILoginSucceedsOnPanelEndpoint"),
++    ("client_BitComet_p2p_test.go", "TestP2PJSONAPISubmitBlockPeerGroupsByInfoHash"),
++    ("client_BitComet_p2p_test.go", "TestP2PJSONAPISubmitBlockPeerFailsWhenAnyBanRejected"),
++    ("client_BitComet_p2p_test.go", "TestP2PLegacyFetchTorrentsParsesPanelTaskTable"),
++    ("client_BitComet_p2p_test.go", "TestP2PLegacyFetchTorrentPeersSkipsNonRemoteAddress"),
++    ("client_BitComet_p2p_test.go", "TestP2PLegacyUnsupportedOperationsKeepFailing"),
++    ("client_BitComet_p2p_test.go", "TestP2PLegacyLoginSucceedsOnPanelEndpoint"),
++    ("client_BitComet_p2p_test.go", "TestP2PForcedBitCometDetectionKeepsFailureInstance"),
++    ("client_BitComet_p2p_test.go", "TestP2PClientInterfaceContractPreserved"),
++    ("client_BitComet_p2p_test.go", "TestP2PSharedModelsPreserved"),
++    ("client_BitComet_p2p_test.go", "TestP2PConfiguredQBitTorrentStillSelected"),
++    ("client_BitComet_p2p_test.go", "TestP2PConfiguredTransmissionStillSelected"),
++    ("client_test.go", "TestIsSupportClient"),
++    ("client_test.go", "TestIsBanPort"),
++    ("client_test.go", "TestSubmitBlockPeer_NilInput"),
++    ("client_test.go", "TestTrTorrentToTorrent"),
++]
++
++SELECTOR_PATTERN = re.compile(r"(?:([A-Za-z0-9_./\\-]+\.go)::)?\b(Test[A-Za-z0-9_]+)\b")
++INTERNAL_TIMEOUT_SECONDS = 480
++
++
++def find_go_binary():
++    found = shutil.which("go")
++    if found:
++        return found
++    for candidate in (
++        "/usr/local/go/bin/go",
++        "/usr/lib/go/bin/go",
++        "/opt/envpipe/runtime/bin/go",
++        "/usr/local/bin/go",
++    ):
++        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
++            return candidate
++    return "go"
++
++
++def load_selection(select_paths):
++    """Read the pipeline supplied selection inputs; only Test leaves are used."""
++    selection = []
++    seen = set()
++    for select_path in select_paths:
++        if not select_path or select_path.startswith("{"):
++            continue
++        try:
++            if not os.path.isfile(select_path):
++                continue
++            with open(select_path, "r", encoding="utf-8", errors="replace") as handle:
++                text = handle.read()
++        except OSError:
++            continue
++        for match in SELECTOR_PATTERN.finditer(text):
++            file_path = match.group(1) or ""
++            leaf = match.group(2)
++            if leaf in seen:
++                continue
++            seen.add(leaf)
++            selection.append((file_path, leaf))
++    return selection
++
++
++DECLARED_FILES = [file_path for file_path, _ in DECLARED_SELECTION]
++ORIGINAL_LEAVES = [
++    leaf for file_path, leaf in DECLARED_SELECTION if file_path == "client_test.go"
++]
++
++
++def normalize_file(file_path):
++    """Map a selector path onto the declared repository relative file name."""
++    if not file_path:
++        return ""
++    if file_path in DECLARED_FILES:
++        return file_path
++    base_name = os.path.basename(file_path.replace("\\", "/"))
++    if base_name in DECLARED_FILES:
++        return base_name
++    return file_path
++
++
++def prepare_environment():
++    env = dict(os.environ)
++    env.setdefault("GO111MODULE", "on")
++    env["GOPROXY"] = "off"
++    if not env.get("HOME"):
++        env["HOME"] = os.environ.get("TMPDIR") or "/tmp"
++    exec_dir = os.environ.get("VERIFIER_EXEC_DIR", "").strip()
++    if exec_dir:
++        try:
++            gocache = os.path.join(exec_dir, "gocache")
++            gotmp = os.path.join(exec_dir, "gotmp")
++            os.makedirs(gocache, exist_ok=True)
++            os.makedirs(gotmp, exist_ok=True)
++            env["GOCACHE"] = gocache
++            env["GOTMPDIR"] = gotmp
++            env["TMPDIR"] = gotmp
++        except OSError:
++            pass
++    if not env.get("GOMODCACHE"):
++        default_cache = os.path.join(os.path.expanduser("~"), "go", "pkg", "mod")
++        if os.path.isdir(default_cache):
++            env["GOMODCACHE"] = default_cache
++    if not os.path.isdir(env.get("GOMODCACHE", "")) and os.path.isdir("/root/go/pkg/mod"):
++        env["GOMODCACHE"] = "/root/go/pkg/mod"
++    return env
++
++
++def run_go_test(leaves, env):
++    run_pattern = "^(?:" + "|".join(sorted(leaves)) + ")$"
++    command = [
++        find_go_binary(),
++        "test",
++        "-count=1",
++        "-vet=off",
++        "-json",
++        "-timeout",
++        "240s",
++        "-run",
++        run_pattern,
++        ".",
++    ]
++    started = time.time()
++    try:
++        completed = subprocess.run(
++            command,
++            cwd=PACKAGE_DIR,
++            env=env,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT,
++            text=True,
++            timeout=INTERNAL_TIMEOUT_SECONDS,
++        )
++        return completed.stdout, completed.returncode, time.time() - started, False
++    except subprocess.TimeoutExpired as timeout_error:
++        output = timeout_error.stdout or ""
++        if isinstance(output, bytes):
++            output = output.decode("utf-8", "replace")
++        return output, -1, time.time() - started, True
++    except OSError as os_error:
++        return "runner error: %s" % os_error, -1, time.time() - started, False
++
++
++def parse_go_test_events(output):
++    results = {}
++    outputs = {}
++    saw_test_event = False
++    for line in output.splitlines():
++        line = line.strip()
++        if not line.startswith("{"):
++            continue
++        try:
++            event = json.loads(line)
++        except ValueError:
++            continue
++        if not isinstance(event, dict):
++            continue
++        action = event.get("Action")
++        test_name = event.get("Test")
++        if not test_name:
++            continue
++        saw_test_event = True
++        leaf = test_name.split("/")[0]
++        if action == "output":
++            outputs.setdefault(leaf, []).append(event.get("Output", ""))
++        elif action == "run" and "/" not in test_name:
++            results[leaf] = "running"
++        elif action in ("pass", "fail", "skip") and "/" not in test_name:
++            # Only the completed parent event establishes the selected outcome.
++            results[leaf] = action
++    return results, outputs, saw_test_event
++
++
++def execution_error_attributes(output):
++    """Type operational failures without treating Go crashes as assertions."""
++    if re.search(r"(?m)^panic: test timed out after ", output):
++        return {"type": "TimeoutError", "message": "go test timeout"}
++    if re.search(r"(?m)^(panic:|fatal error:|signal:|runtime:)", output):
++        return {"type": "ProcessCrash", "message": "go test process crash"}
++    if re.search(r"module lookup disabled|missing go.sum entry|no required module provides package", output):
++        return {"type": "SetupError", "phase": "setup", "message": "go test dependency setup error"}
++    if "[build failed]" in output:
++        return {"type": "CompileError", "phase": "compile", "message": "go test compile error"}
++    if output.startswith("runner error:"):
++        return {"type": "ExecutionError", "message": "go test execution error"}
++    if "runner internal timeout after" in output:
++        return {"type": "TimeoutError", "message": "go test timeout"}
++    return {"type": "GoExecutionError", "message": "go test could not execute the node"}
++
++
++def build_report(selection, results, outputs, build_failed, build_output, duration):
++    failures = 0
++    errors = 0
++    skipped = 0
++    testcases = []
++    for file_path, leaf in selection:
++        outcome = results.get(leaf)
++        if outcome == "pass":
++            status = "pass"
++        elif outcome == "fail":
++            text = "".join(outputs.get(leaf, []))
++            crashed = re.search(r"(?m)^(panic:|fatal error:|signal:|runtime:)", text)
++            status = "error" if crashed else "fail"
++        elif outcome in ("running", "error"):
++            status = "error"
++        elif outcome == "skip":
++            status = "skip"
++        else:
++            status = "error" if build_failed else "notrun"
++        if status == "fail":
++            failures += 1
++        elif status == "error":
++            errors += 1
++        elif status in ("skip", "notrun"):
++            skipped += 1
++        testcases.append((file_path, leaf, status, outputs.get(leaf, [])))
++
++    testsuites = ET.Element(
++        "testsuites",
++        {
++            "name": "p2p",
++            "tests": str(len(testcases)),
++            "failures": str(failures),
++            "errors": str(errors),
++            "skipped": str(skipped),
++            "time": "%.3f" % duration,
++        },
++    )
++    testsuite = ET.SubElement(
++        testsuites,
++        "testsuite",
++        {
++            "name": "p2p",
++            "tests": str(len(testcases)),
++            "failures": str(failures),
++            "errors": str(errors),
++            "skipped": str(skipped),
++            "time": "%.3f" % duration,
++            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
++        },
++    )
++    for file_path, leaf, status, leaf_output in testcases:
++        testcase = ET.SubElement(
++            testsuite,
++            "testcase",
++            {
++                "classname": file_path or "p2p",
++                "name": leaf,
++                "time": "%.3f" % (0.0 if status == "notrun" else 0.001),
++            },
++        )
++        text = "".join(leaf_output).strip()
++        if status == "fail":
++            failure = ET.SubElement(testcase, "failure", {"type": "AssertionError", "message": "test failed"})
++            failure.text = text or "test failed"
++        elif status == "error":
++            error = ET.SubElement(
++                testcase, "error", execution_error_attributes(text or build_output)
++            )
++            error.text = (build_output or text or "go test build/exec failure").strip()[:20000]
++        elif status == "skip":
++            skipped_node = ET.SubElement(testcase, "skipped", {"message": "SKIPPED"})
++            skipped_node.text = text
++        elif status == "notrun":
++            skipped_node = ET.SubElement(
++                testcase, "skipped", {"message": "NOT_RUN: node was not collected by go test"}
++            )
++            skipped_node.text = text
++        if text and status == "pass":
++            system_out = ET.SubElement(testcase, "system-out")
++            system_out.text = text
++    return testsuites
++
++
++def main():
++    parser = argparse.ArgumentParser(description="P2P JUnit runner")
++    parser.add_argument("--report", required=True)
++    parser.add_argument("--select", action="append", default=[])
++    parser.add_argument("--config", action="append", default=[])
++    arguments = parser.parse_args()
++
++    selection = load_selection(list(arguments.select) + list(arguments.config))
++    if selection:
++        selection = [(normalize_file(file_path), leaf) for file_path, leaf in selection]
++        selected_leaves = set(leaf for _, leaf in selection)
++        # The execution report must always cover the restored Baseline nodes
++        # declared in original_inventory, so keep them in the run even when a
++        # narrower selection file is supplied.
++        for leaf in ORIGINAL_LEAVES:
++            if leaf not in selected_leaves:
++                selection.append(("client_test.go", leaf))
++                selected_leaves.add(leaf)
++    else:
++        selection = list(DECLARED_SELECTION)
++
++    leaves = [leaf for _, leaf in selection]
++    env = prepare_environment()
++    output, returncode, duration, timed_out = run_go_test(leaves, env)
++    results, outputs, saw_test_event = parse_go_test_events(output)
++    build_failed = (not saw_test_event) and (returncode != 0 or timed_out)
++
++    if timed_out:
++        for leaf in leaves:
++            results.setdefault(leaf, "error")
++            outputs.setdefault(leaf, []).append("runner internal timeout after %ss\n" % INTERNAL_TIMEOUT_SECONDS)
++
++    report = build_report(selection, results, outputs, build_failed, output, duration)
++    report_path = os.path.abspath(arguments.report)
++    report_dir = os.path.dirname(report_path)
++    if report_dir:
++        os.makedirs(report_dir, exist_ok=True)
++    ET.ElementTree(report).write(report_path, encoding="UTF-8", xml_declaration=True)
++
++    passed = sum(1 for _, leaf in selection if results.get(leaf) == "pass")
++    sys.stderr.write(
++        "p2p_runner: %d/%d nodes passed, go test exit=%s, report=%s\n"
++        % (passed, len(selection), returncode, report_path)
++    )
++    return int(returncode != 0 or passed != len(selection))
++
++
++if __name__ == "__main__":
++    sys.exit(main())

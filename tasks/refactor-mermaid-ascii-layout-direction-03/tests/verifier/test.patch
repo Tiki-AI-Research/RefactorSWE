@@ -1,0 +1,4618 @@
+diff --git a/test/f2p/abstraction_harness_test.go b/test/f2p/abstraction_harness_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..10eee38b06b791a614eb1ad22a429e9a5aeaa327
+--- /dev/null
++++ b/test/f2p/abstraction_harness_test.go
+@@ -0,0 +1,2438 @@
++package f2p
++
++// This harness supplies the evidence machinery for the layout-direction
++// abstraction checks. It works on two levels:
++//
++//  1. Runtime observation: Parse the same graph with different Mermaid
++//     direction declarations and reflectively locate the stored direction
++//     state. This identifies the state and its declared type without any
++//     naming heuristic.
++//  2. Type-checked static analysis: load the non-test sources of pkg/graph
++//     with go/types, resolve every call to a concrete declaration, build the
++//     call graph and follow value flow through local assignments. That lets
++//     the checks state which method computes a decision and where its result
++//     is consumed, instead of only asserting that some literal is absent.
++//
++// The supported analysis includes a value type, a
++// struct or an interface with per-axis implementations all satisfy the
++// checks when source value flow can establish that the stored state has methods that
++// answer the axis-dependent questions and the layout code consumes them.
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"go/ast"
++	"go/importer"
++	"go/parser"
++	"go/token"
++	"go/types"
++	"io"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"reflect"
++	"sort"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/AlexanderGrooff/mermaid-ascii/pkg/graph"
++)
++
++// ---------------------------------------------------------------------------
++// runtime observation of the stored direction state
++// ---------------------------------------------------------------------------
++
++var directionProbeInputs = []struct {
++	label   string
++	mermaid string
++}{
++	{"LR", "graph LR\nA --> B"},
++	{"RL", "graph RL\nA --> B"},
++	{"TD", "graph TD\nA --> B"},
++	{"TB", "graph TB\nA --> B"},
++	{"BT", "graph BT\nA --> B"},
++	{"default", "graph\nA --> B"},
++}
++
++type observedDirectionState struct {
++	field string
++	typ   reflect.Type
++}
++
++var (
++	directionStateOnce sync.Once
++	directionStates    []observedDirectionState
++	directionStateRepr map[string]map[string]string
++	directionStateErr  error
++)
++
++func graphPackagePath() string {
++	return reflect.TypeOf(graph.Properties{}).PkgPath()
++}
++
++func isPackageDeclaredType(t reflect.Type) bool {
++	for t != nil && t.Kind() == reflect.Pointer {
++		t = t.Elem()
++	}
++	return t != nil && t.Name() != "" && t.PkgPath() == graphPackagePath()
++}
++
++func underlyingKind(t reflect.Type) reflect.Kind {
++	for t != nil && t.Kind() == reflect.Pointer {
++		t = t.Elem()
++	}
++	if t == nil {
++		return reflect.Invalid
++	}
++	return t.Kind()
++}
++
++// observeDirectionState parses the probe inputs and reports the Properties
++// fields whose stored value differs between the horizontal and the vertical
++// axis, together with the rendered value of every probe for every such field.
++func observeDirectionState(t *testing.T) ([]observedDirectionState, map[string]map[string]string) {
++	t.Helper()
++	directionStateOnce.Do(func() {
++		directionStateRepr = map[string]map[string]string{}
++		type fieldType struct {
++			typ reflect.Type
++		}
++		fieldTypes := map[string]fieldType{}
++		for _, probe := range directionProbeInputs {
++			props, err := graph.Parse(probe.mermaid, "cli")
++			if err != nil {
++				directionStateErr = fmt.Errorf("Parse(%q) failed: %v", probe.mermaid, err)
++				return
++			}
++			value := reflect.ValueOf(props).Elem()
++			reprs := map[string]string{}
++			for i := 0; i < value.NumField(); i++ {
++				field := value.Type().Field(i)
++				reprs[field.Name] = valueRepr(value.Field(i), 0)
++				if _, ok := fieldTypes[field.Name]; !ok {
++					fieldTypes[field.Name] = fieldType{typ: field.Type}
++				}
++			}
++			directionStateRepr[probe.label] = reprs
++		}
++		horizontal := directionStateRepr["LR"]
++		vertical := directionStateRepr["TD"]
++		for _, field := range sortedKeys(horizontal) {
++			if horizontal[field] == vertical[field] {
++				continue
++			}
++			directionStates = append(directionStates, observedDirectionState{field: field, typ: fieldTypes[field].typ})
++		}
++	})
++	if directionStateErr != nil {
++		t.Fatalf("cannot observe the stored direction state: %v", directionStateErr)
++	}
++	if len(directionStates) == 0 {
++		t.Fatalf("no field of graph.Properties stores a value that differs between the LR and the TD declaration")
++	}
++	return directionStates, directionStateRepr
++}
++
++// isTokenRepr reports whether a rendered field value is exactly one of the
++// Mermaid direction tokens as a quoted string.
++func isTokenRepr(repr string) bool {
++	if len(repr) < 2 || !strings.HasPrefix(repr, `"`) || !strings.HasSuffix(repr, `"`) {
++		return false
++	}
++	return directionTokens[strings.ToUpper(strings.Trim(repr, `"`))]
++}
++
++// axisStateFields keeps the differing fields that really carry the layout
++// axis: a package-declared carrier type, or (for the unfixed baseline) a
++// field whose value is a raw direction-token string. Fields whose rendered
++// value differs for unrelated reasons (for example map iteration order in the
++// parsed data structures) are ignored.
++func axisStateFields(t *testing.T) []observedDirectionState {
++	t.Helper()
++	states, reprs := observeDirectionState(t)
++	var out []observedDirectionState
++	for _, state := range states {
++		if isPackageDeclaredType(state.typ) {
++			out = append(out, state)
++			continue
++		}
++		if isTokenRepr(reprs["LR"][state.field]) || isTokenRepr(reprs["TD"][state.field]) {
++			out = append(out, state)
++		}
++	}
++	return out
++}
++
++// directionStateFieldNames returns the names of the storage fields that carry
++// the layout axis.
++func directionStateFieldNames(t *testing.T) map[string]bool {
++	names := map[string]bool{}
++	for _, state := range axisStateFields(t) {
++		names[state.field] = true
++	}
++	return names
++}
++
++// carrierTypeNames returns the package-declared type names of the stored
++// direction state. Interface-typed state also contributes the dynamic
++// implementation types observed for both axes.
++func carrierTypeNames(t *testing.T) []string {
++	states, reprs := observeDirectionState(t)
++	names := map[string]bool{}
++	for _, state := range states {
++		if isPackageDeclaredType(state.typ) {
++			names[baseReflectName(state.typ)] = true
++		}
++		if state.typ.Kind() != reflect.Interface {
++			continue
++		}
++		for _, label := range []string{"LR", "RL", "TD", "TB", "BT", "default"} {
++			props, err := graph.Parse(probeMermaid(label), "cli")
++			if err != nil {
++				continue
++			}
++			value := reflect.ValueOf(props).Elem().FieldByName(state.field)
++			if value.Kind() != reflect.Interface || value.IsNil() {
++				continue
++			}
++			if dynamic := value.Elem().Type(); isPackageDeclaredType(dynamic) {
++				names[baseReflectName(dynamic)] = true
++			}
++		}
++		_ = reprs
++	}
++	out := make([]string, 0, len(names))
++	for name := range names {
++		out = append(out, name)
++	}
++	sort.Strings(out)
++	return out
++}
++
++func probeMermaid(label string) string {
++	for _, probe := range directionProbeInputs {
++		if probe.label == label {
++			return probe.mermaid
++		}
++	}
++	return directionProbeInputs[0].mermaid
++}
++
++func sortedKeys(m map[string]string) []string {
++	out := make([]string, 0, len(m))
++	for key := range m {
++		out = append(out, key)
++	}
++	sort.Strings(out)
++	return out
++}
++
++// valueRepr renders a reflect.Value without ever calling Interface(), which
++// would panic for unexported fields such as the ones this harness inspects.
++func valueRepr(v reflect.Value, depth int) string {
++	if !v.IsValid() {
++		return "<invalid>"
++	}
++	if depth > 4 {
++		return v.Type().String() + "{...}"
++	}
++	switch v.Kind() {
++	case reflect.Interface:
++		if v.IsNil() {
++			return v.Type().String() + "(nil)"
++		}
++		return v.Type().String() + "(" + valueRepr(v.Elem(), depth+1) + ")"
++	case reflect.Pointer:
++		if v.IsNil() {
++			return v.Type().String() + "(nil)"
++		}
++		return v.Type().String() + "(" + valueRepr(v.Elem(), depth+1) + ")"
++	case reflect.Struct:
++		if v.Type().NumField() == 0 {
++			return v.Type().String() + "{}"
++		}
++		var parts []string
++		for i := 0; i < v.Type().NumField(); i++ {
++			field := v.Type().Field(i)
++			parts = append(parts, field.Name+":"+valueRepr(v.Field(i), depth+1))
++		}
++		return v.Type().String() + "{" + strings.Join(parts, ",") + "}"
++	case reflect.Bool:
++		return strconv.FormatBool(v.Bool())
++	case reflect.String:
++		return strconv.Quote(v.String())
++	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
++		return strconv.FormatInt(v.Int(), 10)
++	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
++		return strconv.FormatUint(v.Uint(), 10)
++	case reflect.Float32, reflect.Float64:
++		return strconv.FormatFloat(v.Float(), 'g', -1, 64)
++	case reflect.Slice, reflect.Array:
++		if v.Kind() == reflect.Slice && v.IsNil() {
++			return v.Type().String() + "(nil)"
++		}
++		var parts []string
++		for i := 0; i < v.Len() && i < 8; i++ {
++			parts = append(parts, valueRepr(v.Index(i), depth+1))
++		}
++		return v.Type().String() + "[" + strings.Join(parts, ",") + "]"
++	case reflect.Map:
++		if v.IsNil() {
++			return v.Type().String() + "(nil)"
++		}
++		keys := v.MapKeys()
++		var parts []string
++		for i, key := range keys {
++			if i >= 8 {
++				break
++			}
++			parts = append(parts, valueRepr(key, depth+1)+":"+valueRepr(v.MapIndex(key), depth+1))
++		}
++		sort.Strings(parts)
++		return v.Type().String() + "{" + strings.Join(parts, ",") + "}"
++	default:
++		return v.Type().String()
++	}
++}
++
++// ---------------------------------------------------------------------------
++// type-checked static analysis of pkg/graph
++// ---------------------------------------------------------------------------
++
++type analysisCall struct {
++	caller     *ast.FuncDecl
++	call       *ast.CallExpr
++	callee     *types.Func
++	calleeDecl *ast.FuncDecl
++}
++
++type graphPackage struct {
++	fset         *token.FileSet
++	pkg          *types.Package
++	info         *types.Info
++	files        []*ast.File
++	fileOf       map[*ast.File]string
++	decls        []*ast.FuncDecl
++	declOfFunc   map[*types.Func]*ast.FuncDecl
++	funcOfDecl   map[*ast.FuncDecl]*types.Func
++	callsByDecl  map[*ast.FuncDecl][]analysisCall
++	allCalls     []analysisCall
++	parents      map[ast.Node]ast.Node
++	namedTypes   map[string]*types.Named
++	structFields map[string]map[string]types.Type
++	loaded       bool
++}
++
++var (
++	graphPackageOnce sync.Once
++	graphPackageVal  *graphPackage
++	graphPackageErr  error
++)
++
++func loadGraphPackage(t *testing.T) *graphPackage {
++	t.Helper()
++	graphPackageOnce.Do(func() {
++		graphPackageVal, graphPackageErr = buildGraphPackage()
++	})
++	if graphPackageErr != nil {
++		panic(fmt.Sprintf("source analysis infrastructure error: %v", graphPackageErr))
++	}
++	return graphPackageVal
++}
++
++func buildGraphPackage() (*graphPackage, error) {
++	root, err := repositoryRoot()
++	if err != nil {
++		return nil, err
++	}
++	dir := filepath.Join(root, "pkg", "graph")
++	entries, err := os.ReadDir(dir)
++	if err != nil {
++		return nil, err
++	}
++	g := &graphPackage{
++		fset:         token.NewFileSet(),
++		fileOf:       map[*ast.File]string{},
++		declOfFunc:   map[*types.Func]*ast.FuncDecl{},
++		funcOfDecl:   map[*ast.FuncDecl]*types.Func{},
++		callsByDecl:  map[*ast.FuncDecl][]analysisCall{},
++		parents:      map[ast.Node]ast.Node{},
++		namedTypes:   map[string]*types.Named{},
++		structFields: map[string]map[string]types.Type{},
++	}
++	var names []string
++	for _, entry := range entries {
++		name := entry.Name()
++		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
++			continue
++		}
++		names = append(names, name)
++	}
++	sort.Strings(names)
++	for _, name := range names {
++		abs := filepath.Join(dir, name)
++		parsed, parseErr := parser.ParseFile(g.fset, abs, nil, parser.ParseComments|parser.AllErrors)
++		if parseErr != nil {
++			return nil, fmt.Errorf("parse %s: %w", abs, parseErr)
++		}
++		g.files = append(g.files, parsed)
++		g.fileOf[parsed] = "pkg/graph/" + name
++	}
++	g.info = &types.Info{
++		Types:      map[ast.Expr]types.TypeAndValue{},
++		Defs:       map[*ast.Ident]types.Object{},
++		Uses:       map[*ast.Ident]types.Object{},
++		Selections: map[*ast.SelectorExpr]*types.Selection{},
++		Scopes:     map[ast.Node]*types.Scope{},
++	}
++
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
++	defer cancel()
++	cmd := exec.CommandContext(ctx, "go", "list", "-mod=readonly", "-export", "-deps", "-json", ".")
++	cmd.Dir = dir
++	data, err := cmd.Output()
++	if err != nil {
++		return nil, fmt.Errorf("go list export data: %w", err)
++	}
++	exports := map[string]string{}
++	dec := json.NewDecoder(bytes.NewReader(data))
++	for {
++		var row struct{ ImportPath, Export string }
++		err = dec.Decode(&row)
++		if err == io.EOF {
++			break
++		}
++		if err != nil {
++			return nil, err
++		}
++		exports[row.ImportPath] = row.Export
++	}
++	imp := importer.ForCompiler(g.fset, "gc", func(path string) (io.ReadCloser, error) {
++		if exports[path] == "" {
++			return nil, fmt.Errorf("missing compiler export for %s", path)
++		}
++		return os.Open(exports[path])
++	})
++	conf := types.Config{Importer: imp}
++	pkg, err := conf.Check("github.com/AlexanderGrooff/mermaid-ascii/pkg/graph", g.fset, g.files, g.info)
++	if err != nil {
++		return nil, fmt.Errorf("source type check: %w", err)
++	}
++	g.pkg = pkg
++
++	for _, file := range g.files {
++		ast.Inspect(file, func(node ast.Node) bool {
++			if node != nil && node != file {
++				// parent map is filled by the explicit walk below
++			}
++			return true
++		})
++		for _, decl := range file.Decls {
++			if fn, ok := decl.(*ast.FuncDecl); ok {
++				g.decls = append(g.decls, fn)
++			}
++		}
++		g.buildParents(file)
++	}
++	for _, scope := range []*types.Scope{g.pkg.Scope()} {
++		for _, name := range scope.Names() {
++			obj := scope.Lookup(name)
++			named, ok := obj.Type().(*types.Named)
++			if !ok {
++				continue
++			}
++			g.namedTypes[name] = named
++			if structType, ok := named.Underlying().(*types.Struct); ok {
++				fields := map[string]types.Type{}
++				for i := 0; i < structType.NumFields(); i++ {
++					fields[structType.Field(i).Name()] = structType.Field(i).Type()
++				}
++				g.structFields[name] = fields
++			}
++		}
++	}
++	for _, decl := range g.decls {
++		if obj, ok := g.info.Defs[decl.Name].(*types.Func); ok {
++			g.funcOfDecl[decl] = obj
++			g.declOfFunc[obj] = decl
++		}
++	}
++	for _, decl := range g.decls {
++		g.collectCalls(decl)
++	}
++	return g, nil
++}
++
++func (g *graphPackage) buildParents(root ast.Node) {
++	var stack []ast.Node
++	ast.Inspect(root, func(node ast.Node) bool {
++		if node == nil {
++			if len(stack) > 0 {
++				stack = stack[:len(stack)-1]
++			}
++			return true
++		}
++		if len(stack) > 0 {
++			g.parents[node] = stack[len(stack)-1]
++		}
++		stack = append(stack, node)
++		return true
++	})
++}
++
++func (g *graphPackage) collectCalls(decl *ast.FuncDecl) {
++	if decl.Body == nil {
++		return
++	}
++	ast.Inspect(decl.Body, func(node ast.Node) bool {
++		switch typed := node.(type) {
++		case *ast.FuncLit:
++			// Attribute calls inside closures to the enclosing declaration.
++			return true
++		case *ast.CallExpr:
++			callee := g.resolveCallee(typed)
++			call := analysisCall{caller: decl, call: typed, callee: callee}
++			if callee != nil {
++				call.calleeDecl = g.declOfFunc[callee]
++			}
++			g.callsByDecl[decl] = append(g.callsByDecl[decl], call)
++			g.allCalls = append(g.allCalls, call)
++		}
++		return true
++	})
++}
++
++func (g *graphPackage) resolveCallee(call *ast.CallExpr) *types.Func {
++	switch fun := call.Fun.(type) {
++	case *ast.Ident:
++		if obj, ok := g.info.Uses[fun].(*types.Func); ok {
++			return obj
++		}
++	case *ast.SelectorExpr:
++		if selection, ok := g.info.Selections[fun]; ok {
++			if obj, ok := selection.Obj().(*types.Func); ok {
++				return obj
++			}
++		}
++		if obj, ok := g.info.Uses[fun.Sel].(*types.Func); ok {
++			return obj
++		}
++	}
++	return nil
++}
++
++func (g *graphPackage) fileOfNode(node ast.Node) string {
++	for node != nil {
++		if file, ok := node.(*ast.File); ok {
++			return g.fileOf[file]
++		}
++		node = g.parents[node]
++	}
++	return "<unknown>"
++}
++
++func (g *graphPackage) declsNamed(name string) []*ast.FuncDecl {
++	var out []*ast.FuncDecl
++	for _, decl := range g.decls {
++		if decl.Name.Name == name {
++			out = append(out, decl)
++		}
++	}
++	return out
++}
++
++func (g *graphPackage) reachableFrom(roots []*ast.FuncDecl) map[*ast.FuncDecl]bool {
++	seen := map[*ast.FuncDecl]bool{}
++	var queue []*ast.FuncDecl
++	for _, root := range roots {
++		if root != nil && !seen[root] {
++			seen[root] = true
++			queue = append(queue, root)
++		}
++	}
++	for len(queue) > 0 {
++		decl := queue[0]
++		queue = queue[1:]
++		for _, call := range g.callsByDecl[decl] {
++			if call.calleeDecl != nil && !seen[call.calleeDecl] {
++				seen[call.calleeDecl] = true
++				queue = append(queue, call.calleeDecl)
++			}
++		}
++	}
++	return seen
++}
++
++// parseCone is the declaration-parsing cone: Parse and every function it can
++// reach. It is where the Mermaid declaration vocabulary is allowed to live.
++func (g *graphPackage) parseCone() map[*ast.FuncDecl]bool {
++	return g.reachableFrom(g.declsNamed("Parse"))
++}
++
++// layoutCone is the rendering cone: Draw and every function it can reach.
++func (g *graphPackage) layoutCone() map[*ast.FuncDecl]bool {
++	return g.reachableFrom(g.declsNamed("Draw"))
++}
++
++// ---------------------------------------------------------------------------
++// token vocabulary occurrences
++// ---------------------------------------------------------------------------
++
++type tokenOccurrence struct {
++	file string
++	line int
++	tok  string
++	decl *ast.FuncDecl
++	spec *ast.ValueSpec
++}
++
++func (o tokenOccurrence) String() string {
++	where := "package scope"
++	if o.decl != nil {
++		where = "func " + o.decl.Name.Name
++	}
++	return fmt.Sprintf("%s:%d (%q in %s)", o.file, o.line, o.tok, where)
++}
++
++// tokenOccurrencesOutsideParseCone returns every occurrence of an exact
++// Mermaid direction token (literal or string constant reference) that is not
++// inside the declaration-parsing cone and not inside a package-level
++// var/const initializer that the parsing cone references. Those occurrences
++// are the places where a component other than the single mapping point
++// reinterprets direction strings.
++func (g *graphPackage) tokenOccurrencesOutsideParseCone() []tokenOccurrence {
++	cone := g.parseCone()
++	allowedObjects := g.parseConeReferencedObjects(cone)
++	var out []tokenOccurrence
++	record := func(node ast.Node, tok string) {
++		pos := g.fset.Position(node.Pos())
++		occ := tokenOccurrence{file: g.fileOfNode(node), line: pos.Line, tok: tok}
++		switch enclosing := g.enclosingFunc(node); {
++		case enclosing != nil:
++			occ.decl = enclosing
++			if cone[enclosing] || g.tokenIsRepresentation(node, enclosing) {
++				return
++			}
++		default:
++			spec := g.enclosingValueSpec(node)
++			occ.spec = spec
++			if spec != nil && allowedObjects[g.specObject(spec)] {
++				return
++			}
++		}
++		out = append(out, occ)
++	}
++	for _, file := range g.files {
++		var currentSpec *ast.ValueSpec
++		ast.Inspect(file, func(node ast.Node) bool {
++			switch typed := node.(type) {
++			case *ast.GenDecl:
++				if typed.Tok != token.VAR && typed.Tok != token.CONST {
++					return true
++				}
++				for _, spec := range typed.Specs {
++					valueSpec, ok := spec.(*ast.ValueSpec)
++					if !ok {
++						continue
++					}
++					currentSpec = valueSpec
++					for _, value := range valueSpec.Values {
++						collectTokenLiterals(value, record)
++					}
++					for _, value := range valueSpec.Values {
++						collectTokenConstantRefs(g, value, record)
++					}
++					currentSpec = nil
++				}
++				return true
++			case *ast.FuncDecl:
++				if typed.Body == nil {
++					return true
++				}
++				ast.Inspect(typed.Body, func(inner ast.Node) bool {
++					if lit, ok := inner.(*ast.BasicLit); ok {
++						if tok, ok := tokenLiteral(lit); ok {
++							record(lit, tok)
++						}
++						return true
++					}
++					if ident, ok := inner.(*ast.Ident); ok {
++						if tok, ok := g.tokenConstantValue(ident); ok {
++							record(ident, tok)
++						}
++						return true
++					}
++					if expr, ok := inner.(ast.Expr); ok {
++						if tok, ok := g.tokenConstantExpr(expr); ok {
++							record(expr, tok)
++						}
++					}
++					return true
++				})
++				return false
++			}
++			_ = currentSpec
++			return true
++		})
++	}
++	sort.Slice(out, func(i, j int) bool {
++		if out[i].file != out[j].file {
++			return out[i].file < out[j].file
++		}
++		return out[i].line < out[j].line
++	})
++	return out
++}
++
++func collectTokenLiterals(node ast.Node, record func(ast.Node, string)) {
++	ast.Inspect(node, func(inner ast.Node) bool {
++		if lit, ok := inner.(*ast.BasicLit); ok {
++			if tok, ok := tokenLiteral(lit); ok {
++				record(lit, tok)
++			}
++		}
++		return true
++	})
++}
++
++func collectTokenConstantRefs(g *graphPackage, node ast.Node, record func(ast.Node, string)) {
++	ast.Inspect(node, func(inner ast.Node) bool {
++		if ident, ok := inner.(*ast.Ident); ok {
++			if tok, ok := g.tokenConstantValue(ident); ok {
++				record(ident, tok)
++			}
++		}
++		return true
++	})
++}
++
++func (g *graphPackage) tokenConstantValue(ident *ast.Ident) (string, bool) {
++	obj, ok := g.info.Uses[ident].(*types.Const)
++	if !ok {
++		return "", false
++	}
++	value := strings.ToUpper(strings.Trim(obj.Val().String(), `"`))
++	if directionTokens[value] {
++		return value, true
++	}
++	return "", false
++}
++
++// tokenConstantExpr evaluates any constant string expression (including
++// concatenations such as "L"+"R") and reports it when the folded value is a
++// direction token, so the vocabulary check cannot be evaded by splitting the
++// literal.
++func (g *graphPackage) tokenConstantExpr(expr ast.Expr) (string, bool) {
++	tv, ok := g.info.Types[expr]
++	if !ok || tv.Value == nil {
++		return "", false
++	}
++	if basic, ok := tv.Type.Underlying().(*types.Basic); !ok || basic.Info()&types.IsString == 0 {
++		return "", false
++	}
++	value := strings.ToUpper(strings.Trim(tv.Value.String(), `"`))
++	if directionTokens[value] {
++		return value, true
++	}
++	return "", false
++}
++
++func (g *graphPackage) enclosingFunc(node ast.Node) *ast.FuncDecl {
++	for current := node; current != nil; current = g.parents[current] {
++		if decl, ok := current.(*ast.FuncDecl); ok {
++			return decl
++		}
++	}
++	return nil
++}
++
++func (g *graphPackage) enclosingValueSpec(node ast.Node) *ast.ValueSpec {
++	for current := node; current != nil; current = g.parents[current] {
++		if spec, ok := current.(*ast.ValueSpec); ok {
++			return spec
++		}
++	}
++	return nil
++}
++
++func (g *graphPackage) specObject(spec *ast.ValueSpec) types.Object {
++	for _, name := range spec.Names {
++		if obj := g.info.Defs[name]; obj != nil {
++			return obj
++		}
++	}
++	return nil
++}
++
++// parseConeReferencedObjects returns package-level objects referenced from
++// the parsing cone, transitively through initializers. A declaration mapping
++// implemented as a package-level lookup table stays inside the mapping point.
++func (g *graphPackage) parseConeReferencedObjects(cone map[*ast.FuncDecl]bool) map[types.Object]bool {
++	allowed := map[types.Object]bool{}
++	var pending []ast.Node
++	for decl := range cone {
++		if decl.Body != nil {
++			pending = append(pending, decl.Body)
++		}
++	}
++	visit := func(node ast.Node) {
++		ast.Inspect(node, func(inner ast.Node) bool {
++			ident, ok := inner.(*ast.Ident)
++			if !ok {
++				return true
++			}
++			obj := g.info.Uses[ident]
++			if obj == nil || obj.Pkg() != g.pkg || obj.Parent() != g.pkg.Scope() {
++				return true
++			}
++			if !allowed[obj] {
++				allowed[obj] = true
++				pending = append(pending, g.nodeOfObject(obj))
++			}
++			return true
++		})
++	}
++	for len(pending) > 0 {
++		node := pending[0]
++		pending = pending[1:]
++		if node != nil {
++			visit(node)
++		}
++	}
++	return allowed
++}
++
++func (g *graphPackage) nodeOfObject(obj types.Object) ast.Node {
++	pos := obj.Pos()
++	for _, file := range g.files {
++		if file.Pos() <= pos && pos < file.End() {
++			var found ast.Node
++			ast.Inspect(file, func(node ast.Node) bool {
++				if found != nil || node == nil {
++					return false
++				}
++				if node.Pos() == pos {
++					found = node
++					return false
++				}
++				return true
++			})
++			if spec, ok := found.(*ast.ValueSpec); ok {
++				return spec
++			}
++			return g.specOfObject(file, obj)
++		}
++	}
++	return nil
++}
++
++func (g *graphPackage) specOfObject(file *ast.File, obj types.Object) ast.Node {
++	var out ast.Node
++	ast.Inspect(file, func(node ast.Node) bool {
++		if out != nil {
++			return false
++		}
++		spec, ok := node.(*ast.ValueSpec)
++		if !ok {
++			return true
++		}
++		for _, name := range spec.Names {
++			if g.info.Defs[name] == obj {
++				out = spec
++				return false
++			}
++		}
++		return true
++	})
++	return out
++}
++
++// ---------------------------------------------------------------------------
++// carrier family and role discovery
++// ---------------------------------------------------------------------------
++
++type carrierRoleMethod struct {
++	carrierType string
++	name        string
++	target      *types.Func
++	sig         *types.Signature
++	implDecls   []*ast.FuncDecl
++	implTypes   []string
++}
++
++func (g *graphPackage) carrierInterfaces(names []string) map[string]*types.Interface {
++	out := map[string]*types.Interface{}
++	for _, name := range names {
++		named, ok := g.namedTypes[name]
++		if !ok {
++			continue
++		}
++		if iface, ok := named.Underlying().(*types.Interface); ok {
++			out[name] = iface
++		}
++	}
++	return out
++}
++
++func (g *graphPackage) typesImplementing(iface *types.Interface) []string {
++	var out []string
++	for name, named := range g.namedTypes {
++		if _, isIface := named.Underlying().(*types.Interface); isIface {
++			continue
++		}
++		if types.Implements(named, iface) || types.Implements(types.NewPointer(named), iface) {
++			out = append(out, name)
++		}
++	}
++	sort.Strings(out)
++	return out
++}
++
++// methodsOfType lists methods declared on T or *T (T never being an
++// interface), resolving each to its declaration.
++func (g *graphPackage) methodsOfType(name string) []carrierRoleMethod {
++	named, ok := g.namedTypes[name]
++	if !ok {
++		return nil
++	}
++	if _, isIface := named.Underlying().(*types.Interface); isIface {
++		return nil
++	}
++	var out []carrierRoleMethod
++	seen := map[string]bool{}
++	for _, recvType := range []types.Type{named, types.NewPointer(named)} {
++		set := types.NewMethodSet(recvType)
++		for i := 0; i < set.Len(); i++ {
++			selection := set.At(i)
++			fn, ok := selection.Obj().(*types.Func)
++			if !ok || seen[fn.Name()] {
++				continue
++			}
++			seen[fn.Name()] = true
++			sig, _ := fn.Type().(*types.Signature)
++			out = append(out, carrierRoleMethod{
++				carrierType: name,
++				name:        fn.Name(),
++				target:      fn,
++				sig:         sig,
++				implDecls:   []*ast.FuncDecl{g.declOfFunc[fn]},
++				implTypes:   []string{name},
++			})
++		}
++	}
++	return out
++}
++
++// carrierMethods returns every method reachable through the carrier family.
++// For an interface carrier the call target is the interface method, while the
++// per-axis implementations contribute their bodies for outcome comparison.
++// carrierMethodIndex lists the methods of the carrier family together with a
++// lookup by the resolved call target. Interface carriers contribute their
++// interface methods; concrete types that merely implement such an interface
++// are used for outcome comparison but do not become separate carriers (calls
++// in the layout code dispatch through the interface).
++func (g *graphPackage) carrierMethodIndex(carrierNames []string) ([]carrierRoleMethod, map[*types.Func]carrierRoleMethod) {
++	interfaces := g.carrierInterfaces(carrierNames)
++	implementedBy := map[string]bool{}
++	for _, iface := range interfaces {
++		for _, impl := range g.typesImplementing(iface) {
++			implementedBy[impl] = true
++		}
++	}
++	var out []carrierRoleMethod
++	aliases := map[*types.Func]*types.Func{}
++	for _, name := range carrierNames {
++		if iface, isIface := interfaces[name]; isIface {
++			impls := g.typesImplementing(iface)
++			for i := 0; i < iface.NumMethods(); i++ {
++				fn := iface.Method(i)
++				sig, _ := fn.Type().(*types.Signature)
++				method := carrierRoleMethod{carrierType: name, name: fn.Name(), target: fn, sig: sig}
++				for _, impl := range impls {
++					if implMethod, decl := g.methodDeclOf(impl, fn.Name()); implMethod != nil {
++						method.implDecls = append(method.implDecls, decl)
++						method.implTypes = append(method.implTypes, impl)
++						if implMethod != fn {
++							aliases[implMethod] = fn
++						}
++					}
++				}
++				out = append(out, method)
++			}
++			continue
++		}
++		if implementedBy[name] {
++			continue
++		}
++		out = append(out, g.methodsOfType(name)...)
++	}
++	byTarget := map[*types.Func]carrierRoleMethod{}
++	for _, method := range out {
++		if method.target != nil {
++			byTarget[method.target] = method
++		}
++	}
++	for alias, target := range aliases {
++		if method, ok := byTarget[target]; ok {
++			byTarget[alias] = method
++		}
++	}
++	return out, byTarget
++}
++
++func (g *graphPackage) methodDeclOf(typeName, methodName string) (*types.Func, *ast.FuncDecl) {
++	named, ok := g.namedTypes[typeName]
++	if !ok {
++		return nil, nil
++	}
++	for _, recvType := range []types.Type{named, types.NewPointer(named)} {
++		set := types.NewMethodSet(recvType)
++		for i := 0; i < set.Len(); i++ {
++			fn, ok := set.At(i).Obj().(*types.Func)
++			if ok && fn.Name() == methodName {
++				return fn, g.declOfFunc[fn]
++			}
++		}
++	}
++	return nil, nil
++}
++
++func (m carrierRoleMethod) label() string {
++	return m.carrierType + "." + m.name
++}
++
++// selectRoles returns the carrier methods matching the predicate.
++func selectRoles(methods []carrierRoleMethod, predicate func(*types.Signature) bool) []carrierRoleMethod {
++	var out []carrierRoleMethod
++	for _, method := range methods {
++		if method.sig != nil && predicate(method.sig) {
++			out = append(out, method)
++		}
++	}
++	return out
++}
++
++func typeNameOf(t types.Type) string {
++	for {
++		ptr, ok := t.(*types.Pointer)
++		if !ok {
++			break
++		}
++		t = ptr.Elem()
++	}
++	if named, ok := t.(*types.Named); ok {
++		return named.Obj().Name()
++	}
++	return t.String()
++}
++
++func isNamedType(t types.Type, name string) bool {
++	for {
++		ptr, ok := t.(*types.Pointer)
++		if !ok {
++			break
++		}
++		t = ptr.Elem()
++	}
++	named, ok := t.(*types.Named)
++	return ok && named.Obj().Name() == name
++}
++
++func isDirectionType(t types.Type) bool { return isNamedType(t, "direction") }
++func isGridCoordType(t types.Type) bool { return isNamedType(t, "gridCoord") }
++
++func isIntType(t types.Type) bool {
++	basic, ok := t.Underlying().(*types.Basic)
++	return ok && basic.Info()&types.IsInteger != 0
++}
++
++func isBoolType(t types.Type) bool {
++	basic, ok := t.Underlying().(*types.Basic)
++	return ok && basic.Kind() == types.Bool
++}
++
++func resultTypes(sig *types.Signature) []types.Type {
++	var out []types.Type
++	for i := 0; i < sig.Results().Len(); i++ {
++		out = append(out, sig.Results().At(i).Type())
++	}
++	return out
++}
++
++func paramTypes(sig *types.Signature) []types.Type {
++	var out []types.Type
++	for i := 0; i < sig.Params().Len(); i++ {
++		out = append(out, sig.Params().At(i).Type())
++	}
++	return out
++}
++
++func sigReturnsFourDirections(sig *types.Signature) bool {
++
++	count := 0
++	for _, result := range resultTypes(sig) {
++		count += directionLeafCount(result)
++	}
++	return count == 4
++
++}
++
++func sigSelfReference(sig *types.Signature) bool {
++	return sigReturnsFourDirections(sig) && sig.Params().Len() == 0
++}
++
++func sigRouteSelection(sig *types.Signature) bool {
++	return sigReturnsFourDirections(sig) && sig.Params().Len() > 0
++}
++
++func sigGridStep(sig *types.Signature) bool {
++	params := paramTypes(sig)
++	results := resultTypes(sig)
++	return len(params) >= 1 && isGridCoordType(params[0]) &&
++		len(results) == 1 && isGridCoordType(results[0])
++}
++
++func sigPlacement(sig *types.Signature) bool {
++	params := paramTypes(sig)
++	results := resultTypes(sig)
++	if len(params) != 2 || !isIntType(params[0]) || !isIntType(params[1]) {
++		return false
++	}
++	return len(results) == 1 && isGridCoordType(results[0])
++}
++
++func sigAxisExtraction(sig *types.Signature) bool {
++	params := paramTypes(sig)
++	results := resultTypes(sig)
++	return len(params) == 1 && isGridCoordType(params[0]) &&
++		len(results) == 1 && isIntType(results[0])
++}
++
++func sigBoolDecision(sig *types.Signature) bool {
++	results := resultTypes(sig)
++	return len(results) == 1 && isBoolType(results[0])
++}
++
++// directionLeafCount counts how many layout `direction` values a type
++// carries: a single direction is 1, a [2]direction pair is 2 and a slice of
++// pairs keeps its element count. It lets an interface that hands out its
++// parallel routing options as a slice of direction pairs satisfy the parallel
++// routing role just like one that returns the two directions separately.
++func directionLeafCount(t types.Type) int {
++
++	var count func(types.Type, map[types.Type]bool) int
++	count = func(t types.Type, seen map[types.Type]bool) int {
++		if isDirectionType(t) {
++			return 1
++		}
++		if seen[t] {
++			return 0
++		}
++		seen[t] = true
++		defer delete(seen, t)
++		switch v := t.Underlying().(type) {
++		case *types.Pointer:
++			return count(v.Elem(), seen)
++		case *types.Array:
++			return int(v.Len()) * count(v.Elem(), seen)
++		case *types.Slice:
++			return count(v.Elem(), seen)
++		case *types.Struct:
++			n := 0
++			for i := 0; i < v.NumFields(); i++ {
++				n += count(v.Field(i).Type(), seen)
++			}
++			return n
++		}
++		return 0
++	}
++	return count(t, map[types.Type]bool{})
++
++}
++
++func sigParallelRouting(sig *types.Signature) bool {
++
++	if results := resultTypes(sig); len(results) == 1 {
++		if list, ok := results[0].Underlying().(*types.Slice); ok && isDirectionType(list.Elem()) {
++			return true
++		}
++	}
++	count := 0
++	for _, result := range resultTypes(sig) {
++		count += directionLeafCount(result)
++	}
++	return count == 2
++
++}
++
++// ---------------------------------------------------------------------------
++// axis dependence and outcome fingerprints
++// ---------------------------------------------------------------------------
++
++// outcomeFingerprints canonicalises the values returned by a method body.
++// Per-axis implementations that return different direction or coordinate
++// values therefore get different fingerprints, while two methods that ignore
++// the axis shape cannot fake them.
++func (g *graphPackage) outcomeFingerprints(decl *ast.FuncDecl) []string {
++	if decl == nil || decl.Body == nil {
++		return nil
++	}
++	defs := g.localDefinitions(decl)
++	seen := map[string]bool{}
++	var out []string
++	ast.Inspect(decl.Body, func(node ast.Node) bool {
++		if _, isLit := node.(*ast.FuncLit); isLit {
++			return false
++		}
++		ret, ok := node.(*ast.ReturnStmt)
++		if !ok {
++			return true
++		}
++		var parts []string
++		for _, result := range ret.Results {
++			parts = append(parts, g.canonicalExpr(result, defs, 0))
++		}
++		fingerprint := strings.Join(parts, ",")
++		if fingerprint != "" && !seen[fingerprint] {
++			seen[fingerprint] = true
++			out = append(out, fingerprint)
++		}
++		return true
++	})
++	sort.Strings(out)
++	return out
++}
++
++// localDefinitions maps every local variable of the declaration to all
++// expressions ever assigned to it, in source order. Keeping every assignment
++// (instead of only the last) matters for the layout code, where a requested
++// coordinate is refined by a second assignment before it is consumed.
++func (g *graphPackage) localDefinitions(decl *ast.FuncDecl) map[types.Object][]ast.Expr {
++	defs := map[types.Object][]ast.Expr{}
++	if decl.Body == nil {
++		return defs
++	}
++	ast.Inspect(decl.Body, func(node ast.Node) bool {
++		if _, isLit := node.(*ast.FuncLit); isLit {
++			return false
++		}
++		switch typed := node.(type) {
++		case *ast.AssignStmt:
++			for i, lhs := range typed.Lhs {
++				ident, ok := lhs.(*ast.Ident)
++				if !ok {
++					continue
++				}
++				obj, ok := g.info.Defs[ident].(*types.Var)
++				if !ok {
++					obj, _ = g.info.Uses[ident].(*types.Var)
++				}
++				if obj == nil {
++					continue
++				}
++				if i < len(typed.Rhs) {
++					defs[obj] = append(defs[obj], typed.Rhs[i])
++				} else if len(typed.Rhs) == 1 {
++					defs[obj] = append(defs[obj], typed.Rhs[0])
++				}
++			}
++		case *ast.ValueSpec:
++			for i, name := range typed.Names {
++				obj, ok := g.info.Defs[name].(*types.Var)
++				if !ok {
++					continue
++				}
++				if i < len(typed.Values) {
++					defs[obj] = append(defs[obj], typed.Values[i])
++				}
++			}
++		}
++		return true
++	})
++	return defs
++}
++
++func (g *graphPackage) canonicalExpr(expr ast.Expr, defs map[types.Object][]ast.Expr, depth int) string {
++	if expr == nil || depth > 6 {
++		return "?"
++	}
++	switch typed := expr.(type) {
++	case *ast.ParenExpr:
++		return g.canonicalExpr(typed.X, defs, depth+1)
++	case *ast.Ident:
++		obj := g.info.Uses[typed]
++		if obj == nil {
++			obj = g.info.Defs[typed]
++		}
++		switch resolved := obj.(type) {
++		case *types.Const:
++			return "const:" + resolved.Val().ExactString()
++		case *types.Var:
++			if resolved.Pkg() == g.pkg && resolved.Parent() == g.pkg.Scope() {
++				return "pkg:" + resolved.Name()
++			}
++			if assignments := defs[resolved]; len(assignments) > 0 {
++				return g.canonicalExpr(assignments[len(assignments)-1], defs, depth+1)
++			}
++			return "var:" + resolved.Name()
++		case *types.Nil:
++			return "nil"
++		default:
++			return "id:" + typed.Name
++		}
++	case *ast.SelectorExpr:
++		return g.canonicalExpr(typed.X, defs, depth+1) + "." + typed.Sel.Name
++	case *ast.BasicLit:
++		return typed.Value
++	case *ast.UnaryExpr:
++		return typed.Op.String() + g.canonicalExpr(typed.X, defs, depth+1)
++	case *ast.BinaryExpr:
++		return "(" + g.canonicalExpr(typed.X, defs, depth+1) + typed.Op.String() + g.canonicalExpr(typed.Y, defs, depth+1) + ")"
++	case *ast.CallExpr:
++		var args []string
++		for _, arg := range typed.Args {
++			args = append(args, g.canonicalExpr(arg, defs, depth+1))
++		}
++		return "call(" + g.canonicalExpr(typed.Fun, defs, depth+1) + "[" + strings.Join(args, ";") + "])"
++	case *ast.CompositeLit:
++		var elements []string
++		for _, element := range typed.Elts {
++			elements = append(elements, g.canonicalExpr(element, defs, depth+1))
++		}
++		return "lit{" + strings.Join(elements, ";") + "}"
++	case *ast.KeyValueExpr:
++		return g.canonicalExpr(typed.Key, defs, depth+1) + ":" + g.canonicalExpr(typed.Value, defs, depth+1)
++	case *ast.IndexExpr:
++		return g.canonicalExpr(typed.X, defs, depth+1) + "[" + g.canonicalExpr(typed.Index, defs, depth+1) + "]"
++	case *ast.TypeAssertExpr:
++		return "assert(" + g.canonicalExpr(typed.X, defs, depth+1) + ")"
++	default:
++		return fmt.Sprintf("<%T>", expr)
++	}
++}
++
++// branchOnAxis reports whether the method body branches on its receiver, i.e.
++// whether the returned outcome is selected by the axis value itself.
++func (g *graphPackage) branchOnAxis(decl *ast.FuncDecl) bool {
++	if decl == nil || decl.Body == nil || decl.Recv == nil || len(decl.Recv.List) == 0 {
++		return false
++	}
++	names := map[string]bool{}
++	for _, name := range decl.Recv.List[0].Names {
++		names[name.Name] = true
++	}
++	if len(names) == 0 {
++		return false
++	}
++	found := false
++	ast.Inspect(decl.Body, func(node ast.Node) bool {
++		if found {
++			return false
++		}
++		switch typed := node.(type) {
++		case *ast.IfStmt:
++			if g.exprReadsAxis(typed.Cond, names) {
++				found = true
++			}
++		case *ast.CaseClause:
++			for _, condition := range typed.List {
++				if g.exprReadsAxis(condition, names) {
++					found = true
++				}
++			}
++		case *ast.SwitchStmt:
++			if typed.Tag != nil && g.exprReadsAxis(typed.Tag, names) {
++				found = true
++			}
++		}
++		return true
++	})
++	return found
++}
++
++func (g *graphPackage) exprReadsAxis(expr ast.Expr, recvNames map[string]bool) bool {
++	found := false
++	ast.Inspect(expr, func(node ast.Node) bool {
++		if found {
++			return false
++		}
++		switch typed := node.(type) {
++		case *ast.Ident:
++			if recvNames[typed.Name] {
++				found = true
++			}
++		case *ast.SelectorExpr:
++			if ident, ok := typed.X.(*ast.Ident); ok && recvNames[ident.Name] {
++				found = true
++			}
++		case *ast.CallExpr:
++			if selector, ok := typed.Fun.(*ast.SelectorExpr); ok {
++				if ident, ok := selector.X.(*ast.Ident); ok && recvNames[ident.Name] {
++					found = true
++				}
++			}
++		}
++		return true
++	})
++	return found
++}
++
++// returnsReadReceiver reports whether any returned expression reads the
++// receiver, which is how a boolean value type expresses an axis comparison
++// without an if/switch (return d == layoutHorizontal).
++func (g *graphPackage) returnsReadReceiver(decl *ast.FuncDecl) bool {
++	if decl == nil || decl.Body == nil || decl.Recv == nil || len(decl.Recv.List) == 0 {
++		return false
++	}
++	names := map[string]bool{}
++	for _, name := range decl.Recv.List[0].Names {
++		names[name.Name] = true
++	}
++	if len(names) == 0 {
++		return false
++	}
++	found := false
++	ast.Inspect(decl.Body, func(node ast.Node) bool {
++		if found {
++			return false
++		}
++		if _, isLit := node.(*ast.FuncLit); isLit {
++			return false
++		}
++		ret, ok := node.(*ast.ReturnStmt)
++		if !ok {
++			return true
++		}
++		for _, result := range ret.Results {
++			if g.exprReadsAxis(result, names) {
++				found = true
++				return false
++			}
++		}
++		return true
++	})
++	return found
++}
++
++type roleEvidence struct {
++	match     carrierRoleMethod
++	distinct  int
++	fingerSet []string
++	reason    string
++	ok        bool
++}
++
++// axisDependent decides whether the matched carrier method makes its outcome
++// depend on the axis:
++//
++//   - an interface family must show at least two implementations with
++//     different outcomes;
++//   - a single carrier type must select between at least two outcomes when it
++//     branches on the receiver, produce a boolean from a receiver comparison,
++//     or return a value that is computed by calling other axis-dependent
++//     carrier methods.
++//
++// The delegation case is what allows a value type to implement a derived
++// decision (nextSpot) purely in terms of level/coord/position without any
++// literal of its own.
++func (g *graphPackage) axisDependent(method carrierRoleMethod, byTarget map[*types.Func]carrierRoleMethod, visiting map[string]bool) roleEvidence {
++	evidence := roleEvidence{match: method}
++	key := method.label()
++	if visiting[key] {
++		evidence.reason = "recursive carrier delegation"
++		return evidence
++	}
++	visiting[key] = true
++	defer delete(visiting, key)
++
++	var fingerprints [][]string
++	for _, decl := range method.implDecls {
++		fingerprints = append(fingerprints, g.outcomeFingerprints(decl))
++	}
++	if len(method.implTypes) >= 2 {
++		distinct := map[string]bool{}
++		for _, fp := range fingerprints {
++			distinct[strings.Join(fp, "|")] = true
++		}
++		evidence.distinct = len(distinct)
++		for value := range distinct {
++			evidence.fingerSet = append(evidence.fingerSet, value)
++		}
++		sort.Strings(evidence.fingerSet)
++		if evidence.distinct < 2 {
++			evidence.reason = "the per-axis implementations return the same outcome"
++			return evidence
++		}
++		evidence.ok = true
++		return evidence
++	}
++	if len(method.implDecls) != 1 || method.implDecls[0] == nil {
++		evidence.reason = "the carrier declares no implementation for this method"
++		return evidence
++	}
++	decl := method.implDecls[0]
++	unique := map[string]bool{}
++	for _, fp := range fingerprints[0] {
++		unique[fp] = true
++	}
++	evidence.distinct = len(unique)
++	for value := range unique {
++		evidence.fingerSet = append(evidence.fingerSet, value)
++	}
++	sort.Strings(evidence.fingerSet)
++	readsReceiver := g.returnsReadReceiver(decl)
++	if g.receiverTableLookup(decl) || g.returnsVaryingCarrierField(decl, method.carrierType) {
++		evidence.ok = true
++		evidence.reason = "result uses varying carrier data"
++		return evidence
++	}
++	if evidence.distinct >= 2 && (g.branchOnAxis(decl) || readsReceiver) {
++		evidence.ok = true
++		return evidence
++	}
++	if evidence.distinct >= 1 && g.returnsBool(decl) && readsReceiver {
++		evidence.ok = true
++		return evidence
++	}
++	for _, callee := range g.calledCarrierMethods(decl, byTarget) {
++		if callee.label() == key {
++			continue
++		}
++		if nested := g.axisDependent(callee, byTarget, visiting); nested.ok {
++			evidence.ok = true
++			evidence.reason = "delegates to " + callee.label()
++			return evidence
++		}
++	}
++	evidence.reason = "the method does not select distinct outcomes in a branch on the axis"
++	return evidence
++}
++
++func (g *graphPackage) returnsBool(decl *ast.FuncDecl) bool {
++	obj, ok := g.funcOfDecl[decl]
++	if !ok || obj == nil {
++		return false
++	}
++	sig, ok := obj.Type().(*types.Signature)
++	if !ok {
++		return false
++	}
++	results := resultTypes(sig)
++	return len(results) == 1 && isBoolType(results[0])
++}
++
++// calledCarrierMethods returns the carrier methods invoked by the body of the
++// declaration, resolving interface dispatch and value receivers alike.
++func (g *graphPackage) calledCarrierMethods(decl *ast.FuncDecl, byTarget map[*types.Func]carrierRoleMethod) []carrierRoleMethod {
++	if decl == nil || decl.Body == nil || len(byTarget) == 0 {
++		return nil
++	}
++	var out []carrierRoleMethod
++	seen := map[*types.Func]bool{}
++	ast.Inspect(decl.Body, func(node ast.Node) bool {
++		call, ok := node.(*ast.CallExpr)
++		if !ok {
++			return true
++		}
++		callee := g.resolveCallee(call)
++		if callee == nil || seen[callee] {
++			return true
++		}
++		if method, ok := byTarget[callee]; ok {
++			seen[callee] = true
++			out = append(out, method)
++		}
++		return true
++	})
++	return out
++}
++
++// ---------------------------------------------------------------------------
++// call sites and value flow
++// ---------------------------------------------------------------------------
++
++type roleCallSite struct {
++	method carrierRoleMethod
++	site   analysisCall
++}
++
++func (g *graphPackage) callSitesOf(method carrierRoleMethod) []roleCallSite {
++	var out []roleCallSite
++	for _, call := range g.allCalls {
++		if call.callee == nil || method.target == nil {
++			continue
++		}
++		if call.callee != method.target {
++			continue
++		}
++		out = append(out, roleCallSite{method: method, site: call})
++	}
++	return out
++}
++
++func (g *graphPackage) flowsFrom(decl *ast.FuncDecl, expr ast.Expr, target *ast.CallExpr, depth int) bool {
++	if expr == nil || target == nil || depth > 6 {
++		return false
++	}
++	if expr == ast.Expr(target) {
++		return true
++	}
++	defs := g.localDefinitions(decl)
++	switch typed := expr.(type) {
++	case *ast.ParenExpr:
++		return g.flowsFrom(decl, typed.X, target, depth+1)
++	case *ast.Ident:
++		obj := g.info.Uses[typed]
++		if obj == nil {
++			obj = g.info.Defs[typed]
++		}
++		for _, def := range defs[obj] {
++			if g.flowsFrom(decl, def, target, depth+1) {
++				return true
++			}
++		}
++	case *ast.SelectorExpr:
++		return g.flowsFrom(decl, typed.X, target, depth+1)
++	case *ast.UnaryExpr:
++		return g.flowsFrom(decl, typed.X, target, depth+1)
++	case *ast.StarExpr:
++		return g.flowsFrom(decl, typed.X, target, depth+1)
++	case *ast.IndexExpr:
++		return g.flowsFrom(decl, typed.X, target, depth+1) || g.flowsFrom(decl, typed.Index, target, depth+1)
++	case *ast.SliceExpr:
++		return g.flowsFrom(decl, typed.X, target, depth+1)
++	case *ast.BinaryExpr:
++		return g.flowsFrom(decl, typed.X, target, depth+1) || g.flowsFrom(decl, typed.Y, target, depth+1)
++	case *ast.CompositeLit:
++		for _, element := range typed.Elts {
++			if g.flowsFrom(decl, element, target, depth+1) {
++				return true
++			}
++		}
++	case *ast.CallExpr:
++		if selector, ok := typed.Fun.(*ast.SelectorExpr); ok {
++			if callee := g.resolveCallee(typed); callee != nil {
++				if body := g.declOfFunc[callee]; body != nil && g.returnsReadReceiver(body) && g.flowsFrom(decl, selector.X, target, depth+1) {
++					return true
++				}
++			}
++		}
++		for _, arg := range typed.Args {
++			if g.flowsFrom(decl, arg, target, depth+1) {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++// flowsIntoArgumentOfCallTo reports whether the result of the role call flows
++// (through local variables and simple wrappers) into an argument of a call
++// whose callee signature satisfies the predicate.
++// flowsIntoRecursiveArgument reports whether the role call's result reaches an
++// argument of a recursive call to the enclosing function, which is how the
++// next-slot search re-enters the grid placement step.
++func (g *graphPackage) flowsIntoRecursiveArgument(site roleCallSite) bool {
++	decl := site.site.caller
++	if decl.Body == nil {
++		return false
++	}
++	found := false
++	ast.Inspect(decl.Body, func(node ast.Node) bool {
++		if found {
++			return false
++		}
++		call, ok := node.(*ast.CallExpr)
++		if !ok || call == site.site.call {
++			return true
++		}
++		if callee := g.resolveCallee(call); callee == nil || g.declOfFunc[callee] != decl {
++			return true
++		}
++		for _, arg := range call.Args {
++			if g.flowsFrom(decl, arg, site.site.call, 0) {
++				found = true
++				return false
++			}
++		}
++		return true
++	})
++	return found
++}
++
++func (g *graphPackage) callSiteLocation(site roleCallSite) string {
++	pos := g.fset.Position(site.site.call.Pos())
++	return fmt.Sprintf("%s:%d in %s", g.fileOfNode(site.site.call), pos.Line, site.site.caller.Name.Name)
++}
++
++// consumerInLayoutCone reports whether the role call happens in a function
++// reachable from the public Draw entry point.
++func (g *graphPackage) consumerInLayoutCone(site roleCallSite) bool {
++	return g.layoutCone()[site.site.caller]
++}
++
++// resultConsumed reports whether the result of the role call is used by the
++// enclosing layout function: returned, passed on as a call argument, used as
++// an index/slice expression, or used in a control-flow expression. A bare
++// statement call or an assignment that is never read again is not enough.
++func (g *graphPackage) resultConsumed(site roleCallSite) bool {
++	decl := site.site.caller
++	if decl.Body == nil {
++		return false
++	}
++	consume := func(expr ast.Expr) bool {
++		return expr != nil && g.flowsFrom(decl, expr, site.site.call, 0)
++	}
++	found := false
++	ast.Inspect(decl.Body, func(node ast.Node) bool {
++		if found {
++			return false
++		}
++		if _, isLit := node.(*ast.FuncLit); isLit {
++			return false
++		}
++		switch typed := node.(type) {
++		case *ast.ReturnStmt:
++			for _, result := range typed.Results {
++				if consume(result) {
++					found = true
++					return false
++				}
++			}
++		case *ast.CallExpr:
++			if typed == site.site.call {
++				return true
++			}
++			for _, arg := range typed.Args {
++				if consume(arg) {
++					found = true
++					return false
++				}
++			}
++		case *ast.IfStmt:
++			if consume(typed.Cond) {
++				found = true
++				return false
++			}
++		case *ast.SwitchStmt:
++			if consume(typed.Tag) {
++				found = true
++				return false
++			}
++			for _, stmt := range typed.Body.List {
++				if clause, ok := stmt.(*ast.CaseClause); ok {
++					for _, expr := range clause.List {
++						if consume(expr) {
++							found = true
++							return false
++						}
++					}
++				}
++			}
++		case *ast.ForStmt:
++			if consume(typed.Cond) {
++				found = true
++				return false
++			}
++		case *ast.RangeStmt:
++			if consume(typed.X) {
++				found = true
++				return false
++			}
++		case *ast.IndexExpr:
++			if consume(typed.X) || consume(typed.Index) {
++				found = true
++				return false
++			}
++		case *ast.SliceExpr:
++			if consume(typed.X) {
++				found = true
++				return false
++			}
++		}
++		return true
++	})
++	return found
++}
++
++// resultFlowsIntoCondition reports whether the role call's result reaches the
++// condition of an if, for or switch in the enclosing function. That is how a
++// boolean axis gate decides which layout branch runs.
++// resultFlowsIntoCallArgumentOrReturn reports whether the role call result
++// reaches a return statement or an argument of another call in the enclosing
++// layout function. That is where a decided direction or coordinate is handed
++// to the rest of the pipeline, as opposed to a result that is merely used in
++// an unrelated expression.
++func (g *graphPackage) resultFlowsIntoCallArgumentOrReturn(site roleCallSite) bool {
++	decl := site.site.caller
++	if decl.Body == nil {
++		return false
++	}
++	found := false
++	ast.Inspect(decl.Body, func(node ast.Node) bool {
++		if found {
++			return false
++		}
++		if _, isLit := node.(*ast.FuncLit); isLit {
++			return false
++		}
++		switch typed := node.(type) {
++		case *ast.ReturnStmt:
++			for _, result := range typed.Results {
++				if g.flowsFrom(decl, result, site.site.call, 0) {
++					found = true
++					return false
++				}
++			}
++		case *ast.CallExpr:
++			if typed == site.site.call {
++				return true
++			}
++			for _, arg := range typed.Args {
++				if g.flowsFrom(decl, arg, site.site.call, 0) {
++					found = true
++					return false
++				}
++			}
++		}
++		return true
++	})
++	return found
++}
++
++// callerSignature returns the signature of the function that contains the
++// call site, so a decision can be tied to the function that produces it.
++func (g *graphPackage) callerSignature(site roleCallSite) *types.Signature {
++	obj, ok := g.funcOfDecl[site.site.caller]
++	if !ok || obj == nil {
++		return nil
++	}
++	sig, _ := obj.Type().(*types.Signature)
++	return sig
++}
++
++func (g *graphPackage) resultFlowsIntoCondition(site roleCallSite) bool {
++	decl := site.site.caller
++	if decl.Body == nil {
++		return false
++	}
++	consume := func(expr ast.Expr) bool {
++		return expr != nil && g.flowsFrom(decl, expr, site.site.call, 0)
++	}
++	found := false
++	ast.Inspect(decl.Body, func(node ast.Node) bool {
++		if found {
++			return false
++		}
++		if _, isLit := node.(*ast.FuncLit); isLit {
++			return false
++		}
++		switch typed := node.(type) {
++		case *ast.IfStmt:
++			if consume(typed.Cond) {
++				found = true
++			}
++		case *ast.ForStmt:
++			if consume(typed.Cond) {
++				found = true
++			}
++		case *ast.SwitchStmt:
++			if consume(typed.Tag) {
++				found = true
++			}
++		case *ast.CaseClause:
++			for _, expr := range typed.List {
++				if consume(expr) {
++					found = true
++					return false
++				}
++			}
++		}
++		return !found
++	})
++	return found
++}
++
++// earlyReturnGuard reports whether the role call's result decides a guard
++// whose entire body is a return statement, i.e. an early return that keeps a
++// whole layout phase from running (the fan-out gate).
++func (g *graphPackage) earlyReturnGuard(site roleCallSite) bool {
++	decl := site.site.caller
++	if decl.Body == nil {
++		return false
++	}
++	consume := func(expr ast.Expr) bool {
++		return expr != nil && g.flowsFrom(decl, expr, site.site.call, 0)
++	}
++	found := false
++	ast.Inspect(decl.Body, func(node ast.Node) bool {
++		if found {
++			return false
++		}
++		if _, isLit := node.(*ast.FuncLit); isLit {
++			return false
++		}
++		stmt, ok := node.(*ast.IfStmt)
++		if !ok || !consume(stmt.Cond) {
++			return true
++		}
++		if stmt.Else != nil || stmt.Body == nil {
++			return true
++		}
++		if len(stmt.Body.List) != 1 {
++			return true
++		}
++		if _, isReturn := stmt.Body.List[0].(*ast.ReturnStmt); isReturn {
++			found = true
++			return false
++		}
++		return true
++	})
++	return found
++}
++
++// carrierRoleMethods returns every carrier method matching at least one
++// decision-role signature.
++func carrierRoleMethods(methods []carrierRoleMethod) []carrierRoleMethod {
++	var out []carrierRoleMethod
++	for _, method := range methods {
++		if method.sig == nil {
++			continue
++		}
++		if isSelfReferenceRole(method.sig) || isRouteRole(method.sig) || isGridStepRole(method.sig) ||
++			isPlacementRole(method.sig) || isExtractionRole(method.sig) || isParallelRole(method.sig) ||
++			isBoolRole(method.sig) {
++			out = append(out, method)
++		}
++	}
++	sort.Slice(out, func(i, j int) bool { return out[i].label() < out[j].label() })
++	return out
++}
++
++func isSelfReferenceRole(sig *types.Signature) bool { return sigSelfReference(sig) }
++func isRouteRole(sig *types.Signature) bool         { return sigRouteSelection(sig) }
++func isGridStepRole(sig *types.Signature) bool      { return sigGridStep(sig) }
++func isPlacementRole(sig *types.Signature) bool     { return sigPlacement(sig) }
++func isExtractionRole(sig *types.Signature) bool    { return sigAxisExtraction(sig) }
++func isParallelRole(sig *types.Signature) bool      { return sigParallelRouting(sig) }
++func isBoolRole(sig *types.Signature) bool          { return sigBoolDecision(sig) }
++
++// carrierDecls indexes the declarations that belong to the carrier family, so
++// call sites inside the carrier itself can be told apart from call sites in
++// the layout code that consumes the abstraction.
++func carrierDecls(methods []carrierRoleMethod) map[*ast.FuncDecl]bool {
++	out := map[*ast.FuncDecl]bool{}
++	for _, method := range methods {
++		for _, decl := range method.implDecls {
++			if decl != nil {
++				out[decl] = true
++			}
++		}
++	}
++	return out
++}
++
++// roleCallSiteEvidence describes how a carrier method is reached from layout
++// code and how its result is used there.
++type roleCallSiteEvidence struct {
++	method    carrierRoleMethod
++	site      roleCallSite
++	location  string
++	consumed  bool
++	condition bool
++	early     bool
++}
++
++// directCallEvidence collects the call sites of the role methods that happen
++// in functions reachable from Draw but outside the carrier family itself.
++func (g *graphPackage) directCallEvidence(methods []carrierRoleMethod) []roleCallSiteEvidence {
++
++	layout := g.layoutCone()
++	byTarget := map[*types.Func]carrierRoleMethod{}
++	for _, m := range methods {
++		if m.target != nil {
++			byTarget[m.target] = m
++		}
++	}
++	engaged, _ := g.engagementOf(methods, byTarget)
++	for _, m := range methods {
++		if engaged[m.label()] {
++			for _, decl := range m.implDecls {
++				layout[decl] = true
++			}
++		}
++	}
++	var out []roleCallSiteEvidence
++	for _, method := range methods {
++		for _, site := range g.callSitesOf(method) {
++			caller := site.site.caller
++			if caller == nil || !layout[caller] {
++				continue
++			}
++			out = append(out, roleCallSiteEvidence{
++				method:    method,
++				site:      site,
++				location:  g.callSiteLocation(site),
++				consumed:  g.resultConsumed(site),
++				condition: g.resultFlowsIntoCondition(site),
++				early:     g.earlyReturnGuard(site),
++			})
++		}
++	}
++	sort.Slice(out, func(i, j int) bool { return out[i].location < out[j].location })
++	return out
++}
++
++// engagementOf reports which role methods are reachable from a layout-code
++// call site, either directly or through other carrier methods. A role method
++// that only exists as a stub without such a path is not engaged.
++func (g *graphPackage) engagementOf(methods []carrierRoleMethod, byTarget map[*types.Func]carrierRoleMethod) (engaged map[string]bool, direct map[string]bool) {
++	carrier := carrierDecls(methods)
++	layout := g.layoutCone()
++	engaged = map[string]bool{}
++	direct = map[string]bool{}
++	var queue []carrierRoleMethod
++	for _, method := range methods {
++		for _, site := range g.callSitesOf(method) {
++			caller := site.site.caller
++			if caller == nil || !layout[caller] || carrier[caller] {
++				continue
++			}
++			if !engaged[method.label()] {
++				engaged[method.label()] = true
++				direct[method.label()] = true
++				queue = append(queue, method)
++			}
++			break
++		}
++	}
++	for len(queue) > 0 {
++		current := queue[0]
++		queue = queue[1:]
++		for _, decl := range current.implDecls {
++			for _, callee := range g.calledCarrierMethods(decl, byTarget) {
++				if !engaged[callee.label()] {
++					engaged[callee.label()] = true
++					queue = append(queue, callee)
++				}
++			}
++		}
++	}
++	return engaged, direct
++}
++
++// ---------------------------------------------------------------------------
++// state field reads
++// ---------------------------------------------------------------------------
++
++type stateRead struct {
++	file    string
++	line    int
++	field   string
++	context string
++	decl    *ast.FuncDecl
++}
++
++func (g *graphPackage) stateReads(fields map[string]bool) []stateRead {
++	var out []stateRead
++	for _, decl := range g.decls {
++		if decl.Body == nil {
++			continue
++		}
++		ast.Inspect(decl.Body, func(node ast.Node) bool {
++			selector, ok := node.(*ast.SelectorExpr)
++			if !ok || !fields[selector.Sel.Name] {
++				return true
++			}
++			if !g.selectorIsStateField(selector) {
++				return true
++			}
++			pos := g.fset.Position(selector.Pos())
++			out = append(out, stateRead{
++				file:    g.fileOfNode(selector),
++				line:    pos.Line,
++				field:   selector.Sel.Name,
++				context: g.classifyReadContext(selector),
++				decl:    g.enclosingFunc(selector),
++			})
++			return true
++		})
++	}
++	sort.Slice(out, func(i, j int) bool {
++		if out[i].file != out[j].file {
++			return out[i].file < out[j].file
++		}
++		return out[i].line < out[j].line
++	})
++	return out
++}
++
++func (g *graphPackage) selectorIsStateField(selector *ast.SelectorExpr) bool {
++	typ := g.info.Types[selector.X].Type
++	if typ == nil {
++		return false
++	}
++	for {
++		if pointer, ok := typ.(*types.Pointer); ok {
++			typ = pointer.Elem()
++			continue
++		}
++		break
++	}
++	named, ok := typ.(*types.Named)
++	if !ok {
++		return false
++	}
++	fields, ok := g.structFields[named.Obj().Name()]
++	if !ok {
++		return false
++	}
++	_, ok = fields[selector.Sel.Name]
++	return ok
++}
++
++// structFieldDecl records a struct field of a package-declared type.
++type structFieldDecl struct {
++	structName string
++	field      string
++	typ        types.Type
++}
++
++// structFieldsNamed lists every package struct type that declares a field
++// with the given name. It is used to verify that the carrier type the parse
++// side stores is also the type the layout side keeps, instead of a second
++// raw copy of the axis.
++func (g *graphPackage) structFieldsNamed(name string) []structFieldDecl {
++	var out []structFieldDecl
++	var names []string
++	for structName := range g.structFields {
++		names = append(names, structName)
++	}
++	sort.Strings(names)
++	for _, structName := range names {
++		typ, ok := g.structFields[structName][name]
++		if !ok {
++			continue
++		}
++		out = append(out, structFieldDecl{structName: structName, field: name, typ: typ})
++	}
++	return out
++}
++
++func (g *graphPackage) classifyReadContext(selector *ast.SelectorExpr) string {
++	parent := g.parents[selector]
++	if parent == nil {
++		return "other"
++	}
++	if call, ok := parent.(*ast.CallExpr); ok {
++		if call.Fun == ast.Expr(selector) {
++			return "call-receiver"
++		}
++		return "call-argument"
++	}
++	if outer, ok := parent.(*ast.SelectorExpr); ok && ast.Expr(outer.X) == ast.Expr(selector) {
++		if grand := g.parents[outer]; grand != nil {
++			if call, ok := grand.(*ast.CallExpr); ok && call.Fun == ast.Expr(outer) {
++				return "call-receiver"
++			}
++		}
++		return "other"
++	}
++	switch typed := parent.(type) {
++	case *ast.AssignStmt:
++		for _, lhs := range typed.Lhs {
++			if ast.Expr(lhs) == ast.Expr(selector) {
++				return "assignment-target"
++			}
++		}
++		for _, rhs := range typed.Rhs {
++			if ast.Expr(rhs) == ast.Expr(selector) {
++				return "state-transfer"
++			}
++		}
++	case *ast.ValueSpec:
++		for _, value := range typed.Values {
++			if ast.Expr(value) == ast.Expr(selector) {
++				return "state-transfer"
++			}
++		}
++	case *ast.BinaryExpr:
++		if ident, ok := typed.X.(*ast.Ident); ok && isActualNil(g, ident) {
++			return "nil-check"
++		}
++		if ident, ok := typed.Y.(*ast.Ident); ok && isActualNil(g, ident) {
++			return "nil-check"
++		}
++	}
++	return "other"
++}
++
++func baseReflectName(t reflect.Type) string {
++	for t != nil && t.Kind() == reflect.Pointer {
++		t = t.Elem()
++	}
++	if t == nil {
++		return ""
++	}
++	return t.Name()
++}
++
++func isActualNil(g *graphPackage, ident *ast.Ident) bool {
++	_, ok := g.info.ObjectOf(ident).(*types.Nil)
++	return ok
++}
++
++// A table lookup may carry axis behavior without an if/switch in the method.
++func (g *graphPackage) receiverTableLookup(decl *ast.FuncDecl) bool {
++	if decl == nil || decl.Recv == nil {
++		return false
++	}
++	names := map[string]bool{}
++	for _, f := range decl.Recv.List {
++		for _, n := range f.Names {
++			names[n.Name] = true
++		}
++	}
++	defs := g.localDefinitions(decl)
++	var distinctTable func(ast.Expr, int) bool
++	distinctTable = func(e ast.Expr, depth int) bool {
++		if depth > 12 {
++			return false
++		}
++		switch x := e.(type) {
++		case *ast.ParenExpr:
++			return distinctTable(x.X, depth+1)
++		case *ast.Ident:
++			obj := g.info.ObjectOf(x)
++			if obj == nil {
++				return false
++			}
++			if vs, ok := g.nodeOfObject(obj).(*ast.ValueSpec); ok {
++				for i, n := range vs.Names {
++					if g.info.ObjectOf(n) == obj && i < len(vs.Values) {
++						return distinctTable(vs.Values[i], depth+1)
++					}
++				}
++			}
++		case *ast.CompositeLit:
++			switch g.info.TypeOf(x).Underlying().(type) {
++			case *types.Array, *types.Slice, *types.Map:
++			default:
++				return false
++			}
++			values := map[string]bool{}
++			for _, v := range x.Elts {
++				if kv, ok := v.(*ast.KeyValueExpr); ok {
++					v = kv.Value
++				}
++				values[g.canonicalExpr(v, defs, 0)] = true
++			}
++			return len(values) >= 2
++		}
++		return false
++	}
++	var readsLookup func(ast.Expr, int) bool
++	readsLookup = func(e ast.Expr, depth int) bool {
++		if e == nil || depth > 12 {
++			return false
++		}
++		found := false
++		ast.Inspect(e, func(n ast.Node) bool {
++			if found {
++				return false
++			}
++			if index, ok := n.(*ast.IndexExpr); ok && g.exprReadsAxis(index.Index, names) && distinctTable(index.X, 0) {
++				found = true
++				return false
++			}
++			if id, ok := n.(*ast.Ident); ok {
++				for _, rhs := range defs[g.info.ObjectOf(id)] {
++					if readsLookup(rhs, depth+1) {
++						found = true
++						break
++					}
++				}
++			}
++			return true
++		})
++		return found
++	}
++	found := false
++	ast.Inspect(decl.Body, func(n ast.Node) bool {
++		if ret, ok := n.(*ast.ReturnStmt); ok {
++			for _, e := range ret.Results {
++				found = found || readsLookup(e, 0)
++			}
++		}
++		return !found
++	})
++	return found
++}
++func (g *graphPackage) tokenIsRepresentation(node ast.Node, decl *ast.FuncDecl) bool {
++	if decl.Recv == nil {
++		return false
++	}
++	object := g.funcOfDecl[decl]
++	if object == nil {
++		return false
++	}
++	sig, ok := object.Type().(*types.Signature)
++	if !ok || sig.Results().Len() != 1 {
++		return false
++	}
++	basic, ok := sig.Results().At(0).Type().Underlying().(*types.Basic)
++	if !ok || basic.Kind() != types.String {
++		return false
++	}
++	for i := 0; i < sig.Params().Len(); i++ {
++		if b, ok := sig.Params().At(i).Type().Underlying().(*types.Basic); ok && b.Kind() == types.String {
++			return false
++		}
++	}
++	for current := node; current != nil && current != decl; current = g.parents[current] {
++		if _, ok := current.(*ast.ReturnStmt); ok {
++			return true
++		}
++		switch current.(type) {
++		case *ast.IfStmt, *ast.SwitchStmt, *ast.CaseClause:
++			return false
++		}
++	}
++	return false
++}
++
++// Runtime parsing identifies which private carrier fields differ across axes;
++// source value flow establishes that those fields contribute to method results.
++func (g *graphPackage) returnsVaryingCarrierField(decl *ast.FuncDecl, carrier string) bool {
++	if decl == nil || decl.Recv == nil {
++		return false
++	}
++	observations := map[string]map[string]string{}
++	for _, axis := range []string{"LR", "TD"} {
++		properties, err := graph.Parse(probeMermaid(axis), "cli")
++		if err != nil {
++			return false
++		}
++		fields := reflect.ValueOf(properties).Elem()
++		for i := 0; i < fields.NumField(); i++ {
++			value := fields.Field(i)
++			for value.IsValid() && (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface) {
++				if value.IsNil() {
++					value = reflect.Value{}
++					break
++				}
++				value = value.Elem()
++			}
++			if !value.IsValid() || value.Kind() != reflect.Struct || value.Type().Name() != carrier || value.Type().PkgPath() != graphPackagePath() {
++				continue
++			}
++			for j := 0; j < value.NumField(); j++ {
++				name := value.Type().Field(j).Name
++				if observations[name] == nil {
++					observations[name] = map[string]string{}
++				}
++				observations[name][axis] = valueRepr(value.Field(j), 0)
++			}
++		}
++	}
++	varying := map[string]bool{}
++	for name, values := range observations {
++		lr, lok := values["LR"]
++		td, tok := values["TD"]
++		if lok && tok && lr != td {
++			varying[name] = true
++		}
++	}
++	recv := map[string]bool{}
++	for _, field := range decl.Recv.List {
++		for _, name := range field.Names {
++			recv[name.Name] = true
++		}
++	}
++	defs := g.localDefinitions(decl)
++	var uses func(ast.Expr, int) bool
++	uses = func(e ast.Expr, depth int) bool {
++		if e == nil || depth > 12 {
++			return false
++		}
++		found := false
++		ast.Inspect(e, func(n ast.Node) bool {
++			if found {
++				return false
++			}
++			if selector, ok := n.(*ast.SelectorExpr); ok {
++				if id, ok := selector.X.(*ast.Ident); ok && recv[id.Name] && varying[selector.Sel.Name] {
++					found = true
++					return false
++				}
++			}
++			if id, ok := n.(*ast.Ident); ok {
++				for _, rhs := range defs[g.info.ObjectOf(id)] {
++					if uses(rhs, depth+1) {
++						found = true
++						break
++					}
++				}
++			}
++			return true
++		})
++		return found
++	}
++	found := false
++	ast.Inspect(decl.Body, func(n ast.Node) bool {
++		if ret, ok := n.(*ast.ReturnStmt); ok {
++			for _, e := range ret.Results {
++				found = found || uses(e, 0)
++			}
++		}
++		return !found
++	})
++	return found
++}
++
++// A carrier may own and execute the fan-out phase, instead of handing a
++// boolean back to a graph method. No specific method name is required.
++func carrierOwnsFanoutAction(t *testing.T) bool {
++	g := loadGraphPackage(t)
++	methods, _ := g.carrierMethodIndex(carrierTypeNames(t))
++	layout := g.layoutCone()
++	for _, method := range methods {
++		if method.sig.Results().Len() != 0 {
++			continue
++		}
++		active := false
++		for _, site := range g.callSitesOf(method) {
++			if layout[site.site.caller] {
++				active = true
++			}
++		}
++		if !active {
++			continue
++		}
++		for _, decl := range method.implDecls {
++			if decl == nil || !g.branchOnAxis(decl) {
++				continue
++			}
++			writesFanout := false
++			ast.Inspect(decl.Body, func(n ast.Node) bool {
++				if assignment, ok := n.(*ast.AssignStmt); ok {
++					for _, lhs := range assignment.Lhs {
++						if field, ok := lhs.(*ast.SelectorExpr); ok && field.Sel.Name == "fanout" {
++							writesFanout = true
++						}
++					}
++				}
++				return true
++			})
++			if writesFanout {
++				return true
++			}
++		}
++	}
++	return false
++}
+diff --git a/test/f2p/direction_structure_test.go b/test/f2p/direction_structure_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f78bf398ea969c0089db2b0ef2c61f94ebdd0ea0
+--- /dev/null
++++ b/test/f2p/direction_structure_test.go
+@@ -0,0 +1,367 @@
++package f2p
++
++// The fail-to-pass checks in this file pin REQ-STRUCT-001, REQ-STRUCT-002 and
++// REQ-STRUCT-003 of the graph layout-direction refactor. They do not look for
++// a particular mechanism: the harness discovers the stored axis state at
++// runtime, type-checks pkg/graph with go/types, resolves the calls into the
++// axis carrier and follows where the carrier results are consumed. Each test
++// therefore asserts a concrete obligation:
++//
++//   - the stored axis state is a package-declared carrier instead of a raw
++//     direction string and normalizes LR/RL, TD/TB/BT and the default to the
++//     same axis value;
++//   - the Mermaid declaration vocabulary lives only in the Parse reachable
++//     mapping cone;
++//   - layout code never inspects the stored axis state except as the receiver
++//     of a carrier method;
++//   - every direction-dependent decision family (self-reference, route
++//     selection, grid stepping, coordinate growth, level/position extraction,
++//     parallel edge routing, boolean layout gates and the fan-out early
++//     return) is answered by an axis-dependent carrier method called from
++//     Draw-reachable layout code whose result is consumed there;
++//   - carrier role methods are not unused stubs.
++
++import (
++	"fmt"
++	"go/types"
++	"reflect"
++	"sort"
++	"strings"
++	"testing"
++)
++
++func describeCarrierStates(states []observedDirectionState) string {
++	var parts []string
++	for _, state := range states {
++		parts = append(parts, fmt.Sprintf("Properties.%s (%s)", state.field, state.typ))
++	}
++	if len(parts) == 0 {
++		return "none"
++	}
++	return strings.Join(parts, ", ")
++}
++
++// carrierRolesFor loads the reflectively discovered carrier family together
++// with its type-checked role methods and the call target index used to follow
++// delegation between carrier methods.
++func carrierRolesFor(t *testing.T) (*graphPackage, []carrierRoleMethod, map[*types.Func]carrierRoleMethod) {
++	t.Helper()
++	names := carrierTypeNames(t)
++	g := loadGraphPackage(t)
++	methods, byTarget := g.carrierMethodIndex(names)
++	return g, carrierRoleMethods(methods), byTarget
++}
++
++// answeredSites keeps reachable layout and internal carrier call sites of carrier methods
++// matching the family whose outcome is axis-dependent and where the result is
++// used the way the family requires (returned/handed on, fed to the recursive
++// placement search, or deciding a layout condition).
++func answeredSites(g *graphPackage, roles []carrierRoleMethod, byTarget map[*types.Func]carrierRoleMethod, match func(*types.Signature) bool, used func(roleCallSiteEvidence) bool) []roleCallSiteEvidence {
++	var out []roleCallSiteEvidence
++	for _, evidence := range g.directCallEvidence(roles) {
++		if !match(evidence.method.sig) || !used(evidence) {
++			continue
++		}
++		if !g.axisDependent(evidence.method, byTarget, map[string]bool{}).ok {
++			continue
++		}
++		out = append(out, evidence)
++	}
++	return out
++}
++
++func describeAnsweredSites(sites []roleCallSiteEvidence) string {
++	if len(sites) == 0 {
++		return "none"
++	}
++	var parts []string
++	for _, site := range sites {
++		parts = append(parts, fmt.Sprintf("%s (%s)", site.method.label(), site.location))
++	}
++	return strings.Join(parts, "; ")
++}
++
++func allRoleEvidence(g *graphPackage, roles []carrierRoleMethod, byTarget map[*types.Func]carrierRoleMethod) (stubs, unengaged []string, engagedCount int) {
++	engaged, _ := g.engagementOf(roles, byTarget)
++	for _, method := range roles {
++		if !g.axisDependent(method, byTarget, map[string]bool{}).ok {
++			stubs = append(stubs, method.label())
++		}
++		if !engaged[method.label()] {
++			unengaged = append(unengaged, method.label())
++			continue
++		}
++		engagedCount++
++	}
++	sort.Strings(stubs)
++	sort.Strings(unengaged)
++	return stubs, unengaged, engagedCount
++}
++
++// TestStoredAxisStateIsCarrierTyped pins REQ-STRUCT-001: the parsed
++// declaration must be stored as a package-declared layout-direction carrier
++// instead of the previous raw direction string. The check parses the same
++// graph with the LR and the TD declaration and compares every top-level
++// field of the returned Properties, so no field name is assumed.
++func TestStoredAxisStateIsCarrierTyped(t *testing.T) {
++	states := axisStateFields(t)
++	var carriers, rawStrings []string
++	for _, state := range states {
++		if isPackageDeclaredType(state.typ) {
++			carriers = append(carriers, state.field)
++			continue
++		}
++		if underlyingKind(state.typ) == reflect.String {
++			rawStrings = append(rawStrings, fmt.Sprintf("%s (%s)", state.field, state.typ))
++		}
++	}
++	if len(carriers) == 0 {
++		t.Errorf("no field of graph.Properties that differs between the LR and the TD declaration is stored as a package-declared layout-direction carrier; differing fields: %s", describeCarrierStates(states))
++	}
++	if len(rawStrings) > 0 {
++		t.Errorf("the stored layout axis is still a raw string field: %s", strings.Join(rawStrings, ", "))
++	}
++}
++
++// TestCarrierTypeFlowsIntoLayoutState pins REQ-STRUCT-001 for the layout
++// side: every package struct field that shares its name with the axis state
++// discovered on Properties must be typed with the same package-declared
++// carrier, so the layout pipeline keeps working on the abstraction instead of
++// a second raw copy of the axis.
++func TestCarrierTypeFlowsIntoLayoutState(t *testing.T) {
++	states := axisStateFields(t)
++	g := loadGraphPackage(t)
++	carriers := map[string]bool{}
++	for _, name := range carrierTypeNames(t) {
++		carriers[name] = true
++	}
++	var offenders []string
++	checked := 0
++	for _, state := range states {
++		for _, field := range g.structFieldsNamed(state.field) {
++			checked++
++			if carriers[typeNameOf(field.typ)] {
++				continue
++			}
++			offenders = append(offenders, fmt.Sprintf("%s.%s is %s", field.structName, field.field, field.typ))
++		}
++	}
++	if checked == 0 {
++		t.Errorf("no package struct type declares a field named like the discovered axis state %s", describeCarrierStates(states))
++	}
++	if len(offenders) > 0 {
++		t.Errorf("the layout state keeps a non-carrier copy of the axis state: %s", strings.Join(offenders, ", "))
++	}
++}
++
++// TestTokenVocabularyConfinedToDeclarationMapping pins REQ-STRUCT-003: the
++// exact direction tokens may only occur inside Parse and the package-level
++// tables it references (the single mapping point). Any occurrence in the
++// layout code, in a helper or in another file is a second place that
++// reinterprets direction strings.
++func TestTokenVocabularyConfinedToDeclarationMapping(t *testing.T) {
++	g := loadGraphPackage(t)
++	offenders := g.tokenOccurrencesOutsideParseCone()
++	if len(offenders) > 0 {
++		var parts []string
++		for i, occurrence := range offenders {
++			if i == 12 {
++				parts = append(parts, fmt.Sprintf("... and %d more", len(offenders)-i))
++				break
++			}
++			parts = append(parts, occurrence.String())
++		}
++		t.Errorf("direction tokens are reinterpreted outside the Parse mapping cone (%d occurrences): %s", len(offenders), strings.Join(parts, "; "))
++	}
++}
++
++// TestAxisStateReadsGoThroughCarrierMethods pins REQ-STRUCT-001 for the
++// consumers: outside the declaration mapping cone every read of the stored
++// axis state must be the receiver of a carrier method call or a direct
++// carrier-to-carrier transfer. Comparisons, arithmetic or bare boolean reads
++// of the state mean the layout code still inspects the raw axis value itself.
++func TestAxisStateReadsGoThroughCarrierMethods(t *testing.T) {
++	g := loadGraphPackage(t)
++	fields := directionStateFieldNames(t)
++	if len(fields) == 0 {
++		t.Errorf("no stored field of graph.Properties differs between the LR and the TD declaration, so no layout axis is stored")
++	}
++	allowed := map[string]bool{"call-receiver": true, "state-transfer": true, "assignment-target": true, "nil-check": true}
++	cone := g.parseCone()
++	var offenders []string
++	for _, read := range g.stateReads(fields) {
++		if allowed[read.context] {
++			continue
++		}
++		if read.decl != nil && cone[read.decl] {
++			continue
++		}
++		offenders = append(offenders, fmt.Sprintf("%s:%d reads %s as %s", read.file, read.line, read.field, read.context))
++	}
++	if len(offenders) > 0 {
++		var parts []string
++		for i, offender := range offenders {
++			if i == 12 {
++				parts = append(parts, fmt.Sprintf("... and %d more", len(offenders)-i))
++				break
++			}
++			parts = append(parts, offender)
++		}
++		t.Errorf("layout code inspects the stored axis state directly instead of asking the carrier: %s", strings.Join(parts, "; "))
++	}
++}
++
++// TestSelfReferenceDirectionsAnsweredByCarrier pins REQ-STRUCT-002 for
++// self-referencing edges: the four start and end directions for a node that
++// links to itself must come from an axis-dependent carrier method that the
++// layout pipeline calls and whose result it consumes.
++func TestSelfReferenceDirectionsAnsweredByCarrier(t *testing.T) {
++	g, roles, byTarget := carrierRolesFor(t)
++	sites := answeredSites(g, roles, byTarget, isSelfReferenceRole, func(site roleCallSiteEvidence) bool {
++		return g.resultFlowsIntoCallArgumentOrReturn(site.site)
++	})
++	if len(sites) == 0 {
++		t.Errorf("no axis-dependent carrier method provides the four self-reference directions as consumed results (including a result record); role methods: %v", roleLabels(roles))
++	}
++}
++
++// TestRouteSelectionAnsweredByCarrier pins REQ-STRUCT-002 for backwards-edge
++// detection and preferred/alternative route selection: the four start and end
++// directions for a normal edge must come from an axis-dependent carrier
++// method that consumes the flow direction and is called by layout code.
++func TestRouteSelectionAnsweredByCarrier(t *testing.T) {
++	g, roles, byTarget := carrierRolesFor(t)
++	sites := answeredSites(g, roles, byTarget, isRouteRole, func(site roleCallSiteEvidence) bool {
++		return g.resultFlowsIntoCallArgumentOrReturn(site.site)
++	})
++	if len(sites) == 0 {
++		t.Errorf("no axis-dependent carrier method provides the four route directions from the edge flow as consumed results (including a result record); role methods: %v", roleLabels(roles))
++	}
++}
++
++// TestGridSteppingAnsweredByCarrier pins REQ-STRUCT-002 for grid stepping:
++// when the requested spot is taken, reserveSpotInGrid must ask an
++// axis-dependent carrier method for the next grid coordinate and recurse with
++// that result, instead of branching on the axis itself.
++func TestGridSteppingAnsweredByCarrier(t *testing.T) {
++	g, roles, byTarget := carrierRolesFor(t)
++	sites := answeredSites(g, roles, byTarget, func(sig *types.Signature) bool { return isGridStepRole(sig) || isPlacementRole(sig) }, func(site roleCallSiteEvidence) bool {
++		return g.flowsIntoRecursiveArgument(site.site)
++	})
++	if len(sites) == 0 {
++		t.Errorf("no axis-dependent carrier method computes or composes the retry coordinate of the recursive placement search; role methods: %v", roleLabels(roles))
++	}
++}
++
++// TestCoordinateGrowthAnsweredByCarrier pins REQ-STRUCT-002 for coordinate
++// growth: the grid coordinate for a level and cross position must be built by
++// an axis-dependent carrier method whose result is consumed by the layout
++// code (for example as the coordinate handed to reserveSpotInGrid).
++func TestCoordinateGrowthAnsweredByCarrier(t *testing.T) {
++	g, roles, byTarget := carrierRolesFor(t)
++	sites := answeredSites(g, roles, byTarget, isPlacementRole, func(site roleCallSiteEvidence) bool {
++		return g.resultFlowsIntoCallArgumentOrReturn(site.site)
++	})
++	if len(sites) == 0 {
++		t.Errorf("no axis-dependent carrier method turning a (level, position) pair into a gridCoord hands its result to a return statement or a layout call; role methods: %v", roleLabels(roles))
++	}
++}
++
++// TestLevelAndPositionExtractionAnsweredByCarrier pins REQ-STRUCT-002 for the
++// growth decisions that read an existing coordinate: the flow level (or the
++// cross position) of a node coordinate must be asked from an axis-dependent
++// carrier method instead of being read as a raw field.
++func TestLevelAndPositionExtractionAnsweredByCarrier(t *testing.T) {
++	g, roles, byTarget := carrierRolesFor(t)
++	sites := answeredSites(g, roles, byTarget, isExtractionRole, func(site roleCallSiteEvidence) bool {
++		return g.resultFlowsIntoCallArgumentOrReturn(site.site)
++	})
++	if len(sites) == 0 {
++		t.Errorf("no axis-dependent carrier method extracting a level/position integer from a gridCoord hands its result to a return statement or a layout call; role methods: %v", roleLabels(roles))
++	}
++}
++
++// TestParallelEdgeDirectionsAnsweredByCarrier pins REQ-STRUCT-002 for
++// repeated edges: the parallel start and end directions must be chosen by an
++// axis-dependent carrier method that the routing code calls and whose result
++// it consumes.
++func TestParallelEdgeDirectionsAnsweredByCarrier(t *testing.T) {
++	g, roles, byTarget := carrierRolesFor(t)
++	sites := answeredSites(g, roles, byTarget, isParallelRole, func(site roleCallSiteEvidence) bool {
++		if !g.resultFlowsIntoCallArgumentOrReturn(site.site) {
++			return false
++		}
++		return true
++	})
++	if len(sites) == 0 {
++		t.Errorf("no axis-dependent carrier method answering the parallel directions of repeated edges feeds a routing function that returns those directions; role methods: %v", roleLabels(roles))
++	}
++}
++
++// TestBooleanLayoutGatesAnsweredByCarrier pins REQ-STRUCT-002 for the boolean
++// layout gates: the subgraph-root separation branch and the fan-out early
++// return must consume axis-dependent carrier results. The two decisions may
++// share a carrier method; method identity is not a public contract.
++func TestBooleanLayoutGatesAnsweredByCarrier(t *testing.T) {
++	g, roles, byTarget := carrierRolesFor(t)
++	branches := map[string]string{}
++	earlyReturns := map[string]string{}
++	for _, site := range answeredSites(g, roles, byTarget, isBoolRole, func(site roleCallSiteEvidence) bool {
++		return site.condition
++	}) {
++		if site.early {
++			earlyReturns[site.location] = site.method.label()
++		} else {
++			branches[site.location] = site.method.label()
++		}
++	}
++	if len(branches) == 0 {
++		t.Errorf("no axis-dependent carrier result decides the subgraph-root layout branch; role methods: %v", roleLabels(roles))
++	}
++	if len(earlyReturns) == 0 && !carrierOwnsFanoutAction(t) {
++		t.Errorf("no axis-dependent carrier result or active carrier-owned action controls fan-out; role methods: %v", roleLabels(roles))
++	}
++}
++
++// TestFanoutEarlyReturnGateAnsweredByCarrier pins REQ-STRUCT-002 for the
++// fan-out layout gate: the only layout phase that is skipped by an early
++// return on the axis (the fan-out handling) must take that decision from an
++// axis-dependent carrier method instead of comparing the direction itself.
++func TestFanoutEarlyReturnGateAnsweredByCarrier(t *testing.T) {
++	g, roles, byTarget := carrierRolesFor(t)
++	sites := answeredSites(g, roles, byTarget, isBoolRole, func(site roleCallSiteEvidence) bool {
++		return site.condition && site.early
++	})
++	if len(sites) == 0 && !carrierOwnsFanoutAction(t) {
++		t.Errorf("no axis-dependent carrier boolean or active carrier-owned action controls the fan-out layout phase; role methods: %v", roleLabels(roles))
++	}
++}
++
++// TestCarrierRoleMethodsEngagedAndAxisDependent pins REQ-STRUCT-001 and
++// REQ-STRUCT-002 from the abstraction side: actual axis-dependent carrier
++// behavior must be reachable from layout code. The separate family checks
++// establish coverage; unused extra private helpers are not a requirement.
++func TestCarrierRoleMethodsEngagedAndAxisDependent(t *testing.T) {
++
++	g, roles, byTarget := carrierRolesFor(t)
++	engaged, _ := g.engagementOf(roles, byTarget)
++	for _, method := range roles {
++		if engaged[method.label()] && g.axisDependent(method, byTarget, map[string]bool{}).ok {
++			return
++		}
++	}
++	t.Errorf("no axis-dependent carrier behavior is engaged by the layout pipeline")
++
++}
++
++func roleLabels(roles []carrierRoleMethod) []string {
++	var out []string
++	for _, role := range roles {
++		out = append(out, role.label())
++	}
++	sort.Strings(out)
++	if len(out) == 0 {
++		return []string{"none"}
++	}
++	return out
++}
+diff --git a/test/f2p/doc.go b/test/f2p/doc.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb9eba2bbb07457f01f61fbb25950f5e55b67139
+--- /dev/null
++++ b/test/f2p/doc.go
+@@ -0,0 +1,14 @@
++// Package f2p holds the fail-to-pass structural tests for the graph
++// layout-direction refactor.
++//
++// The tests reflectively discover the stored axis state of graph.Properties,
++// type-check the non-test sources of pkg/graph with go/types and follow where
++// the carrier results are consumed. They verify that the Mermaid declaration
++// is translated once in the Parse reachable cone and that every
++// direction-dependent decision family (self-reference and route directions,
++// grid stepping and coordinate growth, parallel edge routing, the boolean
++// layout gates and the fan-out early return) is answered by an axis-dependent
++// carrier method that Draw-reachable layout code calls. The mechanism itself
++// stays open: a value type, a struct or an interface with per-axis
++// implementations all satisfy the checks.
++package f2p
+diff --git a/test/f2p/f2prunner/main.go b/test/f2p/f2prunner/main.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..d866cc4df4c126d87fb14aae08b463059cc9f490
+--- /dev/null
++++ b/test/f2p/f2prunner/main.go
+@@ -0,0 +1,539 @@
++// Command f2prunner executes the fail-to-pass structural selectors of the
++// graph layout-direction plan and writes a regular JUnit report.
++//
++// It is invoked from the repository root by test/f2p/run_f2p.sh and only uses
++// the Go toolchain that ships with the frozen environment image. When the
++// canonical plan configuration is available (flag, environment variable or
++// repository-root config.json) the exact selector set is read from its p2p and
++// f2p arrays so the final scoring set is never re-derived from test files or
++// broad patterns. Every selector is executed with the real `go test` runner:
++// selectors whose test no longer compiles or is no longer collected are
++// reported as errors instead of silently disappearing from the report.
++package main
++
++import (
++	"bytes"
++	"encoding/json"
++	"encoding/xml"
++	"flag"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"sort"
++	"strings"
++	"time"
++)
++
++// fallbackSelectors is the exact fail-to-pass selection of this plan. It is
++// used when no canonical configuration is available (for example while the
++// plan is still being developed); the frozen selection is the configuration
++// read from {config} at grading time.
++var fallbackSelectors = []string{
++	"test/f2p/direction_structure_test.go::TestStoredAxisStateIsCarrierTyped",
++	"test/f2p/direction_structure_test.go::TestCarrierTypeFlowsIntoLayoutState",
++	"test/f2p/direction_structure_test.go::TestTokenVocabularyConfinedToDeclarationMapping",
++	"test/f2p/direction_structure_test.go::TestAxisStateReadsGoThroughCarrierMethods",
++	"test/f2p/direction_structure_test.go::TestSelfReferenceDirectionsAnsweredByCarrier",
++	"test/f2p/direction_structure_test.go::TestRouteSelectionAnsweredByCarrier",
++	"test/f2p/direction_structure_test.go::TestGridSteppingAnsweredByCarrier",
++	"test/f2p/direction_structure_test.go::TestCoordinateGrowthAnsweredByCarrier",
++	"test/f2p/direction_structure_test.go::TestLevelAndPositionExtractionAnsweredByCarrier",
++	"test/f2p/direction_structure_test.go::TestParallelEdgeDirectionsAnsweredByCarrier",
++	"test/f2p/direction_structure_test.go::TestBooleanLayoutGatesAnsweredByCarrier",
++	"test/f2p/direction_structure_test.go::TestFanoutEarlyReturnGateAnsweredByCarrier",
++	"test/f2p/direction_structure_test.go::TestCarrierRoleMethodsEngagedAndAxisDependent",
++}
++
++var selectorPattern = regexp.MustCompile(`^[A-Za-z0-9_./-]+\.go::[A-Za-z_][A-Za-z0-9_]*$`)
++var leafPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
++
++type selector struct {
++	raw    string
++	path   string
++	leaf   string
++	pkgDir string
++}
++
++func parseSelector(raw string) (selector, error) {
++	index := strings.LastIndex(raw, "::")
++	if index <= 0 || index+2 >= len(raw) {
++		return selector{}, fmt.Errorf("selector %q is not a path::leaf selector", raw)
++	}
++	path := raw[:index]
++	leaf := raw[index+2:]
++	if !leafPattern.MatchString(leaf) {
++		return selector{}, fmt.Errorf("selector %q: leaf %q is not a plain test function name", raw, leaf)
++	}
++	pkgDir := path
++	if strings.HasSuffix(path, ".go") {
++		pkgDir = filepath.Dir(path)
++	}
++	if pkgDir == "" || pkgDir == "." || pkgDir == "/" {
++		return selector{}, fmt.Errorf("selector %q: cannot derive a package from %q", raw, path)
++	}
++	return selector{raw: raw, path: path, leaf: leaf, pkgDir: pkgDir}, nil
++}
++
++type testEvent struct {
++	Action  string  `json:"Action"`
++	Package string  `json:"Package"`
++	Test    string  `json:"Test"`
++	Elapsed float64 `json:"Elapsed"`
++	Output  string  `json:"Output"`
++}
++
++type testResult struct {
++	status   string
++	elapsed  float64
++	output   string
++	missing  string
++	observed bool
++}
++
++func findRepoRoot(start string) (string, error) {
++	current, err := filepath.Abs(start)
++	if err != nil {
++		return "", err
++	}
++	for {
++		if _, statErr := os.Stat(filepath.Join(current, "go.mod")); statErr == nil {
++			return current, nil
++		}
++		parent := filepath.Dir(current)
++		if parent == current {
++			return "", fmt.Errorf("cannot find go.mod above %s", start)
++		}
++		current = parent
++	}
++}
++
++// collectSelectors walks arbitrary plan JSON and returns every exact
++// path::leaf selector it contains, preserving document order and dropping
++// duplicates. Reading the configuration keeps the frozen p2p and f2p arrays
++// authoritative instead of re-deriving the selection from test files.
++func collectSelectors(value interface{}, out *[]string, seen map[string]bool) {
++	switch typed := value.(type) {
++	case string:
++		if selectorPattern.MatchString(typed) && !seen[typed] {
++			seen[typed] = true
++			*out = append(*out, typed)
++		}
++	case []interface{}:
++		for _, item := range typed {
++			collectSelectors(item, out, seen)
++		}
++	case map[string]interface{}:
++		keys := make([]string, 0, len(typed))
++		for key := range typed {
++			keys = append(keys, key)
++		}
++		sort.Strings(keys)
++		for _, key := range keys {
++			collectSelectors(typed[key], out, seen)
++		}
++	}
++}
++
++func selectorsFromConfigFile(path string) []string {
++	if strings.TrimSpace(path) == "" {
++		return nil
++	}
++	payload, err := os.ReadFile(path)
++	if err != nil {
++		return nil
++	}
++	var document interface{}
++	if err := json.Unmarshal(payload, &document); err != nil {
++		return nil
++	}
++	if selectors := selectorsFromPlanArrays(document); len(selectors) > 0 {
++		return selectors
++	}
++	var out []string
++	collectSelectors(document, &out, map[string]bool{})
++	return out
++}
++
++// selectorsFromPlanArrays reads the frozen selection from the canonical plan
++// configuration: the top-level p2p and f2p selector arrays (or, when those are
++// absent, the tests arrays of the gates). Inventory lists that some plan
++// shapes carry are deliberately not part of the scoring selection and are only
++// reachable through the generic fallback walk when no plan array exists at all.
++func selectorsFromPlanArrays(document interface{}) []string {
++	root, ok := document.(map[string]interface{})
++	if !ok {
++		return nil
++	}
++	var out []string
++	seen := map[string]bool{}
++	add := func(value interface{}) {
++		raw, ok := value.(string)
++		if !ok || !selectorPattern.MatchString(raw) || seen[raw] {
++			return
++		}
++		seen[raw] = true
++		out = append(out, raw)
++	}
++	for _, key := range []string{"p2p", "f2p"} {
++		list, ok := root[key].([]interface{})
++		if !ok {
++			continue
++		}
++		for _, item := range list {
++			add(item)
++		}
++	}
++	if len(out) > 0 {
++		return out
++	}
++	gates, ok := root["gates"].([]interface{})
++	if !ok {
++		return nil
++	}
++	for _, gate := range gates {
++		entry, ok := gate.(map[string]interface{})
++		if !ok {
++			continue
++		}
++		tests, ok := entry["tests"].([]interface{})
++		if !ok {
++			continue
++		}
++		for _, item := range tests {
++			add(item)
++		}
++	}
++	return out
++}
++
++func discoverConfig(root string) []string {
++	candidates := []string{}
++	for _, key := range []string{"VERIFIER_CONFIG", "VERIFIER_CONFIG_PATH", "VERIFIER_PLAN", "CONFIG_JSON", "GRADER_CONFIG"} {
++		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
++			candidates = append(candidates, value)
++		}
++	}
++	for _, relative := range []string{"config.json", "../config.json", "../../config.json"} {
++		candidates = append(candidates, filepath.Join(root, relative))
++	}
++	for _, candidate := range candidates {
++		if selectors := selectorsFromConfigFile(candidate); len(selectors) > 0 {
++			return selectors
++		}
++	}
++	return nil
++}
++
++// loadSelectors returns the exact selector set to execute. The canonical
++// configuration (when available) contributes its frozen p2p and f2p arrays and
++// is used verbatim, so the report covers exactly the frozen pass-to-pass plus
++// fail-to-pass selection. Without a configuration the declared fail-to-pass
++// selection of this plan is executed so the runner stays usable while the plan
++// is still being developed.
++func loadSelectors(root, configPath string) ([]string, string) {
++	configured := selectorsFromConfigFile(configPath)
++	source := configPath
++	if len(configured) == 0 && configPath == "" {
++		configured = discoverConfig(root)
++		if len(configured) > 0 {
++			source = "discovered"
++		}
++	}
++	if len(configured) == 0 {
++		return fallbackSelectors, "builtin"
++	}
++	return configured, source
++}
++
++func runSelectorGroup(root, pkgDir string, group []selector, timeout time.Duration) map[string]*testResult {
++	results := make(map[string]*testResult, len(group))
++	for _, item := range group {
++		results[item.leaf] = &testResult{status: "missing"}
++	}
++	names := make([]string, 0, len(group))
++	for _, item := range group {
++		names = append(names, regexp.QuoteMeta(item.leaf))
++	}
++	args := []string{
++		"test",
++		"-count=1",
++		"-json",
++		"-timeout", timeout.String(),
++		"-run", "^(" + strings.Join(names, "|") + ")$",
++		"./" + pkgDir,
++	}
++	command := exec.Command("go", args...)
++	command.Dir = root
++	command.Env = append(os.Environ(), "GOPROXY=off")
++
++	var stdout, stderr bytes.Buffer
++	command.Stdout = &stdout
++	command.Stderr = &stderr
++	runErr := command.Run()
++
++	pkgOutput := &strings.Builder{}
++	decoder := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
++	for {
++		var event testEvent
++		if err := decoder.Decode(&event); err != nil {
++			break
++		}
++		if event.Test == "" {
++			if event.Output != "" {
++				pkgOutput.WriteString(event.Output)
++			}
++			continue
++		}
++		for _, item := range group {
++			if event.Test != item.leaf && !strings.HasPrefix(event.Test, item.leaf+"/") {
++				continue
++			}
++			result := results[item.leaf]
++			switch event.Action {
++			case "output":
++				result.output += event.Output
++			case "pass":
++				if event.Test == item.leaf {
++					result.status = "pass"
++					result.elapsed = event.Elapsed
++				}
++			case "fail":
++				if event.Test == item.leaf {
++					result.status = "fail"
++					result.elapsed = event.Elapsed
++				}
++			case "skip":
++				if event.Test == item.leaf {
++					result.status = "skip"
++					result.elapsed = event.Elapsed
++				}
++			}
++			break
++		}
++	}
++	detail := strings.TrimSpace(pkgOutput.String())
++	if detail == "" {
++		detail = strings.TrimSpace(stderr.String())
++	}
++	if runErr != nil {
++		for _, item := range group {
++			if results[item.leaf].status == "missing" {
++				results[item.leaf].missing = fmt.Sprintf("go test ./%s did not collect or complete %s: %v\n%s", pkgDir, item.leaf, runErr, detail)
++			}
++		}
++	}
++	return results
++}
++
++type junitProperty struct {
++	Name  string `xml:"name,attr"`
++	Value string `xml:"value,attr"`
++}
++
++type junitProperties struct {
++	Items []junitProperty `xml:"property"`
++}
++
++type junitFailure struct {
++	Message string `xml:"message,attr"`
++	Text    string `xml:",chardata"`
++}
++
++type junitError struct {
++	Message string `xml:"message,attr"`
++	Text    string `xml:",chardata"`
++}
++
++type junitSkipped struct {
++	Message string `xml:"message,attr,omitempty"`
++}
++
++type junitTestCase struct {
++	Name       string           `xml:"name,attr"`
++	Classname  string           `xml:"classname,attr"`
++	File       string           `xml:"file,attr"`
++	Time       float64          `xml:"time,attr"`
++	Properties *junitProperties `xml:"properties,omitempty"`
++	Failure    *junitFailure    `xml:"failure,omitempty"`
++	Error      *junitError      `xml:"error,omitempty"`
++	Skipped    *junitSkipped    `xml:"skipped,omitempty"`
++}
++
++type junitTestSuite struct {
++	XMLName  xml.Name        `xml:"testsuite"`
++	Name     string          `xml:"name,attr"`
++	Package  string          `xml:"package,attr,omitempty"`
++	Tests    int             `xml:"tests,attr"`
++	Failures int             `xml:"failures,attr"`
++	Errors   int             `xml:"errors,attr"`
++	Skipped  int             `xml:"skipped,attr"`
++	Time     float64         `xml:"time,attr"`
++	Cases    []junitTestCase `xml:"testcase"`
++}
++
++type junitTestSuites struct {
++	XMLName  xml.Name         `xml:"testsuites"`
++	Name     string           `xml:"name,attr"`
++	Tests    int              `xml:"tests,attr"`
++	Failures int              `xml:"failures,attr"`
++	Errors   int              `xml:"errors,attr"`
++	Skipped  int              `xml:"skipped,attr"`
++	Time     float64          `xml:"time,attr"`
++	Suites   []junitTestSuite `xml:"testsuite"`
++}
++
++func main() {
++	reportPath := flag.String("report", "", "path of the JUnit report to write")
++	configPath := flag.String("config", "", "path of the canonical plan configuration with the p2p and f2p selector arrays")
++	perPackageTimeout := flag.Duration("package-timeout", 90*time.Second, "timeout passed to each go test invocation")
++	flag.Parse()
++
++	if strings.TrimSpace(*reportPath) == "" {
++		fmt.Fprintln(os.Stderr, "f2prunner: -report is required")
++		os.Exit(2)
++	}
++
++	workingDir, err := os.Getwd()
++	if err != nil {
++		fmt.Fprintf(os.Stderr, "f2prunner: %v\n", err)
++		os.Exit(2)
++	}
++	root, err := findRepoRoot(workingDir)
++	if err != nil {
++		fmt.Fprintf(os.Stderr, "f2prunner: %v\n", err)
++		os.Exit(2)
++	}
++
++	rawSelectors, source := loadSelectors(root, *configPath)
++	var selectors []selector
++	seen := map[string]bool{}
++	for _, raw := range rawSelectors {
++		if seen[raw] {
++			continue
++		}
++		seen[raw] = true
++		item, parseErr := parseSelector(raw)
++		if parseErr != nil {
++			fmt.Fprintf(os.Stderr, "f2prunner: %v\n", parseErr)
++			os.Exit(2)
++		}
++		selectors = append(selectors, item)
++	}
++	if len(selectors) == 0 {
++		fmt.Fprintln(os.Stderr, "f2prunner: no selectors to execute")
++		os.Exit(2)
++	}
++	fmt.Fprintf(os.Stderr, "f2prunner: executing %d selectors (source: %s)\n", len(selectors), source)
++
++	groups := map[string][]selector{}
++	var groupOrder []string
++	for _, item := range selectors {
++		if _, ok := groups[item.pkgDir]; !ok {
++			groupOrder = append(groupOrder, item.pkgDir)
++		}
++		groups[item.pkgDir] = append(groups[item.pkgDir], item)
++	}
++
++	allResults := map[string]*testResult{}
++	started := time.Now()
++	for _, pkgDir := range groupOrder {
++		groupResults := runSelectorGroup(root, pkgDir, groups[pkgDir], *perPackageTimeout)
++		for leaf, result := range groupResults {
++			allResults[pkgDir+"::"+leaf] = result
++		}
++	}
++
++	suiteByPath := map[string]*junitTestSuite{}
++	var suiteOrder []string
++	for _, item := range selectors {
++		if _, seen := suiteByPath[item.path]; !seen {
++			suiteByPath[item.path] = &junitTestSuite{Name: item.path, Package: item.pkgDir}
++			suiteOrder = append(suiteOrder, item.path)
++		}
++	}
++	for _, item := range selectors {
++		result := allResults[item.pkgDir+"::"+item.leaf]
++		if result == nil {
++			result = &testResult{status: "missing", missing: "selector was not executed"}
++		}
++		suite := suiteByPath[item.path]
++		testCase := junitTestCase{
++			Name:      item.leaf,
++			Classname: item.path,
++			File:      item.path,
++			Time:      result.elapsed,
++			Properties: &junitProperties{Items: []junitProperty{
++				{Name: "selector", Value: item.raw},
++			}},
++		}
++		switch result.status {
++		case "pass":
++		case "skip":
++			testCase.Skipped = &junitSkipped{}
++			suite.Skipped++
++		case "fail":
++			testCase.Failure = &junitFailure{
++				Message: fmt.Sprintf("%s failed", item.raw),
++				Text:    strings.TrimSpace(result.output),
++			}
++			suite.Failures++
++		default:
++			message := result.missing
++			if message == "" {
++				message = fmt.Sprintf("%s was not collected by go test", item.raw)
++			}
++			testCase.Error = &junitError{Message: message, Text: strings.TrimSpace(result.output)}
++			suite.Errors++
++		}
++		suite.Cases = append(suite.Cases, testCase)
++		suite.Tests++
++		suite.Time += result.elapsed
++	}
++
++	report := junitTestSuites{Name: "f2p"}
++	totalTime := time.Since(started).Seconds()
++	for _, path := range suiteOrder {
++		suite := suiteByPath[path]
++		report.Suites = append(report.Suites, *suite)
++		report.Tests += suite.Tests
++		report.Failures += suite.Failures
++		report.Errors += suite.Errors
++		report.Skipped += suite.Skipped
++	}
++	report.Time = totalTime
++
++	payload, err := xml.MarshalIndent(report, "", "  ")
++	if err != nil {
++		fmt.Fprintf(os.Stderr, "f2prunner: cannot encode JUnit report: %v\n", err)
++		os.Exit(2)
++	}
++	payload = append([]byte(xml.Header), payload...)
++	payload = append(payload, '\n')
++	if dir := filepath.Dir(*reportPath); dir != "" && dir != "." {
++		if err := os.MkdirAll(dir, 0o755); err != nil {
++			fmt.Fprintf(os.Stderr, "f2prunner: cannot create report directory: %v\n", err)
++			os.Exit(2)
++		}
++	}
++	if err := os.WriteFile(*reportPath, payload, 0o644); err != nil {
++		fmt.Fprintf(os.Stderr, "f2prunner: cannot write report: %v\n", err)
++		os.Exit(2)
++	}
++
++	exitCode := 0
++	for _, item := range selectors {
++		result := allResults[item.pkgDir+"::"+item.leaf]
++		status := "missing"
++		if result != nil {
++			status = result.status
++		}
++		fmt.Printf("%-7s %s\n", strings.ToUpper(status), item.raw)
++		if status != "pass" {
++			exitCode = 1
++		}
++	}
++	fmt.Printf("f2prunner: %d selectors, %d failures, %d errors, report %s\n", report.Tests, report.Failures, report.Errors, *reportPath)
++	os.Exit(exitCode)
++}
+diff --git a/test/f2p/harness_test.go b/test/f2p/harness_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..0ebe17535943993e91e0fc175c48e9ba76494474
+--- /dev/null
++++ b/test/f2p/harness_test.go
+@@ -0,0 +1,63 @@
++package f2p
++
++// Shared low-level helpers for the structural fail-to-pass checks: the
++// Mermaid direction vocabulary, the token-literal detector and the repository
++// root lookup used by the go/types loader. The heavier analysis machinery
++// lives in abstraction_harness_test.go.
++
++import (
++	"fmt"
++	"go/ast"
++	"go/token"
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++)
++
++// directionTokens are the five Mermaid direction declarations the graph
++// layout pipeline accepts. Only the single declaration-to-axis mapping point
++// (the Parse reachable cone) may interpret them.
++var directionTokens = map[string]bool{
++	"LR": true,
++	"RL": true,
++	"TD": true,
++	"TB": true,
++	"BT": true,
++}
++
++func repositoryRoot() (string, error) {
++	dir, err := os.Getwd()
++	if err != nil {
++		return "", err
++	}
++	for {
++		if info, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil && !info.IsDir() {
++			return dir, nil
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			return "", fmt.Errorf("go.mod not found above %s", dir)
++		}
++		dir = parent
++	}
++}
++
++// tokenLiteral reports whether the expression is a string literal equal to
++// one of the direction tokens. The comparison is case-insensitive on purpose:
++// a lower-cased comparison still interprets the direction string.
++func tokenLiteral(expr ast.Expr) (string, bool) {
++	lit, ok := expr.(*ast.BasicLit)
++	if !ok || lit.Kind != token.STRING {
++		return "", false
++	}
++	value, err := strconv.Unquote(lit.Value)
++	if err != nil {
++		return "", false
++	}
++	value = strings.ToUpper(value)
++	if !directionTokens[value] {
++		return "", false
++	}
++	return value, true
++}
+diff --git a/test/f2p/run_f2p.sh b/test/f2p/run_f2p.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..9d587c64f9e005edf6bb8826dd0928d4a1b03596
+--- /dev/null
++++ b/test/f2p/run_f2p.sh
+@@ -0,0 +1,52 @@
++#!/usr/bin/env bash
++# Runs the fail-to-pass structural selection of the graph layout-direction plan
++# and writes a regular JUnit report at the path given as the first argument.
++#
++# The runner only uses repository files and tools from the frozen environment
++# image: no installs, downloads or registry access happen here. Build artefacts
++# are executed, so the runner is declared with require_exec=true and uses the
++# controlled VERIFIER_EXEC_DIR for the Go build work directory when it is
++# provided; temporary report data stays in TMPDIR.
++set -euo pipefail
++
++report="${1:-}"
++if [ -z "$report" ]; then
++  echo "usage: run_f2p.sh <junit-report-path>" >&2
++  exit 2
++fi
++
++script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++repo_root="$(cd "$script_dir/../.." && pwd)"
++
++case "$report" in
++  /*) ;;
++  *) report="$PWD/$report" ;;
++esac
++
++if [ -n "${VERIFIER_EXEC_DIR:-}" ] && [ -d "${VERIFIER_EXEC_DIR}" ]; then
++  gotmp="${VERIFIER_EXEC_DIR}/go-build-work"
++  if mkdir -p "$gotmp" 2>/dev/null; then
++    export GOTMPDIR="$gotmp"
++  fi
++fi
++
++# The environment may mount TMPDIR noexec; the compiled runner and test
++# binaries must still be executable. Fall back to a work directory inside the
++# repository copy, which is writable and executable, when no controlled
++# execution directory was provided.
++f2p_exec_tmp=""
++if [ -z "${GOTMPDIR:-}" ]; then
++  gotmp="$(mktemp -d "${repo_root}/.f2p-exec.XXXXXX" 2>/dev/null || true)"
++  if [ -n "$gotmp" ]; then
++    export GOTMPDIR="$gotmp"
++    f2p_exec_tmp="$gotmp"
++  fi
++fi
++
++cd "$repo_root"
++status=0
++go run ./test/f2p/f2prunner -report "$report" || status=$?
++if [ -n "$f2p_exec_tmp" ]; then
++  rm -rf "$f2p_exec_tmp"
++fi
++exit "$status"
+diff --git a/test/p2p/direction_regression_test.go b/test/p2p/direction_regression_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..fdd8a44680d296286bd598e9b72cd26ded0a1742
+--- /dev/null
++++ b/test/p2p/direction_regression_test.go
+@@ -0,0 +1,637 @@
++package p2p
++
++import (
++	"errors"
++	"fmt"
++	"reflect"
++	"strings"
++	"testing"
++
++	"github.com/AlexanderGrooff/mermaid-ascii/pkg/diagram"
++	"github.com/AlexanderGrooff/mermaid-ascii/pkg/graph"
++	"github.com/AlexanderGrooff/mermaid-ascii/pkg/render"
++)
++
++// trailingSpaceMarker makes trailing spaces of golden outputs visible in the
++// source, matching the convention the repository test cases use.
++const trailingSpaceMarker = "␠"
++
++func decodeGolden(golden string) string {
++	return strings.ReplaceAll(golden, trailingSpaceMarker, " ")
++}
++
++func parseP2PGraph(t *testing.T, input string) *graph.Properties {
++	t.Helper()
++	properties, err := graph.Parse(input, "cli")
++	if err != nil {
++		t.Fatalf("graph.Parse(%q) error = %v", input, err)
++	}
++	if properties == nil {
++		t.Fatalf("graph.Parse(%q) returned no properties", input)
++	}
++	return properties
++}
++
++func renderP2PASCII(t *testing.T, input string) string {
++	t.Helper()
++	properties := parseP2PGraph(t, input)
++	properties.Apply(diagram.NewTestConfig(true, "cli"))
++	return graph.Draw(properties)
++}
++
++func assertP2PRender(t *testing.T, input, want string) {
++	t.Helper()
++	if got := renderP2PASCII(t, input); got != want {
++		t.Fatalf("rendered output changed for %q\nexpected:\n%q\nactual:\n%q", input, want, got)
++	}
++}
++
++func p2pLineContaining(output, needle string) int {
++	for index, line := range strings.Split(output, "\n") {
++		if strings.Contains(line, needle) {
++			return index
++		}
++	}
++	return -1
++}
++
++// TestP2PRenderedOutputParityPerAxis pins byte-for-byte rendering of one
++// bidirectional pair on each axis.
++func TestP2PRenderedOutputParityPerAxis(t *testing.T) {
++	assertP2PRender(t, "graph LR\nA --> B\nB --> A", decodeGolden(`+---+     +---+
++|   |     |   |
++| A |---->| B |
++|   |     |   |
+++---+     +---+
++  ^         |␠␠
++  +---------+␠␠`))
++	assertP2PRender(t, "graph TD\nA --> B\nB --> A", decodeGolden(`+---+␠␠
++|   |␠␠
++| A |<+
++|   | |
+++---+ |
++  |   |
++  |   |
++  |   |
++  |   |
++  v   |
+++---+ |
++|   | |
++| B |-+
++|   |␠␠
+++---+␠␠`))
++}
++
++// TestP2PDirectionDeclarationAxisMapping pins the declaration-to-axis mapping:
++// LR and RL share the horizontal axis without reversal, TD/TB/BT and a
++// direction-less declaration share the vertical axis without reversal, and the
++// declaration stays case-sensitive.
++func TestP2PDirectionDeclarationAxisMapping(t *testing.T) {
++	horizontal := renderP2PASCII(t, "graph LR\nA --> B")
++	vertical := renderP2PASCII(t, "graph TD\nA --> B")
++
++	for _, declaration := range []string{"graph LR", "flowchart LR", "graph RL", "flowchart RL"} {
++		if got := renderP2PASCII(t, declaration+"\nA --> B"); got != horizontal {
++			t.Errorf("%q must render on the horizontal axis without reversal\n%s", declaration, got)
++		}
++	}
++	for _, declaration := range []string{"graph TD", "flowchart TD", "graph TB", "graph BT", "flowchart BT", "graph", "flowchart"} {
++		if got := renderP2PASCII(t, declaration+"\nA --> B"); got != vertical {
++			t.Errorf("%q must render on the vertical axis without reversal\n%s", declaration, got)
++		}
++	}
++	if horizontal == vertical {
++		t.Fatal("the two axes must keep different layouts for the same edge")
++	}
++	for _, declaration := range []string{"graph lr", "graph Td", "GRAPH LR", "Flowchart LR", "graph tB"} {
++		if _, err := graph.Parse(declaration+"\nA --> B", "cli"); err == nil {
++			t.Errorf("graph.Parse(%q) must keep rejecting the case-mismatched declaration", declaration)
++		}
++	}
++}
++
++// TestP2PDirectionParseErrorCompatibility pins the exact parse errors of the
++// declaration grammar, including the supported-direction list.
++func TestP2PDirectionParseErrorCompatibility(t *testing.T) {
++	cases := []struct {
++		name  string
++		input string
++		want  string
++	}{
++		{
++			name:  "unknown direction",
++			input: "graph SIDEWAYS\nA --> B",
++			want:  "unsupported graph direction 'SIDEWAYS'. Supported directions: TD, TB, BT, LR, RL",
++		},
++		{
++			name:  "lowercase direction",
++			input: "graph td\nA --> B",
++			want:  "unsupported graph direction 'td'. Supported directions: TD, TB, BT, LR, RL",
++		},
++		{
++			name:  "extra tokens after direction",
++			input: "graph TD foo\nA --> B",
++			want:  `unexpected tokens after graph direction: "foo"`,
++		},
++		{
++			name:  "uppercase graph keyword",
++			input: "GRAPH TD\nA --> B",
++			want:  "unsupported graph type 'GRAPH TD'. Supported types: 'graph' or 'flowchart' with an optional direction (TD, TB, BT, LR, RL)",
++		},
++		{
++			name:  "unknown diagram type",
++			input: "sequenceDiagram\nA->>B: x",
++			want:  "unsupported graph type 'sequenceDiagram'. Supported types: 'graph' or 'flowchart' with an optional direction (TD, TB, BT, LR, RL)",
++		},
++		{
++			name:  "empty input",
++			input: "",
++			want:  "missing graph definition",
++		},
++	}
++	for _, testCase := range cases {
++		t.Run(testCase.name, func(t *testing.T) {
++			_, err := graph.Parse(testCase.input, "cli")
++			if err == nil {
++				t.Fatalf("graph.Parse(%q) must keep returning an error", testCase.input)
++			}
++			if err.Error() != testCase.want {
++				t.Fatalf("graph.Parse(%q) error = %q, want %q", testCase.input, err.Error(), testCase.want)
++			}
++		})
++	}
++	if _, err := graph.Parse("graph\nA --> B", "cli"); err != nil {
++		t.Fatalf("a declaration without a direction must keep parsing, got %v", err)
++	}
++}
++
++// TestP2PSelfReferencePerAxis pins the per-axis self-reference loop geometry.
++func TestP2PSelfReferencePerAxis(t *testing.T) {
++	assertP2PRender(t, "graph LR\nA --> A", decodeGolden(`+---+␠␠
++|   |␠␠
++| A |-+
++|   | |
+++---+ |
++  ^   |
++  +---+`))
++	assertP2PRender(t, "graph TD\nA --> A", decodeGolden(`+---+␠␠
++|   |␠␠
++| A |<+
++|   | |
+++---+ |
++  |   |
++  +---+`))
++}
++
++// TestP2PBackwardsEdgePerAxis pins the routing of an edge that flows against
++// the axis of growth (C --> A in a three-node cycle).
++func TestP2PBackwardsEdgePerAxis(t *testing.T) {
++	assertP2PRender(t, "graph LR\nA --> B\nB --> C\nC --> A", decodeGolden(`+---+     +---+     +---+
++|   |     |   |     |   |
++| A |---->| B |---->| C |
++|   |     |   |     |   |
+++---+     +---+     +---+
++  ^                   |␠␠
++  +-------------------+␠␠`))
++	assertP2PRender(t, "graph TD\nA --> B\nB --> C\nC --> A", decodeGolden(`+---+␠␠
++|   |␠␠
++| A |<+
++|   | |
+++---+ |
++  |   |
++  |   |
++  |   |
++  |   |
++  v   |
+++---+ |
++|   | |
++| B | |
++|   | |
+++---+ |
++  |   |
++  |   |
++  |   |
++  |   |
++  v   |
+++---+ |
++|   | |
++| C |-+
++|   |␠␠
+++---+␠␠`))
++}
++
++// TestP2PRepeatedEdgeParallelRoutingPerAxis pins the parallel routing of two
++// edges that connect the same pair of nodes on each axis.
++func TestP2PRepeatedEdgeParallelRoutingPerAxis(t *testing.T) {
++	assertP2PRender(t, "graph LR\nA -->|one| B\nA -->|two| B", decodeGolden(`+---+      +---+
++|   |      |   |
++| A |-one->| B |
++|   |      |   |
+++---+      +---+
++  |          ^␠␠
++  +---two----+␠␠`))
++	assertP2PRender(t, "graph TD\nA -->|one| B\nA -->|two| B", decodeGolden(`+------+␠␠␠␠␠␠
++|      |␠␠␠␠␠␠
++|  A   |---+␠␠
++|      |   |␠␠
+++------+   |␠␠
++    |      |␠␠
++    |      |␠␠
++   one    two␠
++    |      |␠␠
++    v      |␠␠
+++------+   |␠␠
++|      |   |␠␠
++|  B   |<--+␠␠
++|      |␠␠␠␠␠␠
+++------+␠␠␠␠␠␠`))
++}
++
++// TestP2PFanoutAxisGating pins that fan-out branch labels are aligned only for
++// vertical layouts that have no subgraphs.
++func TestP2PFanoutAxisGating(t *testing.T) {
++	vertical := renderP2PASCII(t, "flowchart TB\nA -->|alpha| B\nA -->|beta| C")
++	alphaRow := p2pLineContaining(vertical, "alpha")
++	betaRow := p2pLineContaining(vertical, "beta")
++	if alphaRow < 0 || betaRow < 0 {
++		t.Fatalf("vertical fan-out output lost a branch label\n%s", vertical)
++	}
++	if alphaRow != betaRow {
++		t.Fatalf("vertical fan-out without subgraphs must keep aligned branch labels\n%s", vertical)
++	}
++
++	horizontal := renderP2PASCII(t, "graph LR\nA -->|alpha| B\nA -->|beta| C")
++	if left, right := p2pLineContaining(horizontal, "alpha"), p2pLineContaining(horizontal, "beta"); left < 0 || right < 0 {
++		t.Fatalf("horizontal fan-out output lost a branch label\n%s", horizontal)
++	} else if left == right {
++		t.Fatalf("horizontal layouts must not use the vertical fan-out alignment\n%s", horizontal)
++	}
++
++	withSubgraph := renderP2PASCII(t, "flowchart TB\nA -->|alpha| B\nA -->|beta| C\nsubgraph s\nD --> E\nend")
++	if left, right := p2pLineContaining(withSubgraph, "alpha"), p2pLineContaining(withSubgraph, "beta"); left < 0 || right < 0 {
++		t.Fatalf("subgraph fan-out output lost a branch label\n%s", withSubgraph)
++	} else if left == right {
++		t.Fatalf("fan-out alignment must be disabled when the vertical layout has subgraphs\n%s", withSubgraph)
++	}
++	// An isolated subgraph introduces no other edge that could mask the
++	// no-subgraphs guard by making fan-out ineligible for another reason.
++	t.Run("isolated_subgraph_guard", func(t *testing.T) {
++		assertP2PRender(t, "graph TD\nA -->|alpha| B\nA -->|beta| C\nsubgraph s\nZ\nend", decodeGolden(`               +-------+
++               |   s   |
++               |       |
++               |       |
+++--------+     | +---+ |
++|        |     | |   | |
++|   A    |---+ | | Z | |
++|        |   | | |   | |
+++--------+ beta| +---+ |
++     |       | |       |
++     |       | +-------+
++   alpha     +-----+␠␠␠␠
++     |             |␠␠␠␠
++     v             v␠␠␠␠
+++--------+       +---+␠␠
++|        |       |   |␠␠
++|   B    |       | C |␠␠
++|        |       |   |␠␠
+++--------+       +---+␠␠`))
++	})
++
++}
++
++// TestP2PDeterministicOutputAndOrdering pins that repeated renders are
++// identical and that node ordering follows the declaration.
++func TestP2PDeterministicOutputAndOrdering(t *testing.T) {
++	inputs := []string{
++		"graph LR\nA --> B\nC --> D\nB --> C",
++		"graph TD\nA --> B\nA --> C\nB --> D\nC --> D",
++		"flowchart TB\nA -->|alpha| B\nA -->|beta| C",
++	}
++	for _, input := range inputs {
++		first := renderP2PASCII(t, input)
++		for run := 0; run < 2; run++ {
++			if got := renderP2PASCII(t, input); got != first {
++				t.Fatalf("layout must stay deterministic for %q\nfirst:\n%s\nnext:\n%s", input, first, got)
++			}
++		}
++	}
++
++	ordered := renderP2PASCII(t, "graph LR\nA --> B\nC --> D\nB --> C")
++	positions := []int{
++		strings.Index(ordered, "| A |"),
++		strings.Index(ordered, "| B |"),
++		strings.Index(ordered, "| C |"),
++		strings.Index(ordered, "| D |"),
++	}
++	for index, position := range positions {
++		if position < 0 {
++			t.Fatalf("output lost node %q\n%s", string(rune('A'+index)), ordered)
++		}
++		if index > 0 && positions[index-1] >= position {
++			t.Fatalf("node ordering must follow the declaration order\n%s", ordered)
++		}
++	}
++}
++
++// TestP2PInvalidDeclarationErrorsWithoutPanic pins the remaining invalid
++// declarations and that they return errors instead of panicking.
++func TestP2PInvalidDeclarationErrorsWithoutPanic(t *testing.T) {
++	cases := []struct {
++		input string
++		want  string
++	}{
++		{"GRAPH TD\nA --> B", "unsupported graph type 'GRAPH TD'. Supported types: 'graph' or 'flowchart' with an optional direction (TD, TB, BT, LR, RL)"},
++		{"sequenceDiagram\nA->>B: x", "unsupported graph type 'sequenceDiagram'. Supported types: 'graph' or 'flowchart' with an optional direction (TD, TB, BT, LR, RL)"},
++		{"graph TD foo\nA --> B", `unexpected tokens after graph direction: "foo"`},
++		{"graph TD foo bar\nA --> B", `unexpected tokens after graph direction: "foo bar"`},
++		{"graph SIDEWAYS\nA --> B", "unsupported graph direction 'SIDEWAYS'. Supported directions: TD, TB, BT, LR, RL"},
++		{"", "missing graph definition"},
++	}
++	for _, testCase := range cases {
++		_, err := graph.Parse(testCase.input, "cli")
++		if err == nil {
++			t.Fatalf("graph.Parse(%q) must keep returning an error instead of panicking", testCase.input)
++		}
++		if err.Error() != testCase.want {
++			t.Fatalf("graph.Parse(%q) error = %q, want %q", testCase.input, err.Error(), testCase.want)
++		}
++	}
++	if _, err := graph.Parse("graph\nA --> B", "cli"); err != nil {
++		t.Fatalf("a declaration without a direction must keep parsing, got %v", err)
++	}
++	if _, err := graph.Parse("flowchart\nA --> B", "cli"); err != nil {
++		t.Fatalf("a direction-less flowchart must keep parsing, got %v", err)
++	}
++}
++
++// TestP2PConfigDirectionValidation pins the configuration contract of
++// Config.GraphDirection: exactly "LR" and "TD" are valid and the rejection
++// error names the GraphDirection field.
++func TestP2PConfigDirectionValidation(t *testing.T) {
++	defaults := diagram.DefaultConfig()
++	if defaults.GraphDirection != "LR" {
++		t.Fatalf("DefaultConfig().GraphDirection = %q, want %q", defaults.GraphDirection, "LR")
++	}
++	if err := defaults.Validate(); err != nil {
++		t.Fatalf("DefaultConfig().Validate() error = %v", err)
++	}
++	for _, direction := range []string{"LR", "TD"} {
++		config := diagram.DefaultConfig()
++		config.GraphDirection = direction
++		if err := config.Validate(); err != nil {
++			t.Fatalf("Validate() rejected %q: %v", direction, err)
++		}
++	}
++	for _, direction := range []string{"", "RL", "TB", "BT", "lr", "td", "LR ", "LR\n"} {
++		config := diagram.DefaultConfig()
++		config.GraphDirection = direction
++		err := config.Validate()
++		if err == nil {
++			t.Fatalf("Validate() accepted GraphDirection %q", direction)
++		}
++		var configErr *diagram.ConfigError
++		if !errors.As(err, &configErr) {
++			t.Fatalf("Validate() error for %q is %T, want *diagram.ConfigError", direction, err)
++		}
++		if configErr.Field != "GraphDirection" {
++			t.Fatalf("ConfigError.Field = %q, want %q", configErr.Field, "GraphDirection")
++		}
++		want := fmt.Sprintf("invalid config: GraphDirection = %v (must be \"LR\" or \"TD\")", direction)
++		if err.Error() != want {
++			t.Fatalf("Validate() error = %q, want %q", err.Error(), want)
++		}
++	}
++	if _, err := diagram.NewConfig(false, "RL", "cli"); err == nil {
++		t.Fatal("NewConfig must keep rejecting an unsupported graph direction")
++	}
++}
++
++// TestP2PConstructorSignaturesAndDefaults pins the constructor parameter lists
++// and the existing "LR" defaults.
++func TestP2PConstructorSignaturesAndDefaults(t *testing.T) {
++	config, err := diagram.NewConfig(false, "TD", "cli")
++	if err != nil {
++		t.Fatalf("NewConfig(false, \"TD\", \"cli\") error = %v", err)
++	}
++	if config.UseAscii || config.GraphDirection != "TD" || config.StyleType != "cli" {
++		t.Fatalf("NewConfig values = %+v", config)
++	}
++	if config.BoxBorderPadding != 1 || config.PaddingBetweenX != 5 || config.PaddingBetweenY != 5 {
++		t.Fatalf("NewConfig defaults = %+v", config)
++	}
++
++	cliConfig, err := diagram.NewCLIConfig(true, false, true, 2, 4, 6, "TD")
++	if err != nil {
++		t.Fatalf("NewCLIConfig(...) error = %v", err)
++	}
++	if !cliConfig.UseAscii || cliConfig.ShowCoords || !cliConfig.Verbose || cliConfig.GraphDirection != "TD" || cliConfig.StyleType != "cli" {
++		t.Fatalf("NewCLIConfig values = %+v", cliConfig)
++	}
++
++	webConfig, err := diagram.NewWebConfig(true, 3, 7, 9)
++	if err != nil {
++		t.Fatalf("NewWebConfig(...) error = %v", err)
++	}
++	if !webConfig.UseAscii || webConfig.GraphDirection != "LR" || webConfig.StyleType != "html" {
++		t.Fatalf("NewWebConfig values = %+v", webConfig)
++	}
++	if webConfig.BoxBorderPadding != 3 || webConfig.PaddingBetweenX != 7 || webConfig.PaddingBetweenY != 9 {
++		t.Fatalf("NewWebConfig padding = %+v", webConfig)
++	}
++
++	testConfig := diagram.NewTestConfig(true, "html")
++	if !testConfig.UseAscii || testConfig.GraphDirection != "LR" || testConfig.StyleType != "html" {
++		t.Fatalf("NewTestConfig values = %+v", testConfig)
++	}
++}
++
++// TestP2PParseApplyDrawEntryPoints pins Parse, Apply and Draw as the supported
++// parse, configure and render entry points.
++func TestP2PParseApplyDrawEntryPoints(t *testing.T) {
++	// Parse supplies usable defaults even when Apply is never called.
++	for _, tc := range []struct{ input, want string }{
++		{input: "graph LR\nA --> B", want: decodeGolden(`┌───┐     ┌───┐
++│   │     │   │
++│ A ├────►│ B │
++│   │     │   │
++└───┘     └───┘`)},
++		{input: "graph TD\nA --> B", want: decodeGolden(`┌───┐
++│   │
++│ A │
++│   │
++└─┬─┘
++  │␠␠
++  │␠␠
++  │␠␠
++  │␠␠
++  ▼␠␠
++┌───┐
++│   │
++│ B │
++│   │
++└───┘`)},
++	} {
++		t.Run("direct_parse_"+strings.Split(tc.input, "\n")[0], func(t *testing.T) {
++			if got := graph.Draw(parseP2PGraph(t, tc.input)); got != tc.want {
++				t.Fatalf("Draw(Parse(...)) changed its default output\nexpected:\n%q\nactual:\n%q", tc.want, got)
++			}
++		})
++	}
++
++	properties := parseP2PGraph(t, "graph LR\nA --> B")
++	properties.Apply(diagram.NewTestConfig(true, "cli"))
++	rendered := graph.Draw(properties)
++	for _, want := range []string{"| A |", "| B |", "---->"} {
++		if !strings.Contains(rendered, want) {
++			t.Fatalf("Draw(Apply(Parse(...))) lost %q\n%s", want, rendered)
++		}
++	}
++
++	overlay := diagram.NewTestConfig(true, "cli")
++	overlay.ShowCoords = true
++	properties.Apply(overlay)
++	if graph.Draw(properties) == rendered {
++		t.Fatal("Apply must keep applying the configuration to the parsed graph")
++	}
++}
++
++// TestP2PRenderDiagramWidthStatusContract pins the render entry points and the
++// width-status results.
++func TestP2PRenderDiagramWidthStatusContract(t *testing.T) {
++	plain, err := render.RenderDiagram("graph LR\nA --> B", diagram.NewTestConfig(true, "cli"))
++	if err != nil {
++		t.Fatalf("RenderDiagram error = %v", err)
++	}
++	withStatus, status, err := render.RenderDiagramWithStatus("graph LR\nA --> B", diagram.NewTestConfig(true, "cli"))
++	if err != nil {
++		t.Fatalf("RenderDiagramWithStatus error = %v", err)
++	}
++	if plain != withStatus {
++		t.Fatalf("RenderDiagram and RenderDiagramWithStatus disagree\n%q\n%q", plain, withStatus)
++	}
++	if status.Requested || status.Compacted {
++		t.Fatalf("width fitting must stay disabled without MaxWidth: %+v", status)
++	}
++
++	wide := diagram.NewTestConfig(true, "cli")
++	wide.MaxWidth = 1000
++	_, wideStatus, err := render.RenderDiagramWithStatus("graph LR\nA --> B", wide)
++	if err != nil {
++		t.Fatalf("RenderDiagramWithStatus error = %v", err)
++	}
++	if !wideStatus.Requested || wideStatus.Limit != 1000 || !wideStatus.Met {
++		t.Fatalf("width status = %+v, want a met 1000-column limit", wideStatus)
++	}
++	if wideStatus.Width <= 0 || wideStatus.Width > 1000 {
++		t.Fatalf("width status width = %d, want 0 < width <= 1000", wideStatus.Width)
++	}
++	if wideStatus.Compacted {
++		t.Fatalf("width status = %+v, want no compacting for a met limit", wideStatus)
++	}
++}
++
++// TestP2PLayoutAxisFromDeclaration pins that the axis comes from the Mermaid
++// declaration and that rendering does not honor Config.GraphDirection.
++func TestP2PLayoutAxisFromDeclaration(t *testing.T) {
++	renderWithDirection := func(declaration, direction string) string {
++		config := &diagram.Config{
++			UseAscii:         true,
++			BoxBorderPadding: 1,
++			PaddingBetweenX:  5,
++			PaddingBetweenY:  5,
++			GraphDirection:   direction,
++			StyleType:        "cli",
++		}
++		properties := parseP2PGraph(t, declaration)
++		properties.Apply(config)
++		return graph.Draw(properties)
++	}
++
++	horizontal := renderWithDirection("graph LR\nA --> B", "LR")
++	if got := renderWithDirection("graph LR\nA --> B", "TD"); got != horizontal {
++		t.Fatalf("Config.GraphDirection must not override a horizontal declaration\n%s", got)
++	}
++	vertical := renderWithDirection("graph TD\nA --> B", "TD")
++	if got := renderWithDirection("graph TD\nA --> B", "LR"); got != vertical {
++		t.Fatalf("Config.GraphDirection must not override a vertical declaration\n%s", got)
++	}
++	if horizontal == vertical {
++		t.Fatal("the declared axes must keep different layouts")
++	}
++
++	config := diagram.NewTestConfig(true, "cli")
++	config.GraphDirection = "TD"
++	fromRender, err := render.RenderDiagram("graph LR\nA --> B", config)
++	if err != nil {
++		t.Fatalf("RenderDiagram error = %v", err)
++	}
++	if fromRender != horizontal {
++		t.Fatalf("RenderDiagram must keep using the declared axis\n%s", fromRender)
++	}
++}
++
++// TestP2PPublicSurfaceObservableBehaviorPreserved pins defaults, rendered
++// output and error behavior through the public entry points.
++func TestP2PPublicSurfaceObservableBehaviorPreserved(t *testing.T) {
++	defaults := diagram.DefaultConfig()
++	if defaults.GraphDirection != "LR" || defaults.StyleType != "cli" || defaults.UseAscii {
++		t.Fatalf("DefaultConfig defaults changed: %+v", defaults)
++	}
++
++	fromDefaults, err := render.RenderDiagram("graph LR\nA --> B", defaults)
++	if err != nil {
++		t.Fatalf("RenderDiagram with defaults error = %v", err)
++	}
++	fromNil, err := render.RenderDiagram("graph LR\nA --> B", nil)
++	if err != nil {
++		t.Fatalf("RenderDiagram with a nil config error = %v", err)
++	}
++	if fromDefaults != fromNil {
++		t.Fatalf("a nil config must keep defaulting to DefaultConfig\n%q\n%q", fromDefaults, fromNil)
++	}
++	for _, node := range []string{"A", "B"} {
++		if !strings.Contains(fromDefaults, node) {
++			t.Fatalf("default rendering lost node %q\n%s", node, fromDefaults)
++		}
++	}
++	if !strings.Contains(fromDefaults, "─") || !strings.Contains(fromDefaults, "│") {
++		t.Fatalf("default rendering must keep using Unicode box drawing\n%s", fromDefaults)
++	}
++
++	if _, err := render.RenderDiagram("graph SIDEWAYS\nA --> B", defaults); err == nil || !strings.Contains(err.Error(), "unsupported graph direction") {
++		t.Fatalf("RenderDiagram error = %v, want the unsupported graph direction error", err)
++	}
++}
++
++// TestP2PPublicSurfaceContractStable pins the public signatures and the public
++// configuration error contract, including the exact public field type.
++func TestP2PPublicSurfaceContractStable(t *testing.T) {
++	field, ok := reflect.TypeOf(diagram.Config{}).FieldByName("GraphDirection")
++	if !ok || field.Type != reflect.TypeOf("") {
++		t.Fatalf("Config.GraphDirection must remain exactly string; field = %v, present = %v", field, ok)
++	}
++
++	var _ func(bool, string, string) (*diagram.Config, error) = diagram.NewConfig
++	var _ func(bool, bool, bool, int, int, int, string) (*diagram.Config, error) = diagram.NewCLIConfig
++	var _ func(bool, int, int, int) (*diagram.Config, error) = diagram.NewWebConfig
++	var _ func(bool, string) *diagram.Config = diagram.NewTestConfig
++	var _ func() *diagram.Config = diagram.DefaultConfig
++	var _ func(string, string) (*graph.Properties, error) = graph.Parse
++	var _ func(*graph.Properties) string = graph.Draw
++	var _ func(*graph.Properties, *diagram.Config) = (*graph.Properties).Apply
++	var _ func(string, *diagram.Config) (string, error) = render.RenderDiagram
++	var _ func(string, *diagram.Config) (string, render.WidthStatus, error) = render.RenderDiagramWithStatus
++
++	config := &diagram.Config{GraphDirection: "LR", StyleType: "cli", SequenceSelfMessageWidth: 4}
++	if err := config.Validate(); err != nil {
++		t.Fatalf("a public Config literal with GraphDirection = \"LR\" must validate: %v", err)
++	}
++	config.GraphDirection = "RL"
++	var configErr *diagram.ConfigError
++	if err := config.Validate(); !errors.As(err, &configErr) {
++		t.Fatalf("Validate() error = %v, want *diagram.ConfigError", err)
++	}
++	if got := configErr.Error(); got != `invalid config: GraphDirection = RL (must be "LR" or "TD")` {
++		t.Fatalf("ConfigError.Error() = %q", got)
++	}
++}
+diff --git a/test/p2p/doc.go b/test/p2p/doc.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..28a38a12866a06a1df45192176bf9d13dc0b1444
+--- /dev/null
++++ b/test/p2p/doc.go
+@@ -0,0 +1,7 @@
++// Package p2p holds the frozen pass-to-pass regression tests for the graph
++// layout-direction refactor.
++//
++// The tests use only the public surface of the graph, diagram and render
++// packages so they keep compiling and keep their meaning even when the
++// internal direction representation changes.
++package p2p
+diff --git a/test/p2p/p2prunner/main.go b/test/p2p/p2prunner/main.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..b2a8df40d6d9849241d0c7cae727289ff1d5b0dc
+--- /dev/null
++++ b/test/p2p/p2prunner/main.go
+@@ -0,0 +1,417 @@
++// Command p2prunner executes the frozen pass-to-pass selectors of the graph
++// layout-direction plan and writes a regular JUnit report.
++//
++// It is invoked from the repository root by test/p2p/run_p2p.sh and only uses
++// the Go toolchain that ships with the frozen environment image. Every
++// selector is executed with the real `go test` runner: selectors whose test no
++// longer compiles or is no longer collected are reported as errors instead of
++// silently disappearing from the report.
++package main
++
++import (
++	"bytes"
++	"encoding/json"
++	"encoding/xml"
++	"flag"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"strings"
++	"time"
++)
++
++// inventorySelectors lists every original baseline test collected for the
++// direction refactor. They are executed so that the report covers the frozen
++// original_inventory entries as well as the selected pass-to-pass nodes.
++var inventorySelectors = []string{
++	"pkg/graph/graph_test.go::TestASCII",
++	"pkg/graph/graph_test.go::TestExtendedChars",
++	"pkg/graph/graph_test.go::TestMultibyte",
++	"pkg/graph/graph_test.go::TestGraphUseAsciiConfig",
++	"pkg/graph/label_test.go::TestNewGraphLabel",
++	"pkg/graph/render_graph_test.go::TestRenderGraphHandlesLongChainWithoutPanic",
++	"pkg/graph/render_graph_test.go::TestRenderGraphKeepsDisplayWidthForWideNodeLabels",
++	"pkg/graph/render_graph_test.go::TestRenderGraphHandlesUnicodeClusterNodeLabels",
++	"pkg/graph/render_graph_test.go::TestRenderGraphKeepsDisplayWidthForWideSubgraphTitles",
++	"pkg/graph/render_graph_test.go::TestRenderGraphKeepsExplicitTargetLabelAfterBareReference",
++	"pkg/graph/render_graph_test.go::TestRenderGraphKeepsStandaloneSubgraphLabelWhenReferencedLater",
++	"pkg/graph/render_graph_test.go::TestRenderGraphSupportsLiteralNewlineInNodeLabel",
++	"pkg/graph/render_graph_test.go::TestRenderGraphSeparatesDuplicateEdgeLabels",
++	"pkg/graph/render_graph_test.go::TestRenderGraphSeparatesBidirectionalEdgeLabelsLR",
++	"pkg/graph/render_graph_test.go::TestRenderGraphSeparatesBidirectionalEdgeLabelsTD",
++	"pkg/graph/render_graph_test.go::TestRenderGraphAlignsFanoutLabels",
++	"pkg/render/frontmatter_test.go::TestRenderWithFrontmatter",
++	"pkg/render/frontmatter_test.go::TestRenderTitleAboveDiagram",
++	"pkg/render/integration_test.go::TestSequenceDiagramIntegration",
++	"pkg/render/integration_test.go::TestSequenceDiagramIntegration_ASCII",
++	"pkg/render/integration_test.go::TestSequenceDiagramIntegration_ErrorHandling",
++	"pkg/render/integration_test.go::TestDiagramFactoryIntegration",
++	"pkg/render/integration_test.go::TestRenderConfig_Defaults",
++	"pkg/render/max_width_test.go::TestGraphMaxWidthGolden",
++	"pkg/render/max_width_test.go::TestMaxWidthHandlesUnicodeClusterLabels",
++	"pkg/render/max_width_test.go::TestMaxWidthPreservesGraphContentAndDoesNotAffectSequence",
++	"pkg/diagram/config_test.go::TestConfigMaxWidthValidation",
++	"pkg/diagram/frontmatter_test.go::TestStripFrontmatter",
++	"pkg/diagram/testutil/testutil_test.go::TestReadTestCaseDecodesExpectedSpaceMarkers",
++	"cmd/root_test.go::TestResolveMaxWidth",
++}
++
++// supplementalSelectors lists the pass-to-pass tests added by the plan.
++var supplementalSelectors = []string{
++	"test/p2p/direction_regression_test.go::TestP2PRenderedOutputParityPerAxis",
++	"test/p2p/direction_regression_test.go::TestP2PDirectionDeclarationAxisMapping",
++	"test/p2p/direction_regression_test.go::TestP2PDirectionParseErrorCompatibility",
++	"test/p2p/direction_regression_test.go::TestP2PSelfReferencePerAxis",
++	"test/p2p/direction_regression_test.go::TestP2PBackwardsEdgePerAxis",
++	"test/p2p/direction_regression_test.go::TestP2PRepeatedEdgeParallelRoutingPerAxis",
++	"test/p2p/direction_regression_test.go::TestP2PFanoutAxisGating",
++	"test/p2p/direction_regression_test.go::TestP2PDeterministicOutputAndOrdering",
++	"test/p2p/direction_regression_test.go::TestP2PInvalidDeclarationErrorsWithoutPanic",
++	"test/p2p/direction_regression_test.go::TestP2PConfigDirectionValidation",
++	"test/p2p/direction_regression_test.go::TestP2PConstructorSignaturesAndDefaults",
++	"test/p2p/direction_regression_test.go::TestP2PParseApplyDrawEntryPoints",
++	"test/p2p/direction_regression_test.go::TestP2PRenderDiagramWidthStatusContract",
++	"test/p2p/direction_regression_test.go::TestP2PLayoutAxisFromDeclaration",
++	"test/p2p/direction_regression_test.go::TestP2PPublicSurfaceObservableBehaviorPreserved",
++	"test/p2p/direction_regression_test.go::TestP2PPublicSurfaceContractStable",
++}
++
++type selector struct {
++	raw    string
++	path   string
++	leaf   string
++	pkgDir string
++}
++
++var leafPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
++
++func parseSelector(raw string) (selector, error) {
++	index := strings.LastIndex(raw, "::")
++	if index <= 0 || index+2 >= len(raw) {
++		return selector{}, fmt.Errorf("selector %q is not a path::leaf selector", raw)
++	}
++	path := raw[:index]
++	leaf := raw[index+2:]
++	if !leafPattern.MatchString(leaf) {
++		return selector{}, fmt.Errorf("selector %q: leaf %q is not a plain test function name", raw, leaf)
++	}
++	pkgDir := path
++	if strings.HasSuffix(path, ".go") {
++		pkgDir = filepath.Dir(path)
++	}
++	if pkgDir == "" || pkgDir == "." || pkgDir == "/" {
++		return selector{}, fmt.Errorf("selector %q: cannot derive a package from %q", raw, path)
++	}
++	return selector{raw: raw, path: path, leaf: leaf, pkgDir: pkgDir}, nil
++}
++
++type testEvent struct {
++	Action  string  `json:"Action"`
++	Package string  `json:"Package"`
++	Test    string  `json:"Test"`
++	Elapsed float64 `json:"Elapsed"`
++	Output  string  `json:"Output"`
++}
++
++type testResult struct {
++	status   string
++	elapsed  float64
++	output   string
++	missing  string
++	observed bool
++}
++
++func findRepoRoot(start string) (string, error) {
++	current, err := filepath.Abs(start)
++	if err != nil {
++		return "", err
++	}
++	for {
++		if _, statErr := os.Stat(filepath.Join(current, "go.mod")); statErr == nil {
++			return current, nil
++		}
++		parent := filepath.Dir(current)
++		if parent == current {
++			return "", fmt.Errorf("cannot find go.mod above %s", start)
++		}
++		current = parent
++	}
++}
++
++func runSelectorGroup(root, pkgDir string, group []selector, timeout time.Duration) map[string]*testResult {
++	results := make(map[string]*testResult, len(group))
++	for _, item := range group {
++		results[item.leaf] = &testResult{status: "missing"}
++	}
++
++	names := make([]string, 0, len(group))
++	for _, item := range group {
++		names = append(names, regexp.QuoteMeta(item.leaf))
++	}
++	args := []string{
++		"test",
++		"-count=1",
++		"-json",
++		"-timeout", timeout.String(),
++		"-run", "^(" + strings.Join(names, "|") + ")$",
++		"./" + pkgDir,
++	}
++	command := exec.Command("go", args...)
++	command.Dir = root
++	command.Env = append(os.Environ(), "GOPROXY=off")
++
++	var stdout, stderr bytes.Buffer
++	command.Stdout = &stdout
++	command.Stderr = &stderr
++	runErr := command.Run()
++
++	pkgOutput := &strings.Builder{}
++	decoder := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
++	for {
++		var event testEvent
++		if err := decoder.Decode(&event); err != nil {
++			break
++		}
++		if event.Test == "" {
++			if event.Output != "" {
++				pkgOutput.WriteString(event.Output)
++			}
++			continue
++		}
++		for _, item := range group {
++			if event.Test != item.leaf && !strings.HasPrefix(event.Test, item.leaf+"/") {
++				continue
++			}
++			result := results[item.leaf]
++			switch event.Action {
++			case "output":
++				result.output += event.Output
++			case "pass":
++				if event.Test == item.leaf {
++					result.status = "pass"
++					result.elapsed = event.Elapsed
++				}
++			case "fail":
++				if event.Test == item.leaf {
++					result.status = "fail"
++					result.elapsed = event.Elapsed
++				}
++			case "skip":
++				if event.Test == item.leaf {
++					result.status = "skip"
++					result.elapsed = event.Elapsed
++				}
++			}
++			break
++		}
++	}
++
++	detail := strings.TrimSpace(pkgOutput.String())
++	if detail == "" {
++		detail = strings.TrimSpace(stderr.String())
++	}
++	if runErr != nil {
++		for _, item := range group {
++			if results[item.leaf].status == "missing" {
++				results[item.leaf].missing = fmt.Sprintf("go test ./%s did not collect or complete %s: %v\n%s", pkgDir, item.leaf, runErr, detail)
++			}
++		}
++	}
++	return results
++}
++
++type junitProperty struct {
++	Name  string `xml:"name,attr"`
++	Value string `xml:"value,attr"`
++}
++
++type junitProperties struct {
++	Items []junitProperty `xml:"property"`
++}
++
++type junitFailure struct {
++	Message string `xml:"message,attr"`
++	Text    string `xml:",chardata"`
++}
++
++type junitError struct {
++	Message string `xml:"message,attr"`
++	Text    string `xml:",chardata"`
++}
++
++type junitSkipped struct{}
++
++type junitTestCase struct {
++	Name       string           `xml:"name,attr"`
++	Classname  string           `xml:"classname,attr"`
++	File       string           `xml:"file,attr,omitempty"`
++	Time       float64          `xml:"time,attr"`
++	Properties *junitProperties `xml:"properties,omitempty"`
++	Failure    *junitFailure    `xml:"failure,omitempty"`
++	Error      *junitError      `xml:"error,omitempty"`
++	Skipped    *junitSkipped    `xml:"skipped,omitempty"`
++}
++
++type junitTestSuite struct {
++	XMLName  xml.Name        `xml:"testsuite"`
++	Name     string          `xml:"name,attr"`
++	Package  string          `xml:"package,attr,omitempty"`
++	Tests    int             `xml:"tests,attr"`
++	Failures int             `xml:"failures,attr"`
++	Errors   int             `xml:"errors,attr"`
++	Skipped  int             `xml:"skipped,attr"`
++	Time     float64         `xml:"time,attr"`
++	Cases    []junitTestCase `xml:"testcase"`
++}
++
++type junitTestSuites struct {
++	XMLName  xml.Name         `xml:"testsuites"`
++	Name     string           `xml:"name,attr"`
++	Tests    int              `xml:"tests,attr"`
++	Failures int              `xml:"failures,attr"`
++	Errors   int              `xml:"errors,attr"`
++	Skipped  int              `xml:"skipped,attr"`
++	Time     float64          `xml:"time,attr"`
++	Suites   []junitTestSuite `xml:"testsuite"`
++}
++
++func main() {
++	reportPath := flag.String("report", "", "path of the JUnit report to write")
++	perPackageTimeout := flag.Duration("package-timeout", 90*time.Second, "timeout passed to each go test invocation")
++	flag.Parse()
++
++	if strings.TrimSpace(*reportPath) == "" {
++		fmt.Fprintln(os.Stderr, "p2prunner: -report is required")
++		os.Exit(2)
++	}
++
++	workingDir, err := os.Getwd()
++	if err != nil {
++		fmt.Fprintf(os.Stderr, "p2prunner: %v\n", err)
++		os.Exit(2)
++	}
++	root, err := findRepoRoot(workingDir)
++	if err != nil {
++		fmt.Fprintf(os.Stderr, "p2prunner: %v\n", err)
++		os.Exit(2)
++	}
++
++	var selectors []selector
++	for _, raw := range append(append([]string{}, inventorySelectors...), supplementalSelectors...) {
++		item, parseErr := parseSelector(raw)
++		if parseErr != nil {
++			fmt.Fprintf(os.Stderr, "p2prunner: %v\n", parseErr)
++			os.Exit(2)
++		}
++		selectors = append(selectors, item)
++	}
++
++	groups := map[string][]selector{}
++	var groupOrder []string
++	for _, item := range selectors {
++		if _, seen := groups[item.pkgDir]; !seen {
++			groupOrder = append(groupOrder, item.pkgDir)
++		}
++		groups[item.pkgDir] = append(groups[item.pkgDir], item)
++	}
++
++	allResults := map[string]*testResult{}
++	started := time.Now()
++	for _, pkgDir := range groupOrder {
++		groupResults := runSelectorGroup(root, pkgDir, groups[pkgDir], *perPackageTimeout)
++		for leaf, result := range groupResults {
++			allResults[pkgDir+"::"+leaf] = result
++		}
++	}
++
++	suiteByPath := map[string]*junitTestSuite{}
++	var suiteOrder []string
++	for _, item := range selectors {
++		result := allResults[item.pkgDir+"::"+item.leaf]
++		if result == nil {
++			result = &testResult{status: "missing", missing: "selector was not executed"}
++		}
++		suite, seen := suiteByPath[item.path]
++		if !seen {
++			suite = &junitTestSuite{Name: item.path, Package: item.pkgDir}
++			suiteByPath[item.path] = suite
++			suiteOrder = append(suiteOrder, item.path)
++		}
++		testCase := junitTestCase{
++			Name:      item.leaf,
++			Classname: item.path,
++			File:      item.path,
++			Time:      result.elapsed,
++			Properties: &junitProperties{Items: []junitProperty{
++				{Name: "selector", Value: item.raw},
++			}},
++		}
++		switch result.status {
++		case "pass":
++		case "skip":
++			testCase.Skipped = &junitSkipped{}
++			suite.Skipped++
++		case "fail":
++			message := fmt.Sprintf("%s failed", item.raw)
++			testCase.Failure = &junitFailure{Message: message, Text: strings.TrimSpace(result.output)}
++			suite.Failures++
++		default:
++			message := result.missing
++			if message == "" {
++				message = fmt.Sprintf("%s was not collected by go test", item.raw)
++			}
++			testCase.Error = &junitError{Message: message, Text: strings.TrimSpace(result.output)}
++			suite.Errors++
++		}
++		suite.Cases = append(suite.Cases, testCase)
++		suite.Tests++
++		suite.Time += result.elapsed
++	}
++
++	report := junitTestSuites{Name: "p2p"}
++	totalTime := time.Since(started).Seconds()
++	for _, path := range suiteOrder {
++		suite := suiteByPath[path]
++		report.Suites = append(report.Suites, *suite)
++		report.Tests += suite.Tests
++		report.Failures += suite.Failures
++		report.Errors += suite.Errors
++		report.Skipped += suite.Skipped
++	}
++	report.Time = totalTime
++
++	payload, err := xml.MarshalIndent(report, "", "  ")
++	if err != nil {
++		fmt.Fprintf(os.Stderr, "p2prunner: cannot encode JUnit report: %v\n", err)
++		os.Exit(2)
++	}
++	payload = append([]byte(xml.Header), payload...)
++	payload = append(payload, '\n')
++	if dir := filepath.Dir(*reportPath); dir != "" && dir != "." {
++		if err := os.MkdirAll(dir, 0o755); err != nil {
++			fmt.Fprintf(os.Stderr, "p2prunner: cannot create report directory: %v\n", err)
++			os.Exit(2)
++		}
++	}
++	if err := os.WriteFile(*reportPath, payload, 0o644); err != nil {
++		fmt.Fprintf(os.Stderr, "p2prunner: cannot write report: %v\n", err)
++		os.Exit(2)
++	}
++
++	exitCode := 0
++	for _, item := range selectors {
++		result := allResults[item.pkgDir+"::"+item.leaf]
++		status := "missing"
++		if result != nil {
++			status = result.status
++		}
++		fmt.Printf("%-5s %s\n", strings.ToUpper(status), item.raw)
++		if status != "pass" {
++			exitCode = 1
++		}
++	}
++	fmt.Printf("p2prunner: %d selectors, %d failures, %d errors, report %s\n", report.Tests, report.Failures, report.Errors, *reportPath)
++	os.Exit(exitCode)
++}
+diff --git a/test/p2p/run_p2p.sh b/test/p2p/run_p2p.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..dcd6ef8fd283a4257a93cc76d726e4689ed0f78c
+--- /dev/null
++++ b/test/p2p/run_p2p.sh
+@@ -0,0 +1,24 @@
++#!/usr/bin/env bash
++# Runs the frozen pass-to-pass selection of the graph layout-direction plan and
++# writes a regular JUnit report at the path given as the first argument.
++#
++# The runner only uses repository files and tools from the frozen environment
++# image: no installs, downloads or registry access happen here.
++set -euo pipefail
++
++report="${1:-}"
++if [ -z "$report" ]; then
++  echo "usage: run_p2p.sh <junit-report-path>" >&2
++  exit 2
++fi
++
++script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++repo_root="$(cd "$script_dir/../.." && pwd)"
++
++case "$report" in
++  /*) ;;
++  *) report="$PWD/$report" ;;
++esac
++
++cd "$repo_root"
++exec go run ./test/p2p/p2prunner -report "$report"

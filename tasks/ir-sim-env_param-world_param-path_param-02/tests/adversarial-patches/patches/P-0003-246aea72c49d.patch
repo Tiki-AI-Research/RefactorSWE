@@ -1,0 +1,929 @@
+diff --git a/irsim/config/env_param.py b/irsim/config/env_param.py
+index 8bb6e0267d3e5fe7d24774baae704ac8f00545ce..b7b47b49ba3f0e8280259ca43c696b2446f5741b 100644
+--- a/irsim/config/env_param.py
++++ b/irsim/config/env_param.py
+@@ -8,12 +8,12 @@ import itertools
+ import platform
+ import sys
+ from collections.abc import Iterator
+-from dataclasses import dataclass, field, fields
+-from types import ModuleType
++from dataclasses import dataclass, field
+ from typing import Any
+ 
+ import numpy as np
+ 
++from irsim.config.param_storage import ParamStorage
+ from irsim.world.object_base import ObjectBase
+ 
+ 
+@@ -45,54 +45,8 @@ class EnvParam:
+ 
+ 
+ # Multi-env storage (default index 0)
+-_instances: list[EnvParam] = [EnvParam()]
+-_current = _instances[0]
+-
+-_PARAM_FIELDS = frozenset(f.name for f in fields(EnvParam))
+-
+-
+-def bind(instance: EnvParam) -> None:
+-    """Bind instance to default index 0 and update current alias."""
+-    global _current
+-    if _instances:
+-        _instances[0] = instance
+-    else:
+-        _instances.append(instance)
+-    _current = instance
+-
+-
+-class _ParamModule(ModuleType):
+-    """Route param-field access on the module to the bound instance.
+-
+-    PEP 562 lets a module define ``__getattr__`` only; plain assignment
+-    (``env_param.logger = x``) would create a real module attribute that
+-    permanently shadows the proxy. Swapping the module class makes
+-    attribute reads, writes, and index access all resolve against the
+-    currently bound :class:`EnvParam` instance.
+-    """
+-
+-    def __getattr__(self, name: str):
+-        return getattr(_current, name)
+-
+-    def __setattr__(self, name: str, value) -> None:
+-        if name in _PARAM_FIELDS:
+-            setattr(_current, name, value)
+-        else:
+-            super().__setattr__(name, value)
+-
+-    def __getitem__(self, index: int) -> EnvParam:
+-        return _instances[index]
+-
+-    def __setitem__(self, index: int, instance: EnvParam) -> None:
+-        """Assign an EnvParam at a specific index. Extends list if needed."""
+-        global _current
+-        if index < 0:
+-            raise IndexError("env_param index must be non-negative")
+-        if index >= len(_instances):
+-            _instances.extend(EnvParam() for _ in range(index - len(_instances) + 1))
+-        _instances[index] = instance
+-        if index == 0:
+-            _current = instance
+-
+-
+-sys.modules[__name__].__class__ = _ParamModule
++_storage = ParamStorage(sys.modules[__name__], EnvParam, "env_param")
++_instances: list[EnvParam] = _storage.instances
++_current = _storage.current
++bind = _storage.bind
++_storage.install_as_module()
+diff --git a/irsim/config/param_storage.py b/irsim/config/param_storage.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..01e0d453f1039c5b9e244d32e5fdb2fe2047c2d5
+--- /dev/null
++++ b/irsim/config/param_storage.py
+@@ -0,0 +1,129 @@
++"""Shared parameter storage and proxy abstraction for IR-SIM configuration modules."""
++
++from __future__ import annotations
++
++import importlib
++from dataclasses import fields
++from types import ModuleType
++from typing import Any, Generic, TypeVar
++
++T = TypeVar("T")
++
++
++class ParamStorage(Generic[T]):
++    """Centralized parameter storage, binding, and indexing engine."""
++
++    def __init__(
++        self,
++        module: ModuleType,
++        param_cls: type[T],
++        module_name: str,
++    ) -> None:
++        self.module = module
++        self.param_cls = param_cls
++        self.module_name = module_name
++        self.param_fields = frozenset(f.name for f in fields(param_cls))
++
++        initial_instance = param_cls()
++        self.module._instances = [initial_instance]
++        self.module._current = initial_instance
++
++    @property
++    def instances(self) -> list[T]:
++        return self.module._instances
++
++    @instances.setter
++    def instances(self, val: list[T]) -> None:
++        self.module._instances = val
++
++    @property
++    def current(self) -> T:
++        return self.module._instances[0] if self.module_name == "env_param" else self.module._current
++
++    @current.setter
++    def current(self, val: T) -> None:
++        self.module._current = val
++
++    def bind(self, instance: T) -> None:
++        """Bind instance to default index 0 and update current alias."""
++        insts = self.instances
++        if insts:
++            insts[0] = instance
++        else:
++            insts.append(instance)
++        self.current = instance
++
++    def get_item(self, index: int) -> T:
++        """Get instance at index using list semantics (negative resolves from tail)."""
++        return self.instances[index]
++
++    def set_item(self, index: int, instance: T) -> None:
++        """Assign instance at non-negative index, extending storage if needed."""
++        if index < 0:
++            raise IndexError(f"{self.module_name} index must be non-negative")
++        insts = self.instances
++        if index >= len(insts):
++            insts.extend(self.param_cls() for _ in range(index - len(insts) + 1))
++        insts[index] = instance
++        if index == 0:
++            self.current = instance
++
++    def install_as_module(self) -> None:
++        """Install ParamModule on the underlying module."""
++        self.module._storage = self
++        self.module.__class__ = ParamModule
++
++
++class ParamModule(ModuleType):
++    """Module proxy routing parameter attributes and indexing to a ParamStorage."""
++
++    _storage: ParamStorage
++
++    def __getattr__(self, name: str) -> Any:
++        return getattr(self._storage.current, name)
++
++    def __setattr__(self, name: str, value: Any) -> None:
++        storage = getattr(self, "_storage", None)
++        if storage is not None and name in storage.param_fields:
++            setattr(storage.current, name, value)
++        else:
++            super().__setattr__(name, value)
++
++    def __getitem__(self, index: int) -> Any:
++        return self._storage.get_item(index)
++
++    def __setitem__(self, index: int, instance: Any) -> None:
++        self._storage.set_item(index, instance)
++
++
++class PathManagerProxy:
++    """Attribute proxy forwarding reads and writes to the bound PathManager."""
++
++    def __init__(self, storage: ParamStorage) -> None:
++        self._storage = storage
++
++    def __getattr__(self, name: str) -> Any:
++        return getattr(self._storage.current, name)
++
++    def __setattr__(self, name: str, value: Any) -> None:
++        if name == "_storage":
++            super().__setattr__(name, value)
++        else:
++            setattr(self._storage.current, name, value)
++
++
++def resolve_param(
++    owner: Any,
++    attr_name: str,
++    module_name: str,
++    *,
++    missing_ok: bool = False,
++) -> Any:
++    """Resolve a parameter instance preferring an owner, falling back to the global module."""
++    if owner is not None:
++        if missing_ok:
++            if hasattr(owner, attr_name):
++                return getattr(owner, attr_name)
++        else:
++            return getattr(owner, attr_name)
++    return importlib.import_module(f"irsim.config.{module_name}")
+diff --git a/irsim/config/path_param.py b/irsim/config/path_param.py
+index 40a4ed7a8c16dd0308e5b9e71ff2418e503ad3d7..26a150e1b592950660257ca7e60057406abe5a54 100644
+--- a/irsim/config/path_param.py
++++ b/irsim/config/path_param.py
+@@ -4,6 +4,7 @@ from dataclasses import dataclass
+ from typing import cast
+ 
+ import irsim
++from irsim.config.param_storage import ParamStorage, PathManagerProxy
+ 
+ 
+ @dataclass
+@@ -23,42 +24,10 @@ class PathManager:
+ 
+ 
+ # Multi-env storage (default index 0)
+-_instances: list[PathManager] = [PathManager()]
+-_current = _instances[0]
+-
+-
+-def bind(instance: PathManager) -> None:
+-    """Bind instance to default index 0 and update current alias."""
+-    global _current
+-    if _instances:
+-        _instances[0] = instance
+-    else:
+-        _instances.append(instance)
+-    _current = instance
+-
+-
+-class _Proxy:
+-    def __getattr__(self, name: str):
+-        return getattr(_current, name)
+-
+-    def __setattr__(self, name: str, value):
+-        setattr(_current, name, value)
+-
+-
+-path_manager = _Proxy()
+-
+-
+-def __getitem__(index: int) -> PathManager:
+-    return _instances[index]
+-
+-
+-def __setitem__(index: int, instance: PathManager) -> None:
+-    """Assign a PathManager at a specific index. Extends list if needed."""
+-    global _current
+-    if index < 0:
+-        raise IndexError("path_param index must be non-negative")
+-    if index >= len(_instances):
+-        _instances.extend(PathManager() for _ in range(index - len(_instances) + 1))
+-    _instances[index] = instance
+-    if index == 0:
+-        _current = instance
++_storage = ParamStorage(sys.modules[__name__], PathManager, "path_param")
++_instances: list[PathManager] = _storage.instances
++_current = _storage.current
++bind = _storage.bind
++path_manager = PathManagerProxy(_storage)
++__getitem__ = _storage.get_item
++__setitem__ = _storage.set_item
+diff --git a/irsim/config/world_param.py b/irsim/config/world_param.py
+index 4f04830ea1274d97e35760017139a09676e92882..90834e1b2e06e0ea25ee5b47d274c62f446abf11 100644
+--- a/irsim/config/world_param.py
++++ b/irsim/config/world_param.py
+@@ -13,8 +13,9 @@ Attributes:
+ """
+ 
+ import sys
+-from dataclasses import dataclass, fields
+-from types import ModuleType
++from dataclasses import dataclass
++
++from irsim.config.param_storage import ParamStorage
+ 
+ 
+ @dataclass
+@@ -40,54 +41,8 @@ class WorldParam:
+ 
+ 
+ # Multi-env storage (default index 0)
+-_instances: list[WorldParam] = [WorldParam()]
+-_current = _instances[0]
+-
+-_PARAM_FIELDS = frozenset(f.name for f in fields(WorldParam))
+-
+-
+-def bind(instance: WorldParam) -> None:
+-    """Bind instance to default index 0 and update current alias."""
+-    global _current
+-    if _instances:
+-        _instances[0] = instance
+-    else:
+-        _instances.append(instance)
+-    _current = instance
+-
+-
+-class _ParamModule(ModuleType):
+-    """Route param-field access on the module to the bound instance.
+-
+-    PEP 562 lets a module define ``__getattr__`` only; plain assignment
+-    (``world_param.count = x``) would create a real module attribute that
+-    permanently shadows the proxy. Swapping the module class makes
+-    attribute reads, writes, and index access all resolve against the
+-    currently bound :class:`WorldParam` instance.
+-    """
+-
+-    def __getattr__(self, name: str):
+-        return getattr(_current, name)
+-
+-    def __setattr__(self, name: str, value) -> None:
+-        if name in _PARAM_FIELDS:
+-            setattr(_current, name, value)
+-        else:
+-            super().__setattr__(name, value)
+-
+-    def __getitem__(self, index: int) -> WorldParam:
+-        return _instances[index]
+-
+-    def __setitem__(self, index: int, instance: WorldParam) -> None:
+-        """Assign a WorldParam at a specific index. Extends list if needed."""
+-        global _current
+-        if index < 0:
+-            raise IndexError("world_param index must be non-negative")
+-        if index >= len(_instances):
+-            _instances.extend(WorldParam() for _ in range(index - len(_instances) + 1))
+-        _instances[index] = instance
+-        if index == 0:
+-            _current = instance
+-
+-
+-sys.modules[__name__].__class__ = _ParamModule
++_storage = ParamStorage(sys.modules[__name__], WorldParam, "world_param")
++_instances: list[WorldParam] = _storage.instances
++_current = _storage.current
++bind = _storage.bind
++_storage.install_as_module()
+diff --git a/irsim/env/env_plot.py b/irsim/env/env_plot.py
+index 8975aa0da602a9e084f9f5f5d8ae1bf6ca932c27..c9064dbb538f600b9a0bbf5d0385bb73eae3c82c 100644
+--- a/irsim/env/env_plot.py
++++ b/irsim/env/env_plot.py
+@@ -34,6 +34,7 @@ from shapely.geometry import MultiPolygon as ShapelyMultiPolygon
+ from shapely.geometry import Polygon as ShapelyPolygon
+ from shapely.geometry.polygon import orient
+ 
++from irsim.config.param_storage import resolve_param
+ from irsim.config.path_param import path_manager as pm
+ from irsim.util.util import points_to_xy_list, traj_to_xy_list
+ 
+@@ -733,11 +734,7 @@ class EnvPlot:
+     @property
+     def _world_param(self):
+         """Access world_param via world's instance if available."""
+-        if hasattr(self.world, "_wp"):
+-            return self.world._wp
+-        from irsim.config import world_param
+-
+-        return world_param
++        return resolve_param(self.world, "_wp", "world_param", missing_ok=True)
+ 
+     @property
+     def _env_param(self):
+diff --git a/irsim/gui/keyboard_control.py b/irsim/gui/keyboard_control.py
+index 7bc2328d104b005165b4e10e4a3aa574fd10b29e..ad9cea79e15c288760cf6bcfee5a4b5525cc1cfd 100644
+--- a/irsim/gui/keyboard_control.py
++++ b/irsim/gui/keyboard_control.py
+@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING, Any, Optional
+ import matplotlib.pyplot as plt
+ import numpy as np
+ 
++from irsim.config.param_storage import resolve_param
++
+ if TYPE_CHECKING:
+     pass
+ 
+@@ -537,20 +539,12 @@ class KeyboardControl:
+     @property
+     def _world_param(self):
+         """Access world_param via env_ref if available."""
+-        if self.env_ref is not None:
+-            return self.env_ref._world_param
+-        from irsim.config import world_param
+-
+-        return world_param
++        return resolve_param(self.env_ref, "_world_param", "world_param")
+ 
+     @property
+     def _env_param(self):
+         """Access env_param via env_ref if available."""
+-        if self.env_ref is not None:
+-            return self.env_ref._env_param
+-        from irsim.config import env_param
+-
+-        return env_param
++        return resolve_param(self.env_ref, "_env_param", "env_param")
+ 
+     @property
+     def logger(self) -> Any:
+diff --git a/irsim/world/object_base.py b/irsim/world/object_base.py
+index 092613abda7ecc7b5265f8d90856bbddede81b45..2aeb7fdad82574fe9bea11e51a123d0df7cbfebb 100644
+--- a/irsim/world/object_base.py
++++ b/irsim/world/object_base.py
+@@ -9,6 +9,7 @@ import numpy as np
+ import shapely
+ from shapely.geometry.base import BaseGeometry
+ 
++from irsim.config.param_storage import resolve_param
+ from irsim.lib import Behavior, GeometryFactory, KinematicsFactory
+ from irsim.util.util import (
+     ClipTo2Pi,
+@@ -2098,11 +2099,7 @@ class ObjectBase:
+         Returns:
+             WorldParam: The world param instance.
+         """
+-        if self._env is not None:
+-            return self._env._world_param
+-        from irsim.config import world_param
+-
+-        return world_param
++        return resolve_param(self._env, "_world_param", "world_param")
+ 
+     @property
+     def _env_param(self):
+@@ -2112,11 +2109,7 @@ class ObjectBase:
+         Returns:
+             EnvParam: The env param instance.
+         """
+-        if self._env is not None:
+-            return self._env._env_param
+-        from irsim.config import env_param
+-
+-        return env_param
++        return resolve_param(self._env, "_env_param", "env_param")
+ 
+     @property
+     def world_param(self):
+diff --git a/irsim/world/sensors/lidar2d.py b/irsim/world/sensors/lidar2d.py
+index 827c2e51ee374da6b3317e75f90ca59a82699026..83f1867c18edf106924f509915cc41c2004ccf78 100644
+--- a/irsim/world/sensors/lidar2d.py
++++ b/irsim/world/sensors/lidar2d.py
+@@ -9,6 +9,7 @@ from mpl_toolkits.mplot3d import Axes3D
+ from mpl_toolkits.mplot3d.art3d import Line3DCollection
+ from shapely import MultiLineString
+ 
++from irsim.config.param_storage import resolve_param
+ from irsim.lib.algorithm.ray_casting_2d import cast_rays
+ from irsim.util.random import rng
+ from irsim.util.util import (
+@@ -143,11 +144,8 @@ class Lidar2D:
+     @property
+     def _env_param(self):
+         """Access env_param via parent's env instance if available."""
+-        if self.parent is not None and self.parent._env is not None:
+-            return self.parent._env._env_param
+-        from irsim.config import env_param
+-
+-        return env_param
++        owner = getattr(self.parent, "_env", None) if self.parent is not None else None
++        return resolve_param(owner, "_env_param", "env_param")
+ 
+     def init_geometry(self, state):
+         """
+diff --git a/irsim/world/world.py b/irsim/world/world.py
+index 1ab13e3c0fcb3b160e5ddb93c84381dfb5e74084..cb9156bf1465aba1697c5f74ac17ad8e145ac0df 100644
+--- a/irsim/world/world.py
++++ b/irsim/world/world.py
+@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional
+ 
+ import numpy as np
+ 
++from irsim.config.param_storage import resolve_param
+ from irsim.util.util import check_unknown_kwargs
+ from irsim.world.map import (
+     FogMap,
+@@ -343,12 +344,7 @@ class World:
+         Returns:
+             EnvParam: The env param instance.
+         """
+-        env = getattr(self, "_env", None)
+-        if env is not None:
+-            return env._env_param
+-        from irsim.config import env_param
+-
+-        return env_param
++        return resolve_param(getattr(self, "_env", None), "_env_param", "env_param")
+ 
+     @property
+     def logger(self):
+diff --git a/tests/test_env.py b/tests/test_env.py
+index dc70849e987d5c79a1307d5748bdfe3bde9e5b2b..eec6f4b563dfdc12318e49df8b284a4344da2cfb 100644
+--- a/tests/test_env.py
++++ b/tests/test_env.py
+@@ -663,6 +663,140 @@ class TestEnvironmentProperties:
+         assert ep.logger is env.logger
+         assert ep is env.env_param
+ 
++    def test_seven_rewritten_accessors_shared_helper_and_identity(self):
++        """Test all 7 rewritten accessors share resolve_param and preserve identity."""
++        from types import SimpleNamespace
++        from unittest.mock import MagicMock
++
++        import numpy as np
++
++        import irsim.config.param_storage as ps
++        import irsim.env.env_plot as ep
++        import irsim.gui.keyboard_control as kc
++        import irsim.world.object_base as ob
++        import irsim.world.sensors.lidar2d as sl
++        import irsim.world.world as ww
++        from irsim.config import env_param, world_param
++        from irsim.config.env_param import EnvParam
++        from irsim.config.world_param import WorldParam
++
++        # 1. Verify all 5 consumer modules import the exact same helper
++        assert ob.resolve_param is ps.resolve_param
++        assert ww.resolve_param is ps.resolve_param
++        assert sl.resolve_param is ps.resolve_param
++        assert kc.resolve_param is ps.resolve_param
++        assert ep.resolve_param is ps.resolve_param
++
++        # Construct consumers
++        obj = ob.ObjectBase(shape={"name": "circle", "radius": 1.0})
++        w = ww.World()
++        lidar = sl.Lidar2D(state=np.zeros((3, 1)), obj_id=1, number=10, range_max=5.0)
++        kb = kc.KeyboardControl(env_ref=None, backend="mpl")
++        plot = ep.EnvPlot.__new__(ep.EnvPlot)
++        plot.world = SimpleNamespace()
++
++        # 2. Verify fallback identity (owner absent -> global module proxies)
++        assert obj._world_param is world_param
++        assert obj._env_param is env_param
++        assert w._env_param is env_param
++        assert lidar._env_param is env_param
++        assert kb._world_param is world_param
++        assert kb._env_param is env_param
++        assert plot._world_param is world_param
++        # EnvPlot._env_param is always global, not owner-first
++        assert plot._env_param is env_param
++
++        # 3. Verify owner-first identity (owner present -> owner instance)
++        mock_wp = WorldParam()
++        mock_ep = EnvParam()
++        obj._env = SimpleNamespace(_world_param=mock_wp, _env_param=mock_ep)
++        w._env = SimpleNamespace(_env_param=mock_ep)
++        lidar.parent = SimpleNamespace(_env=SimpleNamespace(_env_param=mock_ep))
++        kb.env_ref = SimpleNamespace(_world_param=mock_wp, _env_param=mock_ep)
++        plot.world = SimpleNamespace(
++            _wp=mock_wp, _env=SimpleNamespace(_env_param=mock_ep)
++        )
++
++        assert obj._world_param is mock_wp
++        assert obj._env_param is mock_ep
++        assert w._env_param is mock_ep
++        assert lidar._env_param is mock_ep
++        assert kb._world_param is mock_wp
++        assert kb._env_param is mock_ep
++        assert plot._world_param is mock_wp
++        # EnvPlot._env_param remains global even with world._env present
++        assert plot._env_param is env_param
++
++        # 4. Verify all 7 accessors invoke the shared helper
++        spy = MagicMock(side_effect=ps.resolve_param)
++        ob.resolve_param = spy
++        ww.resolve_param = spy
++        sl.resolve_param = spy
++        kc.resolve_param = spy
++        ep.resolve_param = spy
++        try:
++            _ = obj._world_param
++            _ = obj._env_param
++            _ = w._env_param
++            _ = lidar._env_param
++            _ = kb._world_param
++            _ = kb._env_param
++            _ = plot._world_param
++            assert spy.call_count == 7
++        finally:
++            ob.resolve_param = ps.resolve_param
++            ww.resolve_param = ps.resolve_param
++            sl.resolve_param = ps.resolve_param
++            kc.resolve_param = ps.resolve_param
++            ep.resolve_param = ps.resolve_param
++
++    def test_consumer_accessors_fallback_dynamic_rebinding(self):
++        """Owner-less consumers dynamically observe global rebinding without pinning."""
++        from types import SimpleNamespace
++
++        import numpy as np
++
++        from irsim.config import env_param, world_param
++        from irsim.config.env_param import EnvParam
++        from irsim.config.world_param import WorldParam
++        from irsim.env.env_plot import EnvPlot
++        from irsim.gui.keyboard_control import KeyboardControl
++        from irsim.world.object_base import ObjectBase
++        from irsim.world.sensors.lidar2d import Lidar2D
++        from irsim.world.world import World
++
++        obj = ObjectBase(shape={"name": "circle", "radius": 1.0})
++        w = World()
++        lidar = Lidar2D(state=np.zeros((3, 1)), obj_id=1, number=10, range_max=5.0)
++        kb = KeyboardControl(env_ref=None, backend="mpl")
++        plot = EnvPlot.__new__(EnvPlot)
++        plot.world = SimpleNamespace()
++
++        orig_ep_instances = env_param._instances.copy()
++        orig_ep_current = env_param._current
++        orig_wp_instances = world_param._instances.copy()
++        orig_wp_current = world_param._current
++
++        try:
++            # Rebind env_param
++            new_ep = EnvParam()
++            env_param.bind(new_ep)
++            for consumer in (obj, w, lidar, kb, plot):
++                assert consumer._env_param is env_param
++                assert consumer._env_param._current is new_ep
++
++            # Rebind world_param
++            new_wp = WorldParam()
++            world_param.bind(new_wp)
++            for consumer in (obj, kb, plot):
++                assert consumer._world_param is world_param
++                assert consumer._world_param._current is new_wp
++        finally:
++            env_param._instances[:] = orig_ep_instances
++            env_param._current = orig_ep_current
++            world_param._instances[:] = orig_wp_instances
++            world_param._current = orig_wp_current
++
+ 
+ class TestEnvironmentFlags:
+     """Tests for environment flag processing."""
+@@ -1271,12 +1405,30 @@ class TestParamModuleFunctions:
+         try:
+             # Set up test instance at index 0
+             test_instance = EnvParam()
+-            env_param._instances[0] = test_instance
++            second_instance = EnvParam()
++            env_param._instances[:] = [test_instance, second_instance]
+             env_param._current = test_instance
+ 
+             # Test __getitem__ called directly as a function
+             result = env_param.__getitem__(0)
+             assert result is test_instance
++
++            # Subscript access on module
++            assert env_param[0] is test_instance
++            assert env_param[1] is second_instance
++
++            # Negative-index reads resolve from tail without IndexError
++            assert env_param.__getitem__(-1) is second_instance
++            assert env_param[-1] is second_instance
++            assert env_param[-2] is test_instance
++
++            # Out-of-range reads raise IndexError
++            with pytest.raises(IndexError):
++                _ = env_param[10]
++            with pytest.raises(IndexError):
++                _ = env_param.__getitem__(10)
++            with pytest.raises(IndexError):
++                _ = env_param[-10]
+         finally:
+             # Restore original state
+             env_param._instances[:] = original_instances
+@@ -1370,12 +1522,30 @@ class TestParamModuleFunctions:
+         try:
+             # Set up test instance at index 0
+             test_instance = WorldParam()
+-            world_param._instances[0] = test_instance
++            second_instance = WorldParam()
++            world_param._instances[:] = [test_instance, second_instance]
+             world_param._current = test_instance
+ 
+             # Test __getitem__ called directly as a function
+             result = world_param.__getitem__(0)
+             assert result is test_instance
++
++            # Subscript access on module
++            assert world_param[0] is test_instance
++            assert world_param[1] is second_instance
++
++            # Negative-index reads resolve from tail without IndexError
++            assert world_param.__getitem__(-1) is second_instance
++            assert world_param[-1] is second_instance
++            assert world_param[-2] is test_instance
++
++            # Out-of-range reads raise IndexError
++            with pytest.raises(IndexError):
++                _ = world_param[10]
++            with pytest.raises(IndexError):
++                _ = world_param.__getitem__(10)
++            with pytest.raises(IndexError):
++                _ = world_param[-10]
+         finally:
+             # Restore original state
+             world_param._instances[:] = original_instances
+@@ -1469,12 +1639,27 @@ class TestParamModuleFunctions:
+         try:
+             # Set up test instance at index 0
+             test_instance = PathManager()
+-            path_param._instances[0] = test_instance
++            second_instance = PathManager()
++            path_param._instances[:] = [test_instance, second_instance]
+             path_param._current = test_instance
+ 
+             # Test __getitem__ called directly as a function
+             result = path_param.__getitem__(0)
+             assert result is test_instance
++
++            # Negative-index reads resolve from tail without IndexError
++            assert path_param.__getitem__(-1) is second_instance
++            assert path_param.__getitem__(-2) is test_instance
++
++            # path_param is callable-only, not subscriptable (raises TypeError)
++            with pytest.raises(TypeError):
++                _ = path_param[0]
++
++            # Out-of-range reads raise IndexError
++            with pytest.raises(IndexError):
++                _ = path_param.__getitem__(10)
++            with pytest.raises(IndexError):
++                _ = path_param.__getitem__(-10)
+         finally:
+             # Restore original state
+             path_param._instances[:] = original_instances
+@@ -1556,6 +1741,37 @@ class TestParamModuleFunctions:
+             path_param._instances[:] = original_instances
+             path_param._current = original_current
+ 
++    def test_param_module_instances_rebinding_is_shared(self):
++        """Replacing module._instances list object updates bind and index views."""
++        from irsim.config import env_param, path_param, world_param
++        from irsim.config.env_param import EnvParam
++        from irsim.config.path_param import PathManager
++        from irsim.config.world_param import WorldParam
++
++        for module, param_cls in [
++            (env_param, EnvParam),
++            (world_param, WorldParam),
++            (path_param, PathManager),
++        ]:
++            original_instances = module._instances
++            original_current = module._current
++            try:
++                new_list = [param_cls()]
++                module._instances = new_list
++                assert module._instances is new_list
++
++                # getitem reads from the new list
++                assert module.__getitem__(0) is new_list[0]
++
++                # bind replaces index 0 of the new list and updates current
++                new_inst = param_cls()
++                module.bind(new_inst)
++                assert module._instances[0] is new_inst
++                assert module._current is new_inst
++            finally:
++                module._instances = original_instances
++                module._current = original_current
++
+ 
+ # ---------------------------------------------------------------------------
+ # Coverage-targeted tests
+diff --git a/tests/test_gui.py b/tests/test_gui.py
+index deffa03384f037831725f9fcaf26800566bbc473..ca5f0b6b9155aad1d61a6366c3be7db82210f3f4 100644
+--- a/tests/test_gui.py
++++ b/tests/test_gui.py
+@@ -399,6 +399,38 @@ class TestKeyboardControlMpl:
+         env.keyboard._on_mpl_release(mock_mpl_event("e"))
+         assert env.keyboard.key_rot == 0
+ 
++    def test_keyboard_control_mpl_without_env(self):
++        """Test KeyboardControl(env_ref=None) falls back to global module proxies."""
++        from irsim.config import env_param, world_param
++        from irsim.config.env_param import EnvParam
++        from irsim.config.world_param import WorldParam
++
++        kb = irsim.gui.keyboard_control.KeyboardControl(env_ref=None, backend="mpl")
++        assert kb.env_ref is None
++        assert kb._world_param is world_param
++        assert kb._env_param is env_param
++
++        # Verify dynamic rebinding without pinning earlier instance
++        orig_ep_instances = env_param._instances.copy()
++        orig_ep_current = env_param._current
++        orig_wp_instances = world_param._instances.copy()
++        orig_wp_current = world_param._current
++        try:
++            new_ep = EnvParam()
++            env_param.bind(new_ep)
++            assert kb._env_param is env_param
++            assert kb._env_param._current is new_ep
++
++            new_wp = WorldParam()
++            world_param.bind(new_wp)
++            assert kb._world_param is world_param
++            assert kb._world_param._current is new_wp
++        finally:
++            env_param._instances[:] = orig_ep_instances
++            env_param._current = orig_ep_current
++            world_param._instances[:] = orig_wp_instances
++            world_param._current = orig_wp_current
++
+     def test_ang_max_adjustment(self, env_factory, mock_mpl_event):
+         """Test angular velocity max adjustment with c/z keys."""
+         env = env_factory("test_keyboard_control2.yaml")
+diff --git a/tests/test_plot.py b/tests/test_plot.py
+index d0e8329ff8fbae0541a29bea0df064cb27c3268c..adcaf1691ee5b21a7b743e9a5f24aadcd1be40bb 100644
+--- a/tests/test_plot.py
++++ b/tests/test_plot.py
+@@ -156,6 +156,33 @@ class TestEnvPlot2D:
+         plot.viewpoint = "some_name"
+         plot.set_ax_viewpoint(objects=None)
+ 
++    def test_param_accessors_world_owner_first_env_global(self):
++        """EnvPlot._world_param is owner-first; EnvPlot._env_param is always global."""
++        from types import SimpleNamespace
++
++        from irsim.config import env_param, world_param
++        from irsim.config.world_param import WorldParam
++        from irsim.world.world import World
++
++        wp = WorldParam()
++        world = World(world_param_instance=wp)
++        plot = EnvPlot(world)
++
++        try:
++            # World with _wp returns world._wp
++            assert plot._world_param is world._wp
++            assert plot._world_param is wp
++
++            # Even if world has an _env, EnvPlot._env_param remains the global module
++            world._env = SimpleNamespace(_env_param=SimpleNamespace())
++            assert plot._env_param is env_param
++
++            # If world has no _wp, EnvPlot._world_param falls back to the global module
++            plot.world = SimpleNamespace()
++            assert plot._world_param is world_param
++        finally:
++            plot.close()
++
+ 
+ class TestEnvPlot3D:
+     """Tests for 3D plotting functionality."""
+diff --git a/tests/test_sensors.py b/tests/test_sensors.py
+index fc57d249274d6e93ca67557e15e933ebf0a392b9..c77d75a9c1458288c8e83dd35870e08c5793c0bf 100644
+--- a/tests/test_sensors.py
++++ b/tests/test_sensors.py
+@@ -1597,3 +1597,64 @@ class TestLidar2DScanToPointcloud:
+         lidar.range_data[:] = 5.0
+         result = lidar.scan_to_pointcloud()
+         assert result is None
++
++
++class TestLidar2DEnvParamResolution:
++    """Tests for Lidar2D._env_param owner-first and global-fallback resolution."""
++
++    def test_lidar2d_env_param_fallback_when_parent_is_none(self):
++        """Lidar2D._env_param returns global env_param when parent is None."""
++        from irsim.config import env_param
++
++        state = np.array([[0.0], [0.0], [0.0]])
++        lidar = Lidar2D(state=state, obj_id=1, number=10, range_max=5.0)
++        assert lidar.parent is None
++        assert lidar._env_param is env_param
++
++    def test_lidar2d_env_param_fallback_when_parent_env_is_none(self):
++        """Lidar2D._env_param returns global env_param when parent._env is None or missing."""
++        from types import SimpleNamespace
++
++        from irsim.config import env_param
++
++        state = np.array([[0.0], [0.0], [0.0]])
++        lidar = Lidar2D(state=state, obj_id=1, number=10, range_max=5.0)
++
++        # parent without _env attribute
++        lidar.parent = SimpleNamespace()
++        assert lidar._env_param is env_param
++
++        # parent with _env = None
++        lidar.parent = SimpleNamespace(_env=None)
++        assert lidar._env_param is env_param
++
++    def test_lidar2d_env_param_owner_first(self):
++        """Lidar2D._env_param returns parent's _env._env_param when present."""
++        from types import SimpleNamespace
++
++        state = np.array([[0.0], [0.0], [0.0]])
++        lidar = Lidar2D(state=state, obj_id=1, number=10, range_max=5.0)
++
++        mock_env_param = object()
++        lidar.parent = SimpleNamespace(_env=SimpleNamespace(_env_param=mock_env_param))
++        assert lidar._env_param is mock_env_param
++
++    def test_lidar2d_env_param_fallback_dynamic_rebinding(self):
++        """Lidar2D._env_param dynamically reflects global rebinding without pinning."""
++        from irsim.config import env_param
++        from irsim.config.env_param import EnvParam
++
++        state = np.array([[0.0], [0.0], [0.0]])
++        lidar = Lidar2D(state=state, obj_id=1, number=10, range_max=5.0)
++
++        orig_instances = env_param._instances.copy()
++        orig_current = env_param._current
++        try:
++            assert lidar._env_param is env_param
++            new_param = EnvParam()
++            env_param.bind(new_param)
++            assert lidar._env_param is env_param
++            assert lidar._env_param._current is new_param
++        finally:
++            env_param._instances[:] = orig_instances
++            env_param._current = orig_current

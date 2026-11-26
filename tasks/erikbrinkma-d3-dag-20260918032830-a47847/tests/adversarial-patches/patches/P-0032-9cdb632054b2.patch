@@ -1,0 +1,784 @@
+diff --git a/src/layout.ts b/src/layout.ts
+--- a/src/layout.ts
++++ b/src/layout.ts
+@@ -5,7 +5,6 @@
+  */
+ import type { Graph, GraphNode } from "./graph/index.js";
+ import type { Tweak } from "./tweaks.js";
+-import { err } from "./utils.js";
+ 
+ /**
+  * A strictly callable {@link NodeSize}
+@@ -48,33 +47,308 @@
+ ) => number;
+ 
+ /**
++ * Symbol used by operators to invoke built-in tweaks with execution context
++ * @internal
++ */
++export const RUN_TWEAK_CONTEXT = Symbol("RUN_TWEAK_CONTEXT");
++
++function formatNode(node?: GraphNode<unknown, unknown>): string {
++  if (!node) return "N/A";
++  const data = node.data;
++  if (
++    data === null ||
++    typeof data === "string" ||
++    typeof data === "number" ||
++    typeof data === "boolean" ||
++    typeof data === "undefined"
++  ) {
++    return String(data);
++  }
++  return "<node data unavailable>";
++}
++
++function formatElement(value: unknown): string {
++  if (value === null) {
++    return "null";
++  }
++  if (value === undefined) {
++    return "undefined";
++  }
++  const t = typeof value;
++  if (t === "object" || t === "function") {
++    return `<type: ${t}>`;
++  }
++  return String(value);
++}
++
++function formatReturned(value: unknown): string {
++  if (Array.isArray(value)) {
++    return `[length: ${value.length}]`;
++  }
++  if (value === null) {
++    return "null";
++  }
++  if (value === undefined) {
++    return "undefined";
++  }
++  return `<type: ${typeof value}>`;
++}
++
++function isSafeNumber(x: unknown): x is number {
++  return typeof x === "number";
++}
++
++function createNodeSizeError(
++  category: "constant-node-size" | "invalid-callback-node-size",
++  val: unknown,
++  node?: GraphNode<unknown, unknown>,
++  legacyType: "operator" | "cached" = "operator",
++): Error {
++  const nodeStr = category === "constant-node-size" ? "N/A" : formatNode(node);
++  let baseMsg: string;
++  let legacyMsg: string;
++
++  if (Array.isArray(val) && val.length === 2) {
++    const wStr = formatElement(val[0]);
++    const hStr = formatElement(val[1]);
++    baseMsg = `category=${category}; node=${nodeStr}; width=${wStr}; height=${hStr}`;
++
++    if (isSafeNumber(val[0]) && isSafeNumber(val[1])) {
++      const wNum = String(val[0]);
++      const hNum = String(val[1]);
++      if (category === "constant-node-size") {
++        if (legacyType === "cached") {
++          legacyMsg = `all node sizes must be positive, but got width ${wNum} and height ${hNum}`;
++        } else {
++          legacyMsg = `constant nodeSize must be positive, but got: [${wNum}, ${hNum}]`;
++        }
++      } else {
++        legacyMsg = `all node sizes must be positive, but got width ${wNum} and height ${hNum} for node with data: ${nodeStr}; make sure the callback passed to \`sugiyama().nodeSize(...)\` is doing that`;
++      }
++    } else {
++      if (category === "constant-node-size") {
++        legacyMsg =
++          legacyType === "cached"
++            ? "all node sizes must be positive"
++            : "constant nodeSize must be positive";
++      } else {
++        legacyMsg =
++          "all node sizes must be positive; make sure the callback passed to \`sugiyama().nodeSize(...)\` is doing that";
++      }
++    }
++  } else {
++    const retStr = formatReturned(val);
++    baseMsg = `category=${category}; node=${nodeStr}; width=<unavailable>; height=<unavailable>; returned=${retStr}`;
++    if (category === "constant-node-size") {
++      if (legacyType === "cached") {
++        legacyMsg = "all node sizes must be positive";
++      } else if (Array.isArray(val) && val.every(isSafeNumber)) {
++        legacyMsg = `constant nodeSize must be positive, but got: [${val.map(String).join(", ")}]`;
++      } else {
++        legacyMsg = "constant nodeSize must be positive";
++      }
++    } else {
++      legacyMsg =
++        "all node sizes must be positive; make sure the callback passed to \`sugiyama().nodeSize(...)\` is doing that";
++    }
++  }
++
++  return new Error(`${baseMsg}; legacy=${legacyMsg}`);
++}
++
++function createCallbackThrewError(
++  cause: unknown,
++  node: GraphNode<unknown, unknown>,
++): Error {
++  const nodeStr = formatNode(node);
++  const message = `category=node-size-callback-threw; node=${nodeStr}; width=<unavailable>; height=<unavailable>`;
++  return new Error(message, { cause });
++}
++
++/**
++ * Validate constant node dimensions immediately
++ * @internal
++ */
++export function validateConstantNodeSize(
++  val: unknown,
++  legacyType: "operator" | "cached" = "operator",
++): asserts val is readonly [number, number] {
++  if (
++    Array.isArray(val) &&
++    val.length === 2 &&
++    typeof val[0] === "number" &&
++    Number.isFinite(val[0]) &&
++    val[0] > 0 &&
++    typeof val[1] === "number" &&
++    Number.isFinite(val[1]) &&
++    val[1] > 0
++  ) {
++    return;
++  }
++  throw createNodeSizeError("constant-node-size", val, undefined, legacyType);
++}
++
++const RAW_NODE_SIZE = Symbol("RAW_NODE_SIZE");
++const IS_CACHED = Symbol("IS_CACHED");
++
++function isCachedNodeSize(nodeSize: unknown): boolean {
++  return (
++    typeof nodeSize === "function" &&
++    (nodeSize as unknown as Record<symbol, unknown>)[IS_CACHED] === true
++  );
++}
++
++/**
++ * Unwrap any nested cachedNodeSize accessors to retrieve the underlying
++ * raw callback or constant tuple.
++ * @internal
++ */
++export function unwrapNodeSize<N, L>(nodeSize: NodeSize<N, L>): NodeSize<N, L> {
++  let curr = nodeSize;
++  while (
++    typeof curr === "function" &&
++    (curr as unknown as Record<symbol, unknown>)[RAW_NODE_SIZE] !== undefined
++  ) {
++    curr = (curr as unknown as Record<symbol, unknown>)[
++      RAW_NODE_SIZE
++    ] as NodeSize<N, L>;
++  }
++  return curr;
++}
++
++/**
++ * Resolve and validate callback node dimensions for a node
++ * @internal
++ */
++export function resolveCallbackNodeSize<N, L>(
++  fn: (node: GraphNode<N, L>) => readonly [number, number],
++  node: GraphNode<N, L>,
++): readonly [number, number] {
++  let res: unknown;
++  try {
++    res = fn(node);
++  } catch (err) {
++    throw createCallbackThrewError(err, node as GraphNode<unknown, unknown>);
++  }
++  if (
++    Array.isArray(res) &&
++    res.length === 2 &&
++    typeof res[0] === "number" &&
++    Number.isFinite(res[0]) &&
++    res[0] > 0 &&
++    typeof res[1] === "number" &&
++    Number.isFinite(res[1]) &&
++    res[1] > 0
++  ) {
++    return [res[0], res[1]] as const;
++  }
++  throw createNodeSizeError(
++    "invalid-callback-node-size",
++    res,
++    node as GraphNode<unknown, unknown>,
++  );
++}
++
++/**
++ * Context to scope node size caching to a single layout execution
++ * @internal
++ */
++export class NodeSizeContext {
++  private caches = new Map<
++    NodeSize<unknown, unknown>,
++    CallableNodeSize<unknown, unknown>
++  >();
++
++  getCached<N, L>(nodeSize: NodeSize<N, L>): CallableNodeSize<N, L> {
++    let cached = this.caches.get(nodeSize as NodeSize<unknown, unknown>) as
++      | CallableNodeSize<N, L>
++      | undefined;
++    if (!cached) {
++      const unwrapped = unwrapNodeSize(nodeSize);
++      if (typeof unwrapped !== "function") {
++        const [x, y] = unwrapped;
++        cached = () => [x, y] as const;
++      } else {
++        const rawFn = unwrapped;
++        const cache = new Map<
++          GraphNode<N, L>,
++          | { ok: true; val: readonly [number, number] }
++          | { ok: false; err: Error }
++        >();
++
++        cached = (node: GraphNode<N, L>): readonly [number, number] => {
++          const entry = cache.get(node);
++          if (entry !== undefined) {
++            if (entry.ok) {
++              return entry.val;
++            }
++            throw entry.err;
++          }
++          try {
++            const val = resolveCallbackNodeSize(rawFn, node);
++            cache.set(node, { ok: true, val });
++            return val;
++          } catch (err) {
++            const errObj = err instanceof Error ? err : new Error(String(err));
++            cache.set(node, { ok: false, err: errObj });
++            throw errObj;
++          }
++        };
++      }
++      (cached as unknown as Record<symbol, unknown>)[IS_CACHED] = true;
++      this.caches.set(
++        nodeSize as NodeSize<unknown, unknown>,
++        cached as CallableNodeSize<unknown, unknown>,
++      );
++    }
++    return cached;
++  }
++}
++
++/**
+  * cache a {@link NodeSize} so it is called at most once for every node
+  */
+ export function cachedNodeSize<N, L>(
+   nodeSize: NodeSize<N, L>,
+ ): CallableNodeSize<N, L> {
+-  if (typeof nodeSize !== "function") {
+-    const [x, y] = nodeSize;
+-    if (x <= 0 || y <= 0) {
+-      throw err`all node sizes must be positive, but got width ${x} and height ${y}`;
+-    }
+-    return () => [x, y];
++  if (isCachedNodeSize(nodeSize)) {
++    return nodeSize as CallableNodeSize<N, L>;
++  }
++  const unwrapped = unwrapNodeSize(nodeSize);
++  if (typeof unwrapped !== "function") {
++    validateConstantNodeSize(unwrapped, "cached");
++    const [x, y] = unwrapped;
++    const fn = () => [x, y] as const;
++    (fn as unknown as Record<symbol, unknown>)[IS_CACHED] = true;
++    (fn as unknown as Record<symbol, unknown>)[RAW_NODE_SIZE] = unwrapped;
++    return fn;
+   } else {
+-    const cache = new Map<GraphNode<N, L>, readonly [number, number]>();
++    const rawFn = unwrapped;
++    const cache = new Map<
++      GraphNode<N, L>,
++      { ok: true; val: readonly [number, number] } | { ok: false; err: Error }
++    >();
+ 
+     const cached = (node: GraphNode<N, L>): readonly [number, number] => {
+-      let val = cache.get(node);
+-      if (val === undefined) {
+-        val = nodeSize(node);
+-        const [width, height] = val;
+-        if (width <= 0 || height <= 0) {
+-          throw err`all node sizes must be positive, but got width ${width} and height ${height} for node with data: ${node.data}; make sure the callback passed to \`sugiyama().nodeSize(...)\` is doing that`;
++      const entry = cache.get(node);
++      if (entry !== undefined) {
++        if (entry.ok) {
++          return entry.val;
+         }
+-        cache.set(node, val);
+-      }
+-      return val;
++        throw entry.err;
++      }
++      try {
++        const val = resolveCallbackNodeSize(rawFn, node);
++        return val;
++      } catch (err) {
++        const errObj = err instanceof Error ? err : new Error(String(err));
++        cache.set(node, { ok: false, err: errObj });
++        throw errObj;
++      }
+     };
+ 
++    (cached as unknown as Record<symbol, unknown>)[IS_CACHED] = true;
++    (cached as unknown as Record<symbol, unknown>)[RAW_NODE_SIZE] = rawFn;
+     return cached;
+   }
+ }
+@@ -93,9 +367,35 @@
+   if (typeof nodeSize !== "function") {
+     const [x, y] = nodeSize;
+     return [() => x, () => y];
+-  } else {
++  } else if (isCachedNodeSize(nodeSize)) {
+     const callable = nodeSize;
+     return [(node) => callable(node)[0], (node) => callable(node)[1]];
++  } else {
++    const rawFn = nodeSize;
++    const cache = new Map<
++      GraphNode<N, L>,
++      { ok: true; val: readonly [number, number] } | { ok: false; err: Error }
++    >();
++    const getVal = (node: GraphNode<N, L>): readonly [number, number] => {
++      const entry = cache.get(node);
++      if (entry !== undefined) {
++        if (entry.ok) {
++          return entry.val;
++        }
++        throw entry.err;
++      }
++      try {
++        const raw = rawFn(node);
++        const val = [raw[0], raw[1]] as const;
++        cache.set(node, { ok: true, val });
++        return val;
++      } catch (err) {
++        const errObj = err instanceof Error ? err : new Error(String(err));
++        cache.set(node, { ok: false, err: errObj });
++        throw errObj;
++      }
++    };
++    return [(node) => getVal(node)[0], (node) => getVal(node)[1]];
+   }
+ }
+ 
+diff --git a/src/tweaks.ts b/src/tweaks.ts
+--- a/src/tweaks.ts
++++ b/src/tweaks.ts
+@@ -1,9 +1,12 @@
+ import type { Graph } from "./graph/index.js";
+ import {
++  type CallableNodeSize,
+   cachedNodeSize,
+   type LayoutResult,
+   type NodeSize,
++  type NodeSizeContext,
+   type Rankdir,
++  RUN_TWEAK_CONTEXT,
+ } from "./layout.js";
+ import { err } from "./utils.js";
+ 
+@@ -374,13 +377,14 @@
+   nodeSize: NodeSize<N, L>,
+   shape: Shape = shapeRect,
+ ): Tweak<N, L> {
+-  function tweakShape(
++  function run(
+     graph: Graph<N, L>,
+     res: Readonly<LayoutResult>,
++    cached: CallableNodeSize<N, L>,
+   ): LayoutResult {
+     for (const node of graph.nodes()) {
+       const center = [node.x, node.y] as const;
+-      const size = typeof nodeSize === "function" ? nodeSize(node) : nodeSize;
++      const size = cached(node);
+       for (const { points } of node.parentLinks()) {
+         const [second, first] = points.slice(-2);
+         const trimmed = shape(center, size, first, second);
+@@ -394,7 +398,22 @@
+     }
+     return res;
+   }
+-  return tweakShape;
++
++  const tweakFn: Tweak<N, L> & {
++    [RUN_TWEAK_CONTEXT]?(
++      graph: Graph<N, L>,
++      res: Readonly<LayoutResult>,
++      context: NodeSizeContext,
++    ): LayoutResult;
++  } = (graph, res) => {
++    return run(graph, res, cachedNodeSize(nodeSize));
++  };
++
++  tweakFn[RUN_TWEAK_CONTEXT] = (graph, res, context) => {
++    return run(graph, res, context.getCached(nodeSize));
++  };
++
++  return tweakFn;
+ }
+ 
+ /**
+@@ -442,11 +461,10 @@
+  * although it shouldn't be strictly necessary.
+  */
+ export function tweakSugiyama<N, L>(nodeSize: NodeSize<N, L>): Tweak<N, L> {
+-  const cachedSize = cachedNodeSize(nodeSize);
+-
+-  function tweakSugiyama(
++  function run(
+     graph: Graph<N, L>,
+     res: Readonly<LayoutResult>,
++    cachedSize: CallableNodeSize<N, L>,
+   ): LayoutResult {
+     for (const { source, target, points } of graph.links()) {
+       // compute both clips before any mutation to handle two-point edges
+@@ -478,7 +496,21 @@
+     return res;
+   }
+ 
+-  return tweakSugiyama;
++  const tweakFn: Tweak<N, L> & {
++    [RUN_TWEAK_CONTEXT]?(
++      graph: Graph<N, L>,
++      res: Readonly<LayoutResult>,
++      context: NodeSizeContext,
++    ): LayoutResult;
++  } = (graph, res) => {
++    return run(graph, res, cachedNodeSize(nodeSize));
++  };
++
++  tweakFn[RUN_TWEAK_CONTEXT] = (graph, res, context) => {
++    return run(graph, res, context.getCached(nodeSize));
++  };
++
++  return tweakFn;
+ }
+ 
+ /**
+@@ -497,12 +529,12 @@
+   nodeSize: NodeSize<N, L>,
+   gap: readonly [number, number],
+ ): Tweak<N, L> {
+-  const cachedSize = cachedNodeSize(nodeSize);
+   const [, ygap] = gap;
+ 
+-  function tweakGridHandles(
++  function run(
+     graph: Graph<N, L>,
+     res: Readonly<LayoutResult>,
++    cachedSize: CallableNodeSize<N, L>,
+   ): LayoutResult {
+     for (const link of graph.links()) {
+       const { source, target, points } = link;
+@@ -521,7 +553,21 @@
+     return res;
+   }
+ 
+-  return tweakGridHandles;
++  const tweakFn: Tweak<N, L> & {
++    [RUN_TWEAK_CONTEXT]?(
++      graph: Graph<N, L>,
++      res: Readonly<LayoutResult>,
++      context: NodeSizeContext,
++    ): LayoutResult;
++  } = (graph, res) => {
++    return run(graph, res, cachedNodeSize(nodeSize));
++  };
++
++  tweakFn[RUN_TWEAK_CONTEXT] = (graph, res, context) => {
++    return run(graph, res, context.getCached(nodeSize));
++  };
++
++  return tweakFn;
+ }
+ 
+ /**
+diff --git a/src/sugiyama/index.ts b/src/sugiyama/index.ts
+--- a/src/sugiyama/index.ts
++++ b/src/sugiyama/index.ts
+@@ -5,10 +5,12 @@
+  */
+ import type { Graph } from "../graph/index.js";
+ import {
+-  cachedNodeSize,
+   type LayoutResult,
+   type NodeSize,
++  NodeSizeContext,
++  RUN_TWEAK_CONTEXT,
+   splitNodeSize,
++  validateConstantNodeSize,
+ } from "../layout.js";
+ import type { Tweak } from "../tweaks.js";
+ import { err, type U } from "../utils.js";
+@@ -243,12 +245,14 @@
+     dag: Graph<N, L>,
+   ): LayoutResult {
+     let res: LayoutResult;
++    const context = new NodeSizeContext();
+     // short circuit for empty graph
+     if (!dag.nnodes()) {
+       res = { width: 0, height: 0 };
+     } else {
+       // cache and split node sizes
+-      const [xLen, yLen] = splitNodeSize(cachedNodeSize(options.nodeSize));
++      const cached = context.getCached(options.nodeSize);
++      const [xLen, yLen] = splitNodeSize(cached);
+ 
+       // separate gaps
+       const [xGap, yGap] = sizes.gap;
+@@ -279,7 +283,18 @@
+ 
+     // apply any tweaks in order
+     for (const tweak of options.tweaks) {
+-      res = tweak(dag, res);
++      const tweakFn = tweak as Tweak<N, L> & {
++        [RUN_TWEAK_CONTEXT]?(
++          graph: Graph<N, L>,
++          res: Readonly<LayoutResult>,
++          context: NodeSizeContext,
++        ): LayoutResult;
++      };
++      if (typeof tweakFn[RUN_TWEAK_CONTEXT] === "function") {
++        res = tweakFn[RUN_TWEAK_CONTEXT](dag, res, context);
++      } else {
++        res = tweak(dag, res);
++      }
+     }
+     return res;
+   }
+@@ -375,13 +390,22 @@
+     val: NNS,
+   ): Sugiyama<U<Ops, "nodeSize", NNS>>;
+   function nodeSize<NNS extends NodeSize>(
+-    val?: NNS,
++    ...args: [NNS?]
+   ): Sugiyama<U<Ops, "nodeSize", NNS>> | Ops["nodeSize"] {
+-    if (val === undefined) {
++    if (args.length === 0) {
+       return options.nodeSize;
+-    } else if (typeof val !== "function" && (val[0] <= 0 || val[1] <= 0)) {
+-      const [x, y] = val;
+-      throw err`constant nodeSize must be positive, but got: [${x}, ${y}]`;
++    }
++    const [val] = args;
++    if (typeof val !== "function") {
++      validateConstantNodeSize(val);
++      const { nodeSize: _, ...rest } = options;
++      return buildOperator(
++        {
++          ...rest,
++          nodeSize: val,
++        },
++        sizes,
++      );
+     } else {
+       const { nodeSize: _, ...rest } = options;
+       return buildOperator(
+diff --git a/src/zherebko/index.ts b/src/zherebko/index.ts
+--- a/src/zherebko/index.ts
++++ b/src/zherebko/index.ts
+@@ -5,7 +5,13 @@
+  */
+ import type { Graph, Rank } from "../graph/index.js";
+ import { bigrams, map } from "../iters.js";
+-import type { CallableNodeSize, LayoutResult, NodeSize } from "../layout.js";
++import {
++  type LayoutResult,
++  type NodeSize,
++  NodeSizeContext,
++  RUN_TWEAK_CONTEXT,
++  validateConstantNodeSize,
++} from "../layout.js";
+ import type { Tweak } from "../tweaks.js";
+ import { err, type U } from "../utils.js";
+ import { greedy } from "./greedy.js";
+@@ -75,14 +81,6 @@
+   gap(val: readonly [number, number]): Zherebko<Ops>;
+   /** get the current gap size */
+   gap(): readonly [number, number];
+-}
+-
+-function normalize<N, L>(inp: NodeSize<N, L>): CallableNodeSize<N, L> {
+-  if (typeof inp === "function") {
+-    return inp;
+-  } else {
+-    return () => inp;
+-  }
+ }
+ 
+ /** @internal */
+@@ -97,22 +95,20 @@
+     inp: Graph<N, L>,
+   ): LayoutResult {
+     let res: LayoutResult;
++    const context = new NodeSizeContext();
+     // short-circuit empty graph
+     if (!inp.nnodes()) {
+       res = { width: 0, height: 0 };
+     } else {
+       const { xgap, ygap } = sizes;
+-      const nodeSize = normalize(ops.nodeSize);
++      const cached = context.getCached(ops.nodeSize);
+ 
+       // topological-ish sort
+       const ordered = [...inp.topological(ops.rank)];
+       let y = -ygap;
+       let maxWidth = 0;
+       for (const node of ordered) {
+-        const [width, height] = nodeSize(node);
+-        if (width <= 0 || height <= 0) {
+-          throw err`constant nodeSize must be positive, but got: [${width}, ${height}]`;
+-        }
++        const [width, height] = cached(node);
+         maxWidth = Math.max(maxWidth, width);
+         y += ygap;
+         node.y = y + height / 2;
+@@ -179,7 +175,18 @@
+ 
+     // apply tweaks
+     for (const tweak of ops.tweaks) {
+-      res = tweak(inp, res);
++      const tweakFn = tweak as Tweak<N, L> & {
++        [RUN_TWEAK_CONTEXT]?(
++          graph: Graph<N, L>,
++          res: Readonly<LayoutResult>,
++          context: NodeSizeContext,
++        ): LayoutResult;
++      };
++      if (typeof tweakFn[RUN_TWEAK_CONTEXT] === "function") {
++        res = tweakFn[RUN_TWEAK_CONTEXT](inp, res, context);
++      } else {
++        res = tweak(inp, res);
++      }
+     }
+     return res;
+   }
+@@ -225,13 +232,22 @@
+     val: NNS,
+   ): Zherebko<U<O, "nodeSize", NNS>>;
+   function nodeSize<NNS extends NodeSize>(
+-    val?: NNS,
++    ...args: [NNS?]
+   ): Zherebko<U<O, "nodeSize", NNS>> | O["nodeSize"] {
+-    if (val === undefined) {
++    if (args.length === 0) {
+       return ops.nodeSize;
+-    } else if (typeof val !== "function" && (val[0] <= 0 || val[1] <= 0)) {
+-      const [x, y] = val;
+-      throw err`constant nodeSize must be positive, but got: [${x}, ${y}]`;
++    }
++    const [val] = args;
++    if (typeof val !== "function") {
++      validateConstantNodeSize(val);
++      const { nodeSize: _, ...rest } = ops;
++      return buildOperator(
++        {
++          ...rest,
++          nodeSize: val,
++        },
++        sizes,
++      );
+     } else {
+       const { nodeSize: _, ...rest } = ops;
+       return buildOperator(
+diff --git a/src/grid/index.ts b/src/grid/index.ts
+--- a/src/grid/index.ts
++++ b/src/grid/index.ts
+@@ -4,7 +4,13 @@
+  * @packageDocumentation
+  */
+ import type { Graph, Rank } from "../graph/index.js";
+-import type { LayoutResult, NodeSize } from "../layout.js";
++import {
++  type LayoutResult,
++  type NodeSize,
++  NodeSizeContext,
++  RUN_TWEAK_CONTEXT,
++  validateConstantNodeSize,
++} from "../layout.js";
+ import type { Tweak } from "../tweaks.js";
+ import { err, type U } from "../utils.js";
+ import { type LaneGreedy, laneGreedy } from "./lane/greedy.js";
+@@ -134,6 +140,7 @@
+     // it.
+ 
+     let res: LayoutResult;
++    const context = new NodeSizeContext();
+     // short-circuit empty graph
+     if (!grf.nnodes()) {
+       res = { width: 0, height: 0 };
+@@ -152,14 +159,12 @@
+       const { xgap, ygap } = sizes;
+       let width: number, height: number;
+       if (typeof options.nodeSize === "function") {
++        const cached = context.getCached(options.nodeSize);
+         // assign ys and compute widths
+         const laneWidths = Array<number>(numLanes).fill(0);
+         height = -ygap;
+         for (const node of ordered) {
+-          const [nodeWidth, nodeHeight] = options.nodeSize(node);
+-          if (nodeWidth <= 0 || nodeHeight <= 0) {
+-            throw err`nodeSize must be positive, but got: [${nodeWidth}, ${nodeHeight}]`;
+-          }
++          const [nodeWidth, nodeHeight] = cached(node);
+           laneWidths[node.x] = Math.max(laneWidths[node.x], nodeWidth);
+           height += ygap;
+           node.y = height + nodeHeight / 2;
+@@ -210,7 +215,18 @@
+ 
+     // apply tweaks
+     for (const tweak of options.tweaks) {
+-      res = tweak(grf, res);
++      const tweakFn = tweak as Tweak<N, L> & {
++        [RUN_TWEAK_CONTEXT]?(
++          graph: Graph<N, L>,
++          res: Readonly<LayoutResult>,
++          context: NodeSizeContext,
++        ): LayoutResult;
++      };
++      if (typeof tweakFn[RUN_TWEAK_CONTEXT] === "function") {
++        res = tweakFn[RUN_TWEAK_CONTEXT](grf, res, context);
++      } else {
++        res = tweak(grf, res);
++      }
+     }
+     return res;
+   }
+@@ -270,13 +286,22 @@
+     val: NNS,
+   ): Grid<U<Ops, "nodeSize", NNS>>;
+   function nodeSize<NNS extends NodeSize>(
+-    val?: NNS,
++    ...args: [NNS?]
+   ): Grid<U<Ops, "nodeSize", NNS>> | Ops["nodeSize"] {
+-    if (val === undefined) {
++    if (args.length === 0) {
+       return options.nodeSize;
+-    } else if (typeof val !== "function" && (val[0] <= 0 || val[1] <= 0)) {
+-      const [x, y] = val;
+-      throw err`constant nodeSize must be positive, but got: [${x}, ${y}]`;
++    }
++    const [val] = args;
++    if (typeof val !== "function") {
++      validateConstantNodeSize(val);
++      const { nodeSize: _, ...rest } = options;
++      return buildOperator(
++        {
++          ...rest,
++          nodeSize: val,
++        },
++        sizes,
++      );
+     } else {
+       const { nodeSize: _, ...rest } = options;
+       return buildOperator(

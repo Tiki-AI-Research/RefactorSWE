@@ -1,0 +1,11 @@
+--- a/internal/web/handler_api.go
++++ b/internal/web/handler_api.go
+@@ -126,7 +126,7 @@
+ 	if err != nil {
+ 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+ 	}
+-	req := &ms.QueryNodeMetricsReq{StartTimestamp: params.startTS, EndTimestamp: params.endTS, Num: -1, Step: params.step}
++	req := &ms.QueryNodeMetricsReq{StartTimestamp: params.startTS, EndTimestamp: params.endTS, Num: -1, Step: 0}
+ 	if params.latest {
+ 		req.Num = 1
+ 	}

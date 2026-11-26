@@ -1,0 +1,801 @@
+--- a/kivymd/uix/pickers/datepicker/datepicker.py
++++ b/kivymd/uix/pickers/datepicker/datepicker.py
+@@ -1059,6 +1059,7 @@
+     _input_date_dialog_open = BooleanProperty(False)
+     _select_year_dialog_open = False
+     _date_label_text = StringProperty()
++    _menu_selection_is_open = BooleanProperty(False)
+ 
+     __events__ = (
+         "on_select_day",
+@@ -1186,7 +1187,7 @@
+         if year <= 0:
+             year, month = 1, 1
+         self.update_calendar(year, month)
+-        self.dispatch("on_select_month", month)
++        self.dispatch("on_select_month", str(month))
+ 
+     def generate_list_widgets_days(self) -> None:
+         calendar_list = []
+@@ -1303,6 +1304,151 @@
+         anim.bind(on_complete=method)
+         anim.start(self.ids.calendar_layout)
+ 
++    def step_month(self, direction: str) -> None:
++        """
++        Animates calendar layout and changes displayed month in the given direction.
++        """
++        def set_month(*args):
++            self.change_month(direction)
++            self._update_date_label_text()
++            self.restore_calendar_layout_properties()
++
++        self.set_calendar_layout_properties(set_month)
++
++    def step_year(self, direction: str) -> None:
++        """
++        Validates year boundaries, animates calendar layout, and updates calendar year.
++        """
++        year = self.year
++        if direction == "prev":
++            year -= 1
++        elif direction == "next":
++            year += 1
++
++        if year < self.min_year or year > self.max_year:
++            raise MDDatePickerTypeDateError(
++                "The maximum/minimum value of the year is exceeded or less "
++                "than the set value"
++            )
++
++        def set_year(*args):
++            self.update_calendar(year, self.month)
++            self.restore_calendar_layout_properties()
++
++        self.set_calendar_layout_properties(set_year)
++
++    def select_month(self, month: int) -> None:
++        """
++        Selects month, updating displayed calendar and dispatching on_select_month.
++        """
++        self.update_calendar(self.year, month)
++        self.dispatch("on_select_month", month)
++
++    def select_year(self, year: int, month: int | None = None) -> None:
++        """
++        Selects year, updating displayed calendar and dispatching on_select_year.
++        """
++        target_month = self.month if month is None else month
++        self.update_calendar(year, target_month)
++        self.dispatch("on_select_year", year)
++
++    def generate_year_selection_data(
++        self,
++        viewclass: str,
++        year_key: str = "month_year_name",
++        include_index: bool = False,
++        extra_attrs: dict | None = None,
++    ) -> list[dict]:
++        """
++        Generates list data for year selection recycle view.
++        """
++        data = []
++        for i, year in enumerate(range(self.min_year, self.max_year)):
++            item = {
++                "date_picker": self,
++                year_key: str(year),
++                "viewclass": viewclass,
++            }
++            if include_index:
++                item["index"] = i
++            if extra_attrs:
++                item.update(extra_attrs)
++            data.append(item)
++        return data
++
++    def toggle_menu_selection(
++        self, menu_type: str = "year", state: bool | None = None
++    ) -> bool:
++        """
++        Toggles or explicitly sets the month/year selection menu state.
++        Returns the new state (True for open, False for closed).
++        """
++        if state is None:
++            self._menu_selection_is_open = not self._menu_selection_is_open
++
++        # Explicit show/hide preserves the docked direct API's baseline behavior:
++        # only event-driven toggles advance the remembered toggle state.
++        current_state = self._menu_selection_is_open if state is None else state
++        opacity = 0 if current_state else 1
++        disabled = True if current_state else 0
++        rotate = -90 if current_state else 0
++
++        self.prepare_menu_selection(menu_type, current_state)
++
++        for container in self._get_menu_chevron_containers():
++            container.ids.chevron_left.disabled = disabled
++            container.ids.chevron_left.opacity = opacity
++            container.ids.chevron_right.disabled = disabled
++            container.ids.chevron_right.opacity = opacity
++
++        calendar_layout = self.ids.calendar_layout
++        calendar_layout.disabled = disabled
++        calendar_layout.opacity = opacity
++        if current_state:
++            calendar_layout.scale_value_x = 1.1
++            calendar_layout.scale_value_y = 1.1
++
++        button = self._get_menu_selection_button(menu_type)
++        if button:
++            Animation(rotate_value_angle=rotate, d=0.2).start(button)
++
++        layout = self.get_selection_layout()
++        if layout:
++            layout.size = self.get_menu_selection_size(current_state)
++
++        self.apply_menu_selection_state(current_state, menu_type, layout)
++
++        if not current_state:
++            Animation(scale_value_x=1, scale_value_y=1, d=0.1).start(
++                calendar_layout
++            )
++
++        return current_state
++
++    def prepare_menu_selection(self, menu_type: str, state: bool) -> None:
++        """Hook for subclasses to generate or prepare list data."""
++
++    def _get_menu_chevron_containers(self) -> list:
++        """Hook for subclasses to return containers with chevrons to toggle."""
++        return []
++
++    def _get_menu_selection_button(self, menu_type: str):
++        """Hook for subclasses to return the button to rotate."""
++        return None
++
++    def get_selection_layout(self):
++        """Hook for subclasses to return the selection RecycleView layout."""
++        return None
++
++    def get_menu_selection_size(self, state: bool) -> tuple[float, float]:
++        """Hook for subclasses to return the expanded/collapsed selection size."""
++        return (0, 0)
++
++    def apply_menu_selection_state(
++        self, state: bool, menu_type: str, layout
++    ) -> None:
++        """Hook for variant-specific animation and widget state updates."""
++
+     def dismiss(self, *args) -> None:
+         """Dismiss the dialog date picker."""
+ 
+@@ -1470,12 +1616,75 @@
+ 
+ ###############################################################################
+ #
++#                         SHARED SELECTION COMPONENTS
++#
++###############################################################################
++
++
++class MDDatePickerListSelectionItem(RecycleDataViewBehavior):
++    """
++    Base class for selectable items in date picker month and year menus.
++    """
++
++    index = None
++    selected = BooleanProperty(False)
++    selectable = BooleanProperty(True)
++
++    date_picker: MDBaseDatePicker = ObjectProperty()
++    """
++    Date picker object.
++    """
++
++    def refresh_view_attrs(self, rv, index, data):
++        self.index = index
++        return super().refresh_view_attrs(rv, index, data)
++
++    def _can_select_row(self) -> bool:
++        return self.selectable
++
++    def select_row(self) -> None:
++        """Subclasses override to apply specific month/year selection logic."""
++
++    def on_touch_down(self, touch):
++        if super().on_touch_down(touch):
++            return True
++        if self.collide_point(*touch.pos) and self._can_select_row():
++            self.select_row()
++            return self.parent.select_with_touch(self.index, touch)
++
++    def apply_selection(self, rv, index, is_selected):
++        self.selected = is_selected
++        rv.data[index]["selected"] = is_selected
++
++
++class MDDatePickerMenuSelectionBehavior:
++    """
++    Behavior for containers that trigger menu toggle and month/year stepping.
++    """
++
++    menu_type = StringProperty("year")
++
++    def on_open_menu(self, *args) -> None:
++        """Fired when the 'menu-right' button is pressed."""
++        if self.date_picker:
++            self.date_picker.toggle_menu_selection(self.menu_type)
++
++    def on_release(self, direction: str) -> None:
++        """Fired when the chevron buttons are pressed."""
++        if self.date_picker:
++            self.date_picker.step_month(direction)
++
++
++###############################################################################
++#
+ #                                DOCKED CLASSES
+ #
+ ###############################################################################
+ 
+ 
+-class MDDockedDatePickerBaseSelectionContainer(BoxLayout):
++class MDDockedDatePickerBaseSelectionContainer(
++    MDDatePickerMenuSelectionBehavior, BoxLayout
++):
+     """
+     Implements a basic container for switching month/year items and selecting
+     the month/year list menu.
+@@ -1507,13 +1716,8 @@
+     def __init__(self, **kwargs):
+         super().__init__(**kwargs)
+ 
+-    def on_open_menu(self, *args) -> None:
+-        """Fired when the 'menu-right' button are pressed."""
+-
+     def on_release(self, *args) -> None:
+-        """
+-        Fired when the 'chevron-left' and `chevron-right` buttons are pressed.
+-        """
++        """Default event handler; concrete chevrons supply their direction."""
+ 
+ 
+ class MDDockedDatePickerMonthSelectionItem(
+@@ -1529,89 +1733,37 @@
+     :class:`~MDDockedDatePickerBaseSelectionContainer` class documentation.
+     """
+ 
+-    def on_open_menu(self, *args) -> None:
+-        """Fired when the 'menu-right' button are pressed."""
+-
+-        if not self.date_picker._menu_month_year_selection_is_open:
+-            self.date_picker.generate_menu_month_year_selection(
+-                menu_type="month"
+-            )
+-            self.date_picker.open_close_menu_month_year_selection(
+-                state=True, menu_type="month"
+-            )
+-            self.date_picker._menu_month_year_selection_is_open = True
+-        else:
+-            self.date_picker.open_close_menu_month_year_selection(
+-                state=False, menu_type="month"
+-            )
+-            self.date_picker._menu_month_year_selection_is_open = False
++    def __init__(self, **kwargs):
++        super().__init__(**kwargs)
++        self.menu_type = "month"
++
++    def on_release(self, direction: str) -> None:
++        MDDatePickerMenuSelectionBehavior.on_release(self, direction)
++
++
++class MDDockedDatePickerYearSelectionItem(
++    MDDockedDatePickerBaseSelectionContainer
++):
++    """
++    Implements a container with buttons for switching years and selecting
++    the year list menu.
++
++    .. versionadded:: 2.0.0
++
++    For more information, see in the
++    :class:`~MDDockedDatePickerBaseSelectionContainer` class documentation.
++    """
++
++    def __init__(self, **kwargs):
++        super().__init__(**kwargs)
++        self.menu_type = "year"
+ 
+     def on_release(self, direction: str) -> None:
+         """
+         Fired when the 'chevron-left' and chevron-right buttons are pressed.
+         """
+-
+-        def set_month(*args):
+-            self.date_picker.change_month(direction)
+-            self.date_picker._update_date_label_text()
+-            self.date_picker.restore_calendar_layout_properties()
+-
+-        self.date_picker.set_calendar_layout_properties(set_month)
+-
+-
+-class MDDockedDatePickerYearSelectionItem(
+-    MDDockedDatePickerBaseSelectionContainer
+-):
+-    """
+-    Implements a container with buttons for switching years and selecting
+-    the year list menu.
+-
+-    .. versionadded:: 2.0.0
+-
+-    For more information, see in the
+-    :class:`~MDDockedDatePickerBaseSelectionContainer` class documentation.
+-    """
+-
+-    def on_open_menu(self, *args) -> None:
+-        """Fired when the 'menu-right' button are pressed."""
+-
+-        if not self.date_picker._menu_month_year_selection_is_open:
+-            self.date_picker.generate_menu_month_year_selection(
+-                menu_type="year"
+-            )
+-            self.date_picker.open_close_menu_month_year_selection(
+-                state=True, menu_type="year"
+-            )
+-            self.date_picker._menu_month_year_selection_is_open = True
+-        else:
+-            self.date_picker.open_close_menu_month_year_selection(
+-                state=False, menu_type="year"
+-            )
+-            self.date_picker._menu_month_year_selection_is_open = False
+-
+-    def on_release(self, direction: str) -> None:
+-        """
+-        Fired when the 'chevron-left' and chevron-right buttons are pressed.
+-        """
+-
+-        def set_year(*args):
+-            self.date_picker.update_calendar(year, self.date_picker.month)
+-            self.date_picker.restore_calendar_layout_properties()
+-
+-        year = self.date_picker.year
+-        if direction == "prev":
+-            year -= 1
+-        elif direction == "next":
+-            year += 1
+-
+-        if year < self.date_picker.min_year or year > self.date_picker.max_year:
+-            raise MDDatePickerTypeDateError(
+-                "The maximum/minimum value of the year is exceeded or less "
+-                "than the set value"
+-            )
+-            return
+-
+-        self.date_picker.set_calendar_layout_properties(set_year)
++        if self.date_picker:
++            self.date_picker.step_year(direction)
+ 
+ 
+ class MDDockedDatePickerMenuMonthYearSelection(ScaleBehavior, RecycleView):
+@@ -1643,7 +1795,7 @@
+     """
+ 
+ 
+-class MDDockedDatePickerMenuSelectionItem(RecycleDataViewBehavior, BoxLayout):
++class MDDockedDatePickerMenuSelectionItem(MDDatePickerListSelectionItem, BoxLayout):
+     """
+     Implements an item for the month selection list menu.
+ 
+@@ -1655,10 +1807,6 @@
+     classes documentation.
+     """
+ 
+-    index = None
+-    selected = BooleanProperty(False)
+-    selectable = BooleanProperty(True)
+-
+     month_index = NumericProperty()
+     """
+     Month index.
+@@ -1675,39 +1823,15 @@
+     and defaults to `''`.
+     """
+ 
+-    date_picker: MDBaseDatePicker = ObjectProperty()
+-    """
+-    Date picker object -
+-
+-    :attr:`date_picker` is an :class:`~kivy.properties.ObjectProperty`
+-    and defaults to `None`.
+-    """
+-
+-    def refresh_view_attrs(self, rv, index, data):
+-        self.index = index
+-        return super().refresh_view_attrs(rv, index, data)
+-
+-    def on_touch_down(self, touch):
+-        if super().on_touch_down(touch):
+-            return True
+-        if self.collide_point(*touch.pos) and self.selectable:
+-            if self.menu_type == "month":
+-                self.date_picker.update_calendar(
+-                    self.date_picker.year, self.month_index
+-                )
+-                self.date_picker.dispatch("on_select_month", self.month_index)
+-            else:
+-                self.date_picker.update_calendar(
+-                    int(self.month_year_name), self.date_picker.month
+-                )
+-                self.date_picker.dispatch(
+-                    "on_select_year", int(self.month_year_name)
+-                )
+-            return self.parent.select_with_touch(self.index, touch)
+-
+-    def apply_selection(self, rv, index, is_selected):
+-        self.selected = is_selected
+-        rv.data[index]["selected"] = is_selected
++    menu_type = StringProperty("month")
++
++    def select_row(self) -> None:
++        if self.menu_type == "month":
++            self.date_picker.select_month(self.month_index)
++        else:
++            self.date_picker.select_year(
++                int(self.month_year_name), self.date_picker.month
++            )
+ 
+ 
+ class MDDockedDatePicker(CommonElevationBehavior, MDBaseDatePicker):
+@@ -1721,8 +1845,6 @@
+     :class:`~MDBaseDatePicker`
+     classes documentation.
+     """
+-
+-    _menu_month_year_selection_is_open = BooleanProperty(False)
+ 
+     def generate_menu_month_year_selection(
+         self, menu_type: str = "month"
+@@ -1745,17 +1867,74 @@
+                     }
+                 )
+         else:
+-            for year_name in range(self.min_year, self.max_year):
+-                self.ids.month_year_selection_layout.data.append(
+-                    {
++            self.ids.month_year_selection_layout.data = (
++                self.generate_year_selection_data(
++                    viewclass="MDDockedDatePickerMenuSelectionItem",
++                    year_key="month_year_name",
++                    include_index=False,
++                    extra_attrs={
+                         "height": dp(48),
+-                        "date_picker": self,
+                         "menu_type": menu_type,
+-                        "month_year_name": str(year_name),
+                         "month_index": 0,
+-                        "viewclass": "MDDockedDatePickerMenuSelectionItem",
+-                    }
++                    },
+                 )
++            )
++
++    def prepare_menu_selection(self, menu_type: str, state: bool) -> None:
++        if state:
++            self.generate_menu_month_year_selection(menu_type=menu_type)
++
++    def _get_menu_chevron_containers(self) -> list:
++        return [
++            self.ids.month_selection_items,
++            self.ids.year_selection_items,
++        ]
++
++    def _get_menu_selection_button(self, menu_type: str):
++        if menu_type == "month":
++            return self.ids.month_selection_items.ids.menu_selection_button
++        return self.ids.year_selection_items.ids.menu_selection_button
++
++    def get_selection_layout(self):
++        return self.ids.month_year_selection_layout
++
++    def get_menu_selection_size(self, state: bool) -> tuple[float, float]:
++        if state:
++            return (
++                self.width,
++                self.height
++                - (
++                    self.ids.month_year_selection_items_container.height
++                    + dp(56)
++                ),
++            )
++        return (0, 0)
++
++    def apply_menu_selection_state(
++        self, state: bool, menu_type: str, layout
++    ) -> None:
++        opacity = 0 if state else 1
++        scale = 1 if state else 0
++        disabled = True if state else 0
++
++        month_selection_items = self.ids.month_selection_items
++        year_selection_items = self.ids.year_selection_items
++        button_container = self.ids.button_container
++
++        if menu_type == "month":
++            year_selection_items.ids.label.disabled = disabled
++            year_selection_items.ids.menu_selection_button.opacity = opacity
++        else:
++            month_selection_items.ids.label.disabled = disabled
++            month_selection_items.ids.menu_selection_button.opacity = opacity
++
++        button_container.opacity = opacity
++        button_container.disabled = disabled
++
++        if layout:
++            Animation(scale_value_x=scale, scale_value_y=scale, d=0.2).start(
++                layout
++            )
+ 
+     def open_close_menu_month_year_selection(
+         self, state: bool = True, menu_type: str = "month"
+@@ -1764,70 +1943,7 @@
+         Hides the calendar layout and opens the list to select the month or
+         year.
+         """
+-
+-        opacity = 0 if state else 1
+-        scale = 1 if state else 0
+-        disabled = True if state else 0
+-        rotate = -90 if state else 0
+-
+-        month_selection_items = self.ids.month_selection_items
+-        year_selection_items = self.ids.year_selection_items
+-        calendar_layout = self.ids.calendar_layout
+-        button_container = self.ids.button_container
+-        month_year_selection_layout = self.ids.month_year_selection_layout
+-
+-        Animation(rotate_value_angle=rotate, d=0.2).start(
+-            month_selection_items.ids.menu_selection_button
+-            if menu_type == "month"
+-            else self.ids.year_selection_items.ids.menu_selection_button
+-        )
+-
+-        month_selection_items.ids.chevron_left.disabled = disabled
+-        month_selection_items.ids.chevron_left.opacity = opacity
+-        month_selection_items.ids.chevron_right.disabled = disabled
+-        month_selection_items.ids.chevron_right.opacity = opacity
+-
+-        year_selection_items.ids.chevron_left.disabled = disabled
+-        year_selection_items.ids.chevron_left.opacity = opacity
+-        year_selection_items.ids.chevron_right.disabled = disabled
+-        year_selection_items.ids.chevron_right.opacity = opacity
+-
+-        calendar_layout.disabled = disabled
+-        calendar_layout.opacity = opacity
+-        if state:
+-            calendar_layout.scale_value_x = 1.1
+-            calendar_layout.scale_value_y = 1.1
+-
+-        if menu_type == "month":
+-            year_selection_items.ids.label.disabled = disabled
+-            year_selection_items.ids.menu_selection_button.opacity = opacity
+-        else:
+-            month_selection_items.ids.label.disabled = disabled
+-            month_selection_items.ids.menu_selection_button.opacity = opacity
+-
+-        month_year_selection_layout.size = (
+-            (
+-                self.width,
+-                self.height
+-                - (
+-                    self.ids.month_year_selection_items_container.height
+-                    + dp(56)
+-                ),
+-            )
+-            if state
+-            else (0, 0)
+-        )
+-
+-        button_container.opacity = opacity
+-        button_container.disabled = disabled
+-
+-        Animation(scale_value_x=scale, scale_value_y=scale, d=0.2).start(
+-            month_year_selection_layout
+-        )
+-        if not state:
+-            Animation(scale_value_x=1, scale_value_y=1, d=0.1).start(
+-                calendar_layout
+-            )
++        self.toggle_menu_selection(menu_type=menu_type, state=state)
+ 
+ 
+ ###############################################################################
+@@ -1849,8 +1965,6 @@
+     classes documentation.
+     """
+ 
+-    _menu_year_selection_is_open = BooleanProperty(False)
+-
+     def open(self) -> None:
+         """Show the dialog date picker."""
+ 
+@@ -1864,62 +1978,46 @@
+             self.is_open = True
+ 
+     def generate_list_widgets_years(self) -> None:
+-        self.ids.year_selection_layout.data = []
+-        for i, number_year in enumerate(range(self.min_year, self.max_year)):
+-            self.ids.year_selection_layout.data.append(
+-                {
+-                    "date_picker": self,
+-                    "text": str(number_year),
+-                    "index": i,
+-                    "viewclass": "MDModalDatePickerYearSelectableItem",
+-                }
+-            )
++        self.ids.year_selection_layout.data = self.generate_year_selection_data(
++            viewclass="MDModalDatePickerYearSelectableItem",
++            year_key="text",
++            include_index=True,
++        )
++
++    def prepare_menu_selection(self, menu_type: str, state: bool) -> None:
++        self.generate_list_widgets_years()
++
++    def _get_menu_chevron_containers(self) -> list:
++        return [self.ids.year_selection_items]
++
++    def _get_menu_selection_button(self, menu_type: str):
++        return self.ids.year_selection_items.ids.menu_selection_button
++
++    def get_selection_layout(self):
++        return self.ids.year_selection_layout
++
++    def get_menu_selection_size(self, state: bool) -> tuple[float, float]:
++        calendar_layout = self.ids.calendar_layout
++        if state:
++            return (calendar_layout.width - dp(36), calendar_layout.height)
++        return (0, 0)
++
++    def apply_menu_selection_state(
++        self, state: bool, menu_type: str, layout
++    ) -> None:
++        if layout:
++            if state:
++                layout.disabled = False
++                Animation(
++                    scale_value_x=1, scale_value_y=1, t="out_expo", d=0.4
++                ).start(layout)
++            else:
++                layout.scale_value_x = 1.2
++                layout.scale_value_y = 1.2
++                layout.disabled = True
+ 
+     def open_menu_year_selection(self, *args) -> None:
+-        self._menu_year_selection_is_open = (
+-            not self._menu_year_selection_is_open
+-        )
+-        state = self._menu_year_selection_is_open
+-        opacity = 0 if state else 1
+-        disabled = True if state else 0
+-        rotate = -90 if state else 0
+-
+-        calendar_layout = self.ids.calendar_layout
+-        year_selection_items = self.ids.year_selection_items
+-        year_selection_layout = self.ids.year_selection_layout
+-        chevron_left = year_selection_items.ids.chevron_left
+-        chevron_right = year_selection_items.ids.chevron_right
+-        chevron_left.disabled = disabled
+-        chevron_left.opacity = opacity
+-        chevron_right.disabled = disabled
+-        chevron_right.opacity = opacity
+-        calendar_layout.disabled = disabled
+-        calendar_layout.opacity = opacity
+-
+-        Animation(rotate_value_angle=rotate, d=0.2).start(
+-            self.ids.year_selection_items.ids.menu_selection_button
+-        )
+-
+-        year_selection_layout.size = (
+-            (calendar_layout.width - dp(36), calendar_layout.height)
+-            if state
+-            else (0, 0)
+-        )
+-
+-        if state:
+-            year_selection_layout.disabled = False
+-            calendar_layout.scale_value_x = 1.1
+-            calendar_layout.scale_value_y = 1.1
+-            Animation(
+-                scale_value_x=1, scale_value_y=1, t="out_expo", d=0.4
+-            ).start(year_selection_layout)
+-        else:
+-            Animation(scale_value_x=1, scale_value_y=1, d=0.1).start(
+-                calendar_layout
+-            )
+-            year_selection_layout.scale_value_x = 1.2
+-            year_selection_layout.scale_value_y = 1.2
+-            year_selection_layout.disabled = True
++        self.toggle_menu_selection(menu_type="year")
+ 
+     def _update_date_label_text(self):
+         self._current_month_name = self.set_text_full_date()
+@@ -1928,41 +2026,21 @@
+         )
+ 
+ 
+-class MDModalDatePickerYearSelectableItem(RecycleDataViewBehavior, MDLabel):
++class MDModalDatePickerYearSelectableItem(MDDatePickerListSelectionItem, MDLabel):
+     """Implements an item for a pick list of the year."""
+ 
+-    index = None
+-    selected = BooleanProperty(False)
+-    selectable = BooleanProperty(True)
+-
+-    date_picker: MDBaseDatePicker = ObjectProperty()
+-    """
+-    Date picker object -
+-
+-    :attr:`date_picker` is an :class:`~kivy.properties.ObjectProperty`
+-    and defaults to `None`.
+-    """
+-
+-    def refresh_view_attrs(self, rv, index, data):
+-        self.index = index
+-        return super().refresh_view_attrs(rv, index, data)
+-
+-    def on_touch_down(self, touch):
+-        if super().on_touch_down(touch):
+-            return True
+-        if self.collide_point(*touch.pos):
+-            self.date_picker.update_calendar(
+-                int(self.text), self.date_picker.sel_month
+-            )
+-            self.date_picker.dispatch("on_select_year", int(self.text))
+-            return self.parent.select_with_touch(self.index, touch)
+-
+-    def apply_selection(self, rv, index, is_selected):
+-        self.selected = is_selected
+-        rv.data[index]["selected"] = is_selected
+-
+-
+-class MDModalDatePickerYearSelectionItem(ScaleBehavior, BoxLayout):
++    def _can_select_row(self) -> bool:
++        return True
++
++    def select_row(self) -> None:
++        self.date_picker.select_year(
++            int(self.text), self.date_picker.sel_month
++        )
++
++
++class MDModalDatePickerYearSelectionItem(
++    MDDatePickerMenuSelectionBehavior, ScaleBehavior, BoxLayout
++):
+     """
+     Implements a container for switching month items.
+ 
+@@ -1994,24 +2072,6 @@
+ 
+     def __init__(self, **kwargs):
+         super().__init__(**kwargs)
+-
+-    def on_open_menu(self, *args) -> None:
+-        """Fired when the 'menu-right' button are pressed."""
+-
+-        self.date_picker.open_menu_year_selection()
+-        self.date_picker.generate_list_widgets_years()
+-
+-    def on_release(self, direction: str) -> None:
+-        """
+-        Fired when the 'chevron-left' and `chevron-right` buttons are pressed.
+-        """
+-
+-        def set_month(*args):
+-            self.date_picker.change_month(direction)
+-            self.date_picker._update_date_label_text()
+-            self.date_picker.restore_calendar_layout_properties()
+-
+-        self.date_picker.set_calendar_layout_properties(set_month)
+ 
+ 
+ class MDModalDatePickerScrim(Widget):

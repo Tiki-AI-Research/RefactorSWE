@@ -1,0 +1,762 @@
+diff --git a/src/waitress/__init__.py b/src/waitress/__init__.py
+--- a/src/waitress/__init__.py
++++ b/src/waitress/__init__.py
+@@ -1,6 +1,9 @@
+ import logging
+ 
++from waitress.response import PreparedResponse
+ from waitress.server import create_server
++
++__all__ = ["serve", "serve_paste", "profile", "create_server", "PreparedResponse"]
+ 
+ 
+ def serve(app, **kw):
+diff --git a/src/waitress/response.py b/src/waitress/response.py
+new file mode 100644
+--- /dev/null
++++ b/src/waitress/response.py
+@@ -0,0 +1,387 @@
++##############################################################################
++#
++# Copyright (c) 2001, 2002 Zope Foundation and Contributors.
++# All Rights Reserved.
++#
++# This software is subject to the provisions of the Zope Public License,
++# Version 2.1 (ZPL).  A copy of the ZPL should accompany this distribution.
++# THIS SOFTWARE IS PROVIDED "AS IS" AND ANY AND ALL EXPRESS OR IMPLIED
++# WARRANTIES ARE DISCLAIMED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++# WARRANTIES OF TITLE, MERCHANTABILITY, AGAINST INFRINGEMENT, AND FITNESS
++# FOR A PARTICULAR PURPOSE.
++#
++##############################################################################
++"""Response modeling, preparation, framing, and header serialization."""
++
++from dataclasses import dataclass
++from typing import Dict, List, Optional, Sequence, Tuple, Union
++
++from .utilities import build_http_date
++
++HOP_BY_HOP_HEADERS = frozenset(
++    (
++        "connection",
++        "keep-alive",
++        "proxy-authenticate",
++        "proxy-authorization",
++        "te",
++        "trailer",
++        "transfer-encoding",
++        "upgrade",
++    )
++)
++
++
++def is_hop_by_hop(header_name: str) -> bool:
++    """Return True if the given header name is a hop-by-hop header."""
++    return header_name.lower() in HOP_BY_HOP_HEADERS
++
++
++def canonical_header_name(header_name: str) -> str:
++    """Return canonical hyphenated title-cased header name (e.g., Content-Type)."""
++    return "-".join([part.capitalize() for part in header_name.split("-")])
++
++
++def is_body_allowed(status: Optional[str]) -> bool:
++    """Determine whether the response status code permits a message body.
++
++    RFC 7230: MUST NOT send a body for any response with a status code of
++    1xx (Informational), 204 (No Content), or 304 (Not Modified).
++    """
++    if not status:
++        return True
++    status_code = status.split(" ", 1)[0]
++    return not (status_code.startswith("1") or status_code in ("204", "304"))
++
++
++@dataclass(frozen=True)
++class PreparedResponse:
++    """Immutable representation of a prepared HTTP response head and metadata.
++
++    Properties:
++        status: The response status string (e.g. '200 OK').
++        version: The effective HTTP version ('1.0' or '1.1').
++        header_bytes: The complete serialized response head bytes, ending in \\r\\n\\r\\n.
++        headers: An ordered tuple of normalized (name, value) string pairs in wire order.
++        body_allowed: Boolean indicating whether the status code permits a message body.
++        chunked: Boolean indicating whether chunked transfer framing is active.
++        close_connection: Boolean indicating whether the connection must close after response.
++        content_length: Effective outgoing integer content length, or None if no effective length.
++        normalized_headers: Normalized headers in declaration order with system headers appended.
++    """
++
++    status: str
++    version: str
++    header_bytes: bytes
++    headers: Tuple[Tuple[str, str], ...]
++    body_allowed: bool
++    chunked: bool
++    close_connection: bool
++    content_length: Optional[int]
++    normalized_headers: Tuple[Tuple[str, str], ...] = ()
++
++    @property
++    def status_code(self) -> int:
++        """Return the numeric status code."""
++        return int(self.status.split(" ", 1)[0])
++
++    @property
++    def reason_phrase(self) -> str:
++        """Return the reason phrase from the status line, or empty string."""
++        parts = self.status.split(" ", 1)
++        return parts[1] if len(parts) > 1 else ""
++
++    def get_header(self, name: str, default: Optional[str] = None) -> Optional[str]:
++        """Return the value of the first header matching name (case-insensitive)."""
++        target = name.lower()
++        for k, v in self.headers:
++            if k.lower() == target:
++                return v
++        return default
++
++    def get_headers(self, name: str) -> List[str]:
++        """Return a list of values for all headers matching name (case-insensitive)."""
++        target = name.lower()
++        return [v for k, v in self.headers if k.lower() == target]
++
++    def to_dict(self) -> Dict[str, Union[str, int, bool, None, Tuple[Tuple[str, str], ...]]]:
++        """Return a dictionary representation of the prepared response metadata."""
++        return {
++            "status": self.status,
++            "version": self.version,
++            "body_allowed": self.body_allowed,
++            "chunked": self.chunked,
++            "close_connection": self.close_connection,
++            "content_length": self.content_length,
++            "headers": self.headers,
++            "normalized_headers": self.normalized_headers,
++        }
++
++    def __repr__(self) -> str:
++        return (
++            f"<PreparedResponse status={self.status!r} version={self.version!r} "
++            f"body_allowed={self.body_allowed} chunked={self.chunked} "
++            f"close_connection={self.close_connection} content_length={self.content_length}>"
++        )
++
++
++class ResponseFraming:
++    """Calculates HTTP framing, chunked encoding, and connection closure rules."""
++
++    @staticmethod
++    def evaluate(
++        version: str,
++        request_connection: str,
++        content_length_established: bool,
++        body_allowed: bool,
++        is_closing: bool,
++        connection_header_present: bool,
++        chunked_te_present: bool = False,
++    ) -> Tuple[bool, bool, List[Tuple[str, str]]]:
++        """Evaluate framing parameters and return headers to add in legacy sequence.
++
++        Returns:
++            (close_connection, chunked, headers_to_add)
++        """
++        req_conn = (request_connection or "").strip().lower()
++        chunked = False
++        headers_to_add: List[Tuple[str, str]] = []
++
++        if version == "1.0":
++            if req_conn == "keep-alive" and content_length_established and not is_closing:
++                close_connection = False
++                if not connection_header_present:
++                    headers_to_add.append(("Connection", "Keep-Alive"))
++                    connection_header_present = True
++            else:
++                close_connection = True
++                if not connection_header_present:
++                    headers_to_add.append(("Connection", "close"))
++                    connection_header_present = True
++        elif version == "1.1":
++            close_connection = is_closing
++
++            # 1. Incoming request with Connection: close triggers set_close_on_finish first
++            if req_conn == "close":
++                close_connection = True
++                if not connection_header_present:
++                    headers_to_add.append(("Connection", "close"))
++                    connection_header_present = True
++
++            # 2. If no content length established, evaluate chunked framing
++            if not content_length_established:
++                if body_allowed:
++                    chunked = True
++                    if not chunked_te_present:
++                        headers_to_add.append(("Transfer-Encoding", "chunked"))
++
++                close_connection = True
++                if not connection_header_present:
++                    headers_to_add.append(("Connection", "close"))
++                    connection_header_present = True
++
++            # 3. If connection was marked for closure (e.g. from task state)
++            if close_connection and not connection_header_present:
++                headers_to_add.append(("Connection", "close"))
++                connection_header_present = True
++        else:
++            raise AssertionError("neither HTTP/1.0 or HTTP/1.1")
++
++        return close_connection, chunked, headers_to_add
++
++
++class ResponseHeaderSerializer:
++    """Formats and serializes HTTP response headers into wire representation."""
++
++    @staticmethod
++    def serialize(
++        version: str,
++        status: Optional[str],
++        headers: Sequence[Tuple[str, str]],
++    ) -> Tuple[bytes, Tuple[Tuple[str, str], ...]]:
++        """Sort headers lexicographically and serialize to Latin-1 bytes with \\r\\n\\r\\n."""
++        # RFC 2616 section 4.2: stable sort by header name preserves order of duplicates
++        effective_status = status if status is not None else "200 OK"
++        sorted_headers = tuple(sorted(headers, key=lambda x: x[0]))
++        first_line = f"HTTP/{version} {effective_status}"
++        next_lines = [f"{k}: {v}" for k, v in sorted_headers]
++        lines = [first_line] + next_lines
++        header_text = "\r\n".join(lines) + "\r\n\r\n"
++        return header_text.encode("latin-1"), sorted_headers
++
++
++class ResponsePreparer:
++    """Builds and serializes a PreparedResponse without modifying input state."""
++
++    @classmethod
++    def prepare_response(
++        cls,
++        status: Optional[str],
++        version: str,
++        response_headers: Sequence[Tuple[str, str]],
++        task_content_length: Optional[int] = None,
++        request_connection: str = "",
++        server_ident: Optional[str] = None,
++        start_time: float = 0.0,
++        initial_close_connection: bool = False,
++        has_body: Optional[bool] = None,
++    ) -> PreparedResponse:
++        """Construct a PreparedResponse from response state and request context.
++
++        This method is side-effect-free and does not mutate any arguments.
++        """
++        # Validate version
++        if version not in ("1.0", "1.1"):
++            raise AssertionError("neither HTTP/1.0 or HTTP/1.1")
++
++        effective_status = status if status is not None else "200 OK"
++
++        if has_body is not None:
++            body_allowed = bool(has_body)
++        else:
++            body_allowed = is_body_allowed(effective_status)
++
++        normalized_headers: List[Tuple[str, str]] = []
++        content_length_header_val: Optional[str] = None
++        date_header_val: Optional[str] = None
++        server_header_val: Optional[str] = None
++        connection_headers: List[str] = []
++        transfer_encoding_headers: List[str] = []
++
++        for raw_name, raw_val in response_headers:
++            name = canonical_header_name(raw_name)
++            val = str(raw_val)
++
++            if name == "Content-Length":
++                if body_allowed:
++                    content_length_header_val = val
++                    normalized_headers.append((name, val))
++                else:
++                    # RFC 7230: MUST NOT send Transfer-Encoding or Content-Length
++                    # for any response with a status code of 1xx, 204 or 304.
++                    continue
++            elif name == "Transfer-Encoding":
++                if not body_allowed:
++                    # RFC 7230 §3.3.1: A server MUST NOT send a Transfer-Encoding header field
++                    # in any response with a status code of 1xx (Informational) or 204 (No Content)
++                    # or 304 (Not Modified).
++                    continue
++                transfer_encoding_headers.append(val)
++                normalized_headers.append((name, val))
++            else:
++                if name == "Date":
++                    date_header_val = val
++                elif name == "Server":
++                    server_header_val = val
++                elif name == "Connection":
++                    connection_headers.append(val)
++                normalized_headers.append((name, val))
++
++        # Determine effective content length
++        effective_content_length: Optional[int] = None
++        if body_allowed:
++            if content_length_header_val is not None:
++                effective_content_length = int(content_length_header_val)
++            elif task_content_length is not None:
++                effective_content_length = int(task_content_length)
++                content_length_header_val = str(effective_content_length)
++                normalized_headers.append(("Content-Length", content_length_header_val))
++        else:
++            effective_content_length = None
++
++        has_established_length = content_length_header_val is not None
++        has_close_header = any("close" in v.lower() for v in connection_headers)
++        is_closing = initial_close_connection or has_close_header
++        has_chunked_te = any("chunked" in v.lower() for v in transfer_encoding_headers)
++
++        # Evaluate framing and append headers in exact legacy sequence
++        close_connection, chunked, framing_headers = ResponseFraming.evaluate(
++            version=version,
++            request_connection=request_connection,
++            content_length_established=has_established_length,
++            body_allowed=body_allowed,
++            is_closing=is_closing,
++            connection_header_present=bool(connection_headers),
++            chunked_te_present=has_chunked_te,
++        )
++
++        normalized_headers.extend(framing_headers)
++
++        # Deduplicate multiple preset/emitted "Transfer-Encoding: chunked" headers if chunked framing is active
++        if chunked:
++            seen_chunked = False
++            reconciled_te: List[Tuple[str, str]] = []
++            for h_name, h_val in normalized_headers:
++                if h_name == "Transfer-Encoding" and "chunked" in h_val.lower():
++                    if not seen_chunked:
++                        reconciled_te.append((h_name, h_val))
++                        seen_chunked = True
++                else:
++                    reconciled_te.append((h_name, h_val))
++            normalized_headers = reconciled_te
++
++        # Reconcile Connection headers under Tier 2 Mandatory Closure and HTTP/1.0 Keep-Alive rules:
++        if close_connection:
++            # Under Tier 2 Mandatory Connection Closure:
++            # Exactly one "Connection: close" MUST be emitted.
++            # Any preset Connection header (such as "Keep-Alive" or duplicate "close")
++            # is superseded/replaced and deduplicated to a single ("Connection", "close").
++            reconciled_headers: List[Tuple[str, str]] = []
++            conn_set = False
++            for h_name, h_val in normalized_headers:
++                if h_name == "Connection":
++                    if not conn_set:
++                        reconciled_headers.append(("Connection", "close"))
++                        conn_set = True
++                else:
++                    reconciled_headers.append((h_name, h_val))
++            if not conn_set:
++                reconciled_headers.append(("Connection", "close"))
++            normalized_headers = reconciled_headers
++        elif version == "1.0":
++            # HTTP/1.0 with keep-alive established:
++            # Exactly one "Connection: Keep-Alive" MUST be emitted.
++            reconciled_headers: List[Tuple[str, str]] = []
++            conn_set = False
++            for h_name, h_val in normalized_headers:
++                if h_name == "Connection":
++                    if not conn_set:
++                        reconciled_headers.append(("Connection", "Keep-Alive"))
++                        conn_set = True
++                else:
++                    reconciled_headers.append((h_name, h_val))
++            if not conn_set:
++                reconciled_headers.append(("Connection", "Keep-Alive"))
++            normalized_headers = reconciled_headers
++
++        # Date, Server, and Via handling
++        # Preserves any supplied Server (including "")
++        ident = server_ident
++        if not server_header_val:
++            if ident:
++                normalized_headers.append(("Server", ident))
++        else:
++            normalized_headers.append(("Via", ident or "waitress"))
++
++        # Preserves any supplied Date (including ""); adds auto-generated if absent or empty
++        if date_header_val is None:
++            normalized_headers.append(("Date", build_http_date(start_time)))
++
++        # Serialize
++        header_bytes, wire_headers = ResponseHeaderSerializer.serialize(
++            version=version,
++            status=effective_status,
++            headers=normalized_headers,
++        )
++
++        return PreparedResponse(
++            status=effective_status,
++            version=version,
++            header_bytes=header_bytes,
++            headers=wire_headers,
++            body_allowed=body_allowed,
++            chunked=chunked,
++            close_connection=close_connection,
++            content_length=effective_content_length,
++            normalized_headers=tuple(normalized_headers),
++        )
+diff --git a/src/waitress/task.py b/src/waitress/task.py
+--- a/src/waitress/task.py
++++ b/src/waitress/task.py
+@@ -18,25 +18,28 @@
+ import time
+ 
+ from .buffers import ReadOnlyFileBasedBuffer
++from .response import (
++    HOP_BY_HOP_HEADERS,
++    PreparedResponse,
++    ResponsePreparer,
++    is_hop_by_hop,
++)
+ from .utilities import build_http_date, logger, queue_logger
++
++__all__ = [
++    "Task",
++    "WSGITask",
++    "ErrorTask",
++    "ThreadedTaskDispatcher",
++    "PreparedResponse",
++]
+ 
+ rename_headers = {  # or keep them without the HTTP_ prefix added
+     "CONTENT_LENGTH": "CONTENT_LENGTH",
+     "CONTENT_TYPE": "CONTENT_TYPE",
+ }
+ 
+-hop_by_hop = frozenset(
+-    (
+-        "connection",
+-        "keep-alive",
+-        "proxy-authenticate",
+-        "proxy-authorization",
+-        "te",
+-        "trailer",
+-        "transfer-encoding",
+-        "upgrade",
+-    )
+-)
++hop_by_hop = HOP_BY_HOP_HEADERS
+ 
+ 
+ class ThreadedTaskDispatcher:
+@@ -173,114 +176,74 @@
+ 
+     @property
+     def has_body(self):
++        status = str(self.status) if self.status is not None else ""
++        if not status:
++            return True
+         return not (
+-            self.status.startswith("1")
+-            or self.status.startswith("204")
+-            or self.status.startswith("304")
++            status.startswith("1")
++            or status.startswith("204")
++            or status.startswith("304")
+         )
+ 
+     def set_close_on_finish(self) -> None:
+         # if headers have not been written yet, tell the remote
+         # client we are closing the connection
+         if not self.wrote_header:
+-            connection_close_header = None
++            has_close = False
++            new_headers = []
+             for headername, headerval in self.response_headers:
+                 if headername.capitalize() == "Connection":
+-                    connection_close_header = headerval.lower()
+-            if connection_close_header is None:
+-                self.response_headers.append(("Connection", "close"))
++                    if headerval.strip().lower() == "close":
++                        has_close = True
++                        new_headers.append((headername, headerval))
++                else:
++                    new_headers.append((headername, headerval))
++            if not has_close:
++                new_headers.append(("Connection", "close"))
++            self.response_headers = new_headers
+         self.close_on_finish = True
+ 
+-    def build_response_header(self):
+-        version = self.version
+-        # Figure out whether the connection should be closed.
+-        connection = self.request.headers.get("CONNECTION", "").lower()
+-        response_headers = []
+-        content_length_header = None
+-        date_header = None
+-        server_header = None
+-
+-        for headername, headerval in self.response_headers:
+-            headername = "-".join([x.capitalize() for x in headername.split("-")])
+-
+-            if headername == "Content-Length":
+-                if self.has_body:
+-                    content_length_header = headerval
+-                else:
+-                    continue  # pragma: no cover
+-
+-            if headername == "Date":
+-                date_header = headerval
+-
+-            if headername == "Server":
+-                server_header = headerval
+-
+-            # replace with properly capitalized version
+-            response_headers.append((headername, headerval))
+-
+-        # Overwrite the response headers we have with normalized ones
+-        self.response_headers = response_headers
+-
+-        if (
+-            content_length_header is None
+-            and self.content_length is not None
+-            and self.has_body
+-        ):
+-            content_length_header = str(self.content_length)
+-            self.response_headers.append(("Content-Length", content_length_header))
+-
+-        if version == "1.0":
+-            if connection == "keep-alive":
+-                if not content_length_header:
+-                    self.set_close_on_finish()
+-                else:
+-                    self.response_headers.append(("Connection", "Keep-Alive"))
+-            else:
+-                self.set_close_on_finish()
+-
+-        elif version == "1.1":
+-            if connection == "close":
+-                self.set_close_on_finish()
+-
+-            if not content_length_header:
+-                # RFC 7230: MUST NOT send Transfer-Encoding or Content-Length
+-                # for any response with a status code of 1xx, 204 or 304.
+-
+-                if self.has_body:
+-                    self.response_headers.append(("Transfer-Encoding", "chunked"))
+-                    self.chunked_response = True
+-
+-                if not self.close_on_finish:
+-                    self.set_close_on_finish()
+-
+-            # under HTTP 1.1 keep-alive is default, no need to set the header
+-        else:
+-            raise AssertionError("neither HTTP/1.0 or HTTP/1.1")
+-
+-        # Set the Server and Date field, if not yet specified. This is needed
+-        # if the server is used as a proxy.
+-        ident = self.channel.server.adj.ident
+-
+-        if not server_header:
+-            if ident:
+-                self.response_headers.append(("Server", ident))
+-        else:
+-            self.response_headers.append(("Via", ident or "waitress"))
+-
+-        if not date_header:
+-            self.response_headers.append(("Date", build_http_date(self.start_time)))
+-
+-        first_line = f"HTTP/{self.version} {self.status}"
+-        # NB: sorting headers needs to preserve same-named-header order
+-        # as per RFC 2616 section 4.2; thus the key=lambda x: x[0] here;
+-        # rely on stable sort to keep relative position of same-named headers
+-        next_lines = [
+-            "%s: %s" % hv for hv in sorted(self.response_headers, key=lambda x: x[0])
+-        ]
+-        lines = [first_line] + next_lines
+-        res = "%s\r\n\r\n" % "\r\n".join(lines)
+-
+-        return res.encode("latin-1")
++    def prepare_response(self) -> PreparedResponse:
++        conn = ""
++        if hasattr(self, "request") and self.request is not None:
++            if hasattr(self.request, "headers") and self.request.headers is not None:
++                conn = self.request.headers.get("CONNECTION", "")
++
++        ident = None
++        if hasattr(self, "channel") and self.channel is not None:
++            server = getattr(self.channel, "server", None)
++            if server is not None:
++                adj = getattr(server, "adj", None)
++                if adj is not None:
++                    ident = getattr(adj, "ident", None)
++
++        hb = getattr(self, "has_body", None)
++        if callable(hb):
++            try:
++                hb = hb()
++            except Exception:
++                hb = None
++
++        return ResponsePreparer.prepare_response(
++            status=self.status,
++            version=self.version,
++            response_headers=self.response_headers,
++            task_content_length=self.content_length,
++            request_connection=conn,
++            server_ident=ident,
++            start_time=self.start_time,
++            initial_close_connection=bool(self.close_on_finish or isinstance(self, ErrorTask)),
++            has_body=hb,
++        )
++
++    def build_response_header(self) -> bytes:
++        prepared = self.prepare_response()
++        self.chunked_response = prepared.chunked
++        if prepared.close_connection:
++            self.close_on_finish = True
++        self.response_headers = list(prepared.normalized_headers)
++        self.content_length = prepared.content_length
++        return prepared.header_bytes
+ 
+     def remove_content_length_header(self):
+         response_headers = []
+@@ -367,75 +330,75 @@
+ 
+     environ = None
+ 
++    def start_response(self, status, headers, exc_info=None):
++        if self.complete and not exc_info:
++            raise AssertionError(
++                "start_response called a second time without providing exc_info."
++            )
++        if exc_info:
++            try:
++                if self.wrote_header:
++                    # higher levels will catch and handle raised exception:
++                    # 1. "service" method in task.py
++                    # 2. "service" method in channel.py
++                    # 3. "handler_thread" method in task.py
++                    raise exc_info[1]
++                else:
++                    # As per WSGI spec existing headers must be cleared
++                    self.response_headers = []
++            finally:
++                exc_info = None
++
++        self.complete = True
++
++        if not isinstance(status, str):
++            raise AssertionError("status %s is not a string" % status)
++        if "\n" in status or "\r" in status:
++            raise ValueError(
++                "carriage return/line feed character present in status"
++            )
++
++        self.status = status
++
++        # Prepare the headers for output
++        for k, v in headers:
++            if not isinstance(k, str):
++                raise AssertionError(
++                    f"Header name {k!r} is not a string in {(k, v)!r}"
++                )
++            if not isinstance(v, str):
++                raise AssertionError(
++                    f"Header value {v!r} is not a string in {(k, v)!r}"
++                )
++
++            if "\n" in v or "\r" in v:
++                raise ValueError(
++                    "carriage return/line feed character present in header value"
++                )
++            if "\n" in k or "\r" in k:
++                raise ValueError(
++                    "carriage return/line feed character present in header name"
++                )
++
++            kl = k.lower()
++            if kl == "content-length":
++                self.content_length = int(v)
++            elif is_hop_by_hop(kl):
++                raise AssertionError(
++                    '%s is a "hop-by-hop" header; it cannot be used by '
++                    "a WSGI application (see PEP 3333)" % k
++                )
++
++        self.response_headers.extend(headers)
++
++        # Return a method used to write the response data.
++        return self.write
++
+     def execute(self):
+         environ = self.get_environment()
+ 
+-        def start_response(status, headers, exc_info=None):
+-            if self.complete and not exc_info:
+-                raise AssertionError(
+-                    "start_response called a second time without providing exc_info."
+-                )
+-            if exc_info:
+-                try:
+-                    if self.wrote_header:
+-                        # higher levels will catch and handle raised exception:
+-                        # 1. "service" method in task.py
+-                        # 2. "service" method in channel.py
+-                        # 3. "handler_thread" method in task.py
+-                        raise exc_info[1]
+-                    else:
+-                        # As per WSGI spec existing headers must be cleared
+-                        self.response_headers = []
+-                finally:
+-                    exc_info = None
+-
+-            self.complete = True
+-
+-            if not isinstance(status, str):
+-                raise AssertionError("status %s is not a string" % status)
+-            if "\n" in status or "\r" in status:
+-                raise ValueError(
+-                    "carriage return/line feed character present in status"
+-                )
+-
+-            self.status = status
+-
+-            # Prepare the headers for output
+-            for k, v in headers:
+-                if not isinstance(k, str):
+-                    raise AssertionError(
+-                        f"Header name {k!r} is not a string in {(k, v)!r}"
+-                    )
+-                if not isinstance(v, str):
+-                    raise AssertionError(
+-                        f"Header value {v!r} is not a string in {(k, v)!r}"
+-                    )
+-
+-                if "\n" in v or "\r" in v:
+-                    raise ValueError(
+-                        "carriage return/line feed character present in header value"
+-                    )
+-                if "\n" in k or "\r" in k:
+-                    raise ValueError(
+-                        "carriage return/line feed character present in header name"
+-                    )
+-
+-                kl = k.lower()
+-                if kl == "content-length":
+-                    self.content_length = int(v)
+-                elif kl in hop_by_hop:
+-                    raise AssertionError(
+-                        '%s is a "hop-by-hop" header; it cannot be used by '
+-                        "a WSGI application (see PEP 3333)" % k
+-                    )
+-
+-            self.response_headers.extend(headers)
+-
+-            # Return a method used to write the response data.
+-            return self.write
+-
+         # Call the application to handle the request and write a response
+-        app_iter = self.channel.server.application(environ, start_response)
++        app_iter = self.channel.server.application(environ, self.start_response)
+ 
+         can_close_app_iter = True
+         try:

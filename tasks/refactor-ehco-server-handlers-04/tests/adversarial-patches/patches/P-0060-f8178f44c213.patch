@@ -1,0 +1,11 @@
+--- a/internal/web/webui_embed.go
++++ b/internal/web/webui_embed.go
+@@ -65,7 +65,7 @@
+ 			}
+ 		}
+ 		// Otherwise it's a client-side route — return the SPA shell.
+-		c.Response().Header().Set("Cache-Control", "no-store")
++		c.Response().Header().Set("Cache-Control", "max-age=3600")
+ 		return c.Blob(http.StatusOK, "text/html; charset=utf-8", shell)
+ 	}
+ }

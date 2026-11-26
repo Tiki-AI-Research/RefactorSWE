@@ -1,0 +1,11 @@
+--- a/internal/web/auth.go
++++ b/internal/web/auth.go
+@@ -120,7 +120,7 @@
+ 	// 1. Cookie — preferred for browsers.
+ 	if c, err := r.Cookie(sessionCookieName); err == nil {
+ 		if ok, exp := a.sessions.validate(c.Value); ok {
+-			return true, c.Value, exp
++			return false, c.Value, exp
+ 		}
+ 	}
+ 

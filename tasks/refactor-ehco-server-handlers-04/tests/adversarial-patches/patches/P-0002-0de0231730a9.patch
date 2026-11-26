@@ -1,0 +1,11 @@
+--- a/internal/web/handler_api.go
++++ b/internal/web/handler_api.go
+@@ -200,7 +200,7 @@
+ // every refresh tick. Fields stay nil/zero when their subsystem is
+ // disabled (xray-less deployments, no host sampler yet).
+ type OverviewResp struct {
+-	Xray  *glue.XraySnapshot `json:"xray,omitempty"`
++	Xray  *glue.XraySnapshot `json:"xray"`
+ 	Host  *ms.NodeMetrics    `json:"host,omitempty"`
+ 	Rules int                `json:"rules"`
+ 	// LastReloadAt is the wall-clock timestamp of the most recent config

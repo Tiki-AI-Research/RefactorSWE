@@ -1,0 +1,817 @@
+{
+  "base_commit": "9f2823a464f4f333affba462198b289766ebb137",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "--junitxml={report}",
+    "tests/test_f2p_single_stored_data_load.py::test_item_helper_reads_stored_data_once_for_three_instances",
+    "tests/test_f2p_single_stored_data_load.py::test_item_helper_reads_stored_data_once_for_both_construction_shapes",
+    "tests/test_f2p_single_stored_data_load.py::test_item_helper_adds_no_stored_data_read_after_first_instance",
+    "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_reads_stored_data_once_across_modes",
+    "tests/test_f2p_single_stored_data_load.py::test_playback_actions_read_stored_data_once_across_constructions",
+    "tests/test_f2p_single_stored_data_load.py::test_context_entry_point_reads_stored_data_once_across_modes",
+    "tests/test_f2p_single_stored_data_load.py::test_all_four_consumers_share_one_stored_data_read",
+    "tests/test_f2p_single_stored_data_load.py::test_item_helper_adds_no_stored_data_read_after_playback_entry_point",
+    "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_adds_no_stored_data_read_after_item_helper",
+    "tests/test_f2p_single_stored_data_load.py::test_item_helper_paths_survive_stored_data_change_after_load",
+    "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_injects_loaded_values_after_stored_data_change",
+    "tests/test_f2p_single_stored_data_load.py::test_playback_actions_inject_loaded_values_after_stored_data_change",
+    "tests/test_f2p_single_stored_data_load.py::test_context_entry_point_injects_loaded_values_after_stored_data_change",
+    "tests/test_core_connection_contract.py::test_stored_loading_and_normalization_have_one_owner",
+    "tests/test_core_connection_contract.py::test_stored_auth_injection_has_one_owner",
+    "tests/test_core_connection_contract.py::test_actions_preserves_existing_unconfigured_server_default",
+    "tests/test_core_connection_contract.py::test_unconfigured_item_construction_preserves_both_call_shapes",
+    "tests/test_core_connection_contract.py::test_unconfigured_item_construction_adds_no_stored_file_io",
+    "tests/test_p2p_connection_data_regression.py::test_actions_without_client_injects_first_server_auth",
+    "tests/test_p2p_connection_data_regression.py::test_actions_ignores_second_stored_server",
+    "tests/test_p2p_connection_data_regression.py::test_actions_sets_none_for_absent_auth_fields",
+    "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_injects_first_server_auth",
+    "tests/test_p2p_connection_data_regression.py::test_context_entry_point_injects_first_server_auth",
+    "tests/test_p2p_connection_data_regression.py::test_actions_with_server_id_targets_that_client",
+    "tests/test_p2p_connection_data_regression.py::test_actions_without_client_warns_and_continues_when_unconfigured",
+    "tests/test_p2p_connection_data_regression.py::test_actions_without_client_warns_and_continues_without_stored_servers",
+    "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_warns_and_continues_when_unconfigured",
+    "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_warns_and_continues_without_stored_servers",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_without_stored_data",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_without_stored_servers",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_with_unreadable_stored_data",
+    "tests/test_p2p_connection_data_regression.py::test_context_entry_point_propagates_unopenable_stored_data",
+    "tests/test_p2p_connection_data_regression.py::test_context_entry_point_warns_and_continues_without_stored_servers",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_paths_come_from_first_stored_server",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_keeps_path_without_configured_prefix",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_ignores_second_stored_server_paths",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_accepts_optional_server_argument",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_defaults_servers_to_empty_list",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_defaults_missing_servers_key",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_returns_stored_connection_data",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_migrates_legacy_server_entries",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_logging_consumer",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_path_replacement_settings_flow",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_save_then_read_flow",
+    "tests/test_imports.py::test_import_database",
+    "tests/test_imports.py::test_import_entrypoint",
+    "tests/test_imports.py::test_import_helper",
+    "tests/test_imports.py::test_import_jellyfin",
+    "tests/test_imports.py::test_import_objects",
+    "tests/test_imports.py::test_import_connect",
+    "tests/test_core_connection_contract.py::test_events_injects_before_first_authenticated_request",
+    "tests/test_core_connection_contract.py::test_events_reinjects_cached_values_before_authenticated_request",
+    "tests/test_core_connection_contract.py::test_context_injects_before_first_authenticated_request",
+    "tests/test_core_connection_contract.py::test_context_reinjects_cached_values_before_authenticated_request",
+    "tests/test_core_connection_contract.py::test_events_preserves_requested_client_and_first_record",
+    "tests/test_core_connection_contract.py::test_context_preserves_requested_client_and_first_record",
+    "tests/test_core_connection_contract.py::test_events_uses_none_for_absent_first_server_address",
+    "tests/test_core_connection_contract.py::test_context_uses_none_for_absent_first_server_address",
+    "tests/test_core_connection_contract.py::test_actions_uses_none_for_absent_first_server_address",
+    "tests/test_core_connection_contract.py::test_item_mapping_defaults_to_empty_when_paths_field_is_absent",
+    "tests/test_core_connection_contract.py::test_mapping_replaces_substrings_and_preserves_unmatched_paths",
+    "tests/test_core_connection_contract.py::test_actions_preserves_explicit_client_and_server",
+    "tests/test_core_connection_contract.py::test_item_path_preserves_dvd_suffix",
+    "tests/test_core_connection_contract.py::test_item_path_lowercases_protocol_before_mapping",
+    "tests/test_core_connection_contract.py::test_item_path_returns_empty_string_for_absent_or_empty_path",
+    "tests/test_core_connection_contract.py::test_item_path_converts_unc_to_smb",
+    "tests/test_core_connection_contract.py::test_item_path_preserves_local_separator_normalization",
+    "tests/test_core_connection_contract.py::test_item_path_preserves_bluray_suffix"
+  ],
+  "evaluation_files": {
+    "tests/test_core_connection_contract.py": "d6df6ed52b4075a8a3c711dcd9f8e2aed60d04ee8fc34826ccdb995427e5c1e4",
+    "tests/test_f2p_single_stored_data_load.py": "989afb49fee79fe2feae260a8aa8ba9959699adb98c8662f4272a20dac27ba28",
+    "tests/test_p2p_connection_data_regression.py": "f18d0e4d55b540e96edca015ede65fc22dec32be217014d2197cc53ab0a6e639"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 1680.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 300.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 1200.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 300.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_actions_without_client_injects_first_server_auth"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_actions_ignores_second_stored_server"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_actions_sets_none_for_absent_auth_fields"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_injects_first_server_auth"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_context_entry_point_injects_first_server_auth"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_actions_with_server_id_targets_that_client"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_actions_without_client_warns_and_continues_when_unconfigured"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_actions_without_client_warns_and_continues_without_stored_servers"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_warns_and_continues_when_unconfigured"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_warns_and_continues_without_stored_servers"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_without_stored_data"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_without_stored_servers"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_with_unreadable_stored_data"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_context_entry_point_propagates_unopenable_stored_data"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_context_entry_point_warns_and_continues_without_stored_servers"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_item_helper_paths_come_from_first_stored_server"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_item_helper_keeps_path_without_configured_prefix"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_item_helper_ignores_second_stored_server_paths"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_item_helper_accepts_optional_server_argument"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_defaults_servers_to_empty_list"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_defaults_missing_servers_key"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_returns_stored_connection_data"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_migrates_legacy_server_entries"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_logging_consumer"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_path_replacement_settings_flow"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_save_then_read_flow"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_imports.py::test_import_database"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_imports.py::test_import_entrypoint"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_imports.py::test_import_helper"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_imports.py::test_import_jellyfin"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_imports.py::test_import_objects"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_imports.py::test_import_connect"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_events_injects_before_first_authenticated_request"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_events_reinjects_cached_values_before_authenticated_request"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_context_injects_before_first_authenticated_request"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_context_reinjects_cached_values_before_authenticated_request"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_events_preserves_requested_client_and_first_record"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_context_preserves_requested_client_and_first_record"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_events_uses_none_for_absent_first_server_address"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_context_uses_none_for_absent_first_server_address"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_actions_uses_none_for_absent_first_server_address"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_item_mapping_defaults_to_empty_when_paths_field_is_absent"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_mapping_replaces_substrings_and_preserves_unmatched_paths"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_actions_preserves_explicit_client_and_server"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_item_path_preserves_dvd_suffix"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_item_path_lowercases_protocol_before_mapping"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_item_path_returns_empty_string_for_absent_or_empty_path"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_item_path_converts_unc_to_smb"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_item_path_preserves_local_separator_normalization"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/test_core_connection_contract.py::test_item_path_preserves_bluray_suffix"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_item_helper_reads_stored_data_once_for_three_instances"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_item_helper_reads_stored_data_once_for_both_construction_shapes"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_item_helper_adds_no_stored_data_read_after_first_instance"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_reads_stored_data_once_across_modes"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_playback_actions_read_stored_data_once_across_constructions"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_context_entry_point_reads_stored_data_once_across_modes"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_all_four_consumers_share_one_stored_data_read"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_item_helper_adds_no_stored_data_read_after_playback_entry_point"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_adds_no_stored_data_read_after_item_helper"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_item_helper_paths_survive_stored_data_change_after_load"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_injects_loaded_values_after_stored_data_change"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_playback_actions_inject_loaded_values_after_stored_data_change"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_f2p_single_stored_data_load.py::test_context_entry_point_injects_loaded_values_after_stored_data_change"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_core_connection_contract.py::test_stored_loading_and_normalization_have_one_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_core_connection_contract.py::test_stored_auth_injection_has_one_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_core_connection_contract.py::test_actions_preserves_existing_unconfigured_server_default"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_core_connection_contract.py::test_unconfigured_item_construction_preserves_both_call_shapes"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/test_core_connection_contract.py::test_unconfigured_item_construction_adds_no_stored_file_io"
+      }
+    ],
+    "selector_timeout_seconds": 300.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "tests/test_p2p_connection_data_regression.py::test_actions_without_client_injects_first_server_auth",
+          "tests/test_p2p_connection_data_regression.py::test_actions_ignores_second_stored_server",
+          "tests/test_p2p_connection_data_regression.py::test_actions_sets_none_for_absent_auth_fields",
+          "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_injects_first_server_auth",
+          "tests/test_p2p_connection_data_regression.py::test_context_entry_point_injects_first_server_auth",
+          "tests/test_p2p_connection_data_regression.py::test_actions_with_server_id_targets_that_client",
+          "tests/test_p2p_connection_data_regression.py::test_actions_without_client_warns_and_continues_when_unconfigured",
+          "tests/test_p2p_connection_data_regression.py::test_actions_without_client_warns_and_continues_without_stored_servers",
+          "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_warns_and_continues_when_unconfigured",
+          "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_warns_and_continues_without_stored_servers",
+          "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_without_stored_data",
+          "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_without_stored_servers",
+          "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_with_unreadable_stored_data",
+          "tests/test_p2p_connection_data_regression.py::test_context_entry_point_propagates_unopenable_stored_data",
+          "tests/test_p2p_connection_data_regression.py::test_context_entry_point_warns_and_continues_without_stored_servers",
+          "tests/test_p2p_connection_data_regression.py::test_item_helper_paths_come_from_first_stored_server",
+          "tests/test_p2p_connection_data_regression.py::test_item_helper_keeps_path_without_configured_prefix",
+          "tests/test_p2p_connection_data_regression.py::test_item_helper_ignores_second_stored_server_paths",
+          "tests/test_p2p_connection_data_regression.py::test_item_helper_accepts_optional_server_argument",
+          "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_defaults_servers_to_empty_list",
+          "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_defaults_missing_servers_key",
+          "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_returns_stored_connection_data",
+          "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_migrates_legacy_server_entries",
+          "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_logging_consumer",
+          "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_path_replacement_settings_flow",
+          "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_save_then_read_flow",
+          "tests/test_imports.py::test_import_database",
+          "tests/test_imports.py::test_import_entrypoint",
+          "tests/test_imports.py::test_import_helper",
+          "tests/test_imports.py::test_import_jellyfin",
+          "tests/test_imports.py::test_import_objects",
+          "tests/test_imports.py::test_import_connect",
+          "tests/test_core_connection_contract.py::test_events_injects_before_first_authenticated_request",
+          "tests/test_core_connection_contract.py::test_events_reinjects_cached_values_before_authenticated_request",
+          "tests/test_core_connection_contract.py::test_context_injects_before_first_authenticated_request",
+          "tests/test_core_connection_contract.py::test_context_reinjects_cached_values_before_authenticated_request",
+          "tests/test_core_connection_contract.py::test_events_preserves_requested_client_and_first_record",
+          "tests/test_core_connection_contract.py::test_context_preserves_requested_client_and_first_record",
+          "tests/test_core_connection_contract.py::test_events_uses_none_for_absent_first_server_address",
+          "tests/test_core_connection_contract.py::test_context_uses_none_for_absent_first_server_address",
+          "tests/test_core_connection_contract.py::test_actions_uses_none_for_absent_first_server_address",
+          "tests/test_core_connection_contract.py::test_item_mapping_defaults_to_empty_when_paths_field_is_absent",
+          "tests/test_core_connection_contract.py::test_mapping_replaces_substrings_and_preserves_unmatched_paths",
+          "tests/test_core_connection_contract.py::test_actions_preserves_explicit_client_and_server",
+          "tests/test_core_connection_contract.py::test_item_path_preserves_dvd_suffix",
+          "tests/test_core_connection_contract.py::test_item_path_lowercases_protocol_before_mapping",
+          "tests/test_core_connection_contract.py::test_item_path_returns_empty_string_for_absent_or_empty_path",
+          "tests/test_core_connection_contract.py::test_item_path_converts_unc_to_smb",
+          "tests/test_core_connection_contract.py::test_item_path_preserves_local_separator_normalization",
+          "tests/test_core_connection_contract.py::test_item_path_preserves_bluray_suffix",
+          "tests/test_f2p_single_stored_data_load.py::test_item_helper_reads_stored_data_once_for_three_instances",
+          "tests/test_f2p_single_stored_data_load.py::test_item_helper_reads_stored_data_once_for_both_construction_shapes",
+          "tests/test_f2p_single_stored_data_load.py::test_item_helper_adds_no_stored_data_read_after_first_instance",
+          "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_reads_stored_data_once_across_modes",
+          "tests/test_f2p_single_stored_data_load.py::test_playback_actions_read_stored_data_once_across_constructions",
+          "tests/test_f2p_single_stored_data_load.py::test_context_entry_point_reads_stored_data_once_across_modes",
+          "tests/test_f2p_single_stored_data_load.py::test_all_four_consumers_share_one_stored_data_read",
+          "tests/test_f2p_single_stored_data_load.py::test_item_helper_adds_no_stored_data_read_after_playback_entry_point",
+          "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_adds_no_stored_data_read_after_item_helper",
+          "tests/test_f2p_single_stored_data_load.py::test_item_helper_paths_survive_stored_data_change_after_load",
+          "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_injects_loaded_values_after_stored_data_change",
+          "tests/test_f2p_single_stored_data_load.py::test_playback_actions_inject_loaded_values_after_stored_data_change",
+          "tests/test_f2p_single_stored_data_load.py::test_context_entry_point_injects_loaded_values_after_stored_data_change",
+          "tests/test_core_connection_contract.py::test_stored_loading_and_normalization_have_one_owner",
+          "tests/test_core_connection_contract.py::test_stored_auth_injection_has_one_owner",
+          "tests/test_core_connection_contract.py::test_actions_preserves_existing_unconfigured_server_default",
+          "tests/test_core_connection_contract.py::test_unconfigured_item_construction_preserves_both_call_shapes",
+          "tests/test_core_connection_contract.py::test_unconfigured_item_construction_adds_no_stored_file_io"
+        ],
+        "timeout_seconds": 300.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "tests/test_f2p_single_stored_data_load.py::test_item_helper_reads_stored_data_once_for_three_instances",
+    "tests/test_f2p_single_stored_data_load.py::test_item_helper_reads_stored_data_once_for_both_construction_shapes",
+    "tests/test_f2p_single_stored_data_load.py::test_item_helper_adds_no_stored_data_read_after_first_instance",
+    "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_reads_stored_data_once_across_modes",
+    "tests/test_f2p_single_stored_data_load.py::test_playback_actions_read_stored_data_once_across_constructions",
+    "tests/test_f2p_single_stored_data_load.py::test_context_entry_point_reads_stored_data_once_across_modes",
+    "tests/test_f2p_single_stored_data_load.py::test_all_four_consumers_share_one_stored_data_read",
+    "tests/test_f2p_single_stored_data_load.py::test_item_helper_adds_no_stored_data_read_after_playback_entry_point",
+    "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_adds_no_stored_data_read_after_item_helper",
+    "tests/test_f2p_single_stored_data_load.py::test_item_helper_paths_survive_stored_data_change_after_load",
+    "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_injects_loaded_values_after_stored_data_change",
+    "tests/test_f2p_single_stored_data_load.py::test_playback_actions_inject_loaded_values_after_stored_data_change",
+    "tests/test_f2p_single_stored_data_load.py::test_context_entry_point_injects_loaded_values_after_stored_data_change",
+    "tests/test_core_connection_contract.py::test_stored_loading_and_normalization_have_one_owner",
+    "tests/test_core_connection_contract.py::test_stored_auth_injection_has_one_owner",
+    "tests/test_core_connection_contract.py::test_actions_preserves_existing_unconfigured_server_default",
+    "tests/test_core_connection_contract.py::test_unconfigured_item_construction_preserves_both_call_shapes",
+    "tests/test_core_connection_contract.py::test_unconfigured_item_construction_adds_no_stored_file_io"
+  ],
+  "gates": [
+    {
+      "id": "P2P-INJECT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T8:C1",
+        "REQ-BEH-T8:B1",
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002",
+        "REQ-INTEGRITY-004"
+      ],
+      "tests": [
+        "tests/test_p2p_connection_data_regression.py::test_actions_without_client_injects_first_server_auth",
+        "tests/test_p2p_connection_data_regression.py::test_actions_ignores_second_stored_server",
+        "tests/test_p2p_connection_data_regression.py::test_actions_sets_none_for_absent_auth_fields",
+        "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_injects_first_server_auth",
+        "tests/test_p2p_connection_data_regression.py::test_context_entry_point_injects_first_server_auth"
+      ]
+    },
+    {
+      "id": "P2P-ACTIONS-CONTRACT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T8:C2",
+        "REQ-BEH-T8:B6",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "tests/test_p2p_connection_data_regression.py::test_actions_with_server_id_targets_that_client",
+        "tests/test_p2p_connection_data_regression.py::test_actions_without_client_warns_and_continues_when_unconfigured",
+        "tests/test_p2p_connection_data_regression.py::test_actions_without_client_warns_and_continues_without_stored_servers"
+      ]
+    },
+    {
+      "id": "P2P-UNCONFIGURED",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T8:B2",
+        "REQ-BEH-T8:B4",
+        "REQ-STRUCT-004",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_warns_and_continues_when_unconfigured",
+        "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_warns_and_continues_without_stored_servers",
+        "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_without_stored_data",
+        "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_without_stored_servers",
+        "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_with_unreadable_stored_data"
+      ]
+    },
+    {
+      "id": "P2P-CONTEXT-ENTRYPOINT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T8:B3",
+        "REQ-STRUCT-004",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/test_p2p_connection_data_regression.py::test_context_entry_point_propagates_unopenable_stored_data",
+        "tests/test_p2p_connection_data_regression.py::test_context_entry_point_warns_and_continues_without_stored_servers"
+      ]
+    },
+    {
+      "id": "P2P-ITEM-HELPER",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T8:C3",
+        "REQ-BEH-T8:C4",
+        "REQ-BEH-T8:B5"
+      ],
+      "tests": [
+        "tests/test_p2p_connection_data_regression.py::test_item_helper_paths_come_from_first_stored_server",
+        "tests/test_p2p_connection_data_regression.py::test_item_helper_keeps_path_without_configured_prefix",
+        "tests/test_p2p_connection_data_regression.py::test_item_helper_ignores_second_stored_server_paths",
+        "tests/test_p2p_connection_data_regression.py::test_item_helper_accepts_optional_server_argument"
+      ]
+    },
+    {
+      "id": "P2P-STORED-ACCESSOR",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T8:C5"
+      ],
+      "tests": [
+        "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_defaults_servers_to_empty_list",
+        "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_defaults_missing_servers_key",
+        "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_returns_stored_connection_data",
+        "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_migrates_legacy_server_entries",
+        "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_logging_consumer",
+        "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_path_replacement_settings_flow",
+        "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_save_then_read_flow"
+      ]
+    },
+    {
+      "id": "P2P-IMPORT-GRAPH",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/test_imports.py::test_import_database",
+        "tests/test_imports.py::test_import_entrypoint",
+        "tests/test_imports.py::test_import_helper",
+        "tests/test_imports.py::test_import_jellyfin",
+        "tests/test_imports.py::test_import_objects",
+        "tests/test_imports.py::test_import_connect"
+      ]
+    },
+    {
+      "id": "F2P-ITEM-HELPER-LOAD-ONCE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-003",
+        "REQ-BEH-T8:B4",
+        "REQ-BEH-T8:C3"
+      ],
+      "tests": [
+        "tests/test_f2p_single_stored_data_load.py::test_item_helper_reads_stored_data_once_for_three_instances",
+        "tests/test_f2p_single_stored_data_load.py::test_item_helper_reads_stored_data_once_for_both_construction_shapes",
+        "tests/test_f2p_single_stored_data_load.py::test_item_helper_adds_no_stored_data_read_after_first_instance"
+      ]
+    },
+    {
+      "id": "F2P-CONSUMER-SINGLE-LOAD",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002",
+        "REQ-STRUCT-003",
+        "REQ-BEH-T8:B6"
+      ],
+      "tests": [
+        "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_reads_stored_data_once_across_modes",
+        "tests/test_f2p_single_stored_data_load.py::test_playback_actions_read_stored_data_once_across_constructions",
+        "tests/test_f2p_single_stored_data_load.py::test_context_entry_point_reads_stored_data_once_across_modes",
+        "tests/test_f2p_single_stored_data_load.py::test_all_four_consumers_share_one_stored_data_read",
+        "tests/test_f2p_single_stored_data_load.py::test_item_helper_adds_no_stored_data_read_after_playback_entry_point",
+        "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_adds_no_stored_data_read_after_item_helper"
+      ]
+    },
+    {
+      "id": "F2P-LOADED-CONFIG-REUSE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-INTEGRITY-004",
+        "REQ-STRUCT-003",
+        "REQ-BEH-T8:B1",
+        "REQ-BEH-T8:B6",
+        "REQ-BEH-T8:C1"
+      ],
+      "tests": [
+        "tests/test_f2p_single_stored_data_load.py::test_item_helper_paths_survive_stored_data_change_after_load",
+        "tests/test_f2p_single_stored_data_load.py::test_playback_entry_point_injects_loaded_values_after_stored_data_change",
+        "tests/test_f2p_single_stored_data_load.py::test_playback_actions_inject_loaded_values_after_stored_data_change",
+        "tests/test_f2p_single_stored_data_load.py::test_context_entry_point_injects_loaded_values_after_stored_data_change"
+      ]
+    },
+    {
+      "id": "F2P-CENTRALIZED-RESPONSIBILITIES",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "tests/test_core_connection_contract.py::test_stored_loading_and_normalization_have_one_owner",
+        "tests/test_core_connection_contract.py::test_stored_auth_injection_has_one_owner"
+      ]
+    },
+    {
+      "id": "F2P-SAFE-DEFAULTS",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-CORE-SAFE-DEFAULTS"
+      ],
+      "tests": [
+        "tests/test_core_connection_contract.py::test_actions_preserves_existing_unconfigured_server_default",
+        "tests/test_core_connection_contract.py::test_unconfigured_item_construction_preserves_both_call_shapes",
+        "tests/test_core_connection_contract.py::test_unconfigured_item_construction_adds_no_stored_file_io"
+      ]
+    },
+    {
+      "id": "P2P-CORE-CONNECTION-CONTRACT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-CORE-AUTH-TIMING",
+        "REQ-CORE-CLIENT-IDENTITY",
+        "REQ-CORE-MISSING-FIELDS",
+        "REQ-CORE-PATH-REPLACEMENT",
+        "REQ-CORE-PATH-PREPROCESSING"
+      ],
+      "tests": [
+        "tests/test_core_connection_contract.py::test_events_injects_before_first_authenticated_request",
+        "tests/test_core_connection_contract.py::test_events_reinjects_cached_values_before_authenticated_request",
+        "tests/test_core_connection_contract.py::test_context_injects_before_first_authenticated_request",
+        "tests/test_core_connection_contract.py::test_context_reinjects_cached_values_before_authenticated_request",
+        "tests/test_core_connection_contract.py::test_events_preserves_requested_client_and_first_record",
+        "tests/test_core_connection_contract.py::test_context_preserves_requested_client_and_first_record",
+        "tests/test_core_connection_contract.py::test_events_uses_none_for_absent_first_server_address",
+        "tests/test_core_connection_contract.py::test_context_uses_none_for_absent_first_server_address",
+        "tests/test_core_connection_contract.py::test_actions_uses_none_for_absent_first_server_address",
+        "tests/test_core_connection_contract.py::test_item_mapping_defaults_to_empty_when_paths_field_is_absent",
+        "tests/test_core_connection_contract.py::test_mapping_replaces_substrings_and_preserves_unmatched_paths",
+        "tests/test_core_connection_contract.py::test_actions_preserves_explicit_client_and_server",
+        "tests/test_core_connection_contract.py::test_item_path_preserves_dvd_suffix",
+        "tests/test_core_connection_contract.py::test_item_path_lowercases_protocol_before_mapping",
+        "tests/test_core_connection_contract.py::test_item_path_returns_empty_string_for_absent_or_empty_path",
+        "tests/test_core_connection_contract.py::test_item_path_converts_unc_to_smb",
+        "tests/test_core_connection_contract.py::test_item_path_preserves_local_separator_normalization",
+        "tests/test_core_connection_contract.py::test_item_path_preserves_bluray_suffix"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "31a507694dd500b45613bbde6bc1f12704678f6b5cc1f841959d9b92fb1212ea",
+    "test_patch_sha256": "71ef550bf7b6e2a2efffdf8e7011373d36f1c831e6b49cdf9ad942db39be3821"
+  },
+  "junit_assertion_adapter": "pytest",
+  "node_relations": [],
+  "p2p": [
+    "tests/test_p2p_connection_data_regression.py::test_actions_without_client_injects_first_server_auth",
+    "tests/test_p2p_connection_data_regression.py::test_actions_ignores_second_stored_server",
+    "tests/test_p2p_connection_data_regression.py::test_actions_sets_none_for_absent_auth_fields",
+    "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_injects_first_server_auth",
+    "tests/test_p2p_connection_data_regression.py::test_context_entry_point_injects_first_server_auth",
+    "tests/test_p2p_connection_data_regression.py::test_actions_with_server_id_targets_that_client",
+    "tests/test_p2p_connection_data_regression.py::test_actions_without_client_warns_and_continues_when_unconfigured",
+    "tests/test_p2p_connection_data_regression.py::test_actions_without_client_warns_and_continues_without_stored_servers",
+    "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_warns_and_continues_when_unconfigured",
+    "tests/test_p2p_connection_data_regression.py::test_playback_entry_point_warns_and_continues_without_stored_servers",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_without_stored_data",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_without_stored_servers",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_warns_and_does_not_raise_with_unreadable_stored_data",
+    "tests/test_p2p_connection_data_regression.py::test_context_entry_point_propagates_unopenable_stored_data",
+    "tests/test_p2p_connection_data_regression.py::test_context_entry_point_warns_and_continues_without_stored_servers",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_paths_come_from_first_stored_server",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_keeps_path_without_configured_prefix",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_ignores_second_stored_server_paths",
+    "tests/test_p2p_connection_data_regression.py::test_item_helper_accepts_optional_server_argument",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_defaults_servers_to_empty_list",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_defaults_missing_servers_key",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_returns_stored_connection_data",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_migrates_legacy_server_entries",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_logging_consumer",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_path_replacement_settings_flow",
+    "tests/test_p2p_connection_data_regression.py::test_stored_credential_accessor_serves_save_then_read_flow",
+    "tests/test_imports.py::test_import_database",
+    "tests/test_imports.py::test_import_entrypoint",
+    "tests/test_imports.py::test_import_helper",
+    "tests/test_imports.py::test_import_jellyfin",
+    "tests/test_imports.py::test_import_objects",
+    "tests/test_imports.py::test_import_connect",
+    "tests/test_core_connection_contract.py::test_events_injects_before_first_authenticated_request",
+    "tests/test_core_connection_contract.py::test_events_reinjects_cached_values_before_authenticated_request",
+    "tests/test_core_connection_contract.py::test_context_injects_before_first_authenticated_request",
+    "tests/test_core_connection_contract.py::test_context_reinjects_cached_values_before_authenticated_request",
+    "tests/test_core_connection_contract.py::test_events_preserves_requested_client_and_first_record",
+    "tests/test_core_connection_contract.py::test_context_preserves_requested_client_and_first_record",
+    "tests/test_core_connection_contract.py::test_events_uses_none_for_absent_first_server_address",
+    "tests/test_core_connection_contract.py::test_context_uses_none_for_absent_first_server_address",
+    "tests/test_core_connection_contract.py::test_actions_uses_none_for_absent_first_server_address",
+    "tests/test_core_connection_contract.py::test_item_mapping_defaults_to_empty_when_paths_field_is_absent",
+    "tests/test_core_connection_contract.py::test_mapping_replaces_substrings_and_preserves_unmatched_paths",
+    "tests/test_core_connection_contract.py::test_actions_preserves_explicit_client_and_server",
+    "tests/test_core_connection_contract.py::test_item_path_preserves_dvd_suffix",
+    "tests/test_core_connection_contract.py::test_item_path_lowercases_protocol_before_mapping",
+    "tests/test_core_connection_contract.py::test_item_path_returns_empty_string_for_absent_or_empty_path",
+    "tests/test_core_connection_contract.py::test_item_path_converts_unc_to_smb",
+    "tests/test_core_connection_contract.py::test_item_path_preserves_local_separator_normalization",
+    "tests/test_core_connection_contract.py::test_item_path_preserves_bluray_suffix"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": false,
+  "restoration_paths": [
+    "tests/test_clean_none_dict_values.py",
+    "tests/test_helper_utils.py",
+    "tests/test_imports.py",
+    "tests/test_media_segments.py",
+    "tests/test_play_start_index.py",
+    "tests/test_playutils_settings.py",
+    "tests/test_translations.py"
+  ],
+  "reward_mode": "VERIFIER_ONLY",
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-jellyfin-kodi-b7ae33ce",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "tests/test_p2p_connection_data_regression.py",
+    "tests/test_f2p_single_stored_data_load.py",
+    "tests/test_core_connection_contract.py"
+  ],
+  "timeout_seconds": 300,
+  "verifier": "/tests/verifier/verifier.py"
+}

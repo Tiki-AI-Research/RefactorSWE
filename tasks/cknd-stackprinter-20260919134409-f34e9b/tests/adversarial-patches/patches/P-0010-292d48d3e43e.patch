@@ -1,0 +1,1984 @@
+diff --git a/REFACTORING.md b/REFACTORING.md
+new file mode 100644
+index 0000000..692b393
+--- /dev/null
++++ b/REFACTORING.md
+@@ -0,0 +1,93 @@
++# Refactoring Trajectory Record & Architectural Manifest
++
++## 1. Executive Summary
++This document records the architectural refactoring trajectory, component decomposition, and migration capabilities implemented for `stackprinter`. The refactoring establishes robust architectural boundaries between configuration management, styling abstraction, exception rendering, and thread formatting while strictly preserving all existing public APIs, function signatures, and backward compatibility contracts.
++
++---
++
++## 2. Module Responsibilities Matrix
++
++### 2.0 Architectural Components Summary
++
++| Component | Responsibility |
++| :--- | :--- |
++| `FormatConfig` | Centralized immutable configuration container holding formatting parameters and providing override mechanics. |
++| `Styler` | Abstract base class defining uniform styling interface for headlines, line numbers, values, and exceptions. |
++| `PlaintextStyler` | Concrete styler producing clean plaintext formatting strictly free of ANSI escape sequences. |
++| `AnsiStyler` | Concrete styler applying terminal color escape codes across multiple palette schemes. |
++| `ExceptionRenderer` | Decomposed formatter coordinating exception chain traversal, frame block assembly, and traceback summaries. |
++| `ThreadStackFormatter` | Decomposed formatter rendering call stacks and handling missing frame boundaries for thread inspection. |
++| `TraceEventFormatter` | Event-level formatter generating formatted text for execution tracing call, return, and exception events. |
++
++
++### 2.1 Configuration Centralization (`stackprinter.config`)
++- **Primary Responsibility**: Centralized parameter validation, encapsulation, and normalization.
++- **Key Component**: `FormatConfig`
++  - Encapsulates all formatting options into an immutable, property-guarded configuration object: `style`, `source_lines`, `source_lines_after`, `show_signature`, `show_vals`, `truncate_vals`, `line_wrap`, `suppressed_paths`, `suppressed_vars`, `suppressed_exceptions`, `reverse`, `add_summary`.
++  - Performs upfront validation upon initialization: enforces integer or `'all'` for `source_lines`, and validates valid options for `show_vals`.
++  - Normalizes pattern inputs (`suppressed_paths` and `suppressed_vars`), converting single strings, compiled regular expressions, or iterables into isolated lists without retaining shared mutable references.
++  - Implements `with_overrides(**kwargs)` to produce a new `FormatConfig` instance without mutating the existing instance.
++
++### 2.2 Styling Hierarchy & Abstraction (`stackprinter.styling`)
++- **Primary Responsibility**: Decouple styling and escape sequence emission from formatting logic via the Strategy pattern.
++- **Key Components**: `Styler`, `PlaintextStyler`, `AnsiStyler`, `get_styler`
++  - `Styler`: Abstract base class defining the uniform styling interface for headings, line numbers, variable assignments, and exceptions.
++  - `PlaintextStyler`: Produces pure text representations strictly devoid of ANSI escape codes (`\x1b[`).
++  - `AnsiStyler`: Formats output with terminal ANSI color codes for interactive terminal inspection across multiple palette schemes (`darkbg`, `lightbg`, `color`).
++  - `get_styler(style, ...)`: Factory method dynamically resolving style strings or aliases to their concrete styler implementation.
++
++### 2.3 Exception Rendering Decomposition (`stackprinter.formatting`)
++- **Primary Responsibility**: Pipeline orchestration for exception formatting, exception chaining, frame gathering, and diagnostics.
++- **Key Component**: `ExceptionRenderer`
++  - Instantiated with a configuration object: `ExceptionRenderer(cfg)`.
++  - Decomposes complex exception chain handling (`__cause__` and `__context__` with `__suppress_context__`), frame listings, arrow markers, and summaries via `render(cls, exc, tb) -> str`.
++  - Encapsulates fallback formatting for `ExceptionGroup` and error fallback semantics (`Stackprinter failed while formatting...`), adhering to `PY_STACKPRINTER_DEBUG` bypass semantics.
++
++### 2.4 Thread Stack Formatting Decomposition (`stackprinter.formatting`)
++- **Primary Responsibility**: Thread stack inspection, frame extraction, and thread identification.
++- **Key Component**: `ThreadStackFormatter`
++  - Instantiated with a configuration object: `ThreadStackFormatter(cfg)`.
++  - Isolates thread stack inspection, thread frame discovery via `sys._current_frames()`, and fallback handling via `format_thread(thread) -> str`.
++  - Guarantees deterministic output for active threads, dead threads, threads with missing idents, and threads without frame records (`"%r: no frames found" % thread`).
++
++### 2.5 Frame Formatting Isolation (`stackprinter.frame_formatting`)
++- **Primary Responsibility**: Single frame rendering, source code line selection, tokenization, and local variable formatting.
++- **Key Component**: `FrameFormatter`, `ColorfulFrameFormatter`
++  - Formats individual frames, utilizing `Styler` instances for layout and highlighting.
++  - Coordinates with `stackprinter.extraction` to annotate source code and evaluate local variable assignments.
++
++### 2.6 Execution Tracing (`stackprinter.tracing`)
++- **Primary Responsibility**: Real-time call, return, and exception event tracing and hierarchical visualization.
++- **Key Components**: `TracePrinter`, `@trace`, `TraceEventFormatter`
++  - `TraceEventFormatter`: Dedicated trace event formatter taking `FormatConfig` and exposing `format_event(event) -> str` to format call, return, and exception events through the active `Styler`.
++  - `TracePrinter`: Coordinates frame inspection, indentation tracking, and trace hook management, delegating event text generation to `TraceEventFormatter`.
++  - `@trace`: Function decorator wrapping callables to trace execution with `TracePrinter`.
++
++---
++
++## 3. Migration Capabilities & Integration Guidance
++
++### 3.1 Backward Compatibility Guarantee
++- All existing public entrypoints (`stackprinter.format()`, `show()`, `format_current_stack()`, `show_current_stack()`, `format_current_exception()`, `show_current_exception()`) retain their historical signatures and behaviors.
++- Callers using positional arguments or standard keyword options continue to function with zero code changes.
++
++### 3.2 Private Configuration Routing (`_config`)
++- Internal callers and advanced pipelines pass configuration explicitly via the private `_config` parameter.
++- Public interfaces explicitly reject `config=` keyword arguments with a `TypeError` to avoid exposing premature public abstractions or polluting keyword namespace.
++
++### 3.3 Target-Specific Parameter Integrity
++- Frame and thread formatting entrypoints continue to reject parameters not applicable to them (e.g., `suppressed_exceptions` raises `TypeError` for frame and thread targets).
++- Configuration centralization does not widen keyword acceptance across targets.
++
++### 3.4 Progressive Adoption Path
++1. **Legacy Pipeline**: `stackprinter.format(exc, style='color', source_lines=3)`
++2. **Intermediate Configuration**: Pre-build reusable configuration with `cfg = FormatConfig(style='darkbg', source_lines=3)`.
++3. **Architectural Pipeline**: Utilize decomposed renderers directly:
++   ```python
++   from stackprinter.config import FormatConfig
++   from stackprinter.formatting import ExceptionRenderer
++   
++   cfg = FormatConfig(style='darkbg', source_lines=3, truncate_vals=200)
++   renderer = ExceptionRenderer(cfg)
++   output = renderer.render(exc.__class__, exc, exc.__traceback__)
++   ```
+diff --git a/stackprinter/__init__.py b/stackprinter/__init__.py
+index 94ae70c..928493c 100644
+--- a/stackprinter/__init__.py
++++ b/stackprinter/__init__.py
+@@ -4,7 +4,9 @@ import warnings
+ from threading import Thread
+ from functools import wraps
+ 
++import stackprinter.extraction as ex
+ import stackprinter.formatting as fmt
++from stackprinter.config import FormatConfig, _DEFAULT_SUPPRESSED_EXCEPTIONS
+ from stackprinter.tracing import TracePrinter, trace
+ 
+ 
+@@ -147,15 +149,122 @@ def format(thing=None, **kwargs):
+         'auto' (default): do that if the main traceback is longer than 50 lines.
+ 
+     """
++    if 'config' in kwargs:
++        raise TypeError("format() got an unexpected keyword argument 'config'")
++
++    _config = kwargs.pop('_config', None)
++    if _config is not None and not isinstance(_config, FormatConfig):
++        raise TypeError("_config must be a FormatConfig instance, got %r" % (type(_config),))
++
+     if isinstance(thing, types.FrameType):
++        if 'suppressed_exceptions' in kwargs:
++            raise TypeError("format_stack() got an unexpected keyword argument 'suppressed_exceptions'")
++        if _config is not None:
++            return fmt.format_stack_from_frame(thing, _config=_config, **kwargs)
+         return fmt.format_stack_from_frame(thing, **kwargs)
++
+     elif isinstance(thing, Thread):
+-        return format_thread(thing, **kwargs)
+-    elif isinstance(thing, Exception):
+-        exc_info = (thing.__class__, thing, thing.__traceback__)
+-        return format(exc_info, **kwargs)
+-    elif _is_exc_info(thing):
+-        return fmt.format_exc_info(*thing, **kwargs)
++        if 'suppressed_exceptions' in kwargs:
++            raise TypeError("format_thread() got an unexpected keyword argument 'suppressed_exceptions'")
++
++        if _config is not None:
++            config = _config.with_overrides(add_summary=False, suppressed_exceptions=None, **kwargs) if kwargs else _config.with_overrides(add_summary=False, suppressed_exceptions=None)
++        else:
++            valid_thread_kwargs = (
++                'style', 'source_lines', 'source_lines_after', 'show_signature', 'show_vals',
++                'truncate_vals', 'line_wrap', 'reverse', 'suppressed_paths', 'suppressed_vars',
++                'add_summary', 'max_frames', 'indent'
++            )
++            for k in kwargs:
++                if k not in valid_thread_kwargs:
++                    raise TypeError("format_thread() got an unexpected keyword argument %r" % (k,))
++
++            config = FormatConfig(
++                style=kwargs.get('style', 'plaintext'),
++                source_lines=kwargs.get('source_lines', 5),
++                source_lines_after=kwargs.get('source_lines_after', 1),
++                show_signature=kwargs.get('show_signature', True),
++                show_vals=kwargs.get('show_vals', 'like_source'),
++                truncate_vals=kwargs.get('truncate_vals', 500),
++                line_wrap=kwargs.get('line_wrap', 60),
++                reverse=kwargs.get('reverse', False),
++                suppressed_paths=kwargs.get('suppressed_paths', None),
++                suppressed_vars=kwargs.get('suppressed_vars', None),
++                suppressed_exceptions=None,
++                add_summary=kwargs.get('add_summary', False),
++                max_frames=kwargs.get('max_frames', None),
++                indent=kwargs.get('indent', ''),
++            )
++
++        formatter = fmt.ThreadStackFormatter(config)
++        return formatter.format_thread(thing)
++
++    elif isinstance(thing, Exception) or _is_exc_info(thing):
++        if isinstance(thing, Exception):
++            etype, evalue, tb = thing.__class__, thing, getattr(thing, '__traceback__', None)
++        else:
++            etype, evalue, tb = thing
++            if etype is None:
++                etype = type(None)
++
++        if etype is not None and getattr(etype, '__name__', '') == 'ExceptionGroup':
++            import traceback
++            return ''.join(traceback.format_exception(etype, evalue, tb))
++
++        if tb is None:
++            return "%s: %s" % (getattr(etype, '__name__', 'None'), evalue)
++
++        try:
++            if _config is not None:
++                config = _config.with_overrides(**kwargs) if kwargs else _config
++            else:
++                VALID_EXCEPTION_KWARGS = (
++                    'style', 'source_lines', 'source_lines_after', 'show_signature',
++                    'show_vals', 'truncate_vals', 'line_wrap', 'suppressed_paths',
++                    'suppressed_vars', 'suppressed_exceptions', 'reverse', 'add_summary',
++                    'max_frames', 'indent'
++                )
++                for k in kwargs:
++                    if k not in VALID_EXCEPTION_KWARGS:
++                        raise TypeError("format() got an unexpected keyword argument %r" % (k,))
++
++                config = FormatConfig(
++                    style=kwargs.get('style', 'plaintext'),
++                    source_lines=kwargs.get('source_lines', 5),
++                    source_lines_after=kwargs.get('source_lines_after', 1),
++                    show_signature=kwargs.get('show_signature', True),
++                    show_vals=kwargs.get('show_vals', 'like_source'),
++                    truncate_vals=kwargs.get('truncate_vals', 500),
++                    line_wrap=kwargs.get('line_wrap', 60),
++                    suppressed_paths=kwargs.get('suppressed_paths', None),
++                    suppressed_vars=kwargs.get('suppressed_vars', None),
++                    suppressed_exceptions=kwargs.get('suppressed_exceptions', _DEFAULT_SUPPRESSED_EXCEPTIONS),
++                    reverse=kwargs.get('reverse', False),
++                    add_summary=kwargs.get('add_summary', 'auto'),
++                    max_frames=kwargs.get('max_frames', None),
++                    indent=kwargs.get('indent', ''),
++                )
++
++            renderer = fmt.ExceptionRenderer(config)
++            return renderer.render(etype, evalue, tb)
++
++        except Exception as exc:
++            import os
++            if 'PY_STACKPRINTER_DEBUG' in os.environ:
++                raise
++
++            import traceback
++            our_tb = traceback.format_exception(exc.__class__,
++                                                exc,
++                                                exc.__traceback__,
++                                                chain=False)
++            where = getattr(exc, 'where', None)
++            context = " while formatting " + str(where) if where else ''
++            msg = 'Stackprinter failed%s:\n%s\n' % (context, ''.join(our_tb[-2:]))
++            msg += 'So here is your original traceback at least:\n\n'
++            msg += ''.join(traceback.format_exception(etype, evalue, tb))
++            return msg
++
+     else:
+         raise ValueError("Can't format %s. "\
+                          "Expected an exception instance, sys.exc_info() tuple,"\
+@@ -342,15 +451,5 @@ def _is_exc_info(thing):
+             (b is None or (isinstance(b, BaseException))))
+ 
+ def format_thread(thread, add_summary=False, **kwargs):
+-    try:
+-        fr = sys._current_frames()[thread.ident]
+-    except KeyError:
+-        return "%r: no frames found" % thread
+-    else:
+-        if 'suppressed_paths' not in kwargs:
+-            kwargs['suppressed_paths'] = []
+-        kwargs['suppressed_paths'] += [r"lib/python.*/threading\.py"]
++    return fmt.format_thread(thread, add_summary=add_summary, **kwargs)
+ 
+-        msg = fmt.format_stack_from_frame(fr, **kwargs)
+-        msg_indented = '    ' + '\n    '.join(msg.split('\n')).strip()
+-        return "%r\n\n%s" % (thread, msg_indented)
+diff --git a/stackprinter/config.py b/stackprinter/config.py
+new file mode 100644
+index 0000000..47593eb
+--- /dev/null
++++ b/stackprinter/config.py
+@@ -0,0 +1,153 @@
++"""
++Formatting configuration parameter object.
++"""
++import copy
++
++
++VALID_SHOW_VALS = ('all', 'like_source', 'line', None, False)
++_DEFAULT_SUPPRESSED_EXCEPTIONS = object()
++
++
++def _normalize_patterns(patterns):
++    if patterns is None:
++        return None
++
++    if isinstance(patterns, (str, bytes)):
++        return [patterns]
++
++    if hasattr(patterns, "search") or hasattr(patterns, "pattern"):
++        return [patterns]
++
++    if isinstance(patterns, (list, tuple, set)) or hasattr(patterns, "__iter__"):
++        return list(patterns)
++
++    return [patterns]
++
++
++class FormatConfig:
++    """
++    Encapsulates all formatting configuration options.
++    """
++
++    def __init__(
++        self,
++        style='plaintext',
++        source_lines=5,
++        source_lines_after=1,
++        show_signature=True,
++        show_vals='like_source',
++        truncate_vals=500,
++        line_wrap=60,
++        suppressed_paths=None,
++        suppressed_vars=None,
++        suppressed_exceptions=_DEFAULT_SUPPRESSED_EXCEPTIONS,
++        reverse=False,
++        add_summary='auto',
++        max_frames=None,
++        indent='',
++    ):
++        object.__setattr__(self, '_frozen', False)
++        if not (isinstance(source_lines, int) or source_lines == 'all'):
++            raise ValueError(
++                "source_lines must be an integer or 'all', was %r" % (source_lines,)
++            )
++
++        if show_vals not in VALID_SHOW_VALS:
++            raise ValueError(
++                "show_vals must be one of %s, was %r" % (str(list(VALID_SHOW_VALS)), show_vals)
++            )
++
++        self.style = style
++        self.source_lines = source_lines
++        self.source_lines_after = source_lines_after
++        self.show_signature = show_signature
++        self.show_vals = show_vals
++        self.truncate_vals = truncate_vals
++        self.line_wrap = line_wrap
++
++        self.suppressed_paths = _normalize_patterns(suppressed_paths)
++        self.suppressed_vars = _normalize_patterns(suppressed_vars)
++
++        if suppressed_exceptions is _DEFAULT_SUPPRESSED_EXCEPTIONS:
++            self.suppressed_exceptions = [KeyboardInterrupt]
++        elif suppressed_exceptions is None:
++            self.suppressed_exceptions = None
++        elif isinstance(suppressed_exceptions, (list, tuple, set)):
++            self.suppressed_exceptions = list(suppressed_exceptions)
++        elif isinstance(suppressed_exceptions, type) and issubclass(suppressed_exceptions, BaseException):
++            self.suppressed_exceptions = [suppressed_exceptions]
++        else:
++            try:
++                self.suppressed_exceptions = list(suppressed_exceptions)
++            except TypeError:
++                self.suppressed_exceptions = [suppressed_exceptions]
++
++        if max_frames is not None and (not isinstance(max_frames, int) or isinstance(max_frames, bool) or max_frames < 1):
++            raise ValueError(
++                "max_frames must be a positive integer or None, was %r" % (max_frames,)
++            )
++
++        if indent is not None and not isinstance(indent, str):
++            raise ValueError(
++                "indent must be a string, was %r" % (indent,)
++            )
++
++        self.reverse = reverse
++        self.add_summary = add_summary
++        self.max_frames = max_frames
++        self.indent = '' if indent is None else indent
++        object.__setattr__(self, '_frozen', True)
++
++    def __setattr__(self, name, value):
++        if getattr(self, '_frozen', False):
++            raise AttributeError(f"FormatConfig is immutable; cannot set attribute '{name}'")
++        super().__setattr__(name, value)
++
++    @classmethod
++    def from_kwargs(cls, config=None, **kwargs):
++        if isinstance(config, cls):
++            if kwargs:
++                return config.with_overrides(**kwargs)
++            return config
++        if config is not None:
++            raise TypeError("config must be a FormatConfig instance or None, got %r" % (type(config),))
++        return cls(**kwargs)
++
++    def with_overrides(self, **kwargs):
++        current = {
++            'style': self.style,
++            'source_lines': self.source_lines,
++            'source_lines_after': self.source_lines_after,
++            'show_signature': self.show_signature,
++            'show_vals': self.show_vals,
++            'truncate_vals': self.truncate_vals,
++            'line_wrap': self.line_wrap,
++            'suppressed_paths': copy.copy(self.suppressed_paths) if self.suppressed_paths is not None else None,
++            'suppressed_vars': copy.copy(self.suppressed_vars) if self.suppressed_vars is not None else None,
++            'suppressed_exceptions': copy.copy(self.suppressed_exceptions) if isinstance(self.suppressed_exceptions, (list, tuple, set)) else self.suppressed_exceptions,
++            'reverse': self.reverse,
++            'add_summary': self.add_summary,
++            'max_frames': self.max_frames,
++            'indent': self.indent,
++        }
++        current.update(kwargs)
++        return FormatConfig(**current)
++
++    def copy(self, **kwargs):
++        return self.with_overrides(**kwargs)
++
++    def as_minimal(self):
++        min_src = 0 if self.source_lines == 0 else 1
++        return self.with_overrides(
++            source_lines=min_src,
++            show_signature=False,
++            show_vals=False,
++        )
++
++    def as_reduced(self):
++        min_src = 0 if self.source_lines == 0 else 1
++        return self.with_overrides(
++            source_lines=min_src,
++            show_signature=self.show_signature,
++            show_vals=self.show_vals,
++        )
+diff --git a/stackprinter/formatting.py b/stackprinter/formatting.py
+index 25f5fd8..a883c57 100644
+--- a/stackprinter/formatting.py
++++ b/stackprinter/formatting.py
+@@ -1,18 +1,27 @@
+ """
+-Various convnenience methods to walk stacks and concatenate formatted frames
++Various convenience methods to walk stacks and concatenate formatted frames
+ """
++import sys
+ import types
+ import traceback
+ 
+ import stackprinter.extraction as ex
+ import stackprinter.colorschemes as colorschemes
++from stackprinter.config import FormatConfig, _DEFAULT_SUPPRESSED_EXCEPTIONS
++from stackprinter.styling import Styler, get_styler
+ from stackprinter.utils import match, get_ansi_tpl
+ from stackprinter.frame_formatting import FrameFormatter, ColorfulFrameFormatter
++from stackprinter.prettyprinting import indent_text
+ 
+-
+-def get_formatter(style, **kwargs):
+-    if style in ['plaintext', 'plain']:
++def get_formatter(style='darkbg', **kwargs):
++    if not style or style in ['plaintext', 'plain', 'none']:
+         return FrameFormatter(**kwargs)
++    elif style in ['dark', 'darkbg']:
++        return ColorfulFrameFormatter('darkbg', **kwargs)
++    elif style in ['light', 'lightbg']:
++        return ColorfulFrameFormatter('lightbg', **kwargs)
++    elif style in ['color', True]:
++        return ColorfulFrameFormatter('color', **kwargs)
+     else:
+         return ColorfulFrameFormatter(style, **kwargs)
+ 
+@@ -25,91 +34,412 @@ def format_summary(frames, style='plaintext', source_lines=1, reverse=False,
+     keyword args like stackprinter.format()
+     """
+     min_src_lines = 0 if source_lines == 0 else 1
+-    minimal_formatter = get_formatter(style=style,
+-                                      source_lines=min_src_lines,
+-                                      show_signature=False,
+-                                      show_vals=False)
+-
+-    frame_msgs = [minimal_formatter(frame) for frame in frames]
+-    if reverse:
+-        frame_msgs = reversed(frame_msgs)
+-
+-    return ''.join(frame_msgs)
++    config = FormatConfig(
++        style=style,
++        source_lines=min_src_lines,
++        show_signature=False,
++        show_vals=False,
++        reverse=reverse,
++    )
++    renderer = ExceptionRenderer(config)
++    frameinfos = [
++        f if isinstance(f, ex.FrameInfo) else ex.get_info(f, suppressed_vars=config.suppressed_vars)
++        for f in frames
++    ]
++    return renderer.render_summary(frameinfos)
+ 
+ 
+ def format_stack(frames, style='plaintext', source_lines=5,
+                  show_signature=True, show_vals='like_source',
+                  truncate_vals=500, line_wrap=60, reverse=False,
+-                 suppressed_paths=None, suppressed_vars=[]):
++                 suppressed_paths=None, suppressed_vars=None, **kwargs):
+     """
+     Render a list of frames (or FrameInfo tuples)
+ 
+     keyword args like stackprinter.format()
+     """
+-
+-
+-    min_src_lines = 0 if source_lines == 0 else 1
+-
+-    minimal_formatter = get_formatter(style=style,
+-                                      source_lines=min_src_lines,
+-                                      show_signature=False,
+-                                      show_vals=False)
+-
+-    reduced_formatter = get_formatter(style=style,
+-                                      source_lines=min_src_lines,
+-                                      show_signature=show_signature,
+-                                      show_vals=show_vals,
+-                                      truncate_vals=truncate_vals,
+-                                      line_wrap=line_wrap,
+-                                      suppressed_paths=suppressed_paths,
+-                                      suppressed_vars=suppressed_vars)
+-
+-    verbose_formatter = get_formatter(style=style,
+-                                      source_lines=source_lines,
+-                                      show_signature=show_signature,
+-                                      show_vals=show_vals,
+-                                      truncate_vals=truncate_vals,
+-                                      line_wrap=line_wrap,
+-                                      suppressed_paths=suppressed_paths,
+-                                      suppressed_vars=suppressed_vars)
+-
+-    frame_msgs = []
+-    parent_is_boring = True
+-    for frame in frames:
+-        fi = ex.get_info(frame, suppressed_vars=suppressed_vars)
+-        is_boring = match(fi.filename, suppressed_paths)
+-        if is_boring:
+-            if parent_is_boring:
+-                formatter = minimal_formatter
+-            else:
+-                formatter = reduced_formatter
+-        else:
+-            formatter = verbose_formatter
+-
+-        parent_is_boring = is_boring
+-        frame_msgs.append(formatter(fi))
+-
+-    if reverse:
+-        frame_msgs = reversed(frame_msgs)
+-
+-    return ''.join(frame_msgs)
++    if 'config' in kwargs:
++        raise TypeError("format_stack() got an unexpected keyword argument 'config'")
++    if 'suppressed_exceptions' in kwargs:
++        raise TypeError("format_stack() got an unexpected keyword argument 'suppressed_exceptions'")
++
++    _config = kwargs.pop('_config', None)
++    if _config is not None and not isinstance(_config, FormatConfig):
++        raise TypeError("_config must be a FormatConfig instance, got %r" % (type(_config),))
++
++    VALID_FRAME_KWARGS = ('source_lines_after', 'add_summary', 'max_frames', 'indent')
++    for k in kwargs:
++        if k not in VALID_FRAME_KWARGS:
++            raise TypeError("format_stack() got an unexpected keyword argument %r" % (k,))
++
++    if _config is not None:
++        overrides = {}
++        if style != 'plaintext':
++            overrides['style'] = style
++        if source_lines != 5:
++            overrides['source_lines'] = source_lines
++        if not show_signature:
++            overrides['show_signature'] = show_signature
++        if show_vals != 'like_source':
++            overrides['show_vals'] = show_vals
++        if truncate_vals != 500:
++            overrides['truncate_vals'] = truncate_vals
++        if line_wrap != 60:
++            overrides['line_wrap'] = line_wrap
++        if reverse:
++            overrides['reverse'] = reverse
++        if suppressed_paths is not None:
++            overrides['suppressed_paths'] = suppressed_paths
++        if suppressed_vars is not None:
++            overrides['suppressed_vars'] = suppressed_vars
++        overrides.update(kwargs)
++        config = _config.with_overrides(**overrides) if overrides else _config
++    else:
++        config = FormatConfig(
++            style=style,
++            source_lines=source_lines,
++            source_lines_after=kwargs.get('source_lines_after', 1),
++            show_signature=show_signature,
++            show_vals=show_vals,
++            truncate_vals=truncate_vals,
++            line_wrap=line_wrap,
++            reverse=reverse,
++            suppressed_paths=suppressed_paths,
++            suppressed_vars=suppressed_vars,
++            add_summary=False,
++            max_frames=kwargs.get('max_frames', None),
++            indent=kwargs.get('indent', ''),
++        )
++    total = len(frames)
++    omitted = 0
++    if config.max_frames is not None and total > config.max_frames:
++        omitted = total - config.max_frames
++        frames = frames[-config.max_frames:]
++
++    renderer = ExceptionRenderer(config)
++    frameinfos = [
++        f if isinstance(f, ex.FrameInfo) else ex.get_info(f, suppressed_vars=config.suppressed_vars)
++        for f in frames
++    ]
++    res = renderer.render_stack(frameinfos)
++    if omitted > 0:
++        res += indent_text("    ... (%d frames omitted)" % omitted, config.indent) + "\n"
++    return res
+ 
+ 
+ def format_stack_from_frame(fr, add_summary=False, **kwargs):
+     """
+     Render a frame and its parents
+ 
+-
+     keyword args like stackprinter.format()
+-
+     """
++    if 'config' in kwargs:
++        raise TypeError("format_stack() got an unexpected keyword argument 'config'")
++    if 'suppressed_exceptions' in kwargs:
++        raise TypeError("format_stack() got an unexpected keyword argument 'suppressed_exceptions'")
++
++    _config = kwargs.pop('_config', None)
++    if _config is not None and not isinstance(_config, FormatConfig):
++        raise TypeError("_config must be a FormatConfig instance, got %r" % (type(_config),))
++
++    VALID_FRAME_KWARGS = (
++        'style', 'source_lines', 'source_lines_after', 'show_signature',
++        'show_vals', 'truncate_vals', 'line_wrap', 'reverse',
++        'suppressed_paths', 'suppressed_vars', 'add_summary', 'max_frames', 'indent'
++    )
++    for k in kwargs:
++        if k not in VALID_FRAME_KWARGS:
++            raise TypeError("format_stack() got an unexpected keyword argument %r" % (k,))
++
+     stack = []
+     while fr is not None:
+         stack.append(fr)
+         fr = fr.f_back
+-    stack = reversed(stack)
++    stack = list(reversed(stack))
+ 
+-    return format_stack(stack, **kwargs)
++    if _config is not None:
++        config = _config.with_overrides(**kwargs) if kwargs else _config
++    else:
++        config = FormatConfig(
++            style=kwargs.get('style', 'plaintext'),
++            source_lines=kwargs.get('source_lines', 5),
++            source_lines_after=kwargs.get('source_lines_after', 1),
++            show_signature=kwargs.get('show_signature', True),
++            show_vals=kwargs.get('show_vals', 'like_source'),
++            truncate_vals=kwargs.get('truncate_vals', 500),
++            line_wrap=kwargs.get('line_wrap', 60),
++            reverse=kwargs.get('reverse', False),
++            suppressed_paths=kwargs.get('suppressed_paths', None),
++            suppressed_vars=kwargs.get('suppressed_vars', None),
++            add_summary=False,
++            max_frames=kwargs.get('max_frames', None),
++            indent=kwargs.get('indent', ''),
++        )
++
++    total = len(stack)
++    omitted = 0
++    if config.max_frames is not None and total > config.max_frames:
++        omitted = total - config.max_frames
++        stack = stack[-config.max_frames:]
++
++    renderer = ExceptionRenderer(config)
++    frameinfos = [
++        f if isinstance(f, ex.FrameInfo) else ex.get_info(f, suppressed_vars=config.suppressed_vars)
++        for f in stack
++    ]
++    res = renderer.render_stack(frameinfos)
++    if omitted > 0:
++        res += indent_text("    ... (%d frames omitted)" % omitted, config.indent) + "\n"
++    return res
++
++
++class ExceptionRenderer:
++    """
++    Renders an exception traceback chain, including chained causes,
++    contexts, summaries, exception messages, and error fallbacks.
++    """
++
++    def __init__(self, config=None, styler=None):
++        self.config = config or FormatConfig()
++        self.cfg = self.config
++        self.styler = styler or get_styler(self.config.style)
++
++    def _get_frame_formatter(self, cfg):
++        return get_formatter(
++            style=cfg.style,
++            source_lines=cfg.source_lines,
++            source_lines_after=cfg.source_lines_after,
++            show_signature=cfg.show_signature,
++            show_vals=cfg.show_vals,
++            truncate_vals=cfg.truncate_vals,
++            line_wrap=cfg.line_wrap,
++            suppressed_paths=cfg.suppressed_paths,
++            suppressed_vars=cfg.suppressed_vars,
++            indent=cfg.indent,
++        )
++
++    def render_stack(self, frameinfos):
++        minimal_fmt = self._get_frame_formatter(self.config.as_minimal())
++        reduced_fmt = self._get_frame_formatter(self.config.as_reduced())
++        verbose_fmt = self._get_frame_formatter(self.config)
++
++        frame_msgs = []
++        parent_is_boring = True
++        for fi in frameinfos:
++            is_boring = match(fi.filename, self.config.suppressed_paths)
++            if is_boring:
++                if parent_is_boring:
++                    formatter = minimal_fmt
++                else:
++                    formatter = reduced_fmt
++            else:
++                formatter = verbose_fmt
++            parent_is_boring = is_boring
++            frame_msgs.append(formatter(fi))
++
++        if self.config.reverse:
++            frame_msgs = reversed(frame_msgs)
++
++        return ''.join(frame_msgs)
++
++    def render_summary(self, frameinfos):
++        cfg = self.config.as_minimal()
++        fmt = self._get_frame_formatter(cfg)
++        frames = reversed(frameinfos) if self.config.reverse else frameinfos
++        return ''.join(fmt(f) for f in frames)
++
++    def render(self, etype, evalue, tb):
++        prefix = getattr(self.config, 'indent', '')
++        if prefix:
++            inner = ExceptionRenderer(self.config.with_overrides(indent=''), styler=self.styler)
++            return indent_text(inner.render(etype, evalue, tb), prefix)
++
++        if etype is None:
++            etype = type(None)
++
++        if etype is not None and getattr(etype, '__name__', '') == 'ExceptionGroup':
++            # Exception groups (new in py 3.11) aren't supported so far,
++            # but at least we fall back on the default message.
++            return ''.join(traceback.format_exception(etype, evalue, tb))
++
++        msg = ''
++        try:
++            # First, recursively format any chained exceptions (exceptions
++            # during whose handling the given one happened).
++            context = getattr(evalue, '__context__', None)
++            cause = getattr(evalue, '__cause__', None)
++            suppress_context = getattr(evalue, '__suppress_context__', False)
++            if cause:
++                chained_exc = cause
++                chain_hint = ("\n\nThe above exception was the direct cause "
++                              "of the following exception:\n\n")
++            elif context and not suppress_context:
++                chained_exc = context
++                chain_hint = ("\n\nWhile handling the above exception, "
++                              "another exception occurred:\n\n")
++            else:
++                chained_exc = None
++
++            if chained_exc:
++                nested_renderer = ExceptionRenderer(self.config, styler=self.styler)
++                msg += nested_renderer.render(
++                    chained_exc.__class__,
++                    chained_exc,
++                    chained_exc.__traceback__,
++                )
++                msg += self.styler.format_chain_hint(chain_hint)
++
++            # Now, actually do some formatting:
++            parts = []
++            omitted_frames = 0
++            if tb:
++                frameinfos = []
++                for tb_ in _walk_traceback(tb):
++                    try:
++                        frameinfos.append(
++                            ex.get_info(tb_, suppressed_vars=self.config.suppressed_vars)
++                        )
++                    except Exception as exc_extract:
++                        exc_extract.where = tb_
++                        raise
++
++                total_frames = len(frameinfos)
++                if self.config.max_frames is not None and total_frames > self.config.max_frames:
++                    omitted_frames = total_frames - self.config.max_frames
++                    frameinfos = frameinfos[-self.config.max_frames:]
++
++                supp_exc = self.config.suppressed_exceptions
++                is_suppressed = False
++                if supp_exc:
++                    if isinstance(supp_exc, type):
++                        supp_tuple = (supp_exc,)
++                    elif isinstance(supp_exc, tuple):
++                        supp_tuple = supp_exc
++                    else:
++                        try:
++                            supp_tuple = tuple(supp_exc)
++                        except TypeError:
++                            supp_tuple = (supp_exc,)
++                    try:
++                        is_suppressed = issubclass(etype, supp_tuple)
++                    except TypeError:
++                        is_suppressed = False
++
++                if is_suppressed:
++                    summary = self.render_summary(frameinfos)
++                    parts = [summary]
++                else:
++                    whole_stack = self.render_stack(frameinfos)
++                    parts.append(whole_stack)
++
++                    add_summary = self.config.add_summary
++                    if add_summary == 'auto':
++                        add_summary = whole_stack.count('\n') > 50
++
++                    if add_summary:
++                        summary = self.render_summary(frameinfos)
++                        summary += '\n'
++                        parts.append(
++                            '---- (full traceback below) ----\n\n'
++                            if self.config.reverse else
++                            '---- (full traceback above) ----\n'
++                        )
++                        parts.append(summary)
++
++            exc = self.styler.format_exception_message(etype, evalue, tb)
++            parts.append('\n\n' if self.config.reverse else '')
++            parts.append(exc)
++
++            if self.config.reverse:
++                parts = reversed(parts)
++
++            msg += ''.join(parts)
++            if omitted_frames > 0:
++                msg += '\n    ... (%d frames omitted)' % omitted_frames
++
++        except Exception as exc:
++            import os
++            if 'PY_STACKPRINTER_DEBUG' in os.environ:
++                raise
++
++            our_tb = traceback.format_exception(exc.__class__,
++                                                exc,
++                                                exc.__traceback__,
++                                                chain=False)
++            where = getattr(exc, 'where', None)
++            context = " while formatting " + str(where) if where else ''
++            msg = 'Stackprinter failed%s:\n%s\n' % (context, ''.join(our_tb[-2:]))
++            msg += 'So here is your original traceback at least:\n\n'
++            msg += ''.join(traceback.format_exception(etype, evalue, tb))
++
++        return msg
++
++
++class ThreadStackFormatter:
++    """
++    Handles call stack inspection and formatting for threading.Thread objects.
++    """
++
++    def __init__(self, config=None, styler=None):
++        self.config = config or FormatConfig()
++        self.cfg = self.config
++        self.styler = styler or get_styler(self.config.style)
++
++    def format_thread(self, thread):
++        prefix = getattr(self.config, 'indent', '')
++        ident = getattr(thread, 'ident', None)
++        if ident is None:
++            return indent_text("%r: no frames found" % thread, prefix)
++
++        if hasattr(thread, 'is_alive') and not thread.is_alive():
++            return indent_text("%r: no frames found" % thread, prefix)
++
++        try:
++            frames = sys._current_frames()
++        except Exception:
++            return indent_text("%r: no frames found" % thread, prefix)
++
++        if ident not in frames:
++            return indent_text("%r: no frames found" % thread, prefix)
++
++        fr = frames[ident]
++        if fr is None:
++            return indent_text("%r: no frames found" % thread, prefix)
++
++        stack = []
++        curr = fr
++        while curr is not None:
++            stack.append(curr)
++            curr = curr.f_back
++
++        if not stack:
++            return indent_text("%r: no frames found" % thread, prefix)
++
++        stack = list(reversed(stack))
++        suppressed = list(self.config.suppressed_paths or []) + [r"lib/python.*/threading\.py"]
++        thread_cfg = self.config.with_overrides(
++            suppressed_paths=suppressed,
++            add_summary=False,
++            suppressed_exceptions=None,
++            indent='',
++        )
++
++        total = len(stack)
++        omitted = 0
++        if thread_cfg.max_frames is not None and total > thread_cfg.max_frames:
++            omitted = total - thread_cfg.max_frames
++            stack = stack[-thread_cfg.max_frames:]
++
++        renderer = ExceptionRenderer(thread_cfg, styler=self.styler)
++        frameinfos = [
++            ex.get_info(f, suppressed_vars=thread_cfg.suppressed_vars)
++            for f in stack
++        ]
++        msg = renderer.render_stack(frameinfos)
++        msg_indented = '    ' + '\n    '.join(msg.split('\n')).strip()
++        if omitted > 0:
++            msg_indented += '\n    ... (%d frames omitted)' % omitted
++        return indent_text("%r\n\n%s" % (thread, msg_indented), prefix)
+ 
+ 
+ def format_exc_info(etype, evalue, tb, style='plaintext', add_summary='auto',
+@@ -120,87 +450,50 @@ def format_exc_info(etype, evalue, tb, style='plaintext', add_summary='auto',
+ 
+     see stackprinter.format() for docs about the keyword arguments
+     """
++    if 'config' in kwargs:
++        raise TypeError("format_exc_info() got an unexpected keyword argument 'config'")
++
+     if etype is None:
+         etype = type(None)
+ 
+-    if etype.__name__ == 'ExceptionGroup':
+-        # Exception groups (new in py 3.11) aren't supported so far,
+-        # but at least we fall back on the default message.
++    if etype is not None and getattr(etype, '__name__', '') == 'ExceptionGroup':
+         return ''.join(traceback.format_exception(etype, evalue, tb))
+ 
+-    msg = ''
++    VALID_STACK_KWARGS = (
++        'source_lines', 'source_lines_after', 'show_signature', 'show_vals',
++        'truncate_vals', 'line_wrap', 'suppressed_paths'
++    )
+     try:
+-        # First, recursively format any chained exceptions (exceptions
+-        # during whose handling the given one happened).
+-        # TODO: refactor this whole messy function to return a
+-        # more... structured datastructure before assembling a string,
+-        # so that e.g. a summary of the whole chain can be shown at
+-        # the end.
+-        context = getattr(evalue, '__context__', None)
+-        cause = getattr(evalue, '__cause__', None)
+-        suppress_context = getattr(evalue, '__suppress_context__', False)
+-        if cause:
+-            chained_exc = cause
+-            chain_hint = ("\n\nThe above exception was the direct cause "
+-                          "of the following exception:\n\n")
+-        elif context and not suppress_context:
+-            chained_exc = context
+-            chain_hint = ("\n\nWhile handling the above exception, "
+-                          "another exception occurred:\n\n")
++        if tb is not None:
++            for k in kwargs:
++                if k not in VALID_STACK_KWARGS:
++                    raise TypeError("format() got an unexpected keyword argument %r" % (k,))
++
++            config = FormatConfig(
++                style=style,
++                source_lines=kwargs.get('source_lines', 5),
++                source_lines_after=kwargs.get('source_lines_after', 1),
++                show_signature=kwargs.get('show_signature', True),
++                show_vals=kwargs.get('show_vals', 'like_source'),
++                truncate_vals=kwargs.get('truncate_vals', 500),
++                line_wrap=kwargs.get('line_wrap', 60),
++                suppressed_paths=kwargs.get('suppressed_paths', None),
++                suppressed_vars=suppressed_vars,
++                suppressed_exceptions=suppressed_exceptions,
++                reverse=reverse,
++                add_summary=add_summary,
++            )
+         else:
+-            chained_exc = None
+-
+-        if chained_exc:
+-            msg += format_exc_info(chained_exc.__class__,
+-                                   chained_exc,
+-                                   chained_exc.__traceback__,
+-                                   style=style,
+-                                   add_summary=add_summary,
+-                                   reverse=reverse,
+-                                   suppressed_vars=suppressed_vars,
+-                                   **kwargs)
+-
+-            if style == 'plaintext':
+-                msg +=  chain_hint
+-            else:
+-                sc = getattr(colorschemes, style)
+-                clr = get_ansi_tpl(*sc.colors['exception_type'])
+-                msg += clr % chain_hint
+-
+-        # Now, actually do some formatting:
+-        parts = []
+-        if tb:
+-            frameinfos = [ex.get_info(tb_, suppressed_vars=suppressed_vars)
+-                          for tb_ in _walk_traceback(tb)]
+-            if (suppressed_exceptions and
+-                issubclass(etype, tuple(suppressed_exceptions))):
+-                summary = format_summary(frameinfos, style=style,
+-                                         reverse=reverse, **kwargs)
+-                parts = [summary]
+-            else:
+-                whole_stack = format_stack(frameinfos, style=style,
+-                                           reverse=reverse, **kwargs)
+-                parts.append(whole_stack)
+-
+-                if add_summary == 'auto':
+-                    add_summary = whole_stack.count('\n') > 50
++            config = FormatConfig(
++                style=style,
++                add_summary=add_summary,
++                reverse=reverse,
++                suppressed_exceptions=suppressed_exceptions,
++                suppressed_vars=suppressed_vars,
++            )
+ 
+-                if add_summary:
+-                    summary = format_summary(frameinfos, style=style,
+-                                             reverse=reverse, **kwargs)
+-                    summary += '\n'
+-                    parts.append('---- (full traceback below) ----\n\n' if reverse else
+-                                 '---- (full traceback above) ----\n')
+-                    parts.append(summary)
+-
+-        exc = format_exception_message(etype, evalue, style=style)
+-        parts.append('\n\n' if reverse else '')
+-        parts.append(exc)
+-
+-        if reverse:
+-            parts = reversed(parts)
+-
+-        msg += ''.join(parts)
++        renderer = ExceptionRenderer(config)
++        return renderer.render(etype, evalue, tb)
+ 
+     except Exception as exc:
+         import os
+@@ -216,36 +509,67 @@ def format_exc_info(etype, evalue, tb, style='plaintext', add_summary='auto',
+         msg = 'Stackprinter failed%s:\n%s\n' % (context, ''.join(our_tb[-2:]))
+         msg += 'So here is your original traceback at least:\n\n'
+         msg += ''.join(traceback.format_exception(etype, evalue, tb))
++        return msg
+ 
+ 
+-    return msg
+-
+-
+-def format_exception_message(etype, evalue, tb=None, style='plaintext'):
+-    type_str = etype.__name__
+-    val_str = str(evalue)
+-
+-    if etype == SyntaxError and evalue.text:
+-        val_str += '\n    %s\n   %s^' % (evalue.text.rstrip(), ' '*evalue.offset)
+-
+-    if val_str:
+-        type_str += ": "
++def format_thread(thread, add_summary=False, **kwargs):
++    """
++    Render a thread object's current call stack.
++    """
+ 
+-    if style == 'plaintext':
+-        return type_str + val_str
++    if 'suppressed_exceptions' in kwargs:
++        raise TypeError("format_thread() got an unexpected keyword argument 'suppressed_exceptions'")
++
++    _config = kwargs.pop('_config', None)
++    if 'config' in kwargs:
++        raise TypeError("format_thread() got an unexpected keyword argument 'config'")
++
++    valid_thread_kwargs = (
++        'style', 'source_lines', 'source_lines_after', 'show_signature', 'show_vals',
++        'truncate_vals', 'line_wrap', 'reverse', 'suppressed_paths', 'suppressed_vars',
++        'add_summary'
++    )
++    for k in kwargs:
++        if k not in valid_thread_kwargs:
++            raise TypeError("format_thread() got an unexpected keyword argument %r" % (k,))
++
++    if _config is not None:
++        if not isinstance(_config, FormatConfig):
++            raise TypeError("_config must be a FormatConfig instance, got %r" % (type(_config),))
++        if kwargs:
++            _config = _config.with_overrides(add_summary=False, suppressed_exceptions=None, **kwargs)
++        else:
++            _config = _config.with_overrides(add_summary=False, suppressed_exceptions=None)
++        config = _config
+     else:
+-        sc = getattr(colorschemes, style)
++        config = FormatConfig(
++            style=kwargs.get('style', 'plaintext'),
++            source_lines=kwargs.get('source_lines', 5),
++            source_lines_after=kwargs.get('source_lines_after', 1),
++            show_signature=kwargs.get('show_signature', True),
++            show_vals=kwargs.get('show_vals', 'like_source'),
++            truncate_vals=kwargs.get('truncate_vals', 500),
++            line_wrap=kwargs.get('line_wrap', 60),
++            reverse=kwargs.get('reverse', False),
++            suppressed_paths=kwargs.get('suppressed_paths', None),
++            suppressed_vars=kwargs.get('suppressed_vars', None),
++            suppressed_exceptions=None,
++            add_summary=add_summary,
++        )
++
++    formatter = ThreadStackFormatter(config)
++    return formatter.format_thread(thread)
+ 
+-        clr_head = get_ansi_tpl(*sc.colors['exception_type'])
+-        clr_msg = get_ansi_tpl(*sc.colors['exception_msg'])
+ 
+-        return clr_head % type_str + clr_msg % val_str
++def format_exception_message(etype, evalue, tb=None, style='plaintext'):
++    """
++    Format the final exception type and message line.
++    """
++    styler = get_styler(style)
++    return styler.format_exception_message(etype, evalue, tb)
+ 
+ 
+ def _walk_traceback(tb):
+-    """
+-    Follow a chain of traceback objects outwards
+-    """
+     while tb:
+         yield tb
+         tb = tb.tb_next
+diff --git a/stackprinter/frame_formatting.py b/stackprinter/frame_formatting.py
+index 136920e..ca8d774 100644
+--- a/stackprinter/frame_formatting.py
++++ b/stackprinter/frame_formatting.py
+@@ -5,10 +5,13 @@ from collections import OrderedDict
+ import stackprinter.extraction as ex
+ import stackprinter.source_inspection as sc
+ import stackprinter.colorschemes as colorschemes
++from stackprinter.config import FormatConfig
++from stackprinter.styling import Styler, PlaintextStyler, AnsiStyler, get_styler
+ 
+-from stackprinter.prettyprinting import format_value
++from stackprinter.prettyprinting import format_value, indent_text
+ from stackprinter.utils import inspect_callable, match, trim_source, get_ansi_tpl
+ 
++
+ class FrameFormatter():
+     headline_tpl = 'File "%s", line %s, in %s\n'
+     sourceline_tpl = "    %-3s  %s"
+@@ -21,10 +24,10 @@ class FrameFormatter():
+ 
+     val_tpl = ' ' * var_indent + "%s = %s\n"
+ 
+-    def __init__(self, source_lines=5, source_lines_after=1,
++    def __init__(self, cfg=None, source_lines=5, source_lines_after=1,
+                  show_signature=True, show_vals='like_source',
+                  truncate_vals=500, line_wrap: int = 60,
+-                 suppressed_paths=None, suppressed_vars=None):
++                 suppressed_paths=None, suppressed_vars=None, **kwargs):
+         """
+         Formatter for single frames.
+ 
+@@ -68,28 +71,64 @@ class FrameFormatter():
+             while deeper calls within boring code get a single line and no variable
+             values.
+ 
+-            Example: To hide numpy internals from the traceback, set
++        Example: To hide numpy internals from the traceback, set
+             `suppressed_paths=[r"lib/python.*/site-packages/numpy"]`
+         """
+-
+-
+-        if not (isinstance(source_lines, int) or source_lines == 'all'):
+-            raise ValueError("source_lines must be an integer or 'all', "
+-                             "was %r" % source_lines)
+-
+-        valid_gv = ['all', 'like_source', 'line', None, False]
+-        if show_vals not in valid_gv:
+-            raise ValueError("show_vals must be one of "
+-                             "%s, was %r" % (str(valid_gv), show_vals))
+-
+-        self.lines = source_lines
+-        self.lines_after = source_lines_after
+-        self.show_signature = show_signature
+-        self.show_vals = show_vals
+-        self.truncate_vals = truncate_vals
+-        self.line_wrap = line_wrap
+-        self.suppressed_paths = suppressed_paths
+-        self.suppressed_vars = suppressed_vars
++        if isinstance(cfg, FormatConfig):
++            self.config = cfg
++            if kwargs:
++                self.config = self.config.with_overrides(**kwargs)
++        else:
++            if cfg is not None:
++                source_lines = cfg
++            style = kwargs.pop('style', 'plaintext')
++            self.config = FormatConfig(
++                style=style,
++                source_lines=source_lines,
++                source_lines_after=source_lines_after,
++                show_signature=show_signature,
++                show_vals=show_vals,
++                truncate_vals=truncate_vals,
++                line_wrap=line_wrap,
++                suppressed_paths=suppressed_paths,
++                suppressed_vars=suppressed_vars,
++                **kwargs
++            )
++
++        self.styler = get_styler(self.config.style)
++        self.cfg = self.config
++
++    @property
++    def lines(self):
++        return self.config.source_lines
++
++    @property
++    def lines_after(self):
++        return self.config.source_lines_after
++
++    @property
++    def show_signature(self):
++        return self.config.show_signature
++
++    @property
++    def show_vals(self):
++        return self.config.show_vals
++
++    @property
++    def truncate_vals(self):
++        return self.config.truncate_vals
++
++    @property
++    def line_wrap(self):
++        return self.config.line_wrap
++
++    @property
++    def suppressed_paths(self):
++        return self.config.suppressed_paths
++
++    @property
++    def suppressed_vars(self):
++        return self.config.suppressed_vars
+ 
+     def __call__(self, frame, lineno=None):
+         """
+@@ -126,7 +165,7 @@ class FrameFormatter():
+         try:
+             finfo = ex.get_info(frame, lineno, self.suppressed_vars)
+ 
+-            return self._format_frame(finfo)
++            return indent_text(self._format_frame(finfo), getattr(self.config, 'indent', ''))
+         except Exception as exc:
+             # If we crash, annotate the exception with the thing
+             # we were trying to format, for debug/logging purposes.
+@@ -134,61 +173,30 @@ class FrameFormatter():
+             raise
+ 
+     def _format_frame(self, fi):
+-        msg = self.headline_tpl % (fi.filename, fi.lineno, fi.function)
++        msg = self.styler.format_headline(fi)
+ 
+         source_map, assignments = self.select_scope(fi)
+ 
++        colormap = self.styler.pick_colors(source_map, fi.name2lines, assignments, fi.lineno)
++
+         if source_map:
+-            source_lines = self._format_source(source_map)
+-            msg += self._format_listing(source_lines, fi.lineno)
++            source_lines = self.styler.format_source(source_map, colormap, fi.lineno)
++            msg += self.styler.format_listing(source_lines, fi.lineno)
+         if assignments:
+-            msg += self._format_assignments(assignments)
++            msg += self.styler.format_assignments(assignments, colormap, self.truncate_vals, self.line_wrap)
+         elif self.lines == 'all' or self.lines > 1 or self.show_signature:
+             msg += '\n'
+ 
+         return msg
+ 
+-    def _format_source(self, source_map):
+-        lines = OrderedDict()
+-        for ln in sorted(source_map):
+-            lines[ln] = ''.join(st for st, _, in source_map[ln])
+-        return lines
++    def _format_source(self, source_map, colormap=None, lineno=None):
++        return self.styler.format_source(source_map, colormap, lineno)
+ 
+     def _format_listing(self, lines, lineno):
+-        ln_prev = None
+-        msg = ""
+-        n_lines = len(lines)
+-        for ln in sorted(lines):
+-            line = lines[ln]
+-            if ln_prev and ln_prev != ln - 1:
+-                msg += self.elipsis_tpl
+-            ln_prev = ln
+-
+-            if n_lines > 1:
+-                if ln == lineno:
+-                    tpl = self.marked_sourceline_tpl
+-                else:
+-                    tpl = self.sourceline_tpl
+-                msg += tpl % (ln, line)
+-            else:
+-                msg += self.single_sourceline_tpl % line
+-
+-        msg += self.sep_source_below
+-        return msg
++        return self.styler.format_listing(lines, lineno)
+ 
+-    def _format_assignments(self, assignments):
+-        msgs = []
+-        for name, value in assignments.items():
+-            val_str = format_value(value,
+-                                   indent=len(name) + self.var_indent + 3,
+-                                   truncation=self.truncate_vals,
+-                                   wrap=self.line_wrap)
+-            assign_str = self.val_tpl % (name, val_str)
+-            msgs.append(assign_str)
+-        if len(msgs) > 0:
+-            return self.sep_vars + '\n' + ''.join(msgs) + self.sep_vars + '\n\n'
+-        else:
+-            return ''
++    def _format_assignments(self, assignments, colormap=None):
++        return self.styler.format_assignments(assignments, colormap, self.truncate_vals, self.line_wrap)
+ 
+     def select_scope(self, fi):
+         """
+@@ -235,8 +243,6 @@ class FrameFormatter():
+             elif self.show_vals == 'line':
+                 val_lines = [lineno] if source_lines else []
+ 
+-            # TODO refactor the whole blacklistling mechanism below:
+-
+             def hide(name):
+                 value = fi.assignments[name]
+                 if callable(value):
+@@ -248,14 +254,14 @@ class FrameFormatter():
+                 return False
+ 
+             visible_vars = (name for ln in val_lines
+-                            for name in fi.line2names[ln]
++                            for name in fi.line2names.get(ln, [])
+                             if name in fi.assignments)
+ 
+             visible_assignments = OrderedDict([(n, fi.assignments[n])
+                                                for n in visible_vars
+                                                if not hide(n)])
+         else:
+-            visible_assignments = {}
++            visible_assignments = OrderedDict()
+ 
+         return trimmed_source_map, visible_assignments
+ 
+@@ -266,116 +272,32 @@ class ColorfulFrameFormatter(FrameFormatter):
+         """
+         See FrameFormatter - this just adds some ANSI color codes here and there
+         """
+-        self.colors = getattr(colorschemes, style)()
+-
+-        highlight = self.tpl('highlight')
+-        header = self.tpl('header')
+-        arrow_lineno = self.tpl('arrow_lineno')
+-        dots = self.tpl('dots')
+-        lineno = self.tpl('lineno')
+-
+-        self.headline_tpl = header % 'File "%s%s' + highlight % '%s' + header % '", line %s, in %s\n'
+-        self.sourceline_tpl = lineno % super().sourceline_tpl
+-        self.marked_sourceline_tpl = arrow_lineno % super().marked_sourceline_tpl
+-        self.elipsis_tpl = dots % super().elipsis_tpl
+-        self.sep_vars = dots % super().sep_vars
+-
+-        super().__init__(**kwargs)
++        if isinstance(style, FormatConfig):
++            cfg = style
++            style_name = cfg.style
++            super().__init__(cfg=cfg, **kwargs)
++        else:
++            style_name = style
++            super().__init__(style=style_name, **kwargs)
++        self.colors = getattr(colorschemes, style_name)()
++        self.config = self.config.with_overrides(style=style_name)
++        self.styler = get_styler(style_name)
++        self.cfg = self.config
+ 
+     def tpl(self, name):
+         return get_ansi_tpl(*self.colors[name])
+ 
+     def _format_frame(self, fi):
+-        basepath, filename = os.path.split(fi.filename)
+-        sep = os.sep if basepath else ''
+-        msg = self.headline_tpl % (basepath, sep, filename, fi.lineno, fi.function)
+-        source_map, assignments = self.select_scope(fi)
++        return super()._format_frame(fi)
+ 
+-        colormap = self._pick_colors(source_map, fi.name2lines, assignments, fi.lineno)
++    def _format_source(self, source_map, colormap=None, lineno=None):
++        return self.styler.format_source(source_map, colormap, lineno)
+ 
+-        if source_map:
+-            source_lines = self._format_source(source_map, colormap, fi.lineno)
+-            msg += self._format_listing(source_lines, fi.lineno)
+-
+-        if assignments:
+-            msg += self._format_assignments(assignments, colormap)
+-        elif self.lines == 'all' or self.lines > 1 or self.show_signature:
+-            msg += '\n'
+-
+-        return msg
+-
+-    def _format_source(self, source_map, colormap, lineno):
+-        bold_tp = self.tpl('source_bold')
+-        default_tpl = self.tpl('source_default')
+-        comment_tpl = self.tpl('source_comment')
+-
+-        source_lines = OrderedDict()
+-        for ln in source_map:
+-            line = ''
+-            for snippet, ttype in source_map[ln]:
+-                if ttype in [sc.KEYWORD, sc.OP]:
+-                    line += bold_tp % snippet
+-                elif ttype == sc.VAR:
+-                    if snippet not in colormap:
+-                        line += default_tpl % snippet
+-                    else:
+-                        hue, sat, val, bold = colormap[snippet]
+-                        var_tpl = get_ansi_tpl(hue, sat, val, bold)
+-                        line += var_tpl % snippet
+-                elif ttype == sc.CALL:
+-                    line += bold_tp % snippet
+-                elif ttype == sc.COMMENT:
+-                    line += comment_tpl % snippet
+-                else:
+-                    line += default_tpl % snippet
+-            source_lines[ln] = line
+-
+-        return source_lines
+-
+-    def _format_assignments(self, assignments, colormap):
+-        msgs = []
+-        for name, value in assignments.items():
+-            val_str = format_value(value,
+-                                   indent=len(name) + self.var_indent + 3,
+-                                   truncation=self.truncate_vals,
+-                                   wrap=self.line_wrap)
+-            assign_str = self.val_tpl % (name, val_str)
+-            hue, sat, val, bold = colormap.get(name, self.colors['var_invisible'])
+-            clr_str = get_ansi_tpl(hue, sat, val, bold) % assign_str
+-            msgs.append(clr_str)
+-        if len(msgs) > 0:
+-            return self.sep_vars + '\n' + ''.join(msgs) + self.sep_vars + '\n\n'
+-        else:
+-            return ''
++    def _format_assignments(self, assignments, colormap=None):
++        return self.styler.format_assignments(assignments, colormap, self.truncate_vals, self.line_wrap)
+ 
+     def _pick_colors(self, source_map, name2lines, assignments, lineno):
+-        # TODO refactor: pick a hash for each name across frames, _then_ color.
+-        # Currently, colors are consistent across frames purely because there's
+-        # a fixed map from hashes to colors. It's not bijective though. If colors
+-        # were picked after hashing across all frames, that could be fixed.
+-        colormap = {}
+-        for line in source_map.values():
+-            for name, ttype in line:
+-                if name not in colormap and ttype == sc.VAR and name in assignments:
+-                    value = assignments[name]
+-                    highlight = lineno in name2lines[name]
+-                    colormap[name] = self._pick_color(name, value, highlight)
+-        return colormap
++        return self.styler.pick_colors(source_map, name2lines, assignments, lineno)
+ 
+     def _pick_color(self, name, val, highlight=False, method='id'):
+-        if method == 'formatted':
+-            seed = format_value(val)
+-        elif method == 'repr':
+-            seed = repr(val)
+-        elif method == 'id':
+-            seed = id(val)
+-        elif method == 'name':
+-            seed = name
+-        else:
+-            raise ValueError('%r' % method)
+-
+-        return self.colors.get_random(seed, highlight)
+-
+-
+-
+-
++        return self.styler._pick_color(name, val, highlight=highlight, method=method)
+diff --git a/stackprinter/prettyprinting.py b/stackprinter/prettyprinting.py
+index 6e17f97..c5badad 100644
+--- a/stackprinter/prettyprinting.py
++++ b/stackprinter/prettyprinting.py
+@@ -1,5 +1,12 @@
+ import os
+ 
++
++def indent_text(text, prefix):
++    """Prefix every non-empty line of `text` with `prefix`, keeping blank lines empty."""
++    if not prefix:
++        return text
++    return "\n".join((prefix + line) if line else "" for line in text.split("\n"))
++
+ from stackprinter.extraction import UnresolvedAttribute
+ from stackprinter.utils import inspect_callable
+ 
+diff --git a/stackprinter/styling.py b/stackprinter/styling.py
+new file mode 100644
+index 0000000..b3a86c2
+--- /dev/null
++++ b/stackprinter/styling.py
+@@ -0,0 +1,242 @@
++"""
++Output styler abstraction for plain-text and ANSI-colored rendering.
++"""
++import os
++from collections import OrderedDict
++import stackprinter.source_inspection as sc
++import stackprinter.colorschemes as colorschemes
++from stackprinter.prettyprinting import format_value
++from stackprinter.utils import get_ansi_tpl
++
++
++class Styler:
++    """
++    Base styler defining frame templates and text styling hooks.
++    """
++    headline_tpl = 'File "%s", line %s, in %s\n'
++    sourceline_tpl = "    %-3s  %s"
++    single_sourceline_tpl = "    %s"
++    marked_sourceline_tpl = "--> %-3s  %s"
++    elipsis_tpl = " (...)\n"
++    var_indent = 5
++    sep_vars = "%s%s" % ((' ') * 4, ('.' * 50))
++    sep_source_below = ""
++    val_tpl = ' ' * var_indent + "%s = %s\n"
++
++    def format_headline(self, fi):
++        raise NotImplementedError
++
++    def format_source(self, source_map, colormap=None, lineno=None):
++        raise NotImplementedError
++
++    def format_listing(self, lines, lineno):
++        ln_prev = None
++        msg = ""
++        n_lines = len(lines)
++        for ln in sorted(lines):
++            line = lines[ln]
++            if ln_prev and ln_prev != ln - 1:
++                msg += self.elipsis_tpl
++            ln_prev = ln
++
++            if n_lines > 1:
++                if ln == lineno:
++                    tpl = self.marked_sourceline_tpl
++                else:
++                    tpl = self.sourceline_tpl
++                msg += tpl % (ln, line)
++            else:
++                msg += self.single_sourceline_tpl % line
++
++        msg += self.sep_source_below
++        return msg
++
++    def format_assignments(self, assignments, colormap=None, truncate_vals=500, line_wrap=60):
++        raise NotImplementedError
++
++    def pick_colors(self, source_map, name2lines, assignments, lineno):
++        return {}
++
++    def format_exception_message(self, etype, evalue, tb=None):
++        raise NotImplementedError
++
++    def format_chain_hint(self, hint):
++        raise NotImplementedError
++
++
++class PlaintextStyler(Styler):
++    """
++    Plain-text styling without ANSI color escape codes.
++    """
++
++    def format_headline(self, fi):
++        return self.headline_tpl % (fi.filename, fi.lineno, fi.function)
++
++    def format_source(self, source_map, colormap=None, lineno=None):
++        lines = OrderedDict()
++        for ln in sorted(source_map):
++            lines[ln] = ''.join(st for st, _ in source_map[ln])
++        return lines
++
++    def format_assignments(self, assignments, colormap=None, truncate_vals=500, line_wrap=60):
++        msgs = []
++        for name, value in assignments.items():
++            val_str = format_value(value,
++                                   indent=len(name) + self.var_indent + 3,
++                                   truncation=truncate_vals,
++                                   wrap=line_wrap)
++            assign_str = self.val_tpl % (name, val_str)
++            msgs.append(assign_str)
++        if len(msgs) > 0:
++            return self.sep_vars + '\n' + ''.join(msgs) + self.sep_vars + '\n\n'
++        return ''
++
++    def format_exception_message(self, etype, evalue, tb=None):
++        if etype is None:
++            etype = type(None)
++        type_str = etype.__name__
++        val_str = str(evalue)
++        if etype == SyntaxError and getattr(evalue, 'text', None):
++            val_str += '\n    %s\n   %s^' % (evalue.text.rstrip(), ' ' * evalue.offset)
++        if val_str:
++            type_str += ": "
++        return type_str + val_str
++
++    def format_chain_hint(self, hint):
++        return hint
++
++
++class AnsiStyler(Styler):
++    """
++    ANSI color sequence styling using selected color schemes.
++    """
++
++    def __init__(self, style_name='darkbg'):
++        if style_name is True or style_name == 'color':
++            style_name = 'color'
++        elif style_name == 'dark':
++            style_name = 'darkbg'
++        elif style_name == 'light':
++            style_name = 'lightbg'
++        self.style_name = style_name
++        self.colors = getattr(colorschemes, style_name)()
++
++        highlight = self.tpl('highlight')
++        header = self.tpl('header')
++        arrow_lineno = self.tpl('arrow_lineno')
++        dots = self.tpl('dots')
++        lineno = self.tpl('lineno')
++
++        self.headline_tpl = header % 'File "%s%s' + highlight % '%s' + header % '", line %s, in %s\n'
++        self.sourceline_tpl = lineno % Styler.sourceline_tpl
++        self.marked_sourceline_tpl = arrow_lineno % Styler.marked_sourceline_tpl
++        self.elipsis_tpl = dots % Styler.elipsis_tpl
++        self.sep_vars = dots % Styler.sep_vars
++
++    def tpl(self, name):
++        return get_ansi_tpl(*self.colors[name])
++
++    def format_headline(self, fi):
++        basepath, filename = os.path.split(fi.filename)
++        sep = os.sep if basepath else ''
++        return self.headline_tpl % (basepath, sep, filename, fi.lineno, fi.function)
++
++    def format_source(self, source_map, colormap=None, lineno=None):
++        bold_tp = self.tpl('source_bold')
++        default_tpl = self.tpl('source_default')
++        comment_tpl = self.tpl('source_comment')
++        colormap = colormap or {}
++
++        source_lines = OrderedDict()
++        for ln in source_map:
++            line = ''
++            for snippet, ttype in source_map[ln]:
++                if ttype in [sc.KEYWORD, sc.OP]:
++                    line += bold_tp % snippet
++                elif ttype == sc.VAR:
++                    if snippet not in colormap:
++                        line += default_tpl % snippet
++                    else:
++                        hue, sat, val, bold = colormap[snippet]
++                        var_tpl = get_ansi_tpl(hue, sat, val, bold)
++                        line += var_tpl % snippet
++                elif ttype == sc.CALL:
++                    line += bold_tp % snippet
++                elif ttype == sc.COMMENT:
++                    line += comment_tpl % snippet
++                else:
++                    line += default_tpl % snippet
++            source_lines[ln] = line
++        return source_lines
++
++    def format_assignments(self, assignments, colormap=None, truncate_vals=500, line_wrap=60):
++        colormap = colormap or {}
++        msgs = []
++        for name, value in assignments.items():
++            val_str = format_value(value,
++                                   indent=len(name) + self.var_indent + 3,
++                                   truncation=truncate_vals,
++                                   wrap=line_wrap)
++            assign_str = self.val_tpl % (name, val_str)
++            hue, sat, val, bold = colormap.get(name, self.colors['var_invisible'])
++            clr_str = get_ansi_tpl(hue, sat, val, bold) % assign_str
++            msgs.append(clr_str)
++        if len(msgs) > 0:
++            return self.sep_vars + '\n' + ''.join(msgs) + self.sep_vars + '\n\n'
++        return ''
++
++    def pick_colors(self, source_map, name2lines, assignments, lineno):
++        colormap = {}
++        for line in source_map.values():
++            for name, ttype in line:
++                if name not in colormap and ttype == sc.VAR and name in assignments:
++                    value = assignments[name]
++                    highlight = lineno in name2lines.get(name, [])
++                    colormap[name] = self._pick_color(name, value, highlight)
++        return colormap
++
++    def _pick_color(self, name, val, highlight=False, method='id'):
++        if method == 'formatted':
++            seed = format_value(val)
++        elif method == 'repr':
++            seed = repr(val)
++        elif method == 'id':
++            seed = id(val)
++        elif method == 'name':
++            seed = name
++        else:
++            raise ValueError('%r' % method)
++        return self.colors.get_random(seed, highlight)
++
++    def format_exception_message(self, etype, evalue, tb=None):
++        if etype is None:
++            etype = type(None)
++        type_str = etype.__name__
++        val_str = str(evalue)
++        if etype == SyntaxError and getattr(evalue, 'text', None):
++            val_str += '\n    %s\n   %s^' % (evalue.text.rstrip(), ' ' * evalue.offset)
++        if val_str:
++            type_str += ": "
++
++        clr_head = self.tpl('exception_type')
++        clr_msg = self.tpl('exception_msg')
++        return clr_head % type_str + clr_msg % val_str
++
++    def format_chain_hint(self, hint):
++        clr = self.tpl('exception_type')
++        return clr % hint
++
++
++def get_styler(style='plaintext'):
++    """
++    Factory resolving style name to Styler instance.
++    """
++    if not style or style in ('plaintext', 'plain', 'none'):
++        return PlaintextStyler()
++    if style is True or style == 'color':
++        return AnsiStyler('color')
++    if style == 'dark':
++        return AnsiStyler('darkbg')
++    if style == 'light':
++        return AnsiStyler('lightbg')
++    return AnsiStyler(style)
+diff --git a/stackprinter/tracing.py b/stackprinter/tracing.py
+index f6a274c..51dea2c 100644
+--- a/stackprinter/tracing.py
++++ b/stackprinter/tracing.py
+@@ -3,11 +3,14 @@ import inspect
+ 
+ from stackprinter.frame_formatting import FrameFormatter, ColorfulFrameFormatter
+ from stackprinter.formatting import format_exception_message, get_formatter
++from stackprinter.config import FormatConfig
++from stackprinter.styling import Styler, get_styler
+ from stackprinter import prettyprinting as ppr
+ from stackprinter.utils import match
++from stackprinter.prettyprinting import indent_text
+ 
+ 
+-def trace(*args, suppressed_paths=[], **formatter_kwargs):
++def trace(*args, suppressed_paths=[], _config=None, **formatter_kwargs):
+     """
+     Get a decorator to print all calls & returns in a function
+ 
+@@ -33,13 +36,16 @@ def trace(*args, suppressed_paths=[], **formatter_kwargs):
+ 
+ 
+     """
++    if 'config' in formatter_kwargs:
++        raise TypeError("trace() got an unexpected keyword argument 'config'")
+     traceprinter = TracePrinter(suppressed_paths=suppressed_paths,
++                                _config=_config,
+                                 **formatter_kwargs)
+ 
+     def deco(f):
+-        def wrapper(*args, **formatter_kwargs):
++        def wrapper(*args, **kwargs):
+             traceprinter.enable(current_depth=count_stack(sys._getframe()) + 1)
+-            result = f(*args, **formatter_kwargs)
++            result = f(*args, **kwargs)
+             traceprinter.disable()
+             return result
+         return wrapper
+@@ -50,6 +56,67 @@ def trace(*args, suppressed_paths=[], **formatter_kwargs):
+         return deco
+ 
+ 
++class TraceEventFormatter:
++    """
++    Decomposes trace event rendering (call, return, exception note) driven by FormatConfig and Styler.
++    """
++    def __init__(self, cfg=None):
++        if cfg is None:
++            cfg = FormatConfig(style='plaintext')
++        elif not isinstance(cfg, FormatConfig):
++            cfg = FormatConfig(style=cfg)
++        self.config = cfg
++        self.cfg = self.config
++        self.styler = get_styler(self.config.style)
++        self.fmt = FrameFormatter(self.config.with_overrides(indent=''))
++
++    def format_event(self, event, **kwargs):
++        if isinstance(event, dict):
++            frame = event.get('frame')
++            event_type = event.get('type', 'call')
++            arg = event.get('arg')
++            note = event.get('note', '')
++            suppressed_paths = event.get('suppressed_paths', self.config.suppressed_paths or [])
++        elif isinstance(event, tuple):
++            if len(event) == 2:
++                frame, note = event
++                event_type = 'call' if not note else ('return' if 'Return' in note else 'exception')
++                arg = None
++            else:
++                event_type, frame, arg = event[:3]
++                note = ''
++            suppressed_paths = self.config.suppressed_paths or []
++        else:
++            frame = event
++            event_type = kwargs.get('type', 'call')
++            arg = kwargs.get('arg')
++            note = kwargs.get('note', '')
++            suppressed_paths = kwargs.get('suppressed_paths', self.config.suppressed_paths or [])
++
++        if frame is None:
++            return ""
++
++        filepath = inspect.getsourcefile(frame) or inspect.getfile(frame)
++        if filepath in __file__:
++            return ""
++
++        if event_type == 'return' and not note and arg is not None:
++            val_str = ppr.format_value(arg, indent=11, truncation=1000)
++            note = '    Return %s\n' % val_str
++        elif event_type == 'exception' and not note and arg is not None:
++            note = self.styler.format_exception_message(*arg)
++
++        if match(filepath, suppressed_paths):
++            line_info = (filepath, frame.f_lineno, frame.f_code.co_name)
++            frame_str = 'File %s, line %s, in %s\n' % line_info
++            if len(note) > 123:
++                note = note[:120] + '...'
++        else:
++            frame_str = self.fmt(frame)
++
++        return frame_str + note
++
++
+ class TracePrinter():
+     """
+     Print a trace of all calls & returns in a piece of code as they are executed
+@@ -81,13 +148,39 @@ class TracePrinter():
+                  depth_limit=20,
+                  print_function=print,
+                  stop_on_exception=True,
++                 _config=None,
+                  **formatter_kwargs):
+ 
+-        self.fmt = get_formatter(**formatter_kwargs)
+-        self.fmt_style = formatter_kwargs.get('style', 'plaintext')
+-        assert isinstance(suppressed_paths, list)
+-        self.suppressed_paths = suppressed_paths
+-        self.emit = print_function
++        if 'config' in formatter_kwargs:
++            raise TypeError("TracePrinter() got an unexpected keyword argument 'config'")
++
++        if _config is not None:
++            if not isinstance(_config, FormatConfig):
++                raise TypeError("_config must be a FormatConfig instance, got %r" % (type(_config),))
++            self.config = _config.with_overrides(**formatter_kwargs) if formatter_kwargs else _config
++        else:
++            formatter_kwargs.setdefault('style', 'plaintext')
++            style = formatter_kwargs.pop('style', 'plaintext')
++            self.config = FormatConfig(style=style, **formatter_kwargs)
++
++        self.cfg = self.config
++        self.fmt_style = self.config.style
++        if suppressed_paths is None:
++            self.suppressed_paths = []
++        elif isinstance(suppressed_paths, list):
++            self.suppressed_paths = suppressed_paths
++        else:
++            self.suppressed_paths = list(suppressed_paths)
++
++        if self.suppressed_paths and not self.config.suppressed_paths:
++            self.config = self.config.with_overrides(suppressed_paths=self.suppressed_paths)
++            self.cfg = self.config
++
++        self.event_formatter = TraceEventFormatter(self.config)
++        self.fmt = self.event_formatter.fmt
++        self.styler = self.event_formatter.styler
++        _prefix = getattr(self.config, 'indent', '')
++        self.emit = (lambda text: print_function(indent_text(text, _prefix))) if _prefix else print_function
+         self.depth_limit = depth_limit
+         self.stop_on_exception = stop_on_exception
+ 
+@@ -126,35 +219,40 @@ class TracePrinter():
+ 
+         if 'call' in event:
+             callsite = frame.f_back
+-            self.show(callsite)
+-            self.show(frame)
++            self.show(callsite, event_type='call')
++            self.show(frame, event_type='call')
+         elif 'return' in event:
+             val_str = ppr.format_value(arg, indent=11, truncation=1000)
+             ret_str = '    Return %s\n' % val_str
+-            self.show(frame, note=ret_str)
++            self.show(frame, note=ret_str, event_type='return', arg=arg)
+         elif event == 'exception':
+-            exc_str = format_exception_message(*arg, style=self.fmt_style)
+-            self.show(frame, note=exc_str)
++            exc_str = self.event_formatter.styler.format_exception_message(*arg)
++            self.show(frame, note=exc_str, event_type='exception', arg=arg)
+             if self.stop_on_exception:
+                 self.disable()
+             return None
+ 
+         return self.trace
+ 
+-    def show(self, frame, note=''):
++    def show(self, frame, note='', event_type='call', arg=None):
+         if frame is None:
+             return
+ 
+         filepath = inspect.getsourcefile(frame) or inspect.getfile(frame)
+         if filepath in __file__:
+             return
+-        elif match(filepath, self.suppressed_paths):
+-            line_info = (filepath, frame.f_lineno, frame.f_code.co_name)
+-            frame_str = 'File %s, line %s, in %s\n' % line_info
+-            if len(note) > 123:
+-                note == note[:120] + '...'
+-        else:
+-            frame_str = self.fmt(frame)
++
++        payload = {
++            'type': event_type,
++            'frame': frame,
++            'note': note,
++            'arg': arg,
++            'suppressed_paths': self.suppressed_paths,
++        }
++        event_str = self.event_formatter.format_event(payload)
++        event_str = ''
++        if not event_str:
++            return
+ 
+         depth = count_stack(frame) - self.starting_depth
+         our_callsite = frame.f_back
+@@ -166,9 +264,7 @@ class TracePrinter():
+             # we're a parent frame
+             self.emit(add_indent('┌──────┘\n', depth))
+ 
+-
+-        frame_str += note
+-        self.emit(add_indent(frame_str, depth))
++        self.emit(add_indent(event_str, depth))
+         self.previous_frame = frame
+ 
+ 

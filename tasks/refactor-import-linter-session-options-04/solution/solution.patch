@@ -1,0 +1,489 @@
+diff --git a/src/importlinter/api.py b/src/importlinter/api.py
+index f49ce1ddb2669a82119ce75c222d803e5748a991..16d7f72ffd90edd6855308372854db8f63aa40a7 100644
+--- a/src/importlinter/api.py
++++ b/src/importlinter/api.py
+@@ -34,6 +34,6 @@ def read_configuration(config_filename: str | None = None) -> dict:
+     """
+     user_options = use_cases.read_user_options(config_filename)
+     return {
+-        "session_options": user_options.session_options,
++        "session_options": dict(user_options.session_options),
+         "contracts_options": user_options.contracts_options,
+     }
+diff --git a/src/importlinter/application/use_cases.py b/src/importlinter/application/use_cases.py
+index cb84eba51aca2624e499c58dc3fd93552b5dbf72..ddb93644d5b9acb577d4d94bfdabd80147c1cf4a 100644
+--- a/src/importlinter/application/use_cases.py
++++ b/src/importlinter/application/use_cases.py
+@@ -23,7 +23,7 @@ from .ports.reporting import Report
+ from .rendering import render_exception, render_report, format_duration
+ from ..domain.dotfile import DotGraph, Edge, EdgeArrowhead, EdgeStyle
+ from .sentinels import NotSupplied
+-from .user_options import InvalidUserOptions, UserOptions
++from .user_options import InvalidUserOptions, SessionOptions, UserOptions
+ 
+ # Public functions
+ # ----------------
+@@ -121,13 +121,13 @@ def create_report(
+         InvalidUserOptions: if the report could not be run due to invalid user configuration,
+                             such as a module that could not be imported.
+     """
+-    include_external_packages = _get_include_external_packages(user_options)
+-    exclude_type_checking_imports = _get_exclude_type_checking_imports(user_options)
++    include_external_packages = user_options.session_options.include_external_packages
++    exclude_type_checking_imports = user_options.session_options.exclude_type_checking_imports
+ 
+     with _get_spinner(":brick: Building graph...", verbose):
+         with settings.TIMER as timer:
+             graph = _build_graph(
+-                root_package_names=user_options.session_options["root_packages"],
++                root_package_names=user_options.session_options.root_packages,
+                 cache_dir=cache_dir,
+                 include_external_packages=include_external_packages,
+                 exclude_type_checking_imports=exclude_type_checking_imports,
+@@ -213,14 +213,15 @@ def _format_module_count(count: int) -> str:
+ 
+ 
+ def _normalize_user_options(user_options: UserOptions) -> UserOptions:
+-    normalized_options = copy(user_options)
+-    if "root_packages" not in normalized_options.session_options:
+-        normalized_options.session_options["root_packages"] = [
+-            normalized_options.session_options["root_package"]
+-        ]
+-    if "root_package" in normalized_options.session_options:
+-        del normalized_options.session_options["root_package"]
+-    return normalized_options
++    session_options = SessionOptions(copy(user_options.session_options))
++    if "root_packages" not in session_options:
++        session_options["root_packages"] = [session_options["root_package"]]
++    if "root_package" in session_options:
++        del session_options["root_package"]
++    return UserOptions(
++        session_options=session_options,
++        contracts_options=copy(user_options.contracts_options),
++    )
+ 
+ 
+ def _get_spinner(message: str, verbose: bool) -> contextlib.AbstractContextManager:
+@@ -416,44 +417,6 @@ def _string_to_class(string: str) -> type:
+     return cls
+ 
+ 
+-def _get_include_external_packages(user_options: UserOptions) -> bool | None:
+-    """
+-    Get a boolean (or None) for the include_external_packages option in user_options.
+-    """
+-    try:
+-        include_external_packages_str = user_options.session_options["include_external_packages"]
+-    except KeyError:
+-        return None
+-    # Cast the string to a boolean.
+-    return include_external_packages_str in ("True", "true")
+-
+-
+-def _get_exclude_type_checking_imports(user_options: UserOptions) -> bool:
+-    """
+-    Get a boolean for the exclude_type_checking_imports option in user_options.
+-    """
+-    try:
+-        exclude_type_checking_imports_str = user_options.session_options[
+-            "exclude_type_checking_imports"
+-        ]
+-    except KeyError:
+-        return False
+-    # Cast the string to a boolean.
+-    return exclude_type_checking_imports_str in ("True", "true")
+-
+-
+-def _get_show_timings(user_options: UserOptions) -> bool:
+-    """
+-    Get a boolean (or None) for the show_timings option in user_options.
+-    """
+-    try:
+-        show_timings_str = user_options.session_options["show_timings"]
+-    except KeyError:
+-        return False
+-    # Cast the string to a boolean.
+-    return show_timings_str in ("True", "true")
+-
+-
+ # --- Dot graph generation ---
+ 
+ 
+diff --git a/src/importlinter/application/user_options.py b/src/importlinter/application/user_options.py
+index efbdc9881ebabe37388e15c66485a6718c989ba5..fdcf7c47f24de3153a86b85fc7f895ee3d753fc3 100644
+--- a/src/importlinter/application/user_options.py
++++ b/src/importlinter/application/user_options.py
+@@ -1,10 +1,60 @@
+ from typing import Any
++from collections.abc import Mapping
+ 
+ 
+ class InvalidUserOptions(Exception):
+     pass
+ 
+ 
++def _is_truthy(value: Any) -> bool:
++    return str(value).lower() == "true"
++
++
++class SessionOptions(dict[str, Any]):
++    """
++    Typed owner for session-level options, preserving raw values as a mapping.
++    """
++
++    def __init__(self, raw_options: Mapping[str, Any] | None = None) -> None:
++        super().__init__(raw_options or {})
++
++    def normalize_root_packages(self) -> None:
++        """
++        Normalize root_package -> root_packages in-place.
++        """
++        if "root_packages" not in self:
++            if "root_package" in self:
++                self["root_packages"] = [self["root_package"]]
++        if "root_package" in self:
++            del self["root_package"]
++
++    @property
++    def root_packages(self) -> list[str]:
++        if "root_packages" in self:
++            return self["root_packages"]
++        if "root_package" in self:
++            return [self["root_package"]]
++        raise KeyError("root_packages")
++
++    @property
++    def include_external_packages(self) -> bool | None:
++        if "include_external_packages" not in self:
++            return None
++        return _is_truthy(self["include_external_packages"])
++
++    @property
++    def exclude_type_checking_imports(self) -> bool:
++        if "exclude_type_checking_imports" not in self:
++            return False
++        return _is_truthy(self["exclude_type_checking_imports"])
++
++    @property
++    def show_timings(self) -> bool:
++        if "show_timings" not in self:
++            return False
++        return _is_truthy(self["show_timings"])
++
++
+ class UserOptions:
+     """
+     Configuration supplied by the end user.
+@@ -14,10 +64,15 @@ class UserOptions:
+         - contracts_options: List of the options that will be used to build the contracts.
+     """
+ 
++    session_options: SessionOptions
++
+     def __init__(
+-        self, session_options: dict[str, Any], contracts_options: list[dict[str, Any]]
++        self, session_options: Mapping[str, Any], contracts_options: list[dict[str, Any]]
+     ) -> None:
+-        self.session_options = session_options
++        if isinstance(session_options, SessionOptions):
++            self.session_options = session_options
++        else:
++            self.session_options = SessionOptions(session_options)
+         self.contracts_options = contracts_options
+ 
+     def __eq__(self, other: object) -> bool:
+diff --git a/src/importlinter/contracts/forbidden.py b/src/importlinter/contracts/forbidden.py
+index 661758b6dc0395b73765908251cee94667e8f64f..2949eb447be406dae589fc8b3b49b3288e4e895d 100644
+--- a/src/importlinter/contracts/forbidden.py
++++ b/src/importlinter/contracts/forbidden.py
+@@ -8,6 +8,7 @@ from grimp import ImportGraph
+ from importlinter.application import contract_utils, output
+ from importlinter.application import rendering
+ from importlinter.application.contract_utils import AlertLevel
++from importlinter.application.user_options import SessionOptions
+ from importlinter.configuration import settings
+ from importlinter.domain import fields
+ from importlinter.domain.contract import Contract, ContractCheck
+@@ -251,7 +252,9 @@ class ForbiddenContract(Contract):
+         }
+ 
+     def _graph_was_built_with_externals(self) -> bool:
+-        return str(self.session_options.get("include_external_packages")).lower() == "true"
++        if isinstance(self.session_options, SessionOptions):
++            return bool(self.session_options.include_external_packages)
++        return bool(SessionOptions(self.session_options).include_external_packages)
+ 
+     def _get_direct_chains(
+         self,
+diff --git a/tests/functional/test_read_configuration.py b/tests/functional/test_read_configuration.py
+index 62c89c85b9c5127e24adada98e847b6ad5b4fb10..51ba3a32f67e87316a8af95708db0b82ae513920 100644
+--- a/tests/functional/test_read_configuration.py
++++ b/tests/functional/test_read_configuration.py
+@@ -49,6 +49,24 @@ import importlinter.adapters.filesystem
+                 ],
+             ),
+         ),
++        (
++            "testpackage",
++            ".externalkeptcontract.toml",
++            dict(
++                session_options={
++                    "root_packages": ["testpackage"],
++                    "include_external_packages": "True",
++                },
++                contracts_options=[
++                    {
++                        "name": "External kept contract",
++                        "type": "forbidden",
++                        "source_modules": ["testpackage.high.blue"],
++                        "forbidden_modules": ["sqlalchemy"],
++                    }
++                ],
++            ),
++        ),
+     ),
+ )
+ def test_read_config(config_directory, config_file, expected):
+@@ -57,6 +75,9 @@ def test_read_config(config_directory, config_file, expected):
+ 
+     result = api.read_configuration(config_filename)
+ 
++    assert type(result) is dict
++    assert type(result["session_options"]) is dict
++    assert set(result.keys()) == {"session_options", "contracts_options"}
+     assert result == expected
+ 
+ 
+diff --git a/tests/unit/application/test_use_cases.py b/tests/unit/application/test_use_cases.py
+index c7eccfd9f096cd4bba6737989169d60008f8c230..b4ae8a104ee05fc070f2fee2fff7b414c4425e25 100644
+--- a/tests/unit/application/test_use_cases.py
++++ b/tests/unit/application/test_use_cases.py
+@@ -19,6 +19,7 @@ from importlinter.application.use_cases import (
+     lint_imports,
+ )
+ from importlinter.domain.dotfile import DotGraph, Edge, EdgeArrowhead, EdgeStyle
++from importlinter.domain.contract import Contract, ContractCheck, registry
+ from importlinter.application.user_options import UserOptions
+ from tests.adapters.building import FakeGraphBuilder
+ from tests.adapters.timing import FakeTimer
+@@ -272,6 +273,96 @@ class TestCheckContractsAndPrintReport:
+             """
+         )
+ 
++    def test_timings_in_session_options_does_not_affect_output(self):
++        self._configure(
++            contracts_options=[
++                {"type": "always_passes", "name": "Contract foo"},
++            ],
++            session_options={
++                "root_package": "mypackage",
++                "show_timings": "True",
++            },
++        )
++
++        with console.capture() as capture:
++            lint_imports(show_timings=False)
++
++        captured = capture.get()
++        assert "took" not in captured
++        assert "[s]" not in captured
++
++    @pytest.mark.parametrize(
++        "raw_external, expected_builder_val, expected_forbidden_val",
++        [
++            ("True", True, True),
++            ("true", True, True),
++            ("TRUE", True, True),
++            (True, True, True),
++            ("False", False, False),
++            ("false", False, False),
++            (False, False, False),
++            (None, None, False),
++        ],
++    )
++    def test_include_external_packages_shared_interpretation(
++        self, raw_external, expected_builder_val, expected_forbidden_val
++    ):
++        from importlinter.contracts.forbidden import ForbiddenContract
++
++        session_opts = {"root_package": "mypackage"}
++        if raw_external is not None:
++            session_opts["include_external_packages"] = raw_external
++
++        builder = FakeGraphBuilder()
++        self._configure(
++            contracts_options=[],
++            session_options=session_opts,
++            graph_builder=builder,
++        )
++        lint_imports()
++
++        assert builder.build_arguments["include_external_packages"] == expected_builder_val
++
++        contract = ForbiddenContract(
++            name="test",
++            session_options=session_opts,
++            contract_options={
++                "source_modules": ["mypackage.one"],
++                "forbidden_modules": ["external_pkg"],
++            },
++        )
++        assert contract._graph_was_built_with_externals() is expected_forbidden_val
++
++    @pytest.mark.parametrize(
++        "raw_typecheck, expected_builder_val",
++        [
++            ("True", True),
++            ("true", True),
++            ("TRUE", True),
++            (True, True),
++            ("False", False),
++            ("false", False),
++            (False, False),
++            (None, False),
++        ],
++    )
++    def test_exclude_type_checking_imports_passed_to_builder(
++        self, raw_typecheck, expected_builder_val
++    ):
++        session_opts = {"root_package": "mypackage"}
++        if raw_typecheck is not None:
++            session_opts["exclude_type_checking_imports"] = raw_typecheck
++
++        builder = FakeGraphBuilder()
++        self._configure(
++            contracts_options=[],
++            session_options=session_opts,
++            graph_builder=builder,
++        )
++        lint_imports()
++
++        assert builder.build_arguments["exclude_type_checking_imports"] == expected_builder_val
++
+     def test_no_logo(self):
+         self._configure(
+             contracts_options=[
+@@ -580,6 +671,38 @@ class TestMultipleRootPackages:
+ 
+         assert builder.build_arguments["root_package_names"] == root_package_names
+ 
++    def test_contract_receives_normalized_root_packages_without_legacy_key(self):
++        received_session_options = None
++
++        class CustomSessionCheckContract(Contract):
++            type_name = "custom_session_check"
++
++            def check(self, graph, verbose):
++                nonlocal received_session_options
++                received_session_options = self.session_options
++                return ContractCheck(kept=True)
++
++            def render_broken_contract(self, check):
++                pass
++
++        registry.register(CustomSessionCheckContract, "custom_session_check")
++        reader = FakeUserOptionReader(
++            UserOptions(
++                session_options={"root_package": "mypackage"},
++                contracts_options=[{"type": "custom_session_check", "name": "Custom"}],
++            )
++        )
++        settings.configure(
++            USER_OPTION_READERS={"foo": reader},
++            GRAPH_BUILDER=FakeGraphBuilder(),
++        )
++
++        lint_imports()
++
++        assert received_session_options is not None
++        assert received_session_options["root_packages"] == ["mypackage"]
++        assert "root_package" not in received_session_options
++
+ 
+ class TestGraphCopying:
+     def test_graph_can_be_mutated_without_affecting_other_contracts(self):
+diff --git a/tests/unit/application/test_user_options.py b/tests/unit/application/test_user_options.py
+index d7715a2e9203ac04213d9440af5014948306f229..c0334fc160ff0f0cc33afc4e98f8ce24798a66d4 100644
+--- a/tests/unit/application/test_user_options.py
++++ b/tests/unit/application/test_user_options.py
+@@ -1,7 +1,79 @@
+-from importlinter.application.user_options import UserOptions
++import pytest
++
++from importlinter.application.user_options import SessionOptions, UserOptions
+ 
+ 
+ def test_user_options_returns_false_on_unsupported_type_for_equality():
+     options = UserOptions(session_options={}, contracts_options=[])
+     result = options == 1
+     assert result is False
++
++
++@pytest.mark.parametrize(
++    "raw_value, expected_bool",
++    [
++        ("True", True),
++        ("true", True),
++        ("TRUE", True),
++        (True, True),
++        ("False", False),
++        ("false", False),
++        ("FALSE", False),
++        (False, False),
++        ("1", False),
++        ("0", False),
++        ("", False),
++    ],
++)
++def test_session_options_boolean_interpretation_matrix(raw_value, expected_bool):
++    options = SessionOptions(
++        {
++            "root_packages": ["pkg"],
++            "include_external_packages": raw_value,
++            "exclude_type_checking_imports": raw_value,
++            "show_timings": raw_value,
++        }
++    )
++    assert options.include_external_packages is expected_bool
++    assert options.exclude_type_checking_imports is expected_bool
++    assert options.show_timings is expected_bool
++    # Raw values preserved in mapping
++    assert options["include_external_packages"] == raw_value
++    assert options["exclude_type_checking_imports"] == raw_value
++    assert options["show_timings"] == raw_value
++
++
++def test_session_options_missing_defaults():
++    options = SessionOptions({"root_packages": ["pkg"]})
++    assert options.include_external_packages is None
++    assert options.exclude_type_checking_imports is False
++    assert options.show_timings is False
++
++
++def test_session_options_root_packages_resolution_and_normalization():
++    # Singular fallback
++    single = SessionOptions({"root_package": "pkg_a"})
++    assert single.root_packages == ["pkg_a"]
++    single.normalize_root_packages()
++    assert single["root_packages"] == ["pkg_a"]
++    assert "root_package" not in single
++
++    # Plural takes precedence
++    both = SessionOptions({"root_packages": ["pkg_b"], "root_package": "pkg_legacy"})
++    assert both.root_packages == ["pkg_b"]
++    both.normalize_root_packages()
++    assert both["root_packages"] == ["pkg_b"]
++    assert "root_package" not in both
++
++    # Empty raises KeyError on property
++    empty = SessionOptions({})
++    with pytest.raises(KeyError):
++        _ = empty.root_packages
++
++
++def test_user_options_wraps_session_options_as_session_options_instance():
++    raw_session = {"root_package": "pkg", "include_external_packages": "true"}
++    user_options = UserOptions(session_options=raw_session, contracts_options=[])
++    assert isinstance(user_options.session_options, SessionOptions)
++    assert user_options.session_options["include_external_packages"] == "true"
++    assert user_options.session_options.include_external_packages is True

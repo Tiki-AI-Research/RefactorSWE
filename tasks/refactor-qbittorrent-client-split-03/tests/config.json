@@ -1,0 +1,489 @@
+{
+  "base_commit": "3aec9107cd0ca50741ac4e079fd4f89c8a008968",
+  "reward_mode": "VERIFIER_ONLY",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "python3",
+    "tests/f2p_runner.py",
+    "--report",
+    "{report}",
+    "--config",
+    "{config}",
+    "--select",
+    "{p2p_select}"
+  ],
+  "evaluation_files": {
+    "client_BitComet_f2p_test.go": "2d33a3bf23976d4f35affbe83c64d4726452353e6944ce60abd2226f0deaeb42",
+    "client_BitComet_p2p_test.go": "1c6dc881ae27fe3618d2454f0197d65fedb2a18b529d619e8301707425676ac6",
+    "tests/f2p_runner.py": "3d8947794dcec38f582194dcbcfb3c38618574e2a13ac780591c13488f430e2c",
+    "tests/p2p_runner.py": "afd5ff75f13c3749926948ecd974abc3fa241470c86fd9552767fd696ff7b603"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 2880.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 600.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 2400.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 600.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PDetectionPrefersJSONAPIOn200"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PDetectionAcceptsJSONAPIUnauthorized"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PDetectionFallsBackToLegacyPanelChallenge"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PDetectionRejectsPanelWithoutBitCometChallenge"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PDetectionRejectsPanelWhenStatusIsNotUnauthorized"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PJSONAPIFetchTorrentsFiltersBTAndMapsFields"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PJSONAPIFetchTorrentPeersConvertsProgress"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PJSONAPILoginSucceedsOnPanelEndpoint"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PJSONAPISubmitBlockPeerGroupsByInfoHash"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PJSONAPISubmitBlockPeerFailsWhenAnyBanRejected"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PLegacyFetchTorrentsParsesPanelTaskTable"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PLegacyFetchTorrentPeersSkipsNonRemoteAddress"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PLegacyUnsupportedOperationsKeepFailing"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PLegacyLoginSucceedsOnPanelEndpoint"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PForcedBitCometDetectionKeepsFailureInstance"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PClientInterfaceContractPreserved"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PSharedModelsPreserved"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PConfiguredQBitTorrentStillSelected"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_BitComet_p2p_test.go::TestP2PConfiguredTransmissionStillSelected"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_test.go::TestIsSupportClient"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_test.go::TestIsBanPort"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_test.go::TestSubmitBlockPeer_NilInput"
+      },
+      {
+        "role": "P2P",
+        "selector": "client_test.go::TestTrTorrentToTorrent"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PDetectionReturnsDistinctImplementationTypesPerFamily"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PForcedDetectionDoesNotReturnJSONImplementation"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PImplementationChoiceIsIndependentOfAcceptedJSONProbeStatus"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PJSONImplementationTypeExposesNoExportedFields"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PLegacyImplementationTypeExposesNoExportedFields"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PJSONImplementationExportedMethodSetMatchesClientInterface"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PLegacyImplementationExportedMethodSetMatchesClientInterface"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PNoClientFamilyTypeDeclaresExportedIntegerState"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PJSONImplementationZeroValueStaysInJSONFamily"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PJSONInstanceKeepsFamilyAfterLegacyRedetection"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PJSONInstanceKeepsBanSubmissionAfterLegacyRedetection"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PLegacyInstanceKeepsPanelFamilyAfterJSONRedetection"
+      },
+      {
+        "role": "F2P",
+        "selector": "client_BitComet_f2p_test.go::TestF2PLegacyUnsupportedBlockSubmissionSurvivesJSONRedetection"
+      }
+    ],
+    "selector_timeout_seconds": 600.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "client_BitComet_p2p_test.go::TestP2PDetectionPrefersJSONAPIOn200",
+          "client_BitComet_p2p_test.go::TestP2PDetectionAcceptsJSONAPIUnauthorized",
+          "client_BitComet_p2p_test.go::TestP2PDetectionFallsBackToLegacyPanelChallenge",
+          "client_BitComet_p2p_test.go::TestP2PDetectionRejectsPanelWithoutBitCometChallenge",
+          "client_BitComet_p2p_test.go::TestP2PDetectionRejectsPanelWhenStatusIsNotUnauthorized",
+          "client_BitComet_p2p_test.go::TestP2PJSONAPIFetchTorrentsFiltersBTAndMapsFields",
+          "client_BitComet_p2p_test.go::TestP2PJSONAPIFetchTorrentPeersConvertsProgress",
+          "client_BitComet_p2p_test.go::TestP2PJSONAPILoginSucceedsOnPanelEndpoint",
+          "client_BitComet_p2p_test.go::TestP2PJSONAPISubmitBlockPeerGroupsByInfoHash",
+          "client_BitComet_p2p_test.go::TestP2PJSONAPISubmitBlockPeerFailsWhenAnyBanRejected",
+          "client_BitComet_p2p_test.go::TestP2PLegacyFetchTorrentsParsesPanelTaskTable",
+          "client_BitComet_p2p_test.go::TestP2PLegacyFetchTorrentPeersSkipsNonRemoteAddress",
+          "client_BitComet_p2p_test.go::TestP2PLegacyUnsupportedOperationsKeepFailing",
+          "client_BitComet_p2p_test.go::TestP2PLegacyLoginSucceedsOnPanelEndpoint",
+          "client_BitComet_p2p_test.go::TestP2PForcedBitCometDetectionKeepsFailureInstance",
+          "client_BitComet_p2p_test.go::TestP2PClientInterfaceContractPreserved",
+          "client_BitComet_p2p_test.go::TestP2PSharedModelsPreserved",
+          "client_BitComet_p2p_test.go::TestP2PConfiguredQBitTorrentStillSelected",
+          "client_BitComet_p2p_test.go::TestP2PConfiguredTransmissionStillSelected",
+          "client_test.go::TestIsSupportClient",
+          "client_test.go::TestIsBanPort",
+          "client_test.go::TestSubmitBlockPeer_NilInput",
+          "client_test.go::TestTrTorrentToTorrent",
+          "client_BitComet_f2p_test.go::TestF2PDetectionReturnsDistinctImplementationTypesPerFamily",
+          "client_BitComet_f2p_test.go::TestF2PForcedDetectionDoesNotReturnJSONImplementation",
+          "client_BitComet_f2p_test.go::TestF2PImplementationChoiceIsIndependentOfAcceptedJSONProbeStatus",
+          "client_BitComet_f2p_test.go::TestF2PJSONImplementationTypeExposesNoExportedFields",
+          "client_BitComet_f2p_test.go::TestF2PLegacyImplementationTypeExposesNoExportedFields",
+          "client_BitComet_f2p_test.go::TestF2PJSONImplementationExportedMethodSetMatchesClientInterface",
+          "client_BitComet_f2p_test.go::TestF2PLegacyImplementationExportedMethodSetMatchesClientInterface",
+          "client_BitComet_f2p_test.go::TestF2PNoClientFamilyTypeDeclaresExportedIntegerState",
+          "client_BitComet_f2p_test.go::TestF2PJSONImplementationZeroValueStaysInJSONFamily",
+          "client_BitComet_f2p_test.go::TestF2PJSONInstanceKeepsFamilyAfterLegacyRedetection",
+          "client_BitComet_f2p_test.go::TestF2PJSONInstanceKeepsBanSubmissionAfterLegacyRedetection",
+          "client_BitComet_f2p_test.go::TestF2PLegacyInstanceKeepsPanelFamilyAfterJSONRedetection",
+          "client_BitComet_f2p_test.go::TestF2PLegacyUnsupportedBlockSubmissionSurvivesJSONRedetection"
+        ],
+        "timeout_seconds": 600.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "client_BitComet_f2p_test.go::TestF2PDetectionReturnsDistinctImplementationTypesPerFamily",
+    "client_BitComet_f2p_test.go::TestF2PForcedDetectionDoesNotReturnJSONImplementation",
+    "client_BitComet_f2p_test.go::TestF2PImplementationChoiceIsIndependentOfAcceptedJSONProbeStatus",
+    "client_BitComet_f2p_test.go::TestF2PJSONImplementationTypeExposesNoExportedFields",
+    "client_BitComet_f2p_test.go::TestF2PLegacyImplementationTypeExposesNoExportedFields",
+    "client_BitComet_f2p_test.go::TestF2PJSONImplementationExportedMethodSetMatchesClientInterface",
+    "client_BitComet_f2p_test.go::TestF2PLegacyImplementationExportedMethodSetMatchesClientInterface",
+    "client_BitComet_f2p_test.go::TestF2PNoClientFamilyTypeDeclaresExportedIntegerState",
+    "client_BitComet_f2p_test.go::TestF2PJSONImplementationZeroValueStaysInJSONFamily",
+    "client_BitComet_f2p_test.go::TestF2PJSONInstanceKeepsFamilyAfterLegacyRedetection",
+    "client_BitComet_f2p_test.go::TestF2PJSONInstanceKeepsBanSubmissionAfterLegacyRedetection",
+    "client_BitComet_f2p_test.go::TestF2PLegacyInstanceKeepsPanelFamilyAfterJSONRedetection",
+    "client_BitComet_f2p_test.go::TestF2PLegacyUnsupportedBlockSubmissionSurvivesJSONRedetection"
+  ],
+  "gates": [
+    {
+      "id": "P2P-1",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B1",
+        "REQ-BEH-T2:C5",
+        "REQ-STRUCT-002",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "client_BitComet_p2p_test.go::TestP2PDetectionPrefersJSONAPIOn200",
+        "client_BitComet_p2p_test.go::TestP2PDetectionAcceptsJSONAPIUnauthorized",
+        "client_BitComet_p2p_test.go::TestP2PDetectionFallsBackToLegacyPanelChallenge",
+        "client_BitComet_p2p_test.go::TestP2PDetectionRejectsPanelWithoutBitCometChallenge",
+        "client_BitComet_p2p_test.go::TestP2PDetectionRejectsPanelWhenStatusIsNotUnauthorized"
+      ]
+    },
+    {
+      "id": "P2P-2",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C3",
+        "REQ-BEH-T2:B2",
+        "REQ-BEH-T2:B3",
+        "REQ-STRUCT-005"
+      ],
+      "tests": [
+        "client_BitComet_p2p_test.go::TestP2PJSONAPIFetchTorrentsFiltersBTAndMapsFields",
+        "client_BitComet_p2p_test.go::TestP2PJSONAPIFetchTorrentPeersConvertsProgress",
+        "client_BitComet_p2p_test.go::TestP2PJSONAPILoginSucceedsOnPanelEndpoint",
+        "client_BitComet_p2p_test.go::TestP2PJSONAPISubmitBlockPeerGroupsByInfoHash",
+        "client_BitComet_p2p_test.go::TestP2PJSONAPISubmitBlockPeerFailsWhenAnyBanRejected"
+      ]
+    },
+    {
+      "id": "P2P-3",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C4",
+        "REQ-BEH-T2:B4",
+        "REQ-BEH-T2:B5",
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "client_BitComet_p2p_test.go::TestP2PLegacyFetchTorrentsParsesPanelTaskTable",
+        "client_BitComet_p2p_test.go::TestP2PLegacyFetchTorrentPeersSkipsNonRemoteAddress",
+        "client_BitComet_p2p_test.go::TestP2PLegacyUnsupportedOperationsKeepFailing",
+        "client_BitComet_p2p_test.go::TestP2PLegacyLoginSucceedsOnPanelEndpoint"
+      ]
+    },
+    {
+      "id": "P2P-4",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B6"
+      ],
+      "tests": [
+        "client_BitComet_p2p_test.go::TestP2PForcedBitCometDetectionKeepsFailureInstance"
+      ]
+    },
+    {
+      "id": "P2P-5",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C1",
+        "REQ-STRUCT-003",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "client_BitComet_p2p_test.go::TestP2PClientInterfaceContractPreserved",
+        "client_test.go::TestIsSupportClient",
+        "client_test.go::TestSubmitBlockPeer_NilInput"
+      ]
+    },
+    {
+      "id": "P2P-6",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C2"
+      ],
+      "tests": [
+        "client_BitComet_p2p_test.go::TestP2PSharedModelsPreserved",
+        "client_test.go::TestTrTorrentToTorrent"
+      ]
+    },
+    {
+      "id": "P2P-7",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-004"
+      ],
+      "tests": [
+        "client_BitComet_p2p_test.go::TestP2PConfiguredQBitTorrentStillSelected",
+        "client_BitComet_p2p_test.go::TestP2PConfiguredTransmissionStillSelected",
+        "client_test.go::TestIsBanPort"
+      ]
+    },
+    {
+      "id": "F2P-IMPLEMENTATION-SPLIT",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002",
+        "REQ-BEH-T2:B1",
+        "REQ-BEH-T2:C7",
+        "REQ-BEH-T2:B6"
+      ],
+      "tests": [
+        "client_BitComet_f2p_test.go::TestF2PDetectionReturnsDistinctImplementationTypesPerFamily",
+        "client_BitComet_f2p_test.go::TestF2PForcedDetectionDoesNotReturnJSONImplementation",
+        "client_BitComet_f2p_test.go::TestF2PImplementationChoiceIsIndependentOfAcceptedJSONProbeStatus"
+      ]
+    },
+    {
+      "id": "F2P-PUBLIC-SURFACE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T2:C7",
+        "REQ-BEH-T2:C1",
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "client_BitComet_f2p_test.go::TestF2PJSONImplementationTypeExposesNoExportedFields",
+        "client_BitComet_f2p_test.go::TestF2PLegacyImplementationTypeExposesNoExportedFields",
+        "client_BitComet_f2p_test.go::TestF2PJSONImplementationExportedMethodSetMatchesClientInterface",
+        "client_BitComet_f2p_test.go::TestF2PLegacyImplementationExportedMethodSetMatchesClientInterface",
+        "client_BitComet_f2p_test.go::TestF2PNoClientFamilyTypeDeclaresExportedIntegerState"
+      ]
+    },
+    {
+      "id": "F2P-FAMILY-BINDING",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T2:C7",
+        "REQ-BEH-T2:B4",
+        "REQ-BEH-T2:B6"
+      ],
+      "tests": [
+        "client_BitComet_f2p_test.go::TestF2PJSONImplementationZeroValueStaysInJSONFamily",
+        "client_BitComet_f2p_test.go::TestF2PJSONInstanceKeepsFamilyAfterLegacyRedetection",
+        "client_BitComet_f2p_test.go::TestF2PJSONInstanceKeepsBanSubmissionAfterLegacyRedetection",
+        "client_BitComet_f2p_test.go::TestF2PLegacyInstanceKeepsPanelFamilyAfterJSONRedetection",
+        "client_BitComet_f2p_test.go::TestF2PLegacyUnsupportedBlockSubmissionSurvivesJSONRedetection"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "dec36b6ba35176635fc10a434e8b64d1aeba51fdec4d70e919f6eb1254194366",
+    "test_patch_sha256": "8d720ba802ab2f521e621984f7f82062ec2456565a30935a611edf18cf7b79c9"
+  },
+  "node_relations": [],
+  "p2p": [
+    "client_BitComet_p2p_test.go::TestP2PDetectionPrefersJSONAPIOn200",
+    "client_BitComet_p2p_test.go::TestP2PDetectionAcceptsJSONAPIUnauthorized",
+    "client_BitComet_p2p_test.go::TestP2PDetectionFallsBackToLegacyPanelChallenge",
+    "client_BitComet_p2p_test.go::TestP2PDetectionRejectsPanelWithoutBitCometChallenge",
+    "client_BitComet_p2p_test.go::TestP2PDetectionRejectsPanelWhenStatusIsNotUnauthorized",
+    "client_BitComet_p2p_test.go::TestP2PJSONAPIFetchTorrentsFiltersBTAndMapsFields",
+    "client_BitComet_p2p_test.go::TestP2PJSONAPIFetchTorrentPeersConvertsProgress",
+    "client_BitComet_p2p_test.go::TestP2PJSONAPILoginSucceedsOnPanelEndpoint",
+    "client_BitComet_p2p_test.go::TestP2PJSONAPISubmitBlockPeerGroupsByInfoHash",
+    "client_BitComet_p2p_test.go::TestP2PJSONAPISubmitBlockPeerFailsWhenAnyBanRejected",
+    "client_BitComet_p2p_test.go::TestP2PLegacyFetchTorrentsParsesPanelTaskTable",
+    "client_BitComet_p2p_test.go::TestP2PLegacyFetchTorrentPeersSkipsNonRemoteAddress",
+    "client_BitComet_p2p_test.go::TestP2PLegacyUnsupportedOperationsKeepFailing",
+    "client_BitComet_p2p_test.go::TestP2PLegacyLoginSucceedsOnPanelEndpoint",
+    "client_BitComet_p2p_test.go::TestP2PForcedBitCometDetectionKeepsFailureInstance",
+    "client_BitComet_p2p_test.go::TestP2PClientInterfaceContractPreserved",
+    "client_BitComet_p2p_test.go::TestP2PSharedModelsPreserved",
+    "client_BitComet_p2p_test.go::TestP2PConfiguredQBitTorrentStillSelected",
+    "client_BitComet_p2p_test.go::TestP2PConfiguredTransmissionStillSelected",
+    "client_test.go::TestIsSupportClient",
+    "client_test.go::TestIsBanPort",
+    "client_test.go::TestSubmitBlockPeer_NilInput",
+    "client_test.go::TestTrTorrentToTorrent"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": true,
+  "restoration_paths": [
+    "client_test.go"
+  ],
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-qbittorrent-cl-309eca14",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "client_BitComet_p2p_test.go",
+    "tests/p2p_runner.py",
+    "client_BitComet_f2p_test.go",
+    "tests/f2p_runner.py"
+  ],
+  "timeout_seconds": 600,
+  "verifier": "/tests/verifier/verifier.py"
+}

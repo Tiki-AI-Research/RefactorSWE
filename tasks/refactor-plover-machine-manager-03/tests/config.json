@@ -1,0 +1,842 @@
+{
+  "base_commit": "e87c4ef2982fcdeea587d2e612dff829fd331386",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "python",
+    "test/machine_management_f2p_runner.py",
+    "{config}",
+    "{report}"
+  ],
+  "evaluation_files": {
+    "test/machine_management_f2p_runner.py": "77db317ba0a0848d1b0cb50dcc9ac994c39a39a413c28ba57d7cf0e02c43ee0e",
+    "test/test_machine_management_f2p.py": "db38f28143489f36c5cf1b97ea5269889fa500639d0dac3c7d46fe689fdfaf91",
+    "test/test_machine_management_p2p.py": "59376d44e0f42411bde34eb564707a853685693c0cdaf06ee8b6d48e3dd541ff"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 1680.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 300.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 1200.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 300.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_machine_state_property_reports_connection_state"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_startup_creates_machine_from_configured_options"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_keymap_only_change_reuses_machine_instance"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_machine_options_change_rebuilds_machine_instance"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_machine_type_change_rebuilds_machine_instance"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_forced_reconnection_rebuilds_machine_instance"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_output_transitions_synchronize_suppression_once"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_hook_payloads_carry_machine_type_state_and_config"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_shutdown_stops_capture_and_releases_machine"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_reset_machine_reloads_configuration_and_dictionaries"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_machine_callbacks_are_marshalled_onto_engine_thread"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_config_update_loads_dictionaries_after_config_changed"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_engine.py::test_engine_running_state"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine.py::test_update_machine_staten_on_unhandled_exception"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_reload_config_reads_disk_before_full_update"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_reload_config_load_error_does_not_apply_update"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_capture_start_receives_immediate_plugin_stroke"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_none_keymap_reuse_skips_plugin_call"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_none_keymap_rebuild_skips_plugin_call"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_async_readiness_only_forwards_plugin_reports"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_toggle_output_performs_both_effective_transitions"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_threaded_shutdown_stops_worker_and_later_strokes"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/test_machine_management_p2p.py::test_command_resume_and_toggle_delegate_last_stroke_suppression"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_startup_machine_construction_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_startup_state_callback_registration_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_startup_stroke_callback_registration_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_startup_suppression_sync_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_startup_keymap_application_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_startup_capture_start_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_keymap_only_change_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_machine_options_change_rebuild_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_machine_type_change_rebuild_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_forced_reconnection_rebuild_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_shutdown_capture_stop_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_output_enable_suppression_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_output_disable_suppression_is_delegated_to_machine_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_engine_does_not_hold_the_live_machine_instance"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_engine_owned_collaborator_holds_the_live_machine_instance"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_machine_plugin_operations_come_from_the_machine_instance_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_machine_instance_lifetime_stays_in_the_collaborator_across_rebuilds"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_machine_instance_is_released_by_the_collaborator_on_shutdown"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/test_machine_management_f2p.py::test_engine_does_not_hold_the_machine_connection_state"
+      }
+    ],
+    "selector_timeout_seconds": 300.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "test/test_machine_management_p2p.py::test_machine_state_property_reports_connection_state",
+          "test/test_machine_management_p2p.py::test_startup_creates_machine_from_configured_options",
+          "test/test_machine_management_p2p.py::test_keymap_only_change_reuses_machine_instance",
+          "test/test_machine_management_p2p.py::test_machine_options_change_rebuilds_machine_instance",
+          "test/test_machine_management_p2p.py::test_machine_type_change_rebuilds_machine_instance",
+          "test/test_machine_management_p2p.py::test_forced_reconnection_rebuilds_machine_instance",
+          "test/test_machine_management_p2p.py::test_output_transitions_synchronize_suppression_once",
+          "test/test_machine_management_p2p.py::test_hook_payloads_carry_machine_type_state_and_config",
+          "test/test_machine_management_p2p.py::test_shutdown_stops_capture_and_releases_machine",
+          "test/test_machine_management_p2p.py::test_reset_machine_reloads_configuration_and_dictionaries",
+          "test/test_machine_management_p2p.py::test_machine_callbacks_are_marshalled_onto_engine_thread",
+          "test/test_machine_management_p2p.py::test_config_update_loads_dictionaries_after_config_changed",
+          "test/test_engine.py::test_engine_running_state",
+          "test/test_machine.py::test_update_machine_staten_on_unhandled_exception",
+          "test/test_machine_management_p2p.py::test_reload_config_reads_disk_before_full_update",
+          "test/test_machine_management_p2p.py::test_reload_config_load_error_does_not_apply_update",
+          "test/test_machine_management_p2p.py::test_capture_start_receives_immediate_plugin_stroke",
+          "test/test_machine_management_p2p.py::test_none_keymap_reuse_skips_plugin_call",
+          "test/test_machine_management_p2p.py::test_none_keymap_rebuild_skips_plugin_call",
+          "test/test_machine_management_p2p.py::test_async_readiness_only_forwards_plugin_reports",
+          "test/test_machine_management_p2p.py::test_toggle_output_performs_both_effective_transitions",
+          "test/test_machine_management_p2p.py::test_threaded_shutdown_stops_worker_and_later_strokes",
+          "test/test_machine_management_p2p.py::test_command_resume_and_toggle_delegate_last_stroke_suppression",
+          "test/test_machine_management_f2p.py::test_startup_machine_construction_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_startup_state_callback_registration_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_startup_stroke_callback_registration_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_startup_suppression_sync_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_startup_keymap_application_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_startup_capture_start_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_keymap_only_change_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_machine_options_change_rebuild_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_machine_type_change_rebuild_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_forced_reconnection_rebuild_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_shutdown_capture_stop_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_output_enable_suppression_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_output_disable_suppression_is_delegated_to_machine_owner",
+          "test/test_machine_management_f2p.py::test_engine_does_not_hold_the_live_machine_instance",
+          "test/test_machine_management_f2p.py::test_engine_owned_collaborator_holds_the_live_machine_instance",
+          "test/test_machine_management_f2p.py::test_machine_plugin_operations_come_from_the_machine_instance_owner",
+          "test/test_machine_management_f2p.py::test_machine_instance_lifetime_stays_in_the_collaborator_across_rebuilds",
+          "test/test_machine_management_f2p.py::test_machine_instance_is_released_by_the_collaborator_on_shutdown",
+          "test/test_machine_management_f2p.py::test_engine_does_not_hold_the_machine_connection_state"
+        ],
+        "timeout_seconds": 300.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "test/test_machine_management_f2p.py::test_startup_machine_construction_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_startup_state_callback_registration_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_startup_stroke_callback_registration_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_startup_suppression_sync_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_startup_keymap_application_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_startup_capture_start_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_keymap_only_change_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_machine_options_change_rebuild_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_machine_type_change_rebuild_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_forced_reconnection_rebuild_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_shutdown_capture_stop_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_output_enable_suppression_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_output_disable_suppression_is_delegated_to_machine_owner",
+    "test/test_machine_management_f2p.py::test_engine_does_not_hold_the_live_machine_instance",
+    "test/test_machine_management_f2p.py::test_engine_owned_collaborator_holds_the_live_machine_instance",
+    "test/test_machine_management_f2p.py::test_machine_plugin_operations_come_from_the_machine_instance_owner",
+    "test/test_machine_management_f2p.py::test_machine_instance_lifetime_stays_in_the_collaborator_across_rebuilds",
+    "test/test_machine_management_f2p.py::test_machine_instance_is_released_by_the_collaborator_on_shutdown",
+    "test/test_machine_management_f2p.py::test_engine_does_not_hold_the_machine_connection_state"
+  ],
+  "gates": [
+    {
+      "id": "P2P-01",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C1",
+        "REQ-BEH-T1:B1"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_machine_state_property_reports_connection_state"
+      ]
+    },
+    {
+      "id": "P2P-02",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B1",
+        "REQ-BEH-T1:C5",
+        "REQ-BEH-T1:B7"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_startup_creates_machine_from_configured_options"
+      ]
+    },
+    {
+      "id": "P2P-03",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B2",
+        "REQ-BEH-T1:B7"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_keymap_only_change_reuses_machine_instance"
+      ]
+    },
+    {
+      "id": "P2P-04",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B3",
+        "REQ-BEH-T1:B7"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_machine_options_change_rebuilds_machine_instance"
+      ]
+    },
+    {
+      "id": "P2P-05",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B3",
+        "REQ-BEH-T1:C5"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_machine_type_change_rebuilds_machine_instance"
+      ]
+    },
+    {
+      "id": "P2P-06",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C2",
+        "REQ-BEH-T1:B3",
+        "REQ-BEH-T1:B7"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_forced_reconnection_rebuilds_machine_instance"
+      ]
+    },
+    {
+      "id": "P2P-07",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C3",
+        "REQ-BEH-T1:B4"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_output_transitions_synchronize_suppression_once"
+      ]
+    },
+    {
+      "id": "P2P-08",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C4"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_hook_payloads_carry_machine_type_state_and_config"
+      ]
+    },
+    {
+      "id": "P2P-09",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B6",
+        "REQ-BEH-T1:B7"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_shutdown_stops_capture_and_releases_machine"
+      ]
+    },
+    {
+      "id": "P2P-10",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C2"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_reset_machine_reloads_configuration_and_dictionaries"
+      ]
+    },
+    {
+      "id": "P2P-11",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B5"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_machine_callbacks_are_marshalled_onto_engine_thread"
+      ]
+    },
+    {
+      "id": "P2P-12",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C4",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_config_update_loads_dictionaries_after_config_changed"
+      ]
+    },
+    {
+      "id": "P2P-13",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C3"
+      ],
+      "tests": [
+        "test/test_engine.py::test_engine_running_state"
+      ]
+    },
+    {
+      "id": "P2P-14",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C1"
+      ],
+      "tests": [
+        "test/test_machine.py::test_update_machine_staten_on_unhandled_exception"
+      ]
+    },
+    {
+      "id": "F2P-01",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:C5",
+        "REQ-BEH-T1:B1"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_startup_machine_construction_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-02",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:C5"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_startup_state_callback_registration_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-03",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:C5"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_startup_stroke_callback_registration_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-04",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:C5",
+        "REQ-BEH-T1:B1"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_startup_suppression_sync_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-05",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:C5",
+        "REQ-BEH-T1:B7"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_startup_keymap_application_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-06",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:C5",
+        "REQ-BEH-T1:B7"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_startup_capture_start_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-07",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:B2"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_keymap_only_change_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-08",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:B3",
+        "REQ-BEH-T1:B7"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_machine_options_change_rebuild_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-09",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:C5",
+        "REQ-BEH-T1:B3"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_machine_type_change_rebuild_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-10",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:C2",
+        "REQ-BEH-T1:B3"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_forced_reconnection_rebuild_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-11",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:B6"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_shutdown_capture_stop_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-12",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:B4",
+        "REQ-BEH-T1:C3"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_output_enable_suppression_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-13",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:B4",
+        "REQ-BEH-T1:C3"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_output_disable_suppression_is_delegated_to_machine_owner"
+      ]
+    },
+    {
+      "id": "F2P-14",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_engine_does_not_hold_the_live_machine_instance"
+      ]
+    },
+    {
+      "id": "F2P-15",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_engine_owned_collaborator_holds_the_live_machine_instance"
+      ]
+    },
+    {
+      "id": "F2P-16",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_machine_plugin_operations_come_from_the_machine_instance_owner"
+      ]
+    },
+    {
+      "id": "F2P-17",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:B3"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_machine_instance_lifetime_stays_in_the_collaborator_across_rebuilds"
+      ]
+    },
+    {
+      "id": "F2P-18",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:B6"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_machine_instance_is_released_by_the_collaborator_on_shutdown"
+      ]
+    },
+    {
+      "id": "F2P-19",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T1:C1"
+      ],
+      "tests": [
+        "test/test_machine_management_f2p.py::test_engine_does_not_hold_the_machine_connection_state"
+      ]
+    },
+    {
+      "id": "P2P-15",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C2",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_reload_config_reads_disk_before_full_update"
+      ]
+    },
+    {
+      "id": "P2P-16",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C2"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_reload_config_load_error_does_not_apply_update"
+      ]
+    },
+    {
+      "id": "P2P-17",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C5",
+        "REQ-BEH-T1:B5"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_capture_start_receives_immediate_plugin_stroke"
+      ]
+    },
+    {
+      "id": "P2P-18",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B2",
+        "REQ-BEH-T1:B7"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_none_keymap_reuse_skips_plugin_call"
+      ]
+    },
+    {
+      "id": "P2P-19",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B3",
+        "REQ-BEH-T1:B7"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_none_keymap_rebuild_skips_plugin_call"
+      ]
+    },
+    {
+      "id": "P2P-20",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C1"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_async_readiness_only_forwards_plugin_reports"
+      ]
+    },
+    {
+      "id": "P2P-21",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C3",
+        "REQ-BEH-T1:B4"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_toggle_output_performs_both_effective_transitions"
+      ]
+    },
+    {
+      "id": "P2P-22",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B6",
+        "REQ-BEH-T1:B7"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_threaded_shutdown_stops_worker_and_later_strokes"
+      ]
+    },
+    {
+      "id": "P2P-23",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B4",
+        "REQ-BEH-T1:B7"
+      ],
+      "tests": [
+        "test/test_machine_management_p2p.py::test_command_resume_and_toggle_delegate_last_stroke_suppression"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "54950131daf489f72e2e8ff8a042352154eae13cbdcbda0462b4bac90d808ba3",
+    "test_patch_sha256": "8707f19b84faa661e77cfa8e73d9da1c46808a98eb77f0f2474fcb9fb5aedbcb"
+  },
+  "junit_assertion_adapter": "pytest",
+  "node_relations": [],
+  "p2p": [
+    "test/test_machine_management_p2p.py::test_machine_state_property_reports_connection_state",
+    "test/test_machine_management_p2p.py::test_startup_creates_machine_from_configured_options",
+    "test/test_machine_management_p2p.py::test_keymap_only_change_reuses_machine_instance",
+    "test/test_machine_management_p2p.py::test_machine_options_change_rebuilds_machine_instance",
+    "test/test_machine_management_p2p.py::test_machine_type_change_rebuilds_machine_instance",
+    "test/test_machine_management_p2p.py::test_forced_reconnection_rebuilds_machine_instance",
+    "test/test_machine_management_p2p.py::test_output_transitions_synchronize_suppression_once",
+    "test/test_machine_management_p2p.py::test_hook_payloads_carry_machine_type_state_and_config",
+    "test/test_machine_management_p2p.py::test_shutdown_stops_capture_and_releases_machine",
+    "test/test_machine_management_p2p.py::test_reset_machine_reloads_configuration_and_dictionaries",
+    "test/test_machine_management_p2p.py::test_machine_callbacks_are_marshalled_onto_engine_thread",
+    "test/test_machine_management_p2p.py::test_config_update_loads_dictionaries_after_config_changed",
+    "test/test_engine.py::test_engine_running_state",
+    "test/test_machine.py::test_update_machine_staten_on_unhandled_exception",
+    "test/test_machine_management_p2p.py::test_reload_config_reads_disk_before_full_update",
+    "test/test_machine_management_p2p.py::test_reload_config_load_error_does_not_apply_update",
+    "test/test_machine_management_p2p.py::test_capture_start_receives_immediate_plugin_stroke",
+    "test/test_machine_management_p2p.py::test_none_keymap_reuse_skips_plugin_call",
+    "test/test_machine_management_p2p.py::test_none_keymap_rebuild_skips_plugin_call",
+    "test/test_machine_management_p2p.py::test_async_readiness_only_forwards_plugin_reports",
+    "test/test_machine_management_p2p.py::test_toggle_output_performs_both_effective_transitions",
+    "test/test_machine_management_p2p.py::test_threaded_shutdown_stops_worker_and_later_strokes",
+    "test/test_machine_management_p2p.py::test_command_resume_and_toggle_delegate_last_stroke_suppression"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": false,
+  "restoration_paths": [
+    "test/test_engine.py",
+    "test/test_machine.py"
+  ],
+  "reward_mode": "VERIFIER_ONLY",
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-plover-machine-f1ff383b",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "test/test_machine_management_p2p.py",
+    "test/test_machine_management_f2p.py",
+    "test/machine_management_f2p_runner.py"
+  ],
+  "timeout_seconds": 300,
+  "verifier": "/tests/verifier/verifier.py"
+}

@@ -1,0 +1,62 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+[task]
+name = "tikiai/refactor-qbittorrent-client-split-03"
+description = "Split BitComet JSON and legacy HTML protocols into separate clients."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "refactor-qbittorrent-cl-309eca14"
+repository_url = "https://github.com/Simple-Tracker/qBittorrent-ClientBlocker"
+base_commit_hash = "3aec9107cd0ca50741ac4e079fd4f89c8a008968"
+display_title = "Protocol-specific BitComet clients"
+category = "polymorphism_extension"
+language = "Go"
+
+[tests]
+fail_to_pass_count = 13
+pass_to_pass_count = 23
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+user = "root"
+network_mode = "public"
+environment_mode = "separate"
+timeout_sec = 1800.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:refactor-qbittorrent-client-split-03-verifier-image-20261125"
+image_digest = "sha256:34bea9f6db7040dddd103b512616fcbe47ce602422b5068e5d5d0465a203076c"
+network_mode = "public"
+build_timeout_sec = 3600.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "set -eu\nmkdir -p /logs/artifacts\nrm -f /logs/artifacts/model.patch\ncollect_tmp=$(mktemp -d /logs/artifacts/.collect.XXXXXX)\ntrap 'rm -rf \"$collect_tmp\"' EXIT\nexport GIT_INDEX_FILE=\"$collect_tmp/index\"\nattributes_file=\"$collect_tmp/attributes\"\nprintf '* -diff\\n' > \"$attributes_file\"\ngit -C /workspace/repo rev-parse --verify '3aec9107cd0ca50741ac4e079fd4f89c8a008968^{commit}' >/dev/null\ngit -C /workspace/repo read-tree 3aec9107cd0ca50741ac4e079fd4f89c8a008968\ngit -C /workspace/repo add -A -- .\ngit -c core.attributesFile=\"$attributes_file\" -C /workspace/repo diff --cached --binary --full-index --no-ext-diff --no-textconv 3aec9107cd0ca50741ac4e079fd4f89c8a008968 -- > \"$collect_tmp/model.patch\"\nmv \"$collect_tmp/model.patch\" /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+user = "agent"
+network_mode = "public"
+timeout_sec = 7200.0
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:refactor-qbittorrent-client-split-03-task-image-20261125"
+image_digest = "sha256:b30b94f5d555166e3f79cdab34087bed69115c75dbd6b76aaf84802ef1a76d84"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[verifier.env]
+
+[solution.env]

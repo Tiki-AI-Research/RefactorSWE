@@ -1,0 +1,100 @@
+# syntax=docker/dockerfile:1.7
+# Generated environment definition
+# Generator: dockerfile-generator.v1
+# Candidate: ci-tests
+
+FROM --platform=linux/amd64 docker.io/tikiaiteam/refactor:blacktt94-harbor-bundle-base-image-20261125@sha256:c3b4c5a85cc1b8b1602e72d70bf655483735dd1ad5591f51b1ccb23781127ef3
+
+ARG REPO_URL="https://github.com/sveltejs/devalue"
+ARG BASE_COMMIT="a3d30d94c8fd9cfca4b774814ff9d5bfade5010c"
+
+LABEL org.opencontainers.image.source="$REPO_URL" \
+      org.opencontainers.image.revision="$BASE_COMMIT" \
+      io.envpipe.image.generator="dockerfile-generator.v1" \
+      org.opencontainers.image.title="Repository runtime environment" \
+      io.envpipe.project.runtime.family="node" \
+      io.envpipe.project.runtime.version="20.20.2" \
+      io.envpipe.project.runtime.provisioner="mise" \
+      io.envpipe.harbor-bundle.digest="sha256:c3b4c5a85cc1b8b1602e72d70bf655483735dd1ad5591f51b1ccb23781127ef3"
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+WORKDIR /workspace
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates \
+       curl \
+       git \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG ENVPIPE_RUNTIME_SPEC=node@20.20.2
+
+RUN runuser -u agent -- env HOME=/home/agent mise install --yes "$ENVPIPE_RUNTIME_SPEC" \
+    && runtime_dir="$(runuser -u agent -- env HOME=/home/agent mise where "$ENVPIPE_RUNTIME_SPEC")" \
+    && test -d "$runtime_dir" \
+    && ln -s "$runtime_dir" /opt/envpipe/runtime \
+    && basename "$runtime_dir" > /opt/envpipe/runtime-install-version \
+    && chown root:root /opt/envpipe/runtime-install-version
+
+ENV PATH="/opt/envpipe/runtime/bin:${PATH}" \
+    ENVPIPE_RUNTIME_FAMILY=node \
+    ENVPIPE_RUNTIME_VERSION="20.20.2"
+
+RUN node --version 2>&1 \
+    | grep -F 20.20.2
+
+RUN git init /workspace/repo \
+    && git -C /workspace/repo remote add origin "$REPO_URL" \
+    && git -C /workspace/repo fetch --depth=1 origin "$BASE_COMMIT" \
+    && git -C /workspace/repo checkout --detach FETCH_HEAD \
+    && test "$(git -C /workspace/repo rev-parse HEAD)" = "$BASE_COMMIT" \
+    && git -C /workspace/repo remote remove origin \
+    && git -C /workspace/repo config core.hooksPath /dev/null \
+    && git -C /workspace/repo reflog expire --expire=now --all \
+    && git -C /workspace/repo gc --prune=now
+
+# toolchain setup
+RUN cd /workspace/repo && npm install --global pnpm@10.33.4
+
+RUN cd /workspace/repo && ln -sf /opt/envpipe/runtime/bin/node /usr/local/bin/node && ln -sf /opt/envpipe/runtime/bin/pnpm /usr/local/bin/pnpm
+
+# dependency installation
+RUN cd /workspace/repo && pnpm install --frozen-lockfile
+
+# build
+RUN cd /workspace/repo && pnpm build
+
+# Python test dependencies for verifier
+RUN /opt/harbor-agent/bin/python3 -m ensurepip --upgrade && \
+    /opt/harbor-agent/bin/python3 -m pip install --no-cache-dir \
+    pytest==8.3.4 \
+    tree-sitter==0.23.2 \
+    tree-sitter-javascript==0.23.1
+
+ENV \
+    ENVPIPE_BASE_COMMIT="$BASE_COMMIT" \
+    ENVPIPE_REPO_PATH="/workspace/repo" \
+    SWEBENCH_REPO_PATH="/workspace/repo"
+
+WORKDIR /workspace/repo
+
+RUN cd /workspace/repo \
+    && test "$(git rev-parse HEAD)" = "$BASE_COMMIT" \
+    && test -z "$(git status --porcelain)"
+
+RUN chown -R agent:agent /workspace/repo \
+    && git config --system --add safe.directory /workspace/repo
+
+CMD ["/bin/bash"]
+
+# Install verifier dependencies in the interpreter used by verifier.py.
+RUN /opt/harbor-agent/bin/python3 -m ensurepip --upgrade && \
+    /opt/harbor-agent/bin/python3 -m pip install --no-cache-dir \
+        pytest==8.3.4 \
+        tree-sitter==0.23.2 \
+        tree-sitter-javascript==0.23.1 && \
+    /opt/harbor-agent/bin/python3 -c "import pytest, tree_sitter, tree_sitter_javascript"
+
+COPY . /tests
+RUN chmod +x /tests/test.sh /tests/grader.py \
+    /tests/verifier/verifier.py /tests/verifier/hardgate.py

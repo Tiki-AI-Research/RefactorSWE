@@ -1,0 +1,1473 @@
+diff --git a/packages/core/src/lyric-player/base/group-relations.ts b/packages/core/src/lyric-player/base/group-relations.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b9d416857f56eb505026b470c8f6fd9db0091627
+--- /dev/null
++++ b/packages/core/src/lyric-player/base/group-relations.ts
+@@ -0,0 +1,145 @@
++import { MediaTime } from "#utils/time.ts";
++import type { LyricLineGroupBase } from "./group.ts";
++import type { LyricLineBase } from "./line.ts";
++
++export interface LyricGroupRelationsHost {
++	currentLyricGroups: LyricLineGroupBase[];
++	lyricGroupElementMap: WeakMap<Element, LyricLineGroupBase>;
++	lyricGroupSize: WeakMap<LyricLineGroupBase, [number, number]>;
++	resizeObserver: ResizeObserver;
++	readonly defaultLineHeight: number;
++	getElement(): HTMLElement;
++	getLineHeight(index: number): number;
++	getLyricLinesIndexes(): WeakMap<LyricLineBase, number>;
++	setTimelineBounds(
++		bounds: readonly { startTime: MediaTime; endTime: MediaTime }[],
++	): void;
++	initLayoutHeights(count: number, defaultHeight: number): void;
++}
++
++export class LyricGroupRelations {
++
++	constructor(private readonly host: LyricGroupRelationsHost) {}
++
++	resetGroups(): void {
++		this.host.currentLyricGroups = [];
++	}
++
++	initializeGroupOrder(): void {
++		const groups = this.host.currentLyricGroups;
++		groups.sort((a, b) => MediaTime.cmp(b.startTime, a.startTime));
++
++		for (const group of groups) {
++			this.host.lyricGroupElementMap.set(group.getElement(), group);
++		}
++
++		const bounds = groups.map((group) => ({
++			startTime: group.startTime,
++			endTime: group.endTime,
++		}));
++		this.host.setTimelineBounds(bounds);
++		this.host.initLayoutHeights(groups.length, this.host.defaultLineHeight);
++	}
++
++	getLayoutIndex(group: LyricLineGroupBase): number {
++		return this.host.currentLyricGroups.indexOf(group);
++	}
++
++	registerLine(line: LyricLineBase, processedIndex: number): void {
++		this.host.getLyricLinesIndexes().set(line, processedIndex);
++	}
++
++	getLineIndex(line: LyricLineBase): number {
++		return this.host.getLyricLinesIndexes().get(line) ?? -1;
++	}
++
++	registerGroup(group: LyricLineGroupBase): void {
++		this.host.currentLyricGroups.push(group);
++		this.host.lyricGroupElementMap.set(group.getElement(), group);
++	}
++
++	getGroupForElement(element: Element): LyricLineGroupBase | undefined {
++		return this.host.lyricGroupElementMap.get(element);
++	}
++
++	getGroupSize(group: LyricLineGroupBase): [number, number] {
++		return this.host.lyricGroupSize.get(group) ?? [0, 0];
++	}
++
++	setGroupSize(group: LyricLineGroupBase, size: [number, number]): void {
++		this.host.lyricGroupSize.set(group, size);
++	}
++
++	getGroupIndex(group: LyricLineGroupBase): number {
++		return this.host.currentLyricGroups.indexOf(group);
++	}
++
++	getGroupHeight(group: LyricLineGroupBase): number {
++		const index = this.getGroupIndex(group);
++		return index !== -1
++			? this.host.getLineHeight(index)
++			: this.host.defaultLineHeight;
++	}
++
++	observeGroup(group: LyricLineGroupBase): void {
++		this.host.resizeObserver.observe(group.getElement());
++	}
++
++	registerBackground(group: LyricLineGroupBase, wrapper: HTMLElement): void {
++		this.host.lyricGroupElementMap.set(wrapper, group);
++		if (group.getElement().parentElement) {
++			this.host.resizeObserver.observe(wrapper);
++		}
++	}
++
++	mount(group: LyricLineGroupBase): void {
++		const groupEl = group.getElement();
++		if (groupEl.parentElement) return;
++
++		const playerEl = this.host.getElement();
++		const groups = this.host.currentLyricGroups;
++		const myIndex = groups.indexOf(group);
++
++		let referenceNode: Element | null = null;
++		if (myIndex !== -1) {
++			for (let i = myIndex + 1; i < groups.length; i++) {
++				const nextEl = groups[i].getElement();
++				if (nextEl.parentElement === playerEl) {
++					referenceNode = nextEl;
++					break;
++				}
++			}
++		}
++
++		playerEl.insertBefore(groupEl, referenceNode);
++
++		this.host.resizeObserver.observe(groupEl);
++		const bgWrapper = (group as { bgWrapper?: HTMLElement }).bgWrapper;
++		if (bgWrapper) {
++			this.host.resizeObserver.observe(bgWrapper);
++		}
++	}
++
++	unmount(group: LyricLineGroupBase): void {
++		const groupEl = group.getElement();
++		if (!groupEl.parentElement) return;
++
++		this.host.resizeObserver.unobserve(groupEl);
++		const bgWrapper = (group as { bgWrapper?: HTMLElement }).bgWrapper;
++		if (bgWrapper) {
++			this.host.resizeObserver.unobserve(bgWrapper);
++		}
++		groupEl.remove();
++	}
++
++	unregisterGroup(group: LyricLineGroupBase): void {
++		const groupEl = group.getElement();
++		this.host.resizeObserver.unobserve(groupEl);
++		const bgWrapper = (group as { bgWrapper?: HTMLElement }).bgWrapper;
++		if (bgWrapper) {
++			this.host.lyricGroupElementMap.delete(bgWrapper);
++			this.host.resizeObserver.unobserve(bgWrapper);
++		}
++		groupEl.remove();
++	}
++}
+diff --git a/packages/core/src/lyric-player/base/index.ts b/packages/core/src/lyric-player/base/index.ts
+index 83750dbe8a1a94e2a2a23626679d800bfc13f559..ef2a8fcfa51a034bdd69985332f67999d256bdda 100644
+--- a/packages/core/src/lyric-player/base/index.ts
++++ b/packages/core/src/lyric-player/base/index.ts
+@@ -18,6 +18,7 @@ import {
+ } from "./consts.ts";
+ import { FocusController } from "./focus.ts";
+ import type { LyricLineGroupBase } from "./group.ts";
++import { LyricGroupRelations } from "./group-relations.ts";
+ import type { InterludeDots } from "./interlude-dots.ts";
+ import {
+ 	LayoutCalculator,
+@@ -192,7 +193,8 @@ export abstract class LyricPlayerBase
+ 		damping: 20,
+ 		stiffness: 50,
+ 	};
+-	private lyricGroupIndexMap = new WeakMap<LyricLineGroupBase, number>();
++	/** @internal */
++	readonly groupRelations: LyricGroupRelations;
+ 	private onPageShow = () => {
+ 		this.isPageVisible = true;
+ 		this.setCurrentTime(this.getCurrentTime(), true);
+@@ -200,6 +202,24 @@ export abstract class LyricPlayerBase
+ 	private onPageHide = () => {
+ 		this.isPageVisible = false;
+ 	};
++
++	/** @internal */
++	getLyricLinesIndexes(): WeakMap<LyricLineBase, number> {
++		return this.lyricLinesIndexes;
++	}
++
++	/** @internal */
++	setTimelineBounds(
++		bounds: readonly { startTime: MediaTime; endTime: MediaTime }[],
++	): void {
++		this.timelineController.setTimeBounds(bounds);
++	}
++
++	/** @internal */
++	initLayoutHeights(count: number, defaultHeight: number): void {
++		this.layoutCalculator.initHeights(count, defaultHeight);
++	}
++
+ 	/** @internal */
+ 	resizeObserver: ResizeObserver = new ResizeObserver(((entries) => {
+ 		let shouldRelayout = false;
+@@ -227,22 +247,21 @@ export abstract class LyricPlayerBase
+ 					shouldRelayout = true;
+ 				}
+ 			} else {
+-				const groupObj = this.lyricGroupElementMap.get(entry.target);
++				const groupObj = this.groupRelations.getGroupForElement(entry.target);
+ 				if (groupObj) {
+ 					const newSize = getEntrySize(entry);
+ 
+ 					const isGroupElement = entry.target === groupObj.getElement();
+ 
+ 					if (isGroupElement) {
+-						const oldSize: [number, number] = this.lyricGroupSize.get(
+-							groupObj,
+-						) ?? [0, 0];
++						const oldSize: [number, number] =
++							this.groupRelations.getGroupSize(groupObj);
+ 
+ 						if (newSize[0] !== oldSize[0] || newSize[1] !== oldSize[1]) {
+-							this.lyricGroupSize.set(groupObj, newSize);
++							this.groupRelations.setGroupSize(groupObj, newSize);
+ 							groupObj.onLineSizeChange(newSize);
+ 
+-							const index = this.lyricGroupIndexMap.get(groupObj) ?? -1;
++							const index = this.groupRelations.getLayoutIndex(groupObj);
+ 							if (index !== -1) {
+ 								this.layoutCalculator.setLineHeight(index, newSize[1]);
+ 							}
+@@ -271,6 +290,7 @@ export abstract class LyricPlayerBase
+ 
+ 	constructor(element?: HTMLElement) {
+ 		super();
++		this.groupRelations = new LyricGroupRelations(this);
+ 		if (element) this.element = element;
+ 		this.element.classList.add("amll-lyric-player");
+ 
+@@ -753,30 +773,13 @@ export abstract class LyricPlayerBase
+ 		for (const group of this.currentLyricGroups) {
+ 			group.dispose();
+ 		}
+-		this.currentLyricGroups = [];
++		this.groupRelations.resetGroups();
+ 
+ 		this.interludeDots.setInterlude(undefined);
+ 
+ 		this.buildLyricGroups();
+ 
+-		// 对歌词组进行排序，确保滑动窗口与二分查找算法面对的时间线是严格升序的
+-		this.currentLyricGroups.sort((a, b) =>
+-			MediaTime.cmp(a.startTime, b.startTime),
+-		);
+-		for (let i = 0; i < this.currentLyricGroups.length; i++) {
+-			this.lyricGroupIndexMap.set(this.currentLyricGroups[i], i);
+-		}
+-
+-		const bounds = this.currentLyricGroups.map((group) => ({
+-			startTime: group.startTime,
+-			endTime: group.endTime,
+-		}));
+-		this.timelineController.setTimeBounds(bounds);
+-
+-		this.layoutCalculator.initHeights(
+-			this.currentLyricGroups.length,
+-			this.defaultLineHeight,
+-		);
++		this.groupRelations.initializeGroupOrder();
+ 
+ 		this.seekDetector.reset();
+ 		this.setCurrentTime(initialTime, true);
+diff --git a/packages/core/src/lyric-player/dom/index.ts b/packages/core/src/lyric-player/dom/index.ts
+index 5d822aa1a567ceda70ecf0cbbd93c90da3b7a44b..e2a6bcca5213deea926201d9cab80d48ae87206f 100644
+--- a/packages/core/src/lyric-player/dom/index.ts
++++ b/packages/core/src/lyric-player/dom/index.ts
+@@ -85,12 +85,12 @@ export class DomLyricPlayer extends LyricPlayerBase {
+ 		const groupEl = target.closest(`.${styles.lyricLineWrapper}`);
+ 		if (!groupEl) return;
+ 
+-		const group = this.lyricGroupElementMap.get(groupEl);
++		const group = this.groupRelations.getGroupForElement(groupEl);
+ 		if (!group) return;
+ 
+ 		const mainLine = group.mainLine;
+ 		const bgLine = group.bgLine;
+-		const lineIndex = this.lyricLinesIndexes.get(mainLine) ?? -1;
++		const lineIndex = this.groupRelations.getLineIndex(mainLine);
+ 
+ 		const evt = new LyricLineMouseEvent(lineIndex, mainLine, bgLine, e);
+ 		const isDispatched = this.dispatchEvent(evt);
+@@ -181,12 +181,11 @@ export class DomLyricPlayer extends LyricPlayerBase {
+ 			const line = this.processedLines[i];
+ 			const lineEl = new LyricLineEl(this, line);
+ 
+-			this.lyricLinesIndexes.set(lineEl, i);
++			this.groupRelations.registerLine(lineEl, i);
+ 
+ 			if (!line.isBG || !currentGroup) {
+ 				currentGroup = new LyricLineGroup(this, lineEl);
+-				this.currentLyricGroups.push(currentGroup);
+-				this.lyricGroupElementMap.set(currentGroup.element, currentGroup);
++				this.groupRelations.registerGroup(currentGroup);
+ 			} else {
+ 				currentGroup.addBgLine(lineEl);
+ 			}
+diff --git a/packages/core/src/lyric-player/dom/lyric-group.ts b/packages/core/src/lyric-player/dom/lyric-group.ts
+index 3bef236ea0b3cf782814bbf218b3a48c462e62c5..8941034bf550aa290005be9b6d9710f839515c3a 100644
+--- a/packages/core/src/lyric-player/dom/lyric-group.ts
++++ b/packages/core/src/lyric-player/dom/lyric-group.ts
+@@ -32,7 +32,7 @@ export class LyricLineGroup extends LyricLineGroupBase<LyricLineEl> {
+ 		this.element.appendChild(mainLine.getElement());
+ 		this.posY.setPosition(window.innerHeight * 2);
+ 
+-		lyricPlayer.resizeObserver.observe(this.element);
++		lyricPlayer.groupRelations.observeGroup(this);
+ 	}
+ 
+ 	getElement(): HTMLElement {
+@@ -41,13 +41,7 @@ export class LyricLineGroup extends LyricLineGroupBase<LyricLineEl> {
+ 
+ 	get isInSight(): boolean {
+ 		const t = this.posY.getCurrentPosition();
+-
+-		const index = this.lyricPlayer.currentLyricGroups.indexOf(this);
+-		const h =
+-			index !== -1
+-				? this.lyricPlayer.getLineHeight(index)
+-				: this.lyricPlayer.defaultLineHeight;
+-
++		const h = this.lyricPlayer.groupRelations.getGroupHeight(this);
+ 		const pb = this.lyricPlayer.size[1];
+ 		const ov = this.lyricPlayer.getOverscanPx();
+ 
+@@ -55,41 +49,13 @@ export class LyricLineGroup extends LyricLineGroupBase<LyricLineEl> {
+ 	}
+ 
+ 	show(): void {
+-		if (!this.element.parentElement) {
+-			const playerEl = this.lyricPlayer.getElement();
+-			const groups = this.lyricPlayer.currentLyricGroups;
+-			const myIndex = groups.indexOf(this);
+-
+-			let referenceNode: HTMLElement | null = null;
+-			if (myIndex !== -1) {
+-				for (let i = myIndex + 1; i < groups.length; i++) {
+-					if (groups[i].element.parentElement === playerEl) {
+-						referenceNode = groups[i].element;
+-						break;
+-					}
+-				}
+-			}
+-
+-			playerEl.insertBefore(this.element, referenceNode);
+-
+-			this.lyricPlayer.resizeObserver.observe(this.element);
+-			if (this.bgWrapper) {
+-				this.lyricPlayer.resizeObserver.observe(this.bgWrapper);
+-			}
+-		}
+-
++		this.lyricPlayer.groupRelations.mount(this);
+ 		this.mainLine.show();
+ 		this.bgLine?.show();
+ 	}
+ 
+ 	hide(): void {
+-		if (this.element.parentElement) {
+-			this.lyricPlayer.resizeObserver.unobserve(this.element);
+-			if (this.bgWrapper) {
+-				this.lyricPlayer.resizeObserver.unobserve(this.bgWrapper);
+-			}
+-			this.element.remove();
+-		}
++		this.lyricPlayer.groupRelations.unmount(this);
+ 	}
+ 
+ 	override update(delta: Duration = Duration.ZERO): void {
+@@ -155,10 +121,7 @@ export class LyricLineGroup extends LyricLineGroupBase<LyricLineEl> {
+ 			this.element.appendChild(this.bgWrapper);
+ 		}
+ 
+-		this.lyricPlayer.lyricGroupElementMap.set(this.bgWrapper, this);
+-		if (this.element.parentElement) {
+-			this.lyricPlayer.resizeObserver.observe(this.bgWrapper);
+-		}
++		this.lyricPlayer.groupRelations.registerBackground(this, this.bgWrapper);
+ 
+ 		this.lastBgHeight = this.bgWrapper.clientHeight || 0;
+ 	}
+@@ -224,11 +187,6 @@ export class LyricLineGroup extends LyricLineGroupBase<LyricLineEl> {
+ 
+ 	override dispose(): void {
+ 		super.dispose();
+-		this.lyricPlayer.resizeObserver.unobserve(this.element);
+-		if (this.bgWrapper) {
+-			this.lyricPlayer.lyricGroupElementMap.delete(this.bgWrapper);
+-			this.lyricPlayer.resizeObserver.unobserve(this.bgWrapper);
+-		}
+-		this.element.remove();
++		this.lyricPlayer.groupRelations.unregisterGroup(this);
+ 	}
+ }
+diff --git a/packages/core/test/dom-group-relations.test.ts b/packages/core/test/dom-group-relations.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f172d6303c2855cd23f286711fbd829f289e3984
+--- /dev/null
++++ b/packages/core/test/dom-group-relations.test.ts
+@@ -0,0 +1,425 @@
++import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
++import {
++	cleanupFakeDom,
++	FakeElement,
++	FakeMouseEvent,
++	type FakeResizeObserver,
++	setupFakeDom,
++} from "./fake-dom.ts";
++
++let DomLyricPlayer: typeof import("../src/lyric-player/dom/index.ts").DomLyricPlayer;
++let LyricLineEl: typeof import("../src/lyric-player/dom/lyric-line.ts").LyricLineEl;
++let LyricLineGroup: typeof import("../src/lyric-player/dom/lyric-group.ts").LyricLineGroup;
++type LyricLineMouseEventType =
++	import("../src/lyric-player/dom/index.ts").LyricLineMouseEvent;
++
++describe("DomLyricPlayer group relations integration tests", () => {
++	beforeAll(async () => {
++		setupFakeDom();
++		const domMod = await import("../src/lyric-player/dom/index.ts");
++		DomLyricPlayer = domMod.DomLyricPlayer;
++		const groupMod = await import("../src/lyric-player/dom/lyric-group.ts");
++		LyricLineGroup = groupMod.LyricLineGroup;
++		const lineMod = await import("../src/lyric-player/dom/lyric-line.ts");
++		LyricLineEl = lineMod.LyricLineEl;
++	});
++
++	afterAll(() => {
++		cleanupFakeDom();
++	});
++
++	it("handles mouse event targeting, processed index vs group order, bg targets, and cancel/propagation forwarding", () => {
++		const player = new DomLyricPlayer();
++
++		// Create two lines in processed order:
++		// Line 0: startTime 5000 (later in time)
++		// Line 1: startTime 1000 (earlier in time)
++		const rawLine0 = {
++			words: [{ word: "L0", startTime: 5000, endTime: 6000 }],
++			translatedLyric: "",
++			romanLyric: "",
++			startTime: 5000,
++			endTime: 6000,
++			isBG: false,
++			isDuet: false,
++		};
++		const rawLine1 = {
++			words: [{ word: "L1", startTime: 1000, endTime: 2000 }],
++			translatedLyric: "",
++			romanLyric: "",
++			startTime: 1000,
++			endTime: 2000,
++			isBG: false,
++			isDuet: false,
++		};
++		const rawBgLine = {
++			words: [{ word: "BG", startTime: 5200, endTime: 5800 }],
++			translatedLyric: "",
++			romanLyric: "",
++			startTime: 5200,
++			endTime: 5800,
++			isBG: true,
++			isDuet: false,
++		};
++
++		const lineEl0 = new LyricLineEl(player, rawLine0);
++		const lineEl1 = new LyricLineEl(player, rawLine1);
++		const bgLineEl = new LyricLineEl(player, rawBgLine);
++
++		player.groupRelations.registerLine(lineEl0, 0);
++		player.groupRelations.registerLine(lineEl1, 1);
++		player.groupRelations.registerLine(bgLineEl, 2);
++
++		const group0 = new LyricLineGroup(player, lineEl0);
++		group0.addBgLine(bgLineEl);
++		player.groupRelations.registerGroup(group0);
++
++		const group1 = new LyricLineGroup(player, lineEl1);
++		player.groupRelations.registerGroup(group1);
++
++		// Initialize order: stable sort puts group1 (1000ms) at slot 0, and group0 (5000ms) at slot 1
++		player.groupRelations.initializeGroupOrder();
++		expect(player.currentLyricGroups).toEqual([group1, group0]);
++
++		// Attach groups to player element
++		group1.show();
++		group0.show();
++
++		// Test 1: Click on main line of group0
++		// In sorted array, group0 is at index 1. But its lineEl0 was registered at processed index 0!
++		const lineClickEvents: LyricLineMouseEventType[] = [];
++		player.addEventListener("line-click", ((e: Event) => {
++			lineClickEvents.push(e as LyricLineMouseEventType);
++		}) as EventListener);
++
++		const mouseEvent0 = new FakeMouseEvent("click", { cancelable: true });
++		group0.element.dispatchEvent(mouseEvent0);
++
++		expect(lineClickEvents.length).toBe(1);
++		expect(lineClickEvents[0].lineIndex).toBe(0); // MUST be processed index 0, NOT sorted group index 1!
++		expect(lineClickEvents[0].line).toBe(lineEl0);
++		expect(lineClickEvents[0].bgLine).toBe(bgLineEl);
++
++		// Test 2: Click on child inside background wrapper of group0
++		const bgChild = new FakeElement("span");
++		group0.bgWrapper?.appendChild(bgChild as unknown as HTMLElement);
++
++		const mouseEventBg = new FakeMouseEvent("click", { cancelable: true });
++		bgChild.dispatchEvent(mouseEventBg);
++
++		expect(lineClickEvents.length).toBe(2);
++		expect(lineClickEvents[1].lineIndex).toBe(0); // Reports MAIN line's processed index
++		expect(lineClickEvents[1].line).toBe(lineEl0);
++		expect(lineClickEvents[1].bgLine).toBe(bgLineEl);
++
++		// Test 3: Unassociated target produces no event
++		const unassociatedEl = new FakeElement("button");
++		player.getElement().appendChild(unassociatedEl as unknown as HTMLElement);
++		const mouseEventUnassociated = new FakeMouseEvent("click", {
++			cancelable: true,
++		});
++		unassociatedEl.dispatchEvent(mouseEventUnassociated);
++		expect(lineClickEvents.length).toBe(2); // No new event
++		expect(mouseEventUnassociated.defaultPrevented).toBe(false);
++
++		// Test 4: Cancellation forwarding
++		let cancelNext = false;
++		player.addEventListener("line-contextmenu", ((e: Event) => {
++			if (cancelNext) {
++				e.preventDefault();
++			}
++		}) as EventListener);
++
++		cancelNext = false;
++		const ctxEvent1 = new FakeMouseEvent("contextmenu", { cancelable: true });
++		group0.element.dispatchEvent(ctxEvent1);
++		expect(ctxEvent1.defaultPrevented).toBe(false);
++
++		cancelNext = true;
++		const ctxEvent2 = new FakeMouseEvent("contextmenu", { cancelable: true });
++		group0.element.dispatchEvent(ctxEvent2);
++		expect(ctxEvent2.defaultPrevented).toBe(true); // Forwarded preventDefault!
++
++		// Test 5: Propagation forwarding
++		let stopNext = false;
++		let stopImmediateNext = false;
++		player.addEventListener("line-click", ((e: Event) => {
++			if (stopNext) {
++				e.stopPropagation();
++			}
++			if (stopImmediateNext) {
++				e.stopImmediatePropagation();
++			}
++		}) as EventListener);
++
++		stopNext = true;
++		const clickEventStop = new FakeMouseEvent("click", { cancelable: true });
++		group0.element.dispatchEvent(clickEventStop);
++		expect(clickEventStop.isPropagationStopped).toBe(true);
++		expect(clickEventStop.isImmediatePropagationStopped).toBe(true);
++
++		stopNext = false;
++		stopImmediateNext = true;
++		const clickEventStopImm = new FakeMouseEvent("click", { cancelable: true });
++		group0.element.dispatchEvent(clickEventStopImm);
++		expect(clickEventStopImm.isPropagationStopped).toBe(true);
++		expect(clickEventStopImm.isImmediatePropagationStopped).toBe(true);
++	});
++
++	it("routes ResizeObserver entries, writes size to group and layout slot, and handles bg measurements", () => {
++		const player = new DomLyricPlayer();
++
++		const rawLine0 = {
++			words: [{ word: "A", startTime: 1000, endTime: 2000 }],
++			translatedLyric: "",
++			romanLyric: "",
++			startTime: 1000,
++			endTime: 2000,
++			isBG: false,
++			isDuet: false,
++		};
++		const rawLine1 = {
++			words: [{ word: "B", startTime: 3000, endTime: 4000 }],
++			translatedLyric: "",
++			romanLyric: "",
++			startTime: 3000,
++			endTime: 4000,
++			isBG: false,
++			isDuet: false,
++		};
++		const rawBgLine = {
++			words: [{ word: "BG", startTime: 3200, endTime: 3800 }],
++			translatedLyric: "",
++			romanLyric: "",
++			startTime: 3200,
++			endTime: 3800,
++			isBG: true,
++			isDuet: false,
++		};
++
++		const lineEl0 = new LyricLineEl(player, rawLine0);
++		const lineEl1 = new LyricLineEl(player, rawLine1);
++		const bgLineEl = new LyricLineEl(player, rawBgLine);
++
++		player.groupRelations.registerLine(lineEl0, 0);
++		player.groupRelations.registerLine(lineEl1, 1);
++		player.groupRelations.registerLine(bgLineEl, 2);
++
++		const group0 = new LyricLineGroup(player, lineEl0);
++		player.groupRelations.registerGroup(group0);
++
++		const group1 = new LyricLineGroup(player, lineEl1);
++		group1.addBgLine(bgLineEl);
++		player.groupRelations.registerGroup(group1);
++
++		player.groupRelations.initializeGroupOrder();
++
++		const observer = player.resizeObserver as unknown as FakeResizeObserver;
++
++		// 1. Trigger size change for group0 (slot 0)
++		const mainLineSpy = vi.spyOn(lineEl0, "onLineSizeChange");
++		observer.trigger([
++			{
++				target: group0.element as unknown as Element,
++				borderBoxSize: [{ inlineSize: 400, blockSize: 65 }],
++			},
++		]);
++
++		expect(player.lyricGroupSize.get(group0)).toEqual([400, 65]);
++		expect(mainLineSpy).toHaveBeenCalledWith([400, 65]);
++		expect(player.getLineHeight(0)).toBe(65);
++
++		// 2. Trigger size change for group1 (slot 1)
++		const group1MainSpy = vi.spyOn(lineEl1, "onLineSizeChange");
++		const group1BgSpy = vi.spyOn(bgLineEl, "onLineSizeChange");
++		observer.trigger([
++			{
++				target: group1.element as unknown as Element,
++				borderBoxSize: [{ inlineSize: 380, blockSize: 75 }],
++			},
++		]);
++
++		expect(player.lyricGroupSize.get(group1)).toEqual([380, 75]);
++		expect(group1MainSpy).toHaveBeenCalledWith([380, 75]);
++		expect(group1BgSpy).toHaveBeenCalledWith([380, 75]);
++		expect(player.getLineHeight(1)).toBe(75);
++
++		// 3. Duplicate size does not re-trigger line notification
++		mainLineSpy.mockClear();
++		observer.trigger([
++			{
++				target: group0.element as unknown as Element,
++				borderBoxSize: [{ inlineSize: 400, blockSize: 65 }],
++			},
++		]);
++		expect(mainLineSpy).not.toHaveBeenCalled();
++
++		// 4. Background wrapper measurement routes to onBgSizeChange without modifying main size or main layout slot
++		const bgSizeSpy = vi.spyOn(group1, "onBgSizeChange");
++		observer.trigger([
++			{
++				target: group1.bgWrapper as unknown as Element,
++				borderBoxSize: [{ inlineSize: 350, blockSize: 30 }],
++			},
++		]);
++
++		expect(bgSizeSpy).toHaveBeenCalledWith([350, 30]);
++		expect(player.lyricGroupSize.get(group1)).toEqual([380, 75]); // Main size unchanged!
++		expect(player.getLineHeight(1)).toBe(75); // Main layout slot unchanged!
++
++		// 5. Unknown element is ignored
++		const unassociated = new FakeElement("div");
++		expect(() => {
++			observer.trigger([
++				{
++					target: unassociated as unknown as Element,
++					borderBoxSize: [{ inlineSize: 100, blockSize: 20 }],
++				},
++			]);
++		}).not.toThrow();
++	});
++
++	it("preserves group and line identities across hide/show, maintains mount order, and handles disposal", () => {
++		const player = new DomLyricPlayer();
++
++		const rawLine0 = {
++			words: [{ word: "A", startTime: 1000, endTime: 2000 }],
++			translatedLyric: "",
++			romanLyric: "",
++			startTime: 1000,
++			endTime: 2000,
++			isBG: false,
++			isDuet: false,
++		};
++		const rawLine1 = {
++			words: [{ word: "B", startTime: 2000, endTime: 3000 }],
++			translatedLyric: "",
++			romanLyric: "",
++			startTime: 2000,
++			endTime: 3000,
++			isBG: false,
++			isDuet: false,
++		};
++		const rawBgLine = {
++			words: [{ word: "BG", startTime: 2100, endTime: 2800 }],
++			translatedLyric: "",
++			romanLyric: "",
++			startTime: 2100,
++			endTime: 2800,
++			isBG: true,
++			isDuet: false,
++		};
++
++		const lineEl0 = new LyricLineEl(player, rawLine0);
++		const lineEl1 = new LyricLineEl(player, rawLine1);
++		const bgLineEl = new LyricLineEl(player, rawBgLine);
++
++		player.groupRelations.registerLine(lineEl0, 0);
++		player.groupRelations.registerLine(lineEl1, 1);
++		player.groupRelations.registerLine(bgLineEl, 2);
++
++		const group0 = new LyricLineGroup(player, lineEl0);
++		player.groupRelations.registerGroup(group0);
++
++		const group1 = new LyricLineGroup(player, lineEl1);
++		group1.addBgLine(bgLineEl);
++		player.groupRelations.registerGroup(group1);
++
++		player.groupRelations.initializeGroupOrder();
++
++		const playerEl = player.getElement() as unknown as FakeElement;
++		const observer = player.resizeObserver as unknown as FakeResizeObserver;
++
++		// Initial show
++		group0.show();
++		group1.show();
++		expect(group0.element.parentElement).toBe(playerEl);
++		expect(group1.element.parentElement).toBe(playerEl);
++		expect(
++			(playerEl.children as unknown as HTMLElement[]).indexOf(group0.element),
++		).toBeLessThan(
++			(playerEl.children as unknown as HTMLElement[]).indexOf(group1.element),
++		);
++		expect(observer.observed.has(group0.element as unknown as Element)).toBe(
++			true,
++		);
++		expect(observer.observed.has(group1.element as unknown as Element)).toBe(
++			true,
++		);
++		expect(observer.observed.has(group1.bgWrapper as unknown as Element)).toBe(
++			true,
++		);
++
++		// Hide group0
++		group0.hide();
++		expect(group0.element.parentElement).toBeNull();
++		expect(playerEl.children as unknown as HTMLElement[]).not.toContain(
++			group0.element,
++		);
++		expect(observer.unobserved).toContain(group0.element as unknown as Element);
++		// Identity and associations preserved
++		expect(
++			player.groupRelations.getGroupForElement(
++				group0.element as unknown as Element,
++			),
++		).toBe(group0);
++		expect(group0.mainLine).toBe(lineEl0);
++
++		// Hide group1
++		group1.hide();
++		expect(group1.element.parentElement).toBeNull();
++		expect(playerEl.children as unknown as HTMLElement[]).not.toContain(
++			group1.element,
++		);
++		expect(observer.unobserved).toContain(
++			group1.bgWrapper as unknown as Element,
++		);
++
++		// Remount: show group1 first, then group0
++		group1.show();
++		expect(playerEl.children as unknown as HTMLElement[]).toContain(
++			group1.element,
++		);
++		expect(playerEl.children as unknown as HTMLElement[]).not.toContain(
++			group0.element,
++		);
++
++		// Now show group0: since group0 is before group1 in currentLyricGroups,
++		// it must find group1 as referenceNode and insert BEFORE group1!
++		group0.show();
++		expect(playerEl.children as unknown as HTMLElement[]).toContain(
++			group0.element,
++		);
++		expect(playerEl.children as unknown as HTMLElement[]).toContain(
++			group1.element,
++		);
++		expect(
++			(playerEl.children as unknown as HTMLElement[]).indexOf(group0.element),
++		).toBeLessThan(
++			(playerEl.children as unknown as HTMLElement[]).indexOf(group1.element),
++		);
++
++		// Calling show on already mounted group does not move it
++		group0.show();
++		expect(
++			(playerEl.children as unknown as HTMLElement[]).indexOf(group0.element),
++		).toBeLessThan(
++			(playerEl.children as unknown as HTMLElement[]).indexOf(group1.element),
++		);
++
++		// Dispose group1
++		const bgWrapper = group1.bgWrapper;
++		group1.dispose();
++		expect(group1.element.parentElement).toBeNull();
++		// bgWrapper association deleted
++		expect(
++			player.groupRelations.getGroupForElement(bgWrapper as unknown as Element),
++		).toBeUndefined();
++		// Group element association preserved
++		expect(
++			player.groupRelations.getGroupForElement(
++				group1.element as unknown as Element,
++			),
++		).toBe(group1);
++	});
++});
+diff --git a/packages/core/test/fake-dom.ts b/packages/core/test/fake-dom.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..36041a1697921d2e175344fa732cc28daa7ccee0
+--- /dev/null
++++ b/packages/core/test/fake-dom.ts
+@@ -0,0 +1,407 @@
++import { vi } from "vitest";
++
++export class FakeClassList {
++	private classes = new Set<string>();
++
++	constructor(initial = "") {
++		for (const c of initial.split(/\s+/)) {
++			if (c) this.classes.add(c);
++		}
++	}
++
++	add(...tokens: string[]): void {
++		for (const t of tokens) {
++			if (t) this.classes.add(t);
++		}
++	}
++
++	remove(...tokens: string[]): void {
++		for (const t of tokens) {
++			this.classes.delete(t);
++		}
++	}
++
++	contains(token: string): boolean {
++		return this.classes.has(token);
++	}
++
++	toggle(token: string, force?: boolean): boolean {
++		if (force !== undefined) {
++			if (force) this.classes.add(token);
++			else this.classes.delete(token);
++			return force;
++		}
++		if (this.classes.has(token)) {
++			this.classes.delete(token);
++			return false;
++		}
++		this.classes.add(token);
++		return true;
++	}
++
++	toString(): string {
++		return Array.from(this.classes).join(" ");
++	}
++}
++
++export class FakeNode {
++	static readonly ELEMENT_NODE: number = 1;
++	static readonly TEXT_NODE: number = 3;
++	nodeType: number = 1;
++}
++
++export class FakeElement extends FakeNode {
++	override readonly nodeType: number = 1;
++	parentElement: FakeElement | null = null;
++	children: FakeElement[] = [];
++	classList: FakeClassList;
++	style: Record<string, string> & {
++		setProperty(k: string, v: string): void;
++		removeProperty(k: string): void;
++	};
++	innerHTML: string = "";
++	textContent: string = "";
++	dataset: Record<string, string> = {};
++	clientWidth: number = 100;
++	clientHeight: number = 50;
++	offsetWidth: number = 100;
++	offsetHeight: number = 50;
++
++	private listeners = new Map<
++		string,
++		Array<{
++			listener: EventListenerOrEventListenerObject;
++			options?: AddEventListenerOptions | boolean;
++		}>
++	>();
++
++	constructor(public tagName: string = "div") {
++		super();
++		this.classList = new FakeClassList();
++		const styleProps: Record<string, string> = {};
++		this.style = Object.assign(styleProps, {
++			setProperty(k: string, v: string) {
++				styleProps[k] = v;
++			},
++			removeProperty(k: string) {
++				delete styleProps[k];
++			},
++		});
++	}
++
++	get className(): string {
++		return this.classList.toString();
++	}
++
++	set className(val: string) {
++		this.classList = new FakeClassList(val);
++	}
++
++	get childNodes(): FakeElement[] {
++		return this.children;
++	}
++
++	getBoundingClientRect(): {
++		left: number;
++		right: number;
++		top: number;
++		bottom: number;
++		width: number;
++		height: number;
++	} {
++		return {
++			left: 0,
++			right: this.clientWidth,
++			top: 0,
++			bottom: this.clientHeight,
++			width: this.clientWidth,
++			height: this.clientHeight,
++		};
++	}
++
++	private attributes = new Map<string, string>();
++
++	setAttribute(name: string, value: string): void {
++		if (name === "class") {
++			this.className = value;
++		}
++		this.attributes.set(name, value);
++	}
++
++	getAttribute(name: string): string | null {
++		if (name === "class") {
++			return this.className;
++		}
++		return this.attributes.get(name) ?? null;
++	}
++
++	removeAttribute(name: string): void {
++		if (name === "class") {
++			this.className = "";
++		}
++		this.attributes.delete(name);
++	}
++
++	getAttributeNames(): string[] {
++		const names = Array.from(this.attributes.keys());
++		if (this.className && !names.includes("class")) {
++			names.push("class");
++		}
++		return names;
++	}
++
++	appendChild<T extends FakeElement>(child: T): T {
++		if (child.parentElement) {
++			child.parentElement.removeChild(child);
++		}
++		child.parentElement = this;
++		this.children.push(child);
++		return child;
++	}
++
++	insertBefore<T extends FakeElement>(
++		newChild: T,
++		refChild: FakeElement | null,
++	): T {
++		if (newChild.parentElement) {
++			newChild.parentElement.removeChild(newChild);
++		}
++		newChild.parentElement = this;
++		if (!refChild) {
++			this.children.push(newChild);
++			return newChild;
++		}
++		const idx = this.children.indexOf(refChild);
++		if (idx === -1) {
++			this.children.push(newChild);
++		} else {
++			this.children.splice(idx, 0, newChild);
++		}
++		return newChild;
++	}
++
++	removeChild<T extends FakeElement>(child: T): T {
++		const idx = this.children.indexOf(child);
++		if (idx !== -1) {
++			this.children.splice(idx, 1);
++		}
++		child.parentElement = null;
++		return child;
++	}
++
++	remove(): void {
++		if (this.parentElement) {
++			this.parentElement.removeChild(this);
++		}
++	}
++
++	animate(): Animation {
++		return {
++			pause: () => {},
++			play: () => {},
++			finish: () => {},
++			cancel: () => {},
++			currentTime: 0,
++			playbackRate: 1,
++			addEventListener: () => {},
++			removeEventListener: () => {},
++		} as unknown as Animation;
++	}
++
++	closest(selector: string): FakeElement | null {
++		if (selector.startsWith(".")) {
++			const cls = selector.slice(1);
++			if (this.classList.contains(cls)) return this;
++		}
++		return this.parentElement?.closest(selector) ?? null;
++	}
++
++	querySelectorAll(selector: string): FakeElement[] {
++		const results: FakeElement[] = [];
++		const search = (el: FakeElement) => {
++			for (const child of el.children) {
++				if (selector.startsWith(".")) {
++					if (child.classList.contains(selector.slice(1))) {
++						results.push(child);
++					}
++				} else if (child.tagName.toLowerCase() === selector.toLowerCase()) {
++					results.push(child);
++				}
++				search(child);
++			}
++		};
++		search(this);
++		return results;
++	}
++
++	querySelector(selector: string): FakeElement | null {
++		return this.querySelectorAll(selector)[0] ?? null;
++	}
++
++	addEventListener(
++		type: string,
++		listener: EventListenerOrEventListenerObject,
++		options?: AddEventListenerOptions | boolean,
++	): void {
++		let list = this.listeners.get(type);
++		if (!list) {
++			list = [];
++			this.listeners.set(type, list);
++		}
++		list.push({ listener, options });
++		if (typeof options === "object" && options?.signal) {
++			options.signal.addEventListener("abort", () => {
++				this.removeEventListener(type, listener);
++			});
++		}
++	}
++
++	removeEventListener(
++		type: string,
++		listener: EventListenerOrEventListenerObject,
++	): void {
++		const list = this.listeners.get(type);
++		if (list) {
++			const idx = list.findIndex((item) => item.listener === listener);
++			if (idx !== -1) {
++				list.splice(idx, 1);
++			}
++		}
++	}
++
++	dispatchEvent(event: Event): boolean {
++		if (!event.target) {
++			Object.defineProperty(event, "target", {
++				value: this,
++				configurable: true,
++			});
++		}
++		let curr: FakeElement | null = this;
++		while (curr) {
++			const list = curr.listeners.get(event.type) ?? [];
++			for (const item of [...list]) {
++				if (typeof item.listener === "function") {
++					item.listener(event);
++				} else if (
++					item.listener &&
++					typeof item.listener.handleEvent === "function"
++				) {
++					item.listener.handleEvent(event);
++				}
++				if ((event as FakeMouseEvent).isImmediatePropagationStopped) break;
++			}
++			if (
++				(event as FakeMouseEvent).isPropagationStopped ||
++				(event as FakeMouseEvent).isImmediatePropagationStopped
++			) {
++				break;
++			}
++			curr = curr.parentElement;
++		}
++		return !event.defaultPrevented;
++	}
++}
++
++export class FakeMouseEvent extends Event {
++	override defaultPrevented: boolean = false;
++	isPropagationStopped: boolean = false;
++	isImmediatePropagationStopped: boolean = false;
++	override target: EventTarget | null = null;
++
++	override preventDefault(): void {
++		this.defaultPrevented = true;
++	}
++
++	override stopPropagation(): void {
++		this.isPropagationStopped = true;
++	}
++
++	override stopImmediatePropagation(): void {
++		this.isImmediatePropagationStopped = true;
++	}
++}
++
++export class FakeResizeObserver {
++	static instances: FakeResizeObserver[] = [];
++	observed: Set<Element> = new Set<Element>();
++	unobserved: Element[] = [];
++
++	constructor(public callback: ResizeObserverCallback) {
++		FakeResizeObserver.instances.push(this);
++	}
++
++	observe(el: Element): void {
++		this.observed.add(el);
++	}
++
++	unobserve(el: Element): void {
++		this.observed.delete(el);
++		this.unobserved.push(el);
++	}
++
++	disconnect(): void {
++		this.observed.clear();
++	}
++
++	trigger(entries: Partial<ResizeObserverEntry>[]): void {
++		this.callback(
++			entries as ResizeObserverEntry[],
++			this as unknown as ResizeObserver,
++		);
++	}
++}
++
++export class FakeMutationObserver {
++	constructor(public callback: MutationCallback) {}
++	observe(): void {}
++	disconnect(): void {}
++}
++
++export function setupFakeDom(): void {
++	FakeResizeObserver.instances = [];
++	vi.stubGlobal("Node", FakeNode);
++	vi.stubGlobal("Element", FakeElement);
++	vi.stubGlobal("HTMLElement", FakeElement);
++	vi.stubGlobal("MouseEvent", FakeMouseEvent);
++	vi.stubGlobal("ResizeObserver", FakeResizeObserver);
++	vi.stubGlobal("MutationObserver", FakeMutationObserver);
++	vi.stubGlobal("document", {
++		createElement(tag: string) {
++			return new FakeElement(tag);
++		},
++		createTextNode(text: string) {
++			return { textContent: text, nodeType: 3 };
++		},
++		createRange() {
++			return {
++				selectNodeContents: () => {},
++				setStart: () => {},
++				setEnd: () => {},
++				getBoundingClientRect: () => ({
++					left: 0,
++					right: 0,
++					top: 0,
++					bottom: 0,
++					width: 0,
++					height: 0,
++				}),
++			};
++		},
++	});
++	vi.stubGlobal("window", {
++		innerHeight: 1000,
++		addEventListener: vi.fn(),
++		removeEventListener: vi.fn(),
++	});
++	vi.stubGlobal("getComputedStyle", () => ({
++		fontSize: "16px",
++	}));
++	vi.stubGlobal("CSS", {
++		supports: () => true,
++	});
++}
++
++export function cleanupFakeDom(): void {
++	vi.unstubAllGlobals();
++	FakeResizeObserver.instances = [];
++}
+diff --git a/packages/core/test/group-relations.test.ts b/packages/core/test/group-relations.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f67b20aa86e465675092ba10f180becdbae92b2
+--- /dev/null
++++ b/packages/core/test/group-relations.test.ts
+@@ -0,0 +1,225 @@
++import { describe, expect, it, vi } from "vitest";
++import type { LyricLineGroupBase } from "../src/lyric-player/base/group.ts";
++import {
++	LyricGroupRelations,
++	type LyricGroupRelationsHost,
++} from "../src/lyric-player/base/group-relations.ts";
++import type { LyricLineBase } from "../src/lyric-player/base/line.ts";
++import { MediaTime } from "../src/utils/time.ts";
++import { FakeElement } from "./fake-dom.ts";
++
++function createMockGroup(
++	startTimeMs: number,
++	endTimeMs: number,
++	bgWrapper?: FakeElement,
++): LyricLineGroupBase & { element: FakeElement; bgWrapper?: FakeElement } {
++	const el = new FakeElement("div");
++	return {
++		element: el,
++		bgWrapper,
++		startTime: MediaTime.fromMillis(startTimeMs),
++		endTime: MediaTime.fromMillis(endTimeMs),
++		getElement() {
++			return el as unknown as HTMLElement;
++		},
++	} as unknown as LyricLineGroupBase & {
++		element: FakeElement;
++		bgWrapper?: FakeElement;
++	};
++}
++
++describe("LyricGroupRelations unit tests", () => {
++	it("handles group registration, ordering, layout slot allocation, and empty reset", () => {
++		const playerEl = new FakeElement("div");
++		const linesIndexes = new WeakMap<LyricLineBase, number>();
++		const timelineBoundsSpy = vi.fn();
++		const initLayoutHeightsSpy = vi.fn();
++		const observed: Element[] = [];
++		const unobserved: Element[] = [];
++
++		const host: LyricGroupRelationsHost = {
++			currentLyricGroups: [],
++			lyricGroupElementMap: new WeakMap(),
++			lyricGroupSize: new WeakMap(),
++			resizeObserver: {
++				observe: (el: Element) => observed.push(el),
++				unobserve: (el: Element) => unobserved.push(el),
++			} as unknown as ResizeObserver,
++			defaultLineHeight: 30,
++			getElement: () => playerEl as unknown as HTMLElement,
++			getLineHeight: (i: number) => (i + 1) * 20,
++			getLyricLinesIndexes: () => linesIndexes,
++			setTimelineBounds: timelineBoundsSpy,
++			initLayoutHeights: initLayoutHeightsSpy,
++		};
++
++		const relations = new LyricGroupRelations(host);
++
++		// Group creation
++		const g1 = createMockGroup(2000, 3000);
++		const g2 = createMockGroup(1000, 2000);
++		const g3 = createMockGroup(1000, 2500); // Same start time as g2
++		const gUnsorted = createMockGroup(500, 1000);
++
++		host.currentLyricGroups = [g1, g2, g3];
++
++		relations.initializeGroupOrder();
++
++		// Stable sort: g2 and g3 both have startTime 1000, g2 was first, so [g2, g3, g1]
++		expect(host.currentLyricGroups).toEqual([g2, g3, g1]);
++
++		// Bounds and layout init
++		expect(timelineBoundsSpy).toHaveBeenCalledWith([
++			{ startTime: g2.startTime, endTime: g2.endTime },
++			{ startTime: g3.startTime, endTime: g3.endTime },
++			{ startTime: g1.startTime, endTime: g1.endTime },
++		]);
++		expect(initLayoutHeightsSpy).toHaveBeenCalledWith(3, 30);
++
++		// Layout indices
++		expect(relations.getLayoutIndex(g2)).toBe(0);
++		expect(relations.getLayoutIndex(g3)).toBe(1);
++		expect(relations.getLayoutIndex(g1)).toBe(2);
++		expect(relations.getLayoutIndex(gUnsorted)).toBe(-1);
++
++		// Group height
++		expect(relations.getGroupHeight(g2)).toBe(20);
++		expect(relations.getGroupHeight(g3)).toBe(40);
++		expect(relations.getGroupHeight(g1)).toBe(60);
++		expect(relations.getGroupHeight(gUnsorted)).toBe(30);
++
++		// Reset groups
++		relations.resetGroups();
++		expect(host.currentLyricGroups).toEqual([]);
++
++		relations.initializeGroupOrder();
++		expect(timelineBoundsSpy).toHaveBeenLastCalledWith([]);
++		expect(initLayoutHeightsSpy).toHaveBeenLastCalledWith(0, 30);
++	});
++
++	it("manages element associations, size, line indices, and DOM mount/unmount/unregister lifecycle", () => {
++		const playerEl = new FakeElement("div");
++		let linesIndexes = new WeakMap<LyricLineBase, number>();
++		const observed: Element[] = [];
++		const unobserved: Element[] = [];
++
++		const host: LyricGroupRelationsHost = {
++			currentLyricGroups: [],
++			lyricGroupElementMap: new WeakMap(),
++			lyricGroupSize: new WeakMap(),
++			resizeObserver: {
++				observe: (el: Element) => observed.push(el),
++				unobserve: (el: Element) => unobserved.push(el),
++			} as unknown as ResizeObserver,
++			defaultLineHeight: 30,
++			getElement: () => playerEl as unknown as HTMLElement,
++			getLineHeight: () => 30,
++			getLyricLinesIndexes: () => linesIndexes,
++			setTimelineBounds: vi.fn(),
++			initLayoutHeights: vi.fn(),
++		};
++
++		const relations = new LyricGroupRelations(host);
++
++		// Line index registration
++		const line1 = {} as LyricLineBase;
++		const line2 = {} as LyricLineBase;
++		relations.registerLine(line1, 42);
++		expect(relations.getLineIndex(line1)).toBe(42);
++		expect(relations.getLineIndex(line2)).toBe(-1);
++
++		// Replacing linesIndexes respects current reference
++		linesIndexes = new WeakMap();
++		expect(relations.getLineIndex(line1)).toBe(-1);
++
++		// Group registration
++		const bgWrapperA = new FakeElement("div");
++		const groupA = createMockGroup(100, 200, bgWrapperA);
++		const groupB = createMockGroup(300, 400);
++		const bgWrapperC = new FakeElement("div");
++		const groupC = createMockGroup(500, 600, bgWrapperC);
++
++		relations.registerGroup(groupA);
++		relations.registerGroup(groupB);
++		relations.registerGroup(groupC);
++		expect(host.currentLyricGroups).toContain(groupA);
++		expect(
++			relations.getGroupForElement(groupA.element as unknown as Element),
++		).toBe(groupA);
++		expect(
++			relations.getGroupForElement(
++				new FakeElement("div") as unknown as Element,
++			),
++		).toBeUndefined();
++
++		// Group size
++		expect(relations.getGroupSize(groupA)).toEqual([0, 0]);
++		relations.setGroupSize(groupA, [120, 45]);
++		expect(relations.getGroupSize(groupA)).toEqual([120, 45]);
++
++		// Background wrapper registration
++		// When group is not attached, wrapper is not observed
++		relations.registerBackground(groupA, bgWrapperA as unknown as HTMLElement);
++		expect(relations.getGroupForElement(bgWrapperA as unknown as Element)).toBe(
++			groupA,
++		);
++		expect(observed).not.toContain(bgWrapperA as unknown as Element);
++
++		// When group is attached, wrapper is observed
++		playerEl.appendChild(groupA.element);
++		const bgWrapperA2 = new FakeElement("div");
++		relations.registerBackground(groupA, bgWrapperA2 as unknown as HTMLElement);
++		expect(observed).toContain(bgWrapperA2 as unknown as Element);
++		playerEl.removeChild(groupA.element);
++
++		// Mount ordering: [groupA, groupB, groupC]
++		host.currentLyricGroups = [groupA, groupB, groupC];
++		observed.length = 0;
++
++		// Mount groupC first (no successors, appended)
++		relations.mount(groupC);
++		expect(playerEl.children).toEqual([groupC.element]);
++		expect(observed).toContain(groupC.element as unknown as Element);
++		expect(observed).toContain(bgWrapperC as unknown as Element);
++
++		// Mount groupA (successor groupC is attached to playerEl, so inserted before groupC)
++		relations.mount(groupA);
++		expect(playerEl.children).toEqual([groupA.element, groupC.element]);
++
++		// Mount groupB (inserted before groupC)
++		relations.mount(groupB);
++		expect(playerEl.children).toEqual([
++			groupA.element,
++			groupB.element,
++			groupC.element,
++		]);
++
++		// Already mounted group does not move or re-observe
++		const obsCount = observed.length;
++		relations.mount(groupA);
++		expect(observed.length).toBe(obsCount);
++
++		// Unmount
++		relations.unmount(groupB);
++		expect(groupB.element.parentElement).toBeNull();
++		expect(unobserved).toContain(groupB.element as unknown as Element);
++		// Group relations preserved across unmount (hide)
++		expect(
++			relations.getGroupForElement(groupB.element as unknown as Element),
++		).toBe(groupB);
++
++		// Unregister (dispose)
++		relations.unregisterGroup(groupC);
++		expect(groupC.element.parentElement).toBeNull();
++		expect(unobserved).toContain(groupC.element as unknown as Element);
++		expect(unobserved).toContain(bgWrapperC as unknown as Element);
++		// bgWrapper association deleted
++		expect(
++			relations.getGroupForElement(bgWrapperC as unknown as Element),
++		).toBeUndefined();
++		// Group element association preserved
++		expect(
++			relations.getGroupForElement(groupC.element as unknown as Element),
++		).toBe(groupC);
++	});
++});

@@ -1,0 +1,5107 @@
+diff --git a/ingest/ledger_transaction_metadata_view_p2p_test.go b/ingest/ledger_transaction_metadata_view_p2p_test.go
+new file mode 100644
+index 00000000..cfb1a0b2
+--- /dev/null
++++ b/ingest/ledger_transaction_metadata_view_p2p_test.go
+@@ -0,0 +1,601 @@
++package ingest
++
++import (
++	"fmt"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/stellar/go-stellar-sdk/xdr"
++)
++
++// Supplemental P2P regression coverage for the consolidated decoded-metadata
++// generation view. These tests only exercise the exported transaction metadata
++// APIs and pin per-generation observable behavior, so they pass on the
++// Baseline and fail on any refactor that changes the preserved contract.
++
++const p2pMetadataAccount = "GAHK7EEG2WWHVKDNT4CEQFZGKF2LGDSW2IVM4S5DP42RBW3K6BTODB4A"
++
++var p2pMetadataAccountId = xdr.MustMuxedAddress(p2pMetadataAccount)
++
++func p2pLedgerEntry(balance int64) *xdr.LedgerEntry {
++	return &xdr.LedgerEntry{
++		Data: xdr.LedgerEntryData{
++			Type: xdr.LedgerEntryTypeAccount,
++			Account: &xdr.AccountEntry{
++				AccountId: xdr.MustAddress(p2pMetadataAccount),
++				Balance:   xdr.Int64(balance),
++			},
++		},
++	}
++}
++
++func p2pChangePair(from, to int64) xdr.LedgerEntryChanges {
++	return xdr.LedgerEntryChanges{
++		{
++			Type:  xdr.LedgerEntryChangeTypeLedgerEntryState,
++			State: p2pLedgerEntry(from),
++		},
++		{
++			Type:    xdr.LedgerEntryChangeTypeLedgerEntryUpdated,
++			Updated: p2pLedgerEntry(to),
++		},
++	}
++}
++
++func p2pChangePairBalances(balance int64) xdr.LedgerEntryChanges {
++	return p2pChangePair(balance, balance+1)
++}
++
++func p2pPreBalances(changes []Change) []xdr.Int64 {
++	balances := make([]xdr.Int64, 0, len(changes))
++	for _, change := range changes {
++		balances = append(balances, change.Pre.Data.MustAccount().Balance)
++	}
++	return balances
++}
++
++func p2pReasons(changes []Change) []LedgerEntryChangeReason {
++	reasons := make([]LedgerEntryChangeReason, 0, len(changes))
++	for _, change := range changes {
++		reasons = append(reasons, change.Reason)
++	}
++	return reasons
++}
++
++func p2pOperationIndexes(changes []Change) []uint32 {
++	indexes := make([]uint32, 0, len(changes))
++	for _, change := range changes {
++		indexes = append(indexes, change.OperationIndex)
++	}
++	return indexes
++}
++
++func p2pClassicEnvelope() xdr.TransactionEnvelope {
++	return xdr.TransactionEnvelope{
++		Type: xdr.EnvelopeTypeEnvelopeTypeTx,
++		V1: &xdr.TransactionV1Envelope{
++			Tx: xdr.Transaction{
++				SourceAccount: p2pMetadataAccountId,
++			},
++		},
++	}
++}
++
++func p2pSorobanEnvelope() xdr.TransactionEnvelope {
++	return xdr.TransactionEnvelope{
++		Type: xdr.EnvelopeTypeEnvelopeTypeTx,
++		V1: &xdr.TransactionV1Envelope{
++			Tx: xdr.Transaction{
++				SourceAccount: p2pMetadataAccountId,
++				Ext: xdr.TransactionExt{
++					V:           1,
++					SorobanData: &xdr.SorobanTransactionData{},
++				},
++			},
++		},
++	}
++}
++
++func p2pContractEvent(topic string) xdr.ContractEvent {
++	topicValue := xdr.ScSymbol(topic)
++	return xdr.ContractEvent{
++		Type: xdr.ContractEventTypeContract,
++		Body: xdr.ContractEventBody{
++			V: 0,
++			V0: &xdr.ContractEventV0{
++				Topics: []xdr.ScVal{{Type: xdr.ScValTypeScvSymbol, Sym: &topicValue}},
++			},
++		},
++	}
++}
++
++// p2pChangesMeta returns metadata for each supported generation carrying
++// leading transaction changes (balances 100), two operation change groups
++// (200, 300) and, for generations 2-4, trailing transaction changes (400).
++func p2pChangesMeta() map[string]xdr.TransactionMeta {
++	return map[string]xdr.TransactionMeta{
++		"v1": {
++			V: 1,
++			V1: &xdr.TransactionMetaV1{
++				TxChanges: p2pChangePairBalances(100),
++				Operations: []xdr.OperationMeta{
++					{Changes: p2pChangePairBalances(200)},
++					{Changes: p2pChangePairBalances(300)},
++				},
++			},
++		},
++		"v2": {
++			V: 2,
++			V2: &xdr.TransactionMetaV2{
++				TxChangesBefore: p2pChangePairBalances(100),
++				Operations: []xdr.OperationMeta{
++					{Changes: p2pChangePairBalances(200)},
++					{Changes: p2pChangePairBalances(300)},
++				},
++				TxChangesAfter: p2pChangePairBalances(400),
++			},
++		},
++		"v3": {
++			V: 3,
++			V3: &xdr.TransactionMetaV3{
++				TxChangesBefore: p2pChangePairBalances(100),
++				Operations: []xdr.OperationMeta{
++					{Changes: p2pChangePairBalances(200)},
++					{Changes: p2pChangePairBalances(300)},
++				},
++				TxChangesAfter: p2pChangePairBalances(400),
++			},
++		},
++		"v4": {
++			V: 4,
++			V4: &xdr.TransactionMetaV4{
++				TxChangesBefore: p2pChangePairBalances(100),
++				Operations: []xdr.OperationMetaV2{
++					{Changes: p2pChangePairBalances(200)},
++					{Changes: p2pChangePairBalances(300)},
++				},
++				TxChangesAfter: p2pChangePairBalances(400),
++			},
++		},
++	}
++}
++
++func TestP2PGetChangesGeneration1OrderAndAssociations(t *testing.T) {
++	tx := &LedgerTransaction{UnsafeMeta: p2pChangesMeta()["v1"]}
++
++	changes, err := tx.GetChanges()
++	require.NoError(t, err)
++	require.Len(t, changes, 3)
++
++	assert.Equal(t, []xdr.Int64{100, 200, 300}, p2pPreBalances(changes))
++	assert.Equal(t, []LedgerEntryChangeReason{
++		LedgerEntryChangeReasonTransaction,
++		LedgerEntryChangeReasonOperation,
++		LedgerEntryChangeReasonOperation,
++	}, p2pReasons(changes))
++	assert.Equal(t, []uint32{0, 0, 1}, p2pOperationIndexes(changes))
++	for _, change := range changes {
++		assert.True(t, change.Transaction == tx, "change must reference its transaction")
++		assert.True(t, change.Ledger == &tx.Ledger, "change must reference the ledger")
++	}
++
++	operationChanges, err := tx.GetOperationChanges(1)
++	require.NoError(t, err)
++	require.Len(t, operationChanges, 1)
++	assert.Equal(t, xdr.Int64(300), operationChanges[0].Pre.Data.MustAccount().Balance)
++	assert.Equal(t, uint32(1), operationChanges[0].OperationIndex)
++	assert.Equal(t, LedgerEntryChangeReasonOperation, operationChanges[0].Reason)
++}
++
++func TestP2PGetChangesGeneration3OrderAndAssociations(t *testing.T) {
++	tx := &LedgerTransaction{UnsafeMeta: p2pChangesMeta()["v3"]}
++
++	changes, err := tx.GetChanges()
++	require.NoError(t, err)
++	require.Len(t, changes, 4)
++
++	assert.Equal(t, []xdr.Int64{100, 200, 300, 400}, p2pPreBalances(changes))
++	assert.Equal(t, []LedgerEntryChangeReason{
++		LedgerEntryChangeReasonTransaction,
++		LedgerEntryChangeReasonOperation,
++		LedgerEntryChangeReasonOperation,
++		LedgerEntryChangeReasonTransaction,
++	}, p2pReasons(changes))
++	assert.Equal(t, []uint32{0, 0, 1, 0}, p2pOperationIndexes(changes))
++	for _, change := range changes {
++		assert.True(t, change.Transaction == tx, "change must reference its transaction")
++		assert.True(t, change.Ledger == &tx.Ledger, "change must reference the ledger")
++	}
++}
++
++func TestP2PGetChangesGeneration4OrderAndAssociations(t *testing.T) {
++	tx := &LedgerTransaction{UnsafeMeta: p2pChangesMeta()["v4"]}
++
++	changes, err := tx.GetChanges()
++	require.NoError(t, err)
++	require.Len(t, changes, 4)
++
++	assert.Equal(t, []xdr.Int64{100, 200, 300, 400}, p2pPreBalances(changes))
++	assert.Equal(t, []LedgerEntryChangeReason{
++		LedgerEntryChangeReasonTransaction,
++		LedgerEntryChangeReasonOperation,
++		LedgerEntryChangeReasonOperation,
++		LedgerEntryChangeReasonTransaction,
++	}, p2pReasons(changes))
++	assert.Equal(t, []uint32{0, 0, 1, 0}, p2pOperationIndexes(changes))
++
++	operationChanges, err := tx.GetOperationChanges(0)
++	require.NoError(t, err)
++	require.Len(t, operationChanges, 1)
++	assert.Equal(t, xdr.Int64(200), operationChanges[0].Pre.Data.MustAccount().Balance)
++}
++
++func TestP2PGetChangesGeneration2Order(t *testing.T) {
++	tx := &LedgerTransaction{UnsafeMeta: p2pChangesMeta()["v2"]}
++
++	changes, err := tx.GetChanges()
++	require.NoError(t, err)
++	require.Len(t, changes, 4)
++	assert.Equal(t, []xdr.Int64{100, 200, 300, 400}, p2pPreBalances(changes))
++	assert.Equal(t, []LedgerEntryChangeReason{
++		LedgerEntryChangeReasonTransaction,
++		LedgerEntryChangeReasonOperation,
++		LedgerEntryChangeReasonOperation,
++		LedgerEntryChangeReasonTransaction,
++	}, p2pReasons(changes))
++}
++
++func TestP2PGetChangesLegacyInternalErrorShape(t *testing.T) {
++	for name, meta := range p2pChangesMeta() {
++		t.Run(name, func(t *testing.T) {
++			tx := &LedgerTransaction{UnsafeMeta: meta, LedgerVersion: 12}
++			tx.Result.Result.Result.Code = xdr.TransactionResultCodeTxInternalError
++
++			changes, err := tx.GetChanges()
++			require.NoError(t, err)
++			require.Len(t, changes, 1)
++			assert.Equal(t, xdr.Int64(100), changes[0].Pre.Data.MustAccount().Balance)
++			assert.Equal(t, LedgerEntryChangeReasonTransaction, changes[0].Reason)
++
++			operationChanges, err := tx.GetOperationChanges(0)
++			require.NoError(t, err)
++			assert.NotNil(t, operationChanges)
++			assert.Len(t, operationChanges, 0)
++
++			tx.LedgerVersion = 13
++			changes, err = tx.GetChanges()
++			require.NoError(t, err)
++			if name == "v1" {
++				require.Len(t, changes, 3)
++				assert.Equal(t, []xdr.Int64{100, 200, 300}, p2pPreBalances(changes))
++			} else {
++				require.Len(t, changes, 4)
++				assert.Equal(t, []xdr.Int64{100, 200, 300, 400}, p2pPreBalances(changes))
++			}
++
++			operationChanges, err = tx.GetOperationChanges(1)
++			require.NoError(t, err)
++			require.Len(t, operationChanges, 1)
++			assert.Equal(t, xdr.Int64(300), operationChanges[0].Pre.Data.MustAccount().Balance)
++		})
++	}
++}
++
++func TestP2PGetOperationChangesBoundsAndUnsupportedGenerations(t *testing.T) {
++	for name, meta := range p2pChangesMeta() {
++		t.Run(name, func(t *testing.T) {
++			tx := &LedgerTransaction{UnsafeMeta: meta}
++			for _, index := range []uint32{2, 9, ^uint32(0)} {
++				changes, err := tx.GetOperationChanges(index)
++				require.NoError(t, err)
++				assert.NotNil(t, changes)
++				assert.Len(t, changes, 0)
++			}
++		})
++	}
++
++	t.Run("generation-0", func(t *testing.T) {
++		tx := &LedgerTransaction{UnsafeMeta: xdr.TransactionMeta{V: 0, Operations: &[]xdr.OperationMeta{}}}
++		changes, err := tx.GetOperationChanges(0)
++		require.Error(t, err)
++		assert.Contains(t, err.Error(), "TransactionMeta.V=0 not supported")
++		assert.NotNil(t, changes)
++		assert.Len(t, changes, 0)
++
++		changes, err = tx.GetChanges()
++		require.Error(t, err)
++		assert.Contains(t, err.Error(), "TransactionMeta.V=0 not supported")
++		assert.Nil(t, changes)
++	})
++
++	t.Run("unknown-generation", func(t *testing.T) {
++		tx := &LedgerTransaction{UnsafeMeta: xdr.TransactionMeta{V: 5}}
++		changes, err := tx.GetOperationChanges(0)
++		require.Error(t, err)
++		assert.Contains(t, err.Error(), "unsupported TransactionMeta version: 5")
++		assert.NotNil(t, changes)
++		assert.Len(t, changes, 0)
++
++		changes, err = tx.GetChanges()
++		require.Error(t, err)
++		assert.Contains(t, err.Error(), "unsupported TransactionMeta version: 5")
++		assert.Nil(t, changes)
++	})
++}
++
++func TestP2PGetTransactionEventsAbsentOutcomes(t *testing.T) {
++	testCases := []struct {
++		name string
++		tx   *LedgerTransaction
++	}{
++		{
++			name: "generation-1",
++			tx:   &LedgerTransaction{Envelope: p2pClassicEnvelope(), UnsafeMeta: xdr.TransactionMeta{V: 1, V1: &xdr.TransactionMetaV1{}}},
++		},
++		{
++			name: "generation-2",
++			tx:   &LedgerTransaction{Envelope: p2pClassicEnvelope(), UnsafeMeta: xdr.TransactionMeta{V: 2, V2: &xdr.TransactionMetaV2{}}},
++		},
++		{
++			name: "generation-3-classic",
++			tx:   &LedgerTransaction{Envelope: p2pClassicEnvelope(), UnsafeMeta: xdr.TransactionMeta{V: 3, V3: &xdr.TransactionMetaV3{}}},
++		},
++		{
++			name: "generation-4-empty-operations",
++			tx: &LedgerTransaction{
++				Envelope: p2pClassicEnvelope(),
++				UnsafeMeta: xdr.TransactionMeta{V: 4, V4: &xdr.TransactionMetaV4{
++					Operations: []xdr.OperationMetaV2{},
++				}},
++			},
++		},
++	}
++
++	for _, testCase := range testCases {
++		t.Run(testCase.name, func(t *testing.T) {
++			events, err := testCase.tx.GetTransactionEvents()
++			require.NoError(t, err)
++			assert.Empty(t, events.TransactionEvents)
++			assert.Empty(t, events.OperationEvents)
++			assert.Empty(t, events.DiagnosticEvents)
++		})
++	}
++
++	t.Run("unknown-generation", func(t *testing.T) {
++		tx := &LedgerTransaction{Envelope: p2pClassicEnvelope(), UnsafeMeta: xdr.TransactionMeta{V: 5}}
++		_, err := tx.GetTransactionEvents()
++		require.Error(t, err)
++		assert.Contains(t, err.Error(), "unsupported TransactionMeta version: 5")
++	})
++}
++
++func TestP2PGetTransactionEventsGeneration3And4Composition(t *testing.T) {
++	eventA := p2pContractEvent("a")
++	eventB := p2pContractEvent("b")
++	eventC := p2pContractEvent("c")
++	diagnostic := xdr.DiagnosticEvent{InSuccessfulContractCall: true, Event: eventA}
++	stagedBefore := xdr.TransactionEvent{Stage: xdr.TransactionEventStageTransactionEventStageBeforeAllTxs, Event: eventA}
++	stagedAfter := xdr.TransactionEvent{Stage: xdr.TransactionEventStageTransactionEventStageAfterTx, Event: eventB}
++
++	t.Run("generation-3-soroban", func(t *testing.T) {
++		tx := &LedgerTransaction{
++			Envelope: p2pSorobanEnvelope(),
++			UnsafeMeta: xdr.TransactionMeta{V: 3, V3: &xdr.TransactionMetaV3{
++				SorobanMeta: &xdr.SorobanTransactionMeta{
++					Events:           []xdr.ContractEvent{eventA, eventB},
++					DiagnosticEvents: []xdr.DiagnosticEvent{diagnostic},
++				},
++			}},
++		}
++
++		events, err := tx.GetTransactionEvents()
++		require.NoError(t, err)
++		assert.Empty(t, events.TransactionEvents)
++		assert.Equal(t, [][]xdr.ContractEvent{{eventA, eventB}}, events.OperationEvents)
++		assert.Equal(t, []xdr.DiagnosticEvent{diagnostic}, events.DiagnosticEvents)
++	})
++
++	t.Run("generation-3-soroban-without-soroban-meta-single-empty-slot", func(t *testing.T) {
++		tx := &LedgerTransaction{
++			Envelope:   p2pSorobanEnvelope(),
++			UnsafeMeta: xdr.TransactionMeta{V: 3, V3: &xdr.TransactionMetaV3{}},
++		}
++
++		events, err := tx.GetTransactionEvents()
++		require.NoError(t, err)
++		assert.Empty(t, events.TransactionEvents)
++		require.Len(t, events.OperationEvents, 1)
++		assert.Empty(t, events.OperationEvents[0])
++		assert.Empty(t, events.DiagnosticEvents)
++	})
++
++	t.Run("generation-4", func(t *testing.T) {
++		tx := &LedgerTransaction{
++			Envelope: p2pClassicEnvelope(),
++			UnsafeMeta: xdr.TransactionMeta{V: 4, V4: &xdr.TransactionMetaV4{
++				Events:           []xdr.TransactionEvent{stagedBefore, stagedAfter},
++				DiagnosticEvents: []xdr.DiagnosticEvent{diagnostic},
++				Operations: []xdr.OperationMetaV2{
++					{Events: []xdr.ContractEvent{eventA}},
++					{Events: []xdr.ContractEvent{eventB, eventC}},
++				},
++			}},
++		}
++
++		events, err := tx.GetTransactionEvents()
++		require.NoError(t, err)
++		assert.Equal(t, []xdr.TransactionEvent{stagedBefore, stagedAfter}, events.TransactionEvents)
++		assert.Equal(t, [][]xdr.ContractEvent{{eventA}, {eventB, eventC}}, events.OperationEvents)
++		assert.Equal(t, []xdr.DiagnosticEvent{diagnostic}, events.DiagnosticEvents)
++	})
++}
++
++func TestP2PContractEventAccessorsOutcomes(t *testing.T) {
++	eventA := p2pContractEvent("a")
++	eventB := p2pContractEvent("b")
++	diagnostic := xdr.DiagnosticEvent{InSuccessfulContractCall: true, Event: eventA}
++
++	t.Run("for-operation-v4-empty-operations", func(t *testing.T) {
++		tx := &LedgerTransaction{UnsafeMeta: xdr.TransactionMeta{V: 4, V4: &xdr.TransactionMetaV4{}}}
++		events, err := tx.GetContractEventsForOperation(0)
++		require.NoError(t, err)
++		assert.Nil(t, events)
++	})
++
++	t.Run("for-operation-v4-index-is-honored", func(t *testing.T) {
++		tx := &LedgerTransaction{UnsafeMeta: xdr.TransactionMeta{V: 4, V4: &xdr.TransactionMetaV4{
++			Operations: []xdr.OperationMetaV2{
++				{Events: []xdr.ContractEvent{eventA}},
++				{Events: []xdr.ContractEvent{eventB}},
++			},
++		}}}
++		events, err := tx.GetContractEventsForOperation(1)
++		require.NoError(t, err)
++		assert.Equal(t, []xdr.ContractEvent{eventB}, events)
++	})
++
++	t.Run("for-operation-unsupported", func(t *testing.T) {
++		tx := &LedgerTransaction{UnsafeMeta: xdr.TransactionMeta{V: 5}}
++		events, err := tx.GetContractEventsForOperation(0)
++		require.Error(t, err)
++		assert.Contains(t, err.Error(), "unsupported TransactionMeta version: 5")
++		assert.Nil(t, events)
++	})
++
++	t.Run("non-soroban-envelope", func(t *testing.T) {
++		tx := &LedgerTransaction{Envelope: p2pClassicEnvelope(), UnsafeMeta: xdr.TransactionMeta{V: 3, V3: &xdr.TransactionMetaV3{
++			SorobanMeta: &xdr.SorobanTransactionMeta{Events: []xdr.ContractEvent{eventA}},
++		}}}
++		_, err := tx.GetContractEvents()
++		require.Error(t, err)
++		assert.Contains(t, err.Error(), "not a soroban transaction")
++	})
++
++	t.Run("soroban-generations", func(t *testing.T) {
++		txV3 := &LedgerTransaction{Envelope: p2pSorobanEnvelope(), UnsafeMeta: xdr.TransactionMeta{V: 3, V3: &xdr.TransactionMetaV3{
++			SorobanMeta: &xdr.SorobanTransactionMeta{Events: []xdr.ContractEvent{eventA, eventB}},
++		}}}
++		events, err := txV3.GetContractEvents()
++		require.NoError(t, err)
++		assert.Equal(t, []xdr.ContractEvent{eventA, eventB}, events)
++
++		txV4 := &LedgerTransaction{Envelope: p2pSorobanEnvelope(), UnsafeMeta: xdr.TransactionMeta{V: 4, V4: &xdr.TransactionMetaV4{
++			Operations: []xdr.OperationMetaV2{{Events: []xdr.ContractEvent{eventB}}},
++		}}}
++		events, err = txV4.GetContractEvents()
++		require.NoError(t, err)
++		assert.Equal(t, []xdr.ContractEvent{eventB}, events)
++	})
++
++	t.Run("diagnostic-events", func(t *testing.T) {
++		txV1 := &LedgerTransaction{UnsafeMeta: xdr.TransactionMeta{V: 1, V1: &xdr.TransactionMetaV1{}}}
++		events, err := txV1.GetDiagnosticEvents()
++		require.NoError(t, err)
++		assert.Nil(t, events)
++
++		txV3MissingSorobanMeta := &LedgerTransaction{UnsafeMeta: xdr.TransactionMeta{V: 3, V3: &xdr.TransactionMetaV3{}}}
++		events, err = txV3MissingSorobanMeta.GetDiagnosticEvents()
++		require.NoError(t, err)
++		assert.Nil(t, events)
++
++		txV4 := &LedgerTransaction{UnsafeMeta: xdr.TransactionMeta{V: 4, V4: &xdr.TransactionMetaV4{
++			DiagnosticEvents: []xdr.DiagnosticEvent{diagnostic},
++		}}}
++		events, err = txV4.GetDiagnosticEvents()
++		require.NoError(t, err)
++		assert.Equal(t, []xdr.DiagnosticEvent{diagnostic}, events)
++
++		txUnknown := &LedgerTransaction{UnsafeMeta: xdr.TransactionMeta{V: 7}}
++		_, err = txUnknown.GetDiagnosticEvents()
++		require.Error(t, err)
++		assert.Contains(t, err.Error(), "unsupported TransactionMeta version: 7")
++	})
++}
++
++func TestP2PSorobanResourceFeeRefundGenerationAndComposition(t *testing.T) {
++	t.Run("non-soroban-transaction", func(t *testing.T) {
++		tx := &LedgerTransaction{Envelope: p2pClassicEnvelope(), UnsafeMeta: xdr.TransactionMeta{V: 3, V3: &xdr.TransactionMetaV3{
++			TxChangesAfter: p2pChangePair(1000, 1050),
++		}}}
++		assert.Equal(t, int64(0), tx.SorobanResourceFeeRefund())
++	})
++
++	t.Run("generation-3-trailing-changes", func(t *testing.T) {
++		tx := &LedgerTransaction{Envelope: p2pSorobanEnvelope(), UnsafeMeta: xdr.TransactionMeta{V: 3, V3: &xdr.TransactionMetaV3{
++			TxChangesAfter: p2pChangePair(1000, 1030),
++		}}}
++		assert.Equal(t, int64(30), tx.SorobanResourceFeeRefund())
++	})
++
++	t.Run("generation-4-post-apply-changes", func(t *testing.T) {
++		tx := &LedgerTransaction{
++			Envelope:              p2pSorobanEnvelope(),
++			UnsafeMeta:            xdr.TransactionMeta{V: 4, V4: &xdr.TransactionMetaV4{}},
++			PostTxApplyFeeChanges: p2pChangePair(2000, 2025),
++		}
++		assert.Equal(t, int64(25), tx.SorobanResourceFeeRefund())
++	})
++
++	t.Run("trailing-changes-precede-post-apply-changes", func(t *testing.T) {
++		tx := &LedgerTransaction{
++			Envelope: p2pSorobanEnvelope(),
++			UnsafeMeta: xdr.TransactionMeta{V: 4, V4: &xdr.TransactionMetaV4{
++				TxChangesAfter: p2pChangePair(1000, 1001),
++			}},
++			PostTxApplyFeeChanges: p2pChangePair(1001, 1030),
++		}
++		assert.Equal(t, int64(29), tx.SorobanResourceFeeRefund())
++	})
++
++	// A valid account pair reaches the balance-decrease guard, rather than
++	// panicking earlier while unwrapping metadata or looking up the fee payer.
++	for _, version := range []int32{3, 4} {
++		for _, postApply := range []bool{false, true} {
++			t.Run(fmt.Sprintf("decreasing-balance-v%d-post-apply-%t", version, postApply), func(t *testing.T) {
++				meta := xdr.TransactionMeta{V: version}
++				var trailing xdr.LedgerEntryChanges
++				if !postApply {
++					trailing = p2pChangePair(1000, 999)
++				}
++				if version == 3 {
++					meta.V3 = &xdr.TransactionMetaV3{TxChangesAfter: trailing}
++				} else {
++					meta.V4 = &xdr.TransactionMetaV4{TxChangesAfter: trailing}
++				}
++				tx := &LedgerTransaction{Envelope: p2pSorobanEnvelope(), UnsafeMeta: meta}
++				if postApply {
++					tx.PostTxApplyFeeChanges = p2pChangePair(1000, 999)
++				}
++				require.PanicsWithValue(t, "Invalid Soroban Resource Refund", func() { tx.SorobanResourceFeeRefund() })
++			})
++		}
++	}
++
++	t.Run("unsupported-generations-do-not-return-a-value", func(t *testing.T) {
++		for _, version := range []int32{0, 1, 2, 5} {
++			meta := xdr.TransactionMeta{V: version}
++			switch version {
++			case 1:
++				meta.V1 = &xdr.TransactionMetaV1{}
++			case 2:
++				meta.V2 = &xdr.TransactionMetaV2{}
++			}
++			tx := &LedgerTransaction{Envelope: p2pSorobanEnvelope(), UnsafeMeta: meta}
++			require.Panics(t, func() { tx.SorobanResourceFeeRefund() }, "generation %d must not return a refund value", version)
++		}
++	})
++}
++
++func TestP2PGetPostApplyFeeChangesClassification(t *testing.T) {
++	tx := &LedgerTransaction{PostTxApplyFeeChanges: p2pChangePair(700, 705)}
++
++	changes := tx.GetPostApplyFeeChanges()
++	require.Len(t, changes, 1)
++	assert.Equal(t, LedgerEntryChangeReasonFeeRefund, changes[0].Reason)
++	assert.True(t, changes[0].Transaction == tx, "change must reference its transaction")
++	assert.True(t, changes[0].Ledger == &tx.Ledger, "change must reference the ledger")
++	assert.Equal(t, xdr.Int64(700), changes[0].Pre.Data.MustAccount().Balance)
++	assert.Equal(t, xdr.Int64(705), changes[0].Post.Data.MustAccount().Balance)
++}
+diff --git a/ingest/tests/f2p_junit/main.go b/ingest/tests/f2p_junit/main.go
+new file mode 100644
+index 00000000..2fc35441
+--- /dev/null
++++ b/ingest/tests/f2p_junit/main.go
+@@ -0,0 +1,475 @@
++// Command f2p_junit runs the frozen P2P selectors plus the F2P selectors
++// declared by the task plan and writes a regular JUnit XML report.
++//
++// Selection comes from the pipeline-materialized {config} file only: the
++// exact `path::exact_leaf` selectors are read from its `p2p` and `f2p` arrays.
++// No selector inventory is embedded in this runner, and no test file glob,
++// package-wide pattern or original inventory is ever used as the scoring
++// selection set.
++//
++// Only the repository, the Go toolchain already present in the image and its
++// warm module cache are used: no installs, no downloads, no registry access.
++// Tests are executed per package with `go test -json` and the JSON stream is
++// converted into JUnit XML whose testcase identity is `classname=path,
++// name=leaf`, i.e. the exact selector.
++package main
++
++import (
++	"bufio"
++	"encoding/json"
++	"encoding/xml"
++	"flag"
++	"fmt"
++	"io"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"sort"
++	"strings"
++	"time"
++)
++
++type selector struct {
++	Path string
++	Leaf string
++}
++
++func (s selector) String() string { return s.Path + "::" + s.Leaf }
++
++type testEvent struct {
++	Action  string  `json:"Action"`
++	Package string  `json:"Package"`
++	Test    string  `json:"Test"`
++	Output  string  `json:"Output"`
++	Elapsed float64 `json:"Elapsed"`
++}
++
++type leafResult struct {
++	selector selector
++	status   string // pass, fail, skip, notrun
++	output   strings.Builder
++	elapsed  float64
++}
++
++type junitTestsuites struct {
++	XMLName  xml.Name         `xml:"testsuites"`
++	Tests    int              `xml:"tests,attr"`
++	Failures int              `xml:"failures,attr"`
++	Errors   int              `xml:"errors,attr"`
++	Skipped  int              `xml:"skipped,attr"`
++	Time     string           `xml:"time,attr"`
++	Suites   []junitTestsuite `xml:"testsuite"`
++}
++
++type junitTestsuite struct {
++	Name      string          `xml:"name,attr"`
++	Tests     int             `xml:"tests,attr"`
++	Failures  int             `xml:"failures,attr"`
++	Errors    int             `xml:"errors,attr"`
++	Skipped   int             `xml:"skipped,attr"`
++	Time      string          `xml:"time,attr"`
++	Timestamp string          `xml:"timestamp,attr"`
++	Cases     []junitTestcase `xml:"testcase"`
++}
++
++type junitTestcase struct {
++	Classname string        `xml:"classname,attr"`
++	Name      string        `xml:"name,attr"`
++	Time      string        `xml:"time,attr"`
++	Failure   *junitFailure `xml:"failure,omitempty"`
++	Error     *junitFailure `xml:"error,omitempty"`
++	Skipped   *junitSkipped `xml:"skipped,omitempty"`
++}
++
++type junitFailure struct {
++	Type    string `xml:"type,attr,omitempty"`
++	Message string `xml:"message,attr"`
++	Body    string `xml:",chardata"`
++}
++
++type junitSkipped struct {
++	Message string `xml:"message,attr"`
++}
++
++func main() {
++	var (
++		repoPath   = flag.String("repo", "", "repository root (defaults to the working directory)")
++		configPath = flag.String("config", "", "pipeline-materialized config.json carrying the p2p and f2p selector arrays")
++		reportPath = flag.String("report", "", "path of the JUnit XML report to write")
++		verbose    = flag.Bool("verbose", false, "stream go test events to stderr")
++	)
++	flag.Parse()
++	if *reportPath == "" {
++		fmt.Fprintln(os.Stderr, "f2p_junit: --report is required")
++		os.Exit(2)
++	}
++	repo := *repoPath
++	if repo == "" {
++		wd, err := os.Getwd()
++		if err != nil {
++			fmt.Fprintf(os.Stderr, "f2p_junit: cannot determine working directory: %v\n", err)
++			os.Exit(2)
++		}
++		repo = wd
++	}
++
++	selectors, err := loadSelectors(*configPath)
++	if err != nil {
++		fmt.Fprintf(os.Stderr, "f2p_junit: %v\n", err)
++		os.Exit(2)
++	}
++	fmt.Fprintf(os.Stderr, "f2p_junit: running %d selectors (selection: %s)\n", len(selectors), *configPath)
++
++	results := execute(repo, selectors, *verbose)
++	if err := writeReport(*reportPath, results); err != nil {
++		fmt.Fprintf(os.Stderr, "f2p_junit: cannot write report %s: %v\n", *reportPath, err)
++		os.Exit(1)
++	}
++	failed := 0
++	for _, result := range results {
++		if result.status != "pass" {
++			failed++
++		}
++	}
++	fmt.Fprintf(os.Stderr, "f2p_junit: %d/%d selectors passed\n", len(results)-failed, len(results))
++	if failed > 0 {
++		os.Exit(1)
++	}
++}
++
++// loadSelectors reads the exact selector set from the pipeline-materialized
++// config. Only its `p2p` and `f2p` arrays are consulted; the runner declares no
++// selector inventory of its own.
++func loadSelectors(configPath string) ([]selector, error) {
++	if configPath == "" {
++		return nil, fmt.Errorf("--config is required: the frozen P2P+F2P selector set comes from the pipeline config")
++	}
++	raw, err := os.ReadFile(configPath)
++	if err != nil {
++		return nil, fmt.Errorf("cannot read config %s: %w", configPath, err)
++	}
++	var decoded map[string]json.RawMessage
++	if err := json.Unmarshal(raw, &decoded); err != nil {
++		return nil, fmt.Errorf("cannot decode config %s: %w", configPath, err)
++	}
++	var out []selector
++	for _, key := range []string{"p2p", "f2p"} {
++		value, ok := decoded[key]
++		if !ok {
++			continue
++		}
++		out = append(out, parseEntries(value)...)
++	}
++	if len(out) == 0 {
++		return nil, fmt.Errorf("config %s carries no p2p/f2p selectors", configPath)
++	}
++	return out, nil
++}
++
++func parseEntries(raw json.RawMessage) []selector {
++	var entries []json.RawMessage
++	if err := json.Unmarshal(raw, &entries); err != nil {
++		return nil
++	}
++	var out []selector
++	for _, entry := range entries {
++		var text string
++		if err := json.Unmarshal(entry, &text); err == nil {
++			if parsed, ok := parseSelector(text); ok {
++				out = append(out, parsed)
++			}
++			continue
++		}
++		var object map[string]any
++		if err := json.Unmarshal(entry, &object); err != nil {
++			continue
++		}
++		for _, key := range []string{"selector", "test"} {
++			if text, ok := object[key].(string); ok {
++				if parsed, ok := parseSelector(text); ok {
++					out = append(out, parsed)
++				}
++				break
++			}
++		}
++	}
++	return out
++}
++
++func parseSelector(text string) (selector, bool) {
++	text = strings.TrimSpace(text)
++	parts := strings.SplitN(text, "::", 2)
++	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
++		return selector{}, false
++	}
++	return selector{Path: parts[0], Leaf: parts[1]}, true
++}
++
++// packageFor maps a selector file path to the Go package pattern run by
++// `go test`: the directory holding the file.
++func packageFor(selectorPath string) string {
++	dir := filepath.Dir(selectorPath)
++	if dir == "." || dir == "" {
++		return "."
++	}
++	return "./" + filepath.ToSlash(dir)
++}
++
++func execute(repo string, selectors []selector, verbose bool) []leafResult {
++	bySelector := map[string]*leafResult{}
++	var ordered []*leafResult
++	byPackage := map[string][]selector{}
++	for _, current := range selectors {
++		key := current.String()
++		if _, ok := bySelector[key]; ok {
++			continue
++		}
++		result := &leafResult{selector: current}
++		bySelector[key] = result
++		ordered = append(ordered, result)
++		byPackage[packageFor(current.Path)] = append(byPackage[packageFor(current.Path)], current)
++	}
++
++	packages := make([]string, 0, len(byPackage))
++	for pkg := range byPackage {
++		packages = append(packages, pkg)
++	}
++	sort.Strings(packages)
++	for _, pkg := range packages {
++		runPackage(repo, pkg, byPackage[pkg], bySelector, verbose)
++	}
++
++	results := make([]leafResult, 0, len(ordered))
++	for _, result := range ordered {
++		results = append(results, *result)
++	}
++	return results
++}
++
++func runPackage(repo, pkg string, selectors []selector, bySelector map[string]*leafResult, verbose bool) {
++	leaves := make([]string, 0, len(selectors))
++	for _, current := range selectors {
++		leaves = append(leaves, regexp.QuoteMeta(current.Leaf))
++	}
++	pattern := "^(?:" + strings.Join(leaves, "|") + ")$"
++
++	args := []string{"test", "-json", "-count=1", "-run", pattern, pkg}
++	cmd := exec.Command("go", args...)
++	cmd.Dir = repo
++	cmd.Env = append(os.Environ(), "GOPROXY=off", "GOTOOLCHAIN=local", "GOWORK=off")
++
++	stdout, err := cmd.StdoutPipe()
++	if err != nil {
++		markPackageError(selectors, bySelector, fmt.Sprintf("failed to start go test: %v", err))
++		return
++	}
++	var stderr strings.Builder
++	cmd.Stderr = &stderr
++	if err := cmd.Start(); err != nil {
++		markPackageError(selectors, bySelector, fmt.Sprintf("failed to start go test: %v", err))
++		return
++	}
++
++	var packageOutput strings.Builder
++	statuses := map[string]string{}
++	elapsed := map[string]float64{}
++	outputs := map[string]*strings.Builder{}
++	failedTests := map[string]bool{}
++
++	scanner := bufio.NewScanner(stdout)
++	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
++	for scanner.Scan() {
++		line := scanner.Bytes()
++		if verbose {
++			fmt.Fprintln(os.Stderr, string(line))
++		}
++		var event testEvent
++		if err := json.Unmarshal(line, &event); err != nil {
++			packageOutput.Write(line)
++			packageOutput.WriteByte('\n')
++			continue
++		}
++		if event.Test == "" {
++			if event.Action == "output" || event.Action == "build-output" {
++				packageOutput.WriteString(event.Output)
++			}
++			continue
++		}
++		top := topLevelTest(event.Test)
++		if _, ok := leafForPath(selectors, top); !ok {
++			continue
++		}
++		if outputs[event.Test] == nil {
++			outputs[event.Test] = &strings.Builder{}
++		}
++		switch event.Action {
++		case "output":
++			outputs[event.Test].WriteString(event.Output)
++		case "fail":
++			failedTests[top] = true
++		case "pass":
++			if !failedTests[top] {
++				statuses[top] = "pass"
++				elapsed[top] = event.Elapsed
++			}
++		case "skip":
++			if !failedTests[top] {
++				statuses[top] = "skip"
++				elapsed[top] = event.Elapsed
++			}
++		}
++	}
++	waitErr := cmd.Wait()
++
++	for _, current := range selectors {
++		result := bySelector[current.String()]
++		if failedTests[current.Leaf] {
++			result.status = "fail"
++			result.elapsed = elapsed[current.Leaf]
++			var parts []string
++			for name, buffer := range outputs {
++				if topLevelTest(name) == current.Leaf {
++					parts = append(parts, buffer.String())
++				}
++			}
++			result.output.WriteString(strings.Join(parts, ""))
++			if result.output.Len() == 0 {
++				result.output.WriteString(packageOutput.String())
++			}
++			continue
++		}
++		if status, ok := statuses[current.Leaf]; ok {
++			result.status = status
++			result.elapsed = elapsed[current.Leaf]
++			continue
++		}
++		// No per-test event: the package did not build or the selector was not
++		// collected. Surface it as an error, never as a silent pass.
++		result.status = "notrun"
++		detail := strings.TrimSpace(packageOutput.String())
++		if detail == "" {
++			detail = strings.TrimSpace(stderr.String())
++		}
++		if detail == "" && waitErr != nil {
++			detail = waitErr.Error()
++		}
++		if detail == "" {
++			detail = fmt.Sprintf("go test did not report a result for %s", current.Leaf)
++		}
++		result.output.WriteString(detail)
++	}
++}
++
++func leafForPath(selectors []selector, leaf string) (selector, bool) {
++	for _, current := range selectors {
++		if current.Leaf == leaf {
++			return current, true
++		}
++	}
++	return selector{}, false
++}
++
++func topLevelTest(name string) string {
++	if index := strings.Index(name, "/"); index >= 0 {
++		return name[:index]
++	}
++	return name
++}
++
++func markPackageError(selectors []selector, bySelector map[string]*leafResult, message string) {
++	for _, current := range selectors {
++		result := bySelector[current.String()]
++		result.status = "notrun"
++		result.output.WriteString(message)
++	}
++}
++
++// failureType distinguishes completed test failures from Go runtime failures.
++// Runtime diagnostics begin at column zero; assertion messages are indented.
++func failureType(output string) string {
++	for _, line := range strings.Split(output, "\n") {
++		if strings.HasPrefix(line, "panic: test timed out after ") {
++			return "Timeout"
++		}
++		if strings.HasPrefix(line, "panic:") || strings.HasPrefix(line, "fatal error:") ||
++			regexp.MustCompile(`^SIG[A-Z0-9]+:`).MatchString(line) {
++			return "Process Crash"
++		}
++	}
++	return ""
++}
++
++func writeReport(path string, results []leafResult) error {
++	timestamp := time.Now().UTC().Format(time.RFC3339)
++	suite := junitTestsuite{Timestamp: timestamp, Name: "f2p+p2p"}
++	totalTime := 0.0
++
++	for _, result := range results {
++		testCase := junitTestcase{
++			Classname: result.selector.Path,
++			Name:      result.selector.Leaf,
++			Time:      fmt.Sprintf("%.3f", result.elapsed),
++		}
++		totalTime += result.elapsed
++		switch result.status {
++		case "pass":
++		case "skip":
++			suite.Skipped++
++			testCase.Skipped = &junitSkipped{Message: "skipped"}
++		case "fail":
++			failure := &junitFailure{
++				Type:    "AssertionFailure",
++				Message: fmt.Sprintf("%s failed", result.selector.Leaf),
++				Body:    result.output.String(),
++			}
++			if kind := failureType(result.output.String()); kind != "" {
++				suite.Errors++
++				failure.Type = kind
++				testCase.Error = failure
++			} else {
++				suite.Failures++
++				testCase.Failure = failure
++			}
++		default:
++			suite.Errors++
++			testCase.Error = &junitFailure{
++				Type:    failureType(result.output.String()),
++				Message: fmt.Sprintf("%s was not executed", result.selector.Leaf),
++				Body:    result.output.String(),
++			}
++		}
++		suite.Cases = append(suite.Cases, testCase)
++	}
++	suite.Tests = len(suite.Cases)
++	suite.Time = fmt.Sprintf("%.3f", totalTime)
++
++	report := junitTestsuites{
++		Tests:    suite.Tests,
++		Failures: suite.Failures,
++		Errors:   suite.Errors,
++		Skipped:  suite.Skipped,
++		Time:     suite.Time,
++		Suites:   []junitTestsuite{suite},
++	}
++
++	if dir := filepath.Dir(path); dir != "" && dir != "." {
++		if err := os.MkdirAll(dir, 0o755); err != nil {
++			return err
++		}
++	}
++	file, err := os.Create(path)
++	if err != nil {
++		return err
++	}
++	defer file.Close()
++	if _, err := io.WriteString(file, xml.Header); err != nil {
++		return err
++	}
++	encoder := xml.NewEncoder(file)
++	encoder.Indent("", "  ")
++	if err := encoder.Encode(report); err != nil {
++		return err
++	}
++	return encoder.Flush()
++}
+diff --git a/ingest/tests/f2p_junit/run_f2p.sh b/ingest/tests/f2p_junit/run_f2p.sh
+new file mode 100755
+index 00000000..b4d48d04
+--- /dev/null
++++ b/ingest/tests/f2p_junit/run_f2p.sh
+@@ -0,0 +1,33 @@
++#!/usr/bin/env bash
++# Build and run the aggregate P2P+F2P JUnit runner with every build artifact
++# placed in an exec-capable directory.
++#
++# The replay sandbox mounts TMPDIR (and therefore go's default GOTMPDIR) with
++# noexec, so `go run`/`go test` cannot execute the binaries they link there.
++# The plan declares require_exec, so the pipeline provides VERIFIER_EXEC_DIR:
++# the compiled runner and every `go test` binary are placed below it (TMPDIR is
++# only a fallback for local runs). GOTOOLCHAIN=local and GOPROXY=off keep the
++# run fully offline, and the caller's working directory is preserved so
++# relative {config} and {report} paths keep their caller-relative meaning.
++#
++# Selection is read from the pipeline-materialized {config}: the exact `p2p`
++# and `f2p` selector arrays. No test-file globs, package-wide patterns or
++# original inventory are used as the scoring selection set.
++set -euo pipefail
++
++script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
++repo_root="$(cd -- "${script_dir}/../../.." && pwd)"
++
++base_dir="${VERIFIER_EXEC_DIR:-${TMPDIR:-/tmp}}"
++exec_dir="${base_dir}/f2p-junit"
++mkdir -p "$exec_dir"
++export GOTMPDIR="${exec_dir}/go-build-tmp"
++mkdir -p "$GOTMPDIR"
++export GOTOOLCHAIN=local
++export GOPROXY=off
++export GOWORK=off
++echo "run_f2p.sh: building P2P+F2P runner into ${exec_dir}" >&2
++
++runner_bin="${exec_dir}/f2p_junit"
++go -C "$repo_root" build -o "$runner_bin" ./ingest/tests/f2p_junit
++exec "$runner_bin" --repo "$repo_root" "$@"
+diff --git a/ingest/tests/f2p_meta_view/analysis.go b/ingest/tests/f2p_meta_view/analysis.go
+new file mode 100644
+index 00000000..fac4a0ed
+--- /dev/null
++++ b/ingest/tests/f2p_meta_view/analysis.go
+@@ -0,0 +1,729 @@
++// Package f2p_meta_view holds the F2P contract checks for the decoded
++// transaction-metadata consolidation.
++//
++// The frozen requirements for this task are structural: the scattered
++// per-generation conditionals around decoded transaction metadata must be
++// replaced by one internal view whose per-generation handling owns changes,
++// operation changes, events and fee-refund inputs, while the observable
++// results pinned by the P2P nodes stay identical. Because the observable
++// results must NOT change, the acceptance surface of the consolidation itself
++// is the structure of the production sources: which declarations still
++// dispatch per generation, which ones re-derive layout from the raw version
++// field, and which shared declaration owns the dispatch.
++//
++// Every check in this package parses the repository's production Go sources
++// (no compilation, no behavior execution) and pins one concrete structural
++// property. Each check fails on the un-consolidated baseline and passes on an
++// implementation that actually routes every decoded-metadata consumer through
++// one view.
++package f2p_meta_view
++
++import (
++	"fmt"
++	"go/ast"
++	"go/parser"
++	"go/token"
++	"os"
++	"path/filepath"
++	"sort"
++	"strconv"
++	"strings"
++	"testing"
++)
++
++// Production packages that participate in the decoded-metadata contract.
++const (
++	pkgXDR        = "xdr"
++	pkgIngest     = "ingest"
++	pkgTokenXfer  = "processors/token_transfer"
++	rawMetaSuffix = "UnsafeMeta"
++)
++
++// siteID identifies one function or method declaration.
++type siteID struct {
++	Pkg  string
++	Recv string
++	Name string
++}
++
++func (s siteID) String() string {
++	if s.Recv == "" {
++		return fmt.Sprintf("%s.%s", s.Pkg, s.Name)
++	}
++	return fmt.Sprintf("%s.%s.%s", s.Pkg, s.Recv, s.Name)
++}
++
++// decl is one parsed production function/method declaration.
++type decl struct {
++	id                    siteID
++	file                  string
++	line                  int
++	body                  *ast.BlockStmt
++	callees               []string
++	generationTables      [][]int
++	metaUnionArmAccess    bool
++	rawMetaVersionRead    bool
++	rawViewInput          bool
++	rawEventOutput        bool
++	decodedMetaInput      bool
++	unsupportedErrLiteral bool
++}
++
++func (d *decl) hasGenerationTable() bool { return len(d.generationTables) > 0 }
++
++// program is the parsed production-source index.
++type program struct {
++	decls     []*decl
++	byID      map[siteID]*decl
++	byName    map[string][]*decl
++	imports   map[string][]string
++	parseErrs []string
++}
++
++var productionDirs = []struct {
++	pkg string
++	rel string
++}{
++	{pkgXDR, "xdr"},
++	{pkgIngest, "ingest"},
++	{pkgTokenXfer, filepath.Join("processors", "token_transfer")},
++}
++
++// decodedConsumers are the exported entry points that the task consolidates.
++var decodedConsumers = []siteID{
++	{pkgIngest, "LedgerTransaction", "GetChanges"},
++	{pkgIngest, "LedgerTransaction", "GetOperationChanges"},
++	{pkgIngest, "LedgerTransaction", "GetTransactionEvents"},
++	{pkgIngest, "LedgerTransaction", "SorobanResourceFeeRefund"},
++	{pkgXDR, "TransactionMeta", "GetContractEventsForOperation"},
++	{pkgXDR, "TransactionMeta", "GetDiagnosticEvents"},
++	{pkgXDR, "TransactionMeta", "GetTransactionEvents"},
++}
++
++// tokenTransferConsumers are the downstream event consumers that must stop
++// re-deriving metadata layout from the raw version field.
++var tokenTransferConsumers = []siteID{
++	{pkgTokenXfer, "EventsProcessor", "parseEvent"},
++	{pkgTokenXfer, "EventsProcessor", "EventsFromTransaction"},
++	{pkgTokenXfer, "EventsProcessor", "generateFeeEvents"},
++}
++
++// repoRoot locates the repository that contains the sources under analysis.
++// The tests run with the package directory as working directory, so the module
++// root is found by walking up to go.mod; F2P_REPO_ROOT overrides that for
++// scratch calibration runs.
++func repoRoot(t *testing.T) string {
++	t.Helper()
++	if override := os.Getenv("F2P_REPO_ROOT"); override != "" {
++		return override
++	}
++	dir, err := os.Getwd()
++	if err != nil {
++		t.Fatalf("cannot determine working directory: %v", err)
++	}
++	for {
++		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
++			return dir
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			t.Fatalf("cannot locate repository root (no go.mod above %s)", dir)
++		}
++		dir = parent
++	}
++}
++
++// loadProgram parses every hand-written production source file of the three
++// relevant packages. Directories are scanned non-recursively on purpose:
++// unrelated sub-packages (load test helpers, runners, ...) are not part of the
++// decoded metadata contract, and generated XDR codec files are excluded
++// because their union-arm switches are frozen generator output, not generation
++// dispatch for decoded metadata.
++func loadProgram(t *testing.T) *program {
++	t.Helper()
++	root := repoRoot(t)
++	p := &program{byID: map[siteID]*decl{}, byName: map[string][]*decl{}, imports: map[string][]string{}}
++	fset := token.NewFileSet()
++	for _, dir := range productionDirs {
++		entries, err := os.ReadDir(filepath.Join(root, dir.rel))
++		if err != nil {
++			t.Fatalf("cannot read production directory %s: %v", dir.rel, err)
++		}
++		for _, entry := range entries {
++			name := entry.Name()
++			if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || strings.HasSuffix(name, "_generated.go") {
++				continue
++			}
++			full := filepath.Join(root, dir.rel, name)
++			file, err := parser.ParseFile(fset, full, nil, 0)
++			if err != nil {
++				p.parseErrs = append(p.parseErrs, fmt.Sprintf("%s: %v", full, err))
++				continue
++			}
++			rel, err := filepath.Rel(root, full)
++			if err != nil {
++				rel = full
++			}
++			for _, spec := range file.Imports {
++				path, err := strconv.Unquote(spec.Path.Value)
++				if err == nil {
++					p.imports[rel] = append(p.imports[rel], path)
++				}
++			}
++			collectDecls(p, dir.pkg, rel, fset, file)
++		}
++	}
++	if len(p.parseErrs) > 0 {
++		t.Fatalf("production sources must stay parseable: %v", p.parseErrs)
++	}
++	return p
++}
++
++func collectDecls(p *program, pkg, file string, fset *token.FileSet, af *ast.File) {
++	for _, node := range af.Decls {
++		fd, ok := node.(*ast.FuncDecl)
++		if !ok || fd.Body == nil {
++			continue
++		}
++		d := &decl{
++			id:   siteID{Pkg: pkg, Recv: receiverName(fd), Name: fd.Name.Name},
++			file: file,
++			line: fset.Position(fd.Pos()).Line,
++			body: fd.Body,
++		}
++		d.decodedMetaInput = receiverName(fd) == "TransactionMeta"
++		if fd.Type.Params != nil {
++			for _, field := range fd.Type.Params.List {
++				if exprText(field.Type) == "TransactionMeta" || strings.HasSuffix(exprText(field.Type), ".TransactionMeta") {
++					d.decodedMetaInput = true
++				}
++				if strings.HasSuffix(exprText(field.Type), ".TransactionMetaView") || exprText(field.Type) == "TransactionMetaView" {
++					d.rawViewInput = true
++				}
++			}
++		}
++		if fd.Type.Results != nil {
++			for _, field := range fd.Type.Results.List {
++				if exprText(field.Type) == "TxEvents" {
++					d.rawEventOutput = true
++				}
++			}
++		}
++		callees := map[string]bool{}
++		ast.Inspect(fd.Body, func(n ast.Node) bool {
++			switch x := n.(type) {
++			case *ast.SwitchStmt:
++				if values, ok := generationTable(x); ok {
++					d.generationTables = append(d.generationTables, values)
++				}
++			case *ast.CallExpr:
++				switch fun := x.Fun.(type) {
++				case *ast.SelectorExpr:
++					callees[fun.Sel.Name] = true
++					if isMetaExpression(fun.X) && isUnionArmAccessor(fun.Sel.Name) {
++						d.metaUnionArmAccess = true
++					}
++				case *ast.Ident:
++					callees[fun.Name] = true
++				}
++			case *ast.SelectorExpr:
++				text := exprText(x)
++				if strings.HasSuffix(text, "."+rawMetaSuffix+".V") {
++					d.rawMetaVersionRead = true
++				}
++				if isMetaExpression(x.X) && isUnionArmField(x.Sel.Name) {
++					d.metaUnionArmAccess = true
++				}
++			case *ast.BasicLit:
++				if x.Kind == token.STRING && strings.Contains(x.Value, "unsupported TransactionMeta version") {
++					d.unsupportedErrLiteral = true
++				}
++			}
++			return true
++		})
++		d.generationTables = append(d.generationTables, generationGuardTables(fd)...)
++		for name := range callees {
++			d.callees = append(d.callees, name)
++		}
++		sort.Strings(d.callees)
++		p.decls = append(p.decls, d)
++		if _, ok := p.byID[d.id]; !ok {
++			p.byID[d.id] = d
++		}
++		p.byName[d.id.Name] = append(p.byName[d.id.Name], d)
++	}
++}
++
++// generationTable reports whether a switch statement is a per-generation
++// dispatch table: at least two non-default arms whose literal case values all
++// fall in the decoded-metadata generation range and that name at least two
++// distinct supported generations. Data-carrying per-generation handling looks
++// exactly like this; unrelated enum switches (strings, generated enums, single
++// guarded arms) do not.
++func generationTable(sw *ast.SwitchStmt) ([]int, bool) {
++	if sw == nil || sw.Body == nil {
++		return nil, false
++	}
++	var values []int
++	arms := 0
++	for _, stmt := range sw.Body.List {
++		clause, ok := stmt.(*ast.CaseClause)
++		if !ok || len(clause.List) == 0 {
++			continue
++		}
++		arms++
++		for _, expression := range clause.List {
++			lit, ok := expression.(*ast.BasicLit)
++			if !ok || lit.Kind != token.INT {
++				return nil, false
++			}
++			value, err := strconv.Atoi(lit.Value)
++			if err != nil || value < 0 || value > 4 {
++				return nil, false
++			}
++			values = append(values, value)
++		}
++	}
++	if arms < 2 {
++		return nil, false
++	}
++	distinct := map[int]bool{}
++	for _, value := range values {
++		if value >= 1 && value <= 4 {
++			distinct[value] = true
++		}
++	}
++	if len(distinct) < 2 {
++		return nil, false
++	}
++	return values, true
++}
++
++func isMetaExpression(e ast.Expr) bool {
++	return strings.HasSuffix(exprText(e), rawMetaSuffix)
++}
++
++func isUnionArmAccessor(name string) bool {
++	switch name {
++	case "MustV1", "MustV2", "MustV3", "MustV4", "GetV1", "GetV2", "GetV3", "GetV4":
++		return true
++	}
++	return false
++}
++
++func isUnionArmField(name string) bool {
++	return name == "V1" || name == "V2" || name == "V3" || name == "V4"
++}
++
++func exprText(e ast.Expr) string {
++	switch t := e.(type) {
++	case nil:
++		return ""
++	case *ast.Ident:
++		return t.Name
++	case *ast.SelectorExpr:
++		return exprText(t.X) + "." + t.Sel.Name
++	case *ast.CallExpr:
++		return exprText(t.Fun)
++	case *ast.StarExpr:
++		return exprText(t.X)
++	case *ast.ParenExpr:
++		return exprText(t.X)
++	case *ast.IndexExpr:
++		return exprText(t.X)
++	}
++	return ""
++}
++
++func receiverName(fd *ast.FuncDecl) string {
++	if fd.Recv == nil || len(fd.Recv.List) == 0 {
++		return ""
++	}
++	return baseTypeName(fd.Recv.List[0].Type)
++}
++
++func baseTypeName(e ast.Expr) string {
++	switch t := e.(type) {
++	case *ast.StarExpr:
++		return baseTypeName(t.X)
++	case *ast.Ident:
++		return t.Name
++	case *ast.IndexExpr:
++		return baseTypeName(t.X)
++	case *ast.IndexListExpr:
++		return baseTypeName(t.X)
++	}
++	return ""
++}
++
++// reachable returns every declaration reachable from start through calls,
++// resolving callee names across the three production packages and following
++// delegation chains (the requirements explicitly allow consolidation to be
++// reached through delegation rather than in one inlined function body).
++func (p *program) reachable(start *decl) map[*decl]bool {
++	seen := map[*decl]bool{}
++	var walk func(*decl, int)
++	walk = func(current *decl, depth int) {
++		if current == nil || seen[current] || depth > 8 {
++			return
++		}
++		seen[current] = true
++		for _, callee := range current.callees {
++			for _, target := range p.byName[callee] {
++				walk(target, depth+1)
++			}
++		}
++	}
++	walk(start, 0)
++	return seen
++}
++
++// reachableDispatchSites returns the identifiers of every per-generation
++// dispatch table reachable from start (including start itself).
++func (p *program) reachableDispatchSites(start *decl) map[siteID]bool {
++	sites := map[siteID]bool{}
++	for d := range p.reachable(start) {
++		if d.hasGenerationTable() {
++			sites[d.id] = true
++		}
++	}
++	return sites
++}
++
++// consumerOf returns the parsed declaration for id, or nil when the
++// production entry point is not declared. Reporting that absence is the
++// responsibility of the calling check, not of this analysis helper.
++func (p *program) consumerOf(id siteID) *decl {
++	return p.byID[id]
++}
++
++func sortedIDs(in map[siteID]bool) []string {
++	out := make([]string, 0, len(in))
++	for id := range in {
++		out = append(out, id.String())
++	}
++	sort.Strings(out)
++	return out
++}
++
++// dispatchReport captures the outcome of the shared-dispatch-site analysis:
++// the single per-generation dispatch declaration reached by every decoded
++// consumer, plus the concrete reasons when there is no such single site.
++type dispatchReport struct {
++	Site     siteID
++	Problems []string
++}
++
++// sharedDispatchSite analyses the decoded consumers and reports whether they
++// all reach exactly one per-generation dispatch declaration in the data layer.
++// It never asserts: the calling check owns the assertion and its message.
++func sharedDispatchSite(p *program) dispatchReport {
++	union := map[siteID]bool{}
++	perConsumer := map[string][]string{}
++	var problems []string
++	for _, id := range decodedConsumers {
++		d := p.byID[id]
++		if d == nil {
++			problems = append(problems, fmt.Sprintf("%s is not declared", id))
++			continue
++		}
++		sites := p.reachableDispatchSites(d)
++		for site := range sites {
++			union[site] = true
++		}
++		perConsumer[id.String()] = sortedIDs(sites)
++	}
++	if len(problems) > 0 {
++		return dispatchReport{Problems: problems}
++	}
++	if len(union) != 1 {
++		problems = append(problems, fmt.Sprintf("decoded-metadata consumers must share exactly one generation dispatch site, got %v; per consumer: %v", sortedIDs(union), perConsumer))
++		return dispatchReport{Problems: problems}
++	}
++	var site siteID
++	for candidate := range union {
++		site = candidate
++	}
++	if site.Pkg != pkgXDR {
++		problems = append(problems, fmt.Sprintf("the shared generation dispatch site must live in %s so both the metadata accessors and the transaction readers can reach it, got %s", pkgXDR, site))
++		return dispatchReport{Site: site, Problems: problems}
++	}
++	for consumer, sites := range perConsumer {
++		if len(sites) != 1 || sites[0] != site.String() {
++			problems = append(problems, fmt.Sprintf("consumer %s must delegate to the shared site %s, got %v", consumer, site, sites))
++		}
++	}
++	return dispatchReport{Site: site, Problems: problems}
++}
++
++// providersReaching returns the declarations whose call result carries the
++// consolidated view: the view dispatch site itself and every declaration that
++// reaches it by delegation.
++func providersReaching(p *program, site siteID) map[*decl]bool {
++	providers := map[*decl]bool{}
++	for _, candidate := range p.decls {
++		if candidate.id == site {
++			providers[candidate] = true
++			continue
++		}
++		for reachable := range p.reachable(candidate) {
++			if reachable.id == site {
++				providers[candidate] = true
++				break
++			}
++		}
++	}
++	return providers
++}
++
++// viewValueNames returns the local variable names assigned from a call whose
++// callee produces the consolidated view.
++func viewValueNames(p *program, d *decl, providers map[*decl]bool) map[string]bool {
++	names := map[string]bool{}
++	ast.Inspect(d.body, func(n ast.Node) bool {
++		assign, ok := n.(*ast.AssignStmt)
++		if !ok || assign.Tok.String() != ":=" {
++			return true
++		}
++		for i, rhs := range assign.Rhs {
++			call, ok := rhs.(*ast.CallExpr)
++			if !ok || i >= len(assign.Lhs) {
++				continue
++			}
++			if isViewProducingCall(p, call, providers) {
++				if ident, ok := assign.Lhs[i].(*ast.Ident); ok {
++					names[ident.Name] = true
++				}
++			}
++		}
++		return true
++	})
++	return names
++}
++
++// generationOnlyMethods report the generation itself; they are not evidence
++// that the view owns the changes/events/refund data.
++var generationOnlyMethods = map[string]bool{
++	"Generation": true,
++	"Version":    true,
++	"Supported":  true,
++}
++
++// usesViewValue reports whether a value produced by the consolidated view is
++// consumed as data: a non-generation method is called on it (directly or
++// chained), or it is handed to another call (including the append that
++// assembles the result).
++func usesViewValue(p *program, d *decl, viewValues map[string]bool, providers map[*decl]bool) bool {
++	found := false
++	ast.Inspect(d.body, func(n ast.Node) bool {
++		call, ok := n.(*ast.CallExpr)
++		if !ok {
++			return true
++		}
++		if selector, ok := call.Fun.(*ast.SelectorExpr); ok && !generationOnlyMethods[selector.Sel.Name] {
++			switch receiver := selector.X.(type) {
++			case *ast.Ident:
++				if viewValues[receiver.Name] {
++					found = true
++				}
++			case *ast.CallExpr:
++				// Chained read such as meta.Generation().Events(...) where the
++				// inner call is the consolidated view.
++				if isViewProducingCall(p, receiver, providers) {
++					found = true
++				}
++			}
++		}
++		for _, arg := range call.Args {
++			if ident, ok := arg.(*ast.Ident); ok && viewValues[ident.Name] {
++				found = true
++			}
++		}
++		return true
++	})
++	return found
++}
++
++// isViewProducingCall reports whether the callee of call returns the
++// consolidated view. Delegation is resolved by name across the production
++// packages; chained reads (view().Data()) are handled by the caller.
++func isViewProducingCall(p *program, call *ast.CallExpr, providers map[*decl]bool) bool {
++	if p == nil {
++		return false
++	}
++	switch fun := call.Fun.(type) {
++	case *ast.SelectorExpr:
++		for _, target := range p.byName[fun.Sel.Name] {
++			if providers[target] {
++				return true
++			}
++		}
++	case *ast.Ident:
++		for _, target := range p.byName[fun.Name] {
++			if providers[target] {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++func sortedInts(in map[int]bool) []int {
++	out := make([]int, 0, len(in))
++	for value := range in {
++		out = append(out, value)
++	}
++	sort.Ints(out)
++	return out
++}
++
++func sortedStrings(in map[string]bool) []string {
++	out := make([]string, 0, len(in))
++	for value := range in {
++		out = append(out, value)
++	}
++	sort.Strings(out)
++	return out
++}
++
++// generationGuardTables recognizes metadata generation dispatch independently
++// of switch syntax. Comparisons are grouped by their actual discriminator;
++// unrelated numeric guards (operation index, ledger version, etc.) do not
++// contribute coverage. Sequential early-return guards and else-if chains are
++// both valid single-owner dispatch.
++func generationGuardTables(fd *ast.FuncDecl) [][]int {
++	metaNames := map[string]bool{}
++	rawNames := map[string]bool{}
++	seed := func(fields *ast.FieldList) {
++		if fields == nil {
++			return
++		}
++		for _, field := range fields.List {
++			typ := field.Type
++			if star, ok := typ.(*ast.StarExpr); ok {
++				typ = star.X
++			}
++			if exprText(typ) == "TransactionMetaView" || strings.HasSuffix(exprText(typ), ".TransactionMetaView") {
++				for _, name := range field.Names {
++					rawNames[name.Name] = true
++				}
++			}
++			if exprText(typ) == "TransactionMeta" || strings.HasSuffix(exprText(typ), ".TransactionMeta") {
++				for _, name := range field.Names {
++					metaNames[name.Name] = true
++				}
++			}
++		}
++	}
++	seed(fd.Recv)
++	seed(fd.Type.Params)
++	aliases := map[string]string{}
++	var discriminator func(ast.Expr) string
++	discriminator = func(e ast.Expr) string {
++		switch x := e.(type) {
++		case *ast.ParenExpr:
++			return discriminator(x.X)
++		case *ast.Ident:
++			return aliases[x.Name]
++		case *ast.CallExpr:
++			if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "V" && rawNames[exprText(sel.X)] {
++				return exprText(sel)
++			}
++		case *ast.SelectorExpr:
++			if x.Sel.Name == "V" && (metaNames[exprText(x.X)] || isMetaExpression(x.X)) {
++				return exprText(x)
++			}
++		}
++		return ""
++	}
++	// Resolve local copies of metadata and of its version to a fixed point.
++	for changed := true; changed; {
++		changed = false
++		bind := func(name string, rhs ast.Expr) {
++			if name == "_" {
++				return
++			}
++			if (metaNames[exprText(rhs)] || isMetaExpression(rhs)) && !metaNames[name] {
++				metaNames[name] = true
++				changed = true
++			}
++			if key := discriminator(rhs); key != "" && aliases[name] == "" {
++				aliases[name] = key
++				changed = true
++			}
++		}
++		ast.Inspect(fd.Body, func(n ast.Node) bool {
++			switch x := n.(type) {
++			case *ast.AssignStmt:
++				for i, rhs := range x.Rhs {
++					if i < len(x.Lhs) {
++						if name, ok := x.Lhs[i].(*ast.Ident); ok {
++							bind(name.Name, rhs)
++						}
++					}
++				}
++			case *ast.ValueSpec:
++				for i, rhs := range x.Values {
++					if i < len(x.Names) {
++						bind(x.Names[i].Name, rhs)
++					}
++				}
++			}
++			return true
++		})
++	}
++	groups := map[string]map[int]bool{}
++	var collect func(ast.Expr)
++	collect = func(e ast.Expr) {
++		if paren, ok := e.(*ast.ParenExpr); ok {
++			collect(paren.X)
++			return
++		}
++		binary, ok := e.(*ast.BinaryExpr)
++		if !ok {
++			return
++		}
++		if binary.Op == token.LOR || binary.Op == token.LAND {
++			collect(binary.X)
++			collect(binary.Y)
++			return
++		}
++		if binary.Op != token.EQL && binary.Op != token.NEQ {
++			return
++		}
++		for _, pair := range [][2]ast.Expr{{binary.X, binary.Y}, {binary.Y, binary.X}} {
++			key := discriminator(pair[0])
++			lit, ok := pair[1].(*ast.BasicLit)
++			if key == "" || !ok || lit.Kind != token.INT {
++				continue
++			}
++			value, err := strconv.Atoi(lit.Value)
++			if err != nil || value < 0 || value > 4 {
++				continue
++			}
++			if groups[key] == nil {
++				groups[key] = map[int]bool{}
++			}
++			groups[key][value] = true
++		}
++	}
++	ast.Inspect(fd.Body, func(n ast.Node) bool {
++		if branch, ok := n.(*ast.IfStmt); ok {
++			collect(branch.Cond)
++		}
++		return true
++	})
++	var tables [][]int
++	for _, values := range groups {
++		supported := 0
++		for v := range values {
++			if v >= 1 {
++				supported++
++			}
++		}
++		if supported >= 2 {
++			tables = append(tables, sortedInts(values))
++		}
++	}
++	return tables
++}
+diff --git a/ingest/tests/f2p_meta_view/dependencies_test.go b/ingest/tests/f2p_meta_view/dependencies_test.go
+new file mode 100644
+index 00000000..209c8a9b
+--- /dev/null
++++ b/ingest/tests/f2p_meta_view/dependencies_test.go
+@@ -0,0 +1,547 @@
++package f2p_meta_view
++
++import (
++	"bytes"
++	"encoding/json"
++	"io"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++// Paths from `go list -m -json all` at the frozen base
++// d8c8acf5f56cae47fcf033522349565c6fc86764. Include transitives so promoting an
++// existing dependency does not look like introducing a new module.
++const baselineModulePaths = `cel.dev/expr
++cloud.google.com/go
++cloud.google.com/go/accessapproval
++cloud.google.com/go/accesscontextmanager
++cloud.google.com/go/aiplatform
++cloud.google.com/go/analytics
++cloud.google.com/go/apigateway
++cloud.google.com/go/apigeeconnect
++cloud.google.com/go/apigeeregistry
++cloud.google.com/go/appengine
++cloud.google.com/go/area120
++cloud.google.com/go/artifactregistry
++cloud.google.com/go/asset
++cloud.google.com/go/assuredworkloads
++cloud.google.com/go/auth
++cloud.google.com/go/auth/oauth2adapt
++cloud.google.com/go/automl
++cloud.google.com/go/baremetalsolution
++cloud.google.com/go/batch
++cloud.google.com/go/beyondcorp
++cloud.google.com/go/bigquery
++cloud.google.com/go/bigtable
++cloud.google.com/go/billing
++cloud.google.com/go/binaryauthorization
++cloud.google.com/go/certificatemanager
++cloud.google.com/go/channel
++cloud.google.com/go/cloudbuild
++cloud.google.com/go/clouddms
++cloud.google.com/go/cloudtasks
++cloud.google.com/go/compute
++cloud.google.com/go/compute/metadata
++cloud.google.com/go/contactcenterinsights
++cloud.google.com/go/container
++cloud.google.com/go/containeranalysis
++cloud.google.com/go/datacatalog
++cloud.google.com/go/dataflow
++cloud.google.com/go/dataform
++cloud.google.com/go/datafusion
++cloud.google.com/go/datalabeling
++cloud.google.com/go/dataplex
++cloud.google.com/go/dataproc/v2
++cloud.google.com/go/dataqna
++cloud.google.com/go/datastore
++cloud.google.com/go/datastream
++cloud.google.com/go/deploy
++cloud.google.com/go/dialogflow
++cloud.google.com/go/dlp
++cloud.google.com/go/documentai
++cloud.google.com/go/domains
++cloud.google.com/go/edgecontainer
++cloud.google.com/go/errorreporting
++cloud.google.com/go/essentialcontacts
++cloud.google.com/go/eventarc
++cloud.google.com/go/filestore
++cloud.google.com/go/firestore
++cloud.google.com/go/functions
++cloud.google.com/go/gkebackup
++cloud.google.com/go/gkeconnect
++cloud.google.com/go/gkehub
++cloud.google.com/go/gkemulticloud
++cloud.google.com/go/gsuiteaddons
++cloud.google.com/go/iam
++cloud.google.com/go/iap
++cloud.google.com/go/ids
++cloud.google.com/go/iot
++cloud.google.com/go/kms
++cloud.google.com/go/language
++cloud.google.com/go/lifesciences
++cloud.google.com/go/logging
++cloud.google.com/go/longrunning
++cloud.google.com/go/managedidentities
++cloud.google.com/go/maps
++cloud.google.com/go/mediatranslation
++cloud.google.com/go/memcache
++cloud.google.com/go/metastore
++cloud.google.com/go/monitoring
++cloud.google.com/go/networkconnectivity
++cloud.google.com/go/networkmanagement
++cloud.google.com/go/networksecurity
++cloud.google.com/go/notebooks
++cloud.google.com/go/optimization
++cloud.google.com/go/orchestration
++cloud.google.com/go/orgpolicy
++cloud.google.com/go/osconfig
++cloud.google.com/go/oslogin
++cloud.google.com/go/phishingprotection
++cloud.google.com/go/policytroubleshooter
++cloud.google.com/go/privatecatalog
++cloud.google.com/go/pubsub
++cloud.google.com/go/pubsub/v2
++cloud.google.com/go/pubsublite
++cloud.google.com/go/recaptchaenterprise/v2
++cloud.google.com/go/recommendationengine
++cloud.google.com/go/recommender
++cloud.google.com/go/redis
++cloud.google.com/go/resourcemanager
++cloud.google.com/go/resourcesettings
++cloud.google.com/go/retail
++cloud.google.com/go/run
++cloud.google.com/go/scheduler
++cloud.google.com/go/secretmanager
++cloud.google.com/go/security
++cloud.google.com/go/securitycenter
++cloud.google.com/go/servicedirectory
++cloud.google.com/go/shell
++cloud.google.com/go/spanner
++cloud.google.com/go/speech
++cloud.google.com/go/storage
++cloud.google.com/go/storagetransfer
++cloud.google.com/go/talent
++cloud.google.com/go/texttospeech
++cloud.google.com/go/tpu
++cloud.google.com/go/trace
++cloud.google.com/go/translate
++cloud.google.com/go/video
++cloud.google.com/go/videointelligence
++cloud.google.com/go/vision/v2
++cloud.google.com/go/vmmigration
++cloud.google.com/go/vmwareengine
++cloud.google.com/go/vpcaccess
++cloud.google.com/go/webrisk
++cloud.google.com/go/websecurityscanner
++cloud.google.com/go/workflows
++github.com/BurntSushi/toml
++github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp
++github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric
++github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/cloudmock
++github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping
++github.com/Masterminds/goutils
++github.com/Masterminds/semver/v3
++github.com/Masterminds/sprig/v3
++github.com/Masterminds/squirrel
++github.com/Microsoft/go-winio
++github.com/Shopify/sarama
++github.com/Shopify/toxiproxy
++github.com/ajg/form
++github.com/alecthomas/kingpin/v2
++github.com/alecthomas/units
++github.com/andybalholm/brotli
++github.com/antihax/optional
++github.com/araddon/gou
++github.com/armon/go-metrics
++github.com/armon/go-radix
++github.com/asaskevich/govalidator
++github.com/aws/aws-sdk-go
++github.com/aws/aws-sdk-go-v2
++github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream
++github.com/aws/aws-sdk-go-v2/config
++github.com/aws/aws-sdk-go-v2/credentials
++github.com/aws/aws-sdk-go-v2/feature/ec2/imds
++github.com/aws/aws-sdk-go-v2/feature/s3/manager
++github.com/aws/aws-sdk-go-v2/internal/configsources
++github.com/aws/aws-sdk-go-v2/internal/endpoints/v2
++github.com/aws/aws-sdk-go-v2/internal/ini
++github.com/aws/aws-sdk-go-v2/internal/v4a
++github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding
++github.com/aws/aws-sdk-go-v2/service/internal/checksum
++github.com/aws/aws-sdk-go-v2/service/internal/presigned-url
++github.com/aws/aws-sdk-go-v2/service/internal/s3shared
++github.com/aws/aws-sdk-go-v2/service/s3
++github.com/aws/aws-sdk-go-v2/service/sso
++github.com/aws/aws-sdk-go-v2/service/ssooidc
++github.com/aws/aws-sdk-go-v2/service/sts
++github.com/aws/smithy-go
++github.com/beorn7/perks
++github.com/bgentry/speakeasy
++github.com/bitly/go-hostpool
++github.com/bmizerany/assert
++github.com/buger/goreplay
++github.com/cenkalti/backoff/v4
++github.com/cenkalti/backoff/v5
++github.com/census-instrumentation/opencensus-proto
++github.com/cespare/xxhash/v2
++github.com/chzyer/logex
++github.com/chzyer/readline
++github.com/chzyer/test
++github.com/client9/misspell
++github.com/cncf/udpa/go
++github.com/cncf/xds/go
++github.com/coreos/go-semver
++github.com/coreos/go-systemd/v22
++github.com/cpuguy83/go-md2man/v2
++github.com/creachadair/jrpc2
++github.com/creachadair/mds
++github.com/davecgh/go-spew
++github.com/denisenkom/go-mssqldb
++github.com/djherbis/fscache
++github.com/dustin/go-humanize
++github.com/eapache/go-resiliency
++github.com/eapache/go-xerial-snappy
++github.com/eapache/queue
++github.com/envoyproxy/go-control-plane
++github.com/envoyproxy/go-control-plane/envoy
++github.com/envoyproxy/go-control-plane/ratelimit
++github.com/envoyproxy/protoc-gen-validate
++github.com/fatih/color
++github.com/fatih/structs
++github.com/felixge/httpsnoop
++github.com/fortytw2/leaktest
++github.com/frankban/quicktest
++github.com/fsnotify/fsnotify
++github.com/fsouza/fake-gcs-server
++github.com/fsouza/slognil
++github.com/gavv/monotime
++github.com/go-chi/chi
++github.com/go-errors/errors
++github.com/go-gorp/gorp/v3
++github.com/go-jose/go-jose/v4
++github.com/go-kit/log
++github.com/go-logfmt/logfmt
++github.com/go-logr/logr
++github.com/go-logr/stdr
++github.com/go-sql-driver/mysql
++github.com/go-task/slim-sprig
++github.com/gobuffalo/logger
++github.com/gobuffalo/packd
++github.com/gobuffalo/packr/v2
++github.com/goccy/go-json
++github.com/godror/godror
++github.com/gogo/protobuf
++github.com/golang-sql/civil
++github.com/golang/glog
++github.com/golang/groupcache
++github.com/golang/mock
++github.com/golang/protobuf
++github.com/golang/snappy
++github.com/google/go-cmp
++github.com/google/go-pkcs11
++github.com/google/go-querystring
++github.com/google/gopacket
++github.com/google/martian/v3
++github.com/google/pprof
++github.com/google/renameio/v2
++github.com/google/s2a-go
++github.com/google/uuid
++github.com/googleapis/enterprise-certificate-proxy
++github.com/googleapis/gax-go/v2
++github.com/gopherjs/gopherjs
++github.com/gorilla/handlers
++github.com/gorilla/mux
++github.com/gorilla/schema
++github.com/grpc-ecosystem/grpc-gateway/v2
++github.com/guregu/null
++github.com/hashicorp/consul/api
++github.com/hashicorp/errwrap
++github.com/hashicorp/go-cleanhttp
++github.com/hashicorp/go-hclog
++github.com/hashicorp/go-immutable-radix
++github.com/hashicorp/go-multierror
++github.com/hashicorp/go-rootcerts
++github.com/hashicorp/go-uuid
++github.com/hashicorp/golang-lru
++github.com/hashicorp/hcl
++github.com/hashicorp/serf
++github.com/holiman/uint256
++github.com/howeyc/gopass
++github.com/hpcloud/tail
++github.com/huandu/xstrings
++github.com/iancoleman/strcase
++github.com/ianlancetaylor/demangle
++github.com/imdario/mergo
++github.com/imkira/go-interpol
++github.com/inconshreveable/mousetrap
++github.com/jarcoal/httpmock
++github.com/jcmturner/gofork
++github.com/jmespath/go-jmespath
++github.com/jmespath/go-jmespath/internal/testify
++github.com/jmoiron/sqlx
++github.com/jpillora/backoff
++github.com/json-iterator/go
++github.com/jtolds/gls
++github.com/julienschmidt/httprouter
++github.com/karrick/godirwalk
++github.com/klauspost/compress
++github.com/klauspost/cpuid/v2
++github.com/kr/pretty
++github.com/kr/pty
++github.com/kr/text
++github.com/lann/builder
++github.com/lann/ps
++github.com/lib/pq
++github.com/lyft/protoc-gen-star/v2
++github.com/magiconair/properties
++github.com/manucorporat/sse
++github.com/markbates/errx
++github.com/markbates/oncer
++github.com/markbates/safe
++github.com/mattbaird/elastigo
++github.com/mattn/go-colorable
++github.com/mattn/go-isatty
++github.com/mattn/go-oci8
++github.com/mattn/go-runewidth
++github.com/mattn/go-sqlite3
++github.com/matttproud/golang_protobuf_extensions
++github.com/matttproud/golang_protobuf_extensions/v2
++github.com/minio/highwayhash
++github.com/minio/md5-simd
++github.com/minio/minio-go/v7
++github.com/mitchellh/cli
++github.com/mitchellh/copystructure
++github.com/mitchellh/go-homedir
++github.com/mitchellh/mapstructure
++github.com/mitchellh/reflectwalk
++github.com/modern-go/concurrent
++github.com/modern-go/reflect2
++github.com/moul/http2curl
++github.com/mwitkow/go-conntrack
++github.com/nats-io/jwt/v2
++github.com/nats-io/nats.go
++github.com/nats-io/nkeys
++github.com/nats-io/nuid
++github.com/nelsam/hel/v2
++github.com/nxadm/tail
++github.com/olekukonko/tablewriter
++github.com/onsi/ginkgo
++github.com/onsi/ginkgo/v2
++github.com/onsi/gomega
++github.com/pelletier/go-toml
++github.com/pelletier/go-toml/v2
++github.com/pierrec/lz4
++github.com/pkg/errors
++github.com/pkg/xattr
++github.com/planetscale/vtprotobuf
++github.com/pmezard/go-difflib
++github.com/posener/complete
++github.com/poy/onpar
++github.com/prometheus/client_golang
++github.com/prometheus/client_model
++github.com/prometheus/common
++github.com/prometheus/procfs
++github.com/rcrowley/go-metrics
++github.com/rogpeppe/fastuuid
++github.com/rogpeppe/go-internal
++github.com/rs/cors
++github.com/rs/xid
++github.com/rubenv/sql-migrate
++github.com/russross/blackfriday/v2
++github.com/sagikazarmark/crypt
++github.com/sagikazarmark/locafero
++github.com/sagikazarmark/slog-shim
++github.com/segmentio/go-loggly
++github.com/sergi/go-diff
++github.com/shopspring/decimal
++github.com/sirupsen/logrus
++github.com/smartystreets/assertions
++github.com/smartystreets/goconvey
++github.com/sourcegraph/conc
++github.com/spf13/afero
++github.com/spf13/cast
++github.com/spf13/cobra
++github.com/spf13/pflag
++github.com/spf13/viper
++github.com/spiffe/go-spiffe/v2
++github.com/stellar/go-stellar-sdk
++github.com/stellar/go-xdr
++github.com/stretchr/objx
++github.com/stretchr/testify
++github.com/subosito/gotenv
++github.com/tyler-smith/go-bip39
++github.com/valyala/bytebufferpool
++github.com/valyala/fasthttp
++github.com/valyala/tcplisten
++github.com/vishvananda/netlink
++github.com/vishvananda/netns
++github.com/xdg/scram
++github.com/xdg/stringprep
++github.com/xdrpp/goxdr
++github.com/xeipuuv/gojsonpointer
++github.com/xeipuuv/gojsonreference
++github.com/xeipuuv/gojsonschema
++github.com/xhit/go-str2duration/v2
++github.com/yalp/jsonpath
++github.com/yudai/gojsondiff
++github.com/yudai/golcs
++github.com/yudai/pp
++github.com/yuin/goldmark
++github.com/zeebo/errs
++go.einride.tech/aip
++go.etcd.io/etcd/api/v3
++go.etcd.io/etcd/client/pkg/v3
++go.etcd.io/etcd/client/v2
++go.etcd.io/etcd/client/v3
++go.opencensus.io
++go.opentelemetry.io/auto/sdk
++go.opentelemetry.io/contrib/detectors/gcp
++go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc
++go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
++go.opentelemetry.io/otel
++go.opentelemetry.io/otel/exporters/otlp/otlptrace
++go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp
++go.opentelemetry.io/otel/exporters/stdout/stdoutmetric
++go.opentelemetry.io/otel/metric
++go.opentelemetry.io/otel/metric/x
++go.opentelemetry.io/otel/sdk
++go.opentelemetry.io/otel/sdk/metric
++go.opentelemetry.io/otel/trace
++go.opentelemetry.io/proto/otlp
++go.uber.org/atomic
++go.uber.org/goleak
++go.uber.org/multierr
++go.uber.org/zap
++go.yaml.in/yaml/v3
++golang.org/x/crypto
++golang.org/x/exp
++golang.org/x/lint
++golang.org/x/mod
++golang.org/x/net
++golang.org/x/oauth2
++golang.org/x/sync
++golang.org/x/sys
++golang.org/x/term
++golang.org/x/text
++golang.org/x/time
++golang.org/x/tools
++golang.org/x/xerrors
++gonum.org/v1/gonum
++google.golang.org/api
++google.golang.org/appengine
++google.golang.org/genproto
++google.golang.org/genproto/googleapis/api
++google.golang.org/genproto/googleapis/bytestream
++google.golang.org/genproto/googleapis/rpc
++google.golang.org/grpc
++google.golang.org/grpc/examples
++google.golang.org/protobuf
++gopkg.in/check.v1
++gopkg.in/djherbis/atime.v1
++gopkg.in/djherbis/stream.v1
++gopkg.in/fsnotify.v1
++gopkg.in/gavv/httpexpect.v1
++gopkg.in/ini.v1
++gopkg.in/jcmturner/aescts.v1
++gopkg.in/jcmturner/dnsutils.v1
++gopkg.in/jcmturner/goidentity.v3
++gopkg.in/jcmturner/gokrb5.v7
++gopkg.in/jcmturner/rpc.v1
++gopkg.in/tomb.v1
++gopkg.in/tylerb/graceful.v1
++gopkg.in/yaml.v2
++gopkg.in/yaml.v3
++honnef.co/go/tools`
++
++type moduleRecord struct {
++	Path, GoMod string
++	Main        bool
++	Replace     *moduleRecord
++}
++
++type moduleManifest struct {
++	Module  struct{ Path string }
++	Require []struct{ Path string }
++	Replace []struct{ Old, New struct{ Path string } }
++}
++
++func moduleOutput(t *testing.T, root string, args ...string) []byte {
++	t.Helper()
++	cmd := exec.Command("go", args...)
++	cmd.Dir = root
++	var stderr bytes.Buffer
++	cmd.Stderr = &stderr
++	raw, err := cmd.Output()
++	if err != nil {
++		t.Fatalf("cannot inspect module dependencies: %v: %s", err, stderr.String())
++	}
++	return raw
++}
++
++func TestP2PNoNewModuleDependencies(t *testing.T) {
++	root := repoRoot(t)
++	allowed := map[string]bool{}
++	for _, path := range strings.Fields(baselineModulePaths) {
++		allowed[path] = true
++	}
++	check := func(path, source string) {
++		if !allowed[path] {
++			t.Errorf("new module dependency %s from %s is outside the frozen base graph", path, source)
++		}
++	}
++	checked := map[string]bool{}
++	manifest := func(path string) {
++		if path == "" || checked[path] {
++			return
++		}
++		checked[path] = true
++		var m moduleManifest
++		raw := moduleOutput(t, root, "mod", "edit", "-json", path)
++		if err := json.Unmarshal(raw, &m); err != nil {
++			t.Fatal(err)
++		}
++		check(m.Module.Path, path)
++		for _, req := range m.Require {
++			check(req.Path, path)
++		}
++		for _, replacement := range m.Replace {
++			check(replacement.Old.Path, path)
++			// Module replacements have a module path; filesystem replacements are
++			// inspected by their actual go.mod below, never exempted as local code.
++			if !filepath.IsAbs(replacement.New.Path) && !strings.HasPrefix(replacement.New.Path, ".") {
++				check(replacement.New.Path, path)
++			}
++		}
++	}
++	manifest(filepath.Join(root, "go.mod"))
++	// `all` includes unused declared requirements and workspace/nested modules.
++	// -mod=readonly prevents the check itself changing dependency declarations.
++	raw := moduleOutput(t, root, "list", "-mod=readonly", "-m", "-json", "all")
++	decoder := json.NewDecoder(bytes.NewReader(raw))
++	for {
++		var m moduleRecord
++		err := decoder.Decode(&m)
++		if err == io.EOF {
++			break
++		}
++		if err != nil {
++			t.Fatal(err)
++		}
++		check(m.Path, "resolved module graph")
++		if m.Main {
++			manifest(m.GoMod)
++		}
++		if m.Replace != nil {
++			if !filepath.IsAbs(m.Replace.Path) && !strings.HasPrefix(m.Replace.Path, ".") {
++				check(m.Replace.Path, "module replacement")
++			}
++			// Do not inspect cached upstream manifests: they may list optional modules
++			// pruned from the baseline graph. Local replacements are authored inputs.
++			if filepath.IsAbs(m.Replace.Path) || strings.HasPrefix(m.Replace.Path, ".") {
++				manifest(m.Replace.GoMod)
++			}
++		}
++	}
++}
+diff --git a/ingest/tests/f2p_meta_view/dispatch_test.go b/ingest/tests/f2p_meta_view/dispatch_test.go
+new file mode 100644
+index 00000000..e229a40f
+--- /dev/null
++++ b/ingest/tests/f2p_meta_view/dispatch_test.go
+@@ -0,0 +1,246 @@
++package f2p_meta_view
++
++import (
++	"strings"
++	"testing"
++)
++
++// TestGetChangesConsumesConsolidatedViewWithoutLocalDispatch fails when the
++// change-assembly entry point still owns per-generation decoded-metadata
++// handling itself: either a per-generation dispatch table, or a direct read of
++// a raw metadata union arm.
++func TestGetChangesConsumesConsolidatedViewWithoutLocalDispatch(t *testing.T) {
++	p := loadProgram(t)
++	d := p.consumerOf(siteID{pkgIngest, "LedgerTransaction", "GetChanges"})
++	if d == nil {
++		t.Errorf("ingest.LedgerTransaction.GetChanges must remain declared as a production entry point")
++		return
++	}
++	if d.hasGenerationTable() {
++		t.Errorf("%s must not own a per-generation dispatch table any more (found one at %s:%d); the consolidated view must own the generation differences", d.id, d.file, d.line)
++	}
++	if d.metaUnionArmAccess {
++		t.Errorf("%s must not read the raw metadata union arms (MustV1..MustV4 / GetV1..GetV4 / .V1..V4) any more (at %s:%d)", d.id, d.file, d.line)
++	}
++}
++
++// TestGetOperationChangesConsumesConsolidatedViewWithoutLocalDispatch pins the
++// same ownership for the per-operation change entry point.
++func TestGetOperationChangesConsumesConsolidatedViewWithoutLocalDispatch(t *testing.T) {
++	p := loadProgram(t)
++	d := p.consumerOf(siteID{pkgIngest, "LedgerTransaction", "GetOperationChanges"})
++	if d == nil {
++		t.Errorf("ingest.LedgerTransaction.GetOperationChanges must remain declared as a production entry point")
++		return
++	}
++	if d.hasGenerationTable() {
++		t.Errorf("%s must not own a per-generation dispatch table any more (found one at %s:%d); the consolidated view must own the generation differences", d.id, d.file, d.line)
++	}
++	if d.metaUnionArmAccess {
++		t.Errorf("%s must not read the raw metadata union arms (MustV1..MustV4 / GetV1..GetV4 / .V1..V4) any more (at %s:%d)", d.id, d.file, d.line)
++	}
++}
++
++// TestGetTransactionEventsConsumesConsolidatedViewWithoutLocalDispatch pins the
++// same ownership for the transaction-event decomposition entry point.
++func TestGetTransactionEventsConsumesConsolidatedViewWithoutLocalDispatch(t *testing.T) {
++	p := loadProgram(t)
++	d := p.consumerOf(siteID{pkgIngest, "LedgerTransaction", "GetTransactionEvents"})
++	if d == nil {
++		t.Errorf("ingest.LedgerTransaction.GetTransactionEvents must remain declared as a production entry point")
++		return
++	}
++	if d.hasGenerationTable() {
++		t.Errorf("%s must not own a per-generation dispatch table any more (found one at %s:%d); the consolidated view must own the generation differences", d.id, d.file, d.line)
++	}
++	if d.metaUnionArmAccess {
++		t.Errorf("%s must not read the raw metadata union arms (MustV1..MustV4 / GetV1..GetV4 / .V1..V4) any more (at %s:%d)", d.id, d.file, d.line)
++	}
++}
++
++// TestSorobanResourceFeeRefundConsumesConsolidatedViewWithoutLocalDispatch pins
++// the same ownership for the soroban fee-refund input selection.
++func TestSorobanResourceFeeRefundConsumesConsolidatedViewWithoutLocalDispatch(t *testing.T) {
++	p := loadProgram(t)
++	d := p.consumerOf(siteID{pkgIngest, "LedgerTransaction", "SorobanResourceFeeRefund"})
++	if d == nil {
++		t.Errorf("ingest.LedgerTransaction.SorobanResourceFeeRefund must remain declared as a production entry point")
++		return
++	}
++	if d.hasGenerationTable() {
++		t.Errorf("%s must not own a per-generation dispatch table any more (found one at %s:%d); the consolidated view must own the generation differences", d.id, d.file, d.line)
++	}
++	if d.metaUnionArmAccess {
++		t.Errorf("%s must not read the raw metadata union arms (MustV1..MustV4 / GetV1..GetV4 / .V1..V4) any more (at %s:%d)", d.id, d.file, d.line)
++	}
++}
++
++// TestMetaContractEventsAccessorHasNoLocalDispatch pins the data-layer half of
++// the same ownership: the metadata contract-events accessor must not keep its
++// own generation dispatch.
++func TestMetaContractEventsAccessorHasNoLocalDispatch(t *testing.T) {
++	p := loadProgram(t)
++	d := p.consumerOf(siteID{pkgXDR, "TransactionMeta", "GetContractEventsForOperation"})
++	if d == nil {
++		t.Errorf("xdr.TransactionMeta.GetContractEventsForOperation must remain declared as a production entry point")
++		return
++	}
++	if d.hasGenerationTable() {
++		t.Errorf("%s must not own a per-generation dispatch table any more (found one at %s:%d); the consolidated view must own the generation differences", d.id, d.file, d.line)
++	}
++	if d.metaUnionArmAccess {
++		t.Errorf("%s must not read the raw metadata union arms (MustV1..MustV4 / GetV1..GetV4 / .V1..V4) any more (at %s:%d)", d.id, d.file, d.line)
++	}
++}
++
++// TestMetaDiagnosticEventsAccessorHasNoLocalDispatch pins the same ownership for
++// the metadata diagnostic-events accessor.
++func TestMetaDiagnosticEventsAccessorHasNoLocalDispatch(t *testing.T) {
++	p := loadProgram(t)
++	d := p.consumerOf(siteID{pkgXDR, "TransactionMeta", "GetDiagnosticEvents"})
++	if d == nil {
++		t.Errorf("xdr.TransactionMeta.GetDiagnosticEvents must remain declared as a production entry point")
++		return
++	}
++	if d.hasGenerationTable() {
++		t.Errorf("%s must not own a per-generation dispatch table any more (found one at %s:%d); the consolidated view must own the generation differences", d.id, d.file, d.line)
++	}
++	if d.metaUnionArmAccess {
++		t.Errorf("%s must not read the raw metadata union arms (MustV1..MustV4 / GetV1..GetV4 / .V1..V4) any more (at %s:%d)", d.id, d.file, d.line)
++	}
++}
++
++// TestMetaTransactionEventsAccessorHasNoLocalDispatch pins the same ownership
++// for the metadata transaction-events accessor.
++func TestMetaTransactionEventsAccessorHasNoLocalDispatch(t *testing.T) {
++	p := loadProgram(t)
++	d := p.consumerOf(siteID{pkgXDR, "TransactionMeta", "GetTransactionEvents"})
++	if d == nil {
++		t.Errorf("xdr.TransactionMeta.GetTransactionEvents must remain declared as a production entry point")
++		return
++	}
++	if d.hasGenerationTable() {
++		t.Errorf("%s must not own a per-generation dispatch table any more (found one at %s:%d); the consolidated view must own the generation differences", d.id, d.file, d.line)
++	}
++	if d.metaUnionArmAccess {
++		t.Errorf("%s must not read the raw metadata union arms (MustV1..MustV4 / GetV1..GetV4 / .V1..V4) any more (at %s:%d)", d.id, d.file, d.line)
++	}
++}
++
++// TestAllDecodedConsumersShareOneGenerationDispatchSite pins the "one internal
++// view" obligation: every decoded consumer must reach the same single
++// per-generation dispatch declaration, and that declaration must live in the
++// xdr package so both the metadata accessors and the transaction readers can
++// use it.
++func TestAllDecodedConsumersShareOneGenerationDispatchSite(t *testing.T) {
++	p := loadProgram(t)
++	report := sharedDispatchSite(p)
++	if len(report.Problems) > 0 {
++		t.Errorf("every decoded-metadata consumer must reach one shared per-generation dispatch declaration in the data layer: %s", strings.Join(report.Problems, "; "))
++	}
++}
++
++// TestSharedViewDispatchCoversEverySupportedGeneration pins that the shared
++// view really is the per-generation owner rather than a partial shim: its
++// dispatch tables must name all four supported decoded generations.
++func TestSharedViewDispatchCoversEverySupportedGeneration(t *testing.T) {
++	p := loadProgram(t)
++	report := sharedDispatchSite(p)
++	if len(report.Problems) > 0 {
++		t.Errorf("the consolidated view must be the single shared dispatch site before its generation coverage can hold: %s", strings.Join(report.Problems, "; "))
++		return
++	}
++	covered := map[int]bool{}
++	for reachable := range p.reachable(p.byID[report.Site]) {
++		for _, table := range reachable.generationTables {
++			for _, value := range table {
++				covered[value] = true
++			}
++		}
++	}
++	for generation := 1; generation <= 4; generation++ {
++		if !covered[generation] {
++			t.Errorf("the consolidated view %s must own the per-generation handling for generation %d; covered generations: %v", report.Site, generation, sortedInts(covered))
++		}
++	}
++}
++
++// TestP2PDataLayerDependencyDirection pins that the shared
++// handling sits in the data layer (reachable by both the metadata accessors
++// and the transaction readers) without reversing the package dependency
++// direction: no xdr production file may import the ingest or processor trees.
++func TestP2PDataLayerDependencyDirection(t *testing.T) {
++	p := loadProgram(t)
++	for file, paths := range p.imports {
++		if !strings.HasPrefix(file, pkgXDR+"/") {
++			continue
++		}
++		for _, path := range paths {
++			if strings.Contains(path, "/ingest") || strings.Contains(path, "/processors/") {
++				t.Errorf("data-layer file %s must not import %s: the consolidation must not reverse the package dependency direction", file, path)
++			}
++		}
++	}
++}
++
++// TestDecodedConsumersReadDataThroughConsolidatedView pins the dataflow half of
++// the consolidation: it is not enough for a consumer to merely reach the view,
++// the generation-dependent values the consumer returns must be read through
++// the view value instead of being rebuilt locally.
++func TestDecodedConsumersReadDataThroughConsolidatedView(t *testing.T) {
++	p := loadProgram(t)
++	report := sharedDispatchSite(p)
++	if len(report.Problems) > 0 {
++		t.Errorf("the dataflow check needs a single shared dispatch site, got problems: %s", strings.Join(report.Problems, "; "))
++		return
++	}
++	viewProviders := providersReaching(p, report.Site)
++	for _, id := range decodedConsumers {
++		d := p.consumerOf(id)
++		if d == nil {
++			t.Errorf("%s must remain declared as a production entry point", id)
++			continue
++		}
++		viewValues := viewValueNames(p, d, viewProviders)
++		if !usesViewValue(p, d, viewValues, viewProviders) {
++			t.Errorf("%s must obtain its generation-dependent data from the value produced by the consolidated view %s, not merely reach it (view values seen: %v)", id, report.Site.String(), sortedStrings(viewValues))
++		}
++	}
++}
++
++// The raw-view walk is already shared and is explicitly out of scope. Anchor
++// the check at exported callers and the raw input type, not private helper
++// names: renaming private helpers is allowed, duplicating/rerouting the walk
++// or sending raw consumers through the decoded view is not.
++func TestP2PRawViewDispatchRemainsShared(t *testing.T) {
++	p := loadProgram(t)
++	owners := map[siteID]bool{}
++	for _, d := range p.decls {
++		if d.id.Pkg == pkgIngest && d.rawViewInput && d.rawEventOutput && d.hasGenerationTable() {
++			owners[d.id] = true
++		}
++	}
++	if len(owners) != 1 {
++		t.Errorf("raw TransactionMetaView events must retain one dispatch owner, including no copied orphan walks; got %v", sortedIDs(owners))
++		return
++	}
++	for _, name := range []string{"EventsFromTxParts", "LedgerTransactionViewByHash", "LedgerTransactionViewRange"} {
++		root := p.byID[siteID{Pkg: pkgIngest, Name: name}]
++		if root == nil {
++			t.Errorf("raw-view entry point %s is missing", name)
++			continue
++		}
++		reached := false
++		for d := range p.reachable(root) {
++			if owners[d.id] {
++				reached = true
++			}
++			if d.id.Pkg == pkgXDR && d.decodedMetaInput && d.hasGenerationTable() {
++				t.Errorf("raw-view entry point %s must not route through decoded generation dispatch %s", name, d.id)
++			}
++		}
++		if !reached {
++			t.Errorf("raw-view entry point %s bypasses the shared raw dispatch %v", name, sortedIDs(owners))
++		}
++	}
++}
+diff --git a/ingest/tests/f2p_meta_view/token_semantics_test.go b/ingest/tests/f2p_meta_view/token_semantics_test.go
+new file mode 100644
+index 00000000..496b0522
+--- /dev/null
++++ b/ingest/tests/f2p_meta_view/token_semantics_test.go
+@@ -0,0 +1,111 @@
++package f2p_meta_view
++
++import (
++	"bytes"
++	"encoding/json"
++	"fmt"
++	"go/ast"
++	"go/importer"
++	"go/parser"
++	"go/token"
++	"go/types"
++	"io"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"testing"
++)
++
++// Resolve the actual TransactionMeta type, including aliases and local copies.
++// Reading V for interpretation/error text is allowed; exposing union arms is not.
++func tokenUnionViolations(t *testing.T) []string {
++	t.Helper()
++	root := repoRoot(t)
++	cmd := exec.Command("go", "list", "-mod=readonly", "-deps", "-export", "-json", "./processors/token_transfer")
++	cmd.Dir = root
++	var stderr bytes.Buffer
++	cmd.Stderr = &stderr
++	raw, err := cmd.Output()
++	if err != nil {
++		t.Fatalf("infrastructure error: load token types: %v: %s", err, stderr.String())
++	}
++	exports := map[string]string{}
++	var active []string
++	dec := json.NewDecoder(bytes.NewReader(raw))
++	const module = "github.com/stellar/go-stellar-sdk"
++	for {
++		var row struct {
++			ImportPath, Export string
++			GoFiles            []string
++		}
++		err := dec.Decode(&row)
++		if err == io.EOF {
++			break
++		}
++		if err != nil {
++			t.Fatalf("infrastructure error: decode exports: %v", err)
++		}
++		exports[row.ImportPath] = row.Export
++		if row.ImportPath == module+"/processors/token_transfer" {
++			active = row.GoFiles
++		}
++	}
++	if len(active) == 0 {
++		t.Fatal("infrastructure error: missing token source inventory")
++	}
++	fset := token.NewFileSet()
++	var files []*ast.File
++	for _, name := range active {
++		f, err := parser.ParseFile(fset, filepath.Join(root, "processors/token_transfer", name), nil, 0)
++		if err != nil {
++			t.Fatal(err)
++		}
++		files = append(files, f)
++	}
++	imp := importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
++		name := exports[path]
++		if name == "" {
++			return nil, fmt.Errorf("missing export %s", path)
++		}
++		return os.Open(name)
++	})
++	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
++	cfg := types.Config{Importer: imp}
++	if _, err := cfg.Check(module+"/processors/token_transfer", fset, files, info); err != nil {
++		t.Fatalf("infrastructure error: token type-check: %v", err)
++	}
++	pkg, err := imp.Import(module + "/xdr")
++	if err != nil {
++		t.Fatal(err)
++	}
++	meta := pkg.Scope().Lookup("TransactionMeta").Type()
++	unwrap := func(typ types.Type) types.Type {
++		for {
++			typ = types.Unalias(typ)
++			if p, ok := typ.(*types.Pointer); ok {
++				typ = p.Elem()
++			} else {
++				return typ
++			}
++		}
++	}
++	var found []string
++	for _, f := range files {
++		ast.Inspect(f, func(node ast.Node) bool {
++			sel, ok := node.(*ast.SelectorExpr)
++			if !ok || (!isUnionArmField(sel.Sel.Name) && !isUnionArmAccessor(sel.Sel.Name)) {
++				return true
++			}
++			typ := info.TypeOf(sel.X)
++			if typ == nil {
++				t.Fatalf("infrastructure error: unresolved selector at %v", fset.Position(sel.Pos()))
++			}
++			typ = unwrap(typ)
++			if types.Identical(typ, meta) || types.Identical(typ.Underlying(), meta.Underlying()) {
++				found = append(found, fmt.Sprintf("%s at %s", sel.Sel.Name, fset.Position(sel.Pos())))
++			}
++			return true
++		})
++	}
++	return found
++}
+diff --git a/ingest/tests/f2p_meta_view/token_transfer_test.go b/ingest/tests/f2p_meta_view/token_transfer_test.go
+new file mode 100644
+index 00000000..1c6a22d3
+--- /dev/null
++++ b/ingest/tests/f2p_meta_view/token_transfer_test.go
+@@ -0,0 +1,11 @@
++package f2p_meta_view
++
++import "testing"
++
++// Public consumers may read a generation number to preserve interpretation and
++// error text; they must not independently unpack the decoded metadata union.
++func TestTokenTransferHasNoMetadataUnionArmAccess(t *testing.T) {
++	if hits := tokenUnionViolations(t); len(hits) > 0 {
++		t.Errorf("token-transfer consumers unwrap raw TransactionMeta instead of using the consolidated view: %v", hits)
++	}
++}
+diff --git a/ingest/tests/p2p_junit/main.go b/ingest/tests/p2p_junit/main.go
+new file mode 100644
+index 00000000..6374b4d8
+--- /dev/null
++++ b/ingest/tests/p2p_junit/main.go
+@@ -0,0 +1,600 @@
++// Command p2p_junit runs the P2P-selected Go test nodes declared by the frozen
++// P2P plan and writes a regular JUnit XML report.
++//
++// Test selection comes from the pipeline-materialized p2p select file, passed
++// with --select-file ({p2p_select}: one `path::exact_leaf` selector per line).
++// When that file is not available the runner falls back to the selector set
++// frozen in the plan, so the command is self-sufficient. No selection manifest
++// other than the pipeline-provided one is required.
++//
++// The runner only uses the repository, the Go toolchain already present in the
++// image and its warm module cache: no installs, no downloads, no registry
++// access. Tests are executed per package with `go test -json` and the JSON
++// stream is converted into JUnit XML whose testcase identity is
++// `classname=path, name=leaf`, i.e. the exact selector.
++package main
++
++import (
++	"bufio"
++	"context"
++	"encoding/json"
++	"encoding/xml"
++	"flag"
++	"fmt"
++	"io"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"strings"
++	"time"
++)
++
++// defaultSelectors mirrors p2p[].selector from the frozen P2P plan.
++const defaultSelectors = `ingest/ledger_transaction_test.go::TestMetaV2Order
++ingest/ledger_transaction_test.go::TestFeeMetaAndOperationsChangesSeparate
++ingest/ledger_transaction_test.go::TestFailedTransactionOperationChangesMeta
++ingest/ledger_transaction_test.go::TestMetaV0
++ingest/ledger_transaction_test.go::TestTransactionHelperFunctions
++ingest/ledger_transaction_test.go::TestGetContractEventsForOperation
++ingest/ledger_transaction_test.go::TestGetSorobanContractEvents
++ingest/ledger_transaction_test.go::TestGetDiagnosticEvents
++ingest/ledger_transaction_test.go::TestGetTransactionEvents
++ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_MatchesParsedReader
++ingest/transaction_events_view_test.go::TestDiagnosticEventsFromMeta_MatchesParsedReader
++ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_LegacyV0
++ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_V3GateIsCallerResponsibility
++ingest/transaction_view_test.go::TestTransactionView_EventsAgreeWithGetTransactionEvents
++ingest/transaction_view_test.go::TestTransactionView_V3SorobanMetaAbsent_OneEmptyOperationSlot
++processors/token_transfer/contract_events_test.go::TestVersionSpecificSACValidation
++processors/token_transfer/contract_events_test.go::TestV4FeeEventParsing
++processors/token_transfer/contract_events_test.go::TestValidContractEventsV3
++processors/token_transfer/contract_events_test.go::TestValidContractEventsV4
++ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration1OrderAndAssociations
++ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration2Order
++ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration3OrderAndAssociations
++ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration4OrderAndAssociations
++ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesLegacyInternalErrorShape
++ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetOperationChangesBoundsAndUnsupportedGenerations
++ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetTransactionEventsAbsentOutcomes
++ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetTransactionEventsGeneration3And4Composition
++ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PContractEventAccessorsOutcomes
++ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PSorobanResourceFeeRefundGenerationAndComposition
++ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetPostApplyFeeChangesClassification
++xdr/transaction_meta_p2p_test.go::TestP2PMetaGetContractEventsForOperationOutcomes
++xdr/transaction_meta_p2p_test.go::TestP2PMetaGetDiagnosticEventsOutcomes
++xdr/transaction_meta_p2p_test.go::TestP2PMetaGetTransactionEventsOutcomes
++processors/token_transfer/unified_events_p2p_test.go::TestP2PUnifiedEventsStreamAcceptsOnlyGeneration4
++processors/token_transfer/unified_events_p2p_test.go::TestP2PUnifiedEventsOptionDefaultsToLegacyInterpretation
++ingest/tests/f2p_meta_view/dispatch_test.go::TestP2PDataLayerDependencyDirection`
++
++type selector struct {
++	Path string
++	Leaf string
++}
++
++func (s selector) String() string { return s.Path + "::" + s.Leaf }
++
++type testEvent struct {
++	Action  string  `json:"Action"`
++	Package string  `json:"Package"`
++	Test    string  `json:"Test"`
++	Output  string  `json:"Output"`
++	Elapsed float64 `json:"Elapsed"`
++}
++
++type leafResult struct {
++	selector selector
++	status   string // pass, fail, skip, notrun
++	output   strings.Builder
++	elapsed  float64
++}
++
++type junitTestsuites struct {
++	XMLName  xml.Name         `xml:"testsuites"`
++	Tests    int              `xml:"tests,attr"`
++	Failures int              `xml:"failures,attr"`
++	Errors   int              `xml:"errors,attr"`
++	Skipped  int              `xml:"skipped,attr"`
++	Time     string           `xml:"time,attr"`
++	Suites   []junitTestsuite `xml:"testsuite"`
++}
++
++type junitTestsuite struct {
++	Name      string          `xml:"name,attr"`
++	Tests     int             `xml:"tests,attr"`
++	Failures  int             `xml:"failures,attr"`
++	Errors    int             `xml:"errors,attr"`
++	Skipped   int             `xml:"skipped,attr"`
++	Time      string          `xml:"time,attr"`
++	Timestamp string          `xml:"timestamp,attr"`
++	Cases     []junitTestcase `xml:"testcase"`
++	SystemOut string          `xml:"system-out,omitempty"`
++}
++
++type junitTestcase struct {
++	Classname string        `xml:"classname,attr"`
++	Name      string        `xml:"name,attr"`
++	Time      string        `xml:"time,attr"`
++	Failure   *junitFailure `xml:"failure,omitempty"`
++	Error     *junitFailure `xml:"error,omitempty"`
++	Skipped   *junitSkipped `xml:"skipped,omitempty"`
++}
++
++type junitFailure struct {
++	Type    string `xml:"type,attr,omitempty"`
++	Message string `xml:"message,attr"`
++	Body    string `xml:",chardata"`
++}
++
++type junitSkipped struct {
++	Message string `xml:"message,attr,omitempty"`
++}
++
++func main() {
++	var (
++		reportPath  string
++		selectFiles multiFlag
++		repoRoot    string
++		timeout     int
++		verbose     bool
++	)
++	flag.StringVar(&reportPath, "report", "", "path of the JUnit XML report to write")
++	flag.Var(&selectFiles, "select-file", "file with `path::exact_leaf` selectors (repeatable)")
++	flag.StringVar(&repoRoot, "repo", "", "repository root (defaults to the nearest parent with go.mod)")
++	flag.IntVar(&timeout, "timeout", 300, "per-package go test timeout in seconds")
++	flag.BoolVar(&verbose, "verbose", false, "stream go test JSON output to stderr")
++	flag.Parse()
++
++	if reportPath == "" {
++		fatalf("--report is required")
++	}
++	root, err := findRepoRoot(repoRoot)
++	if err != nil {
++		fatalf("%v", err)
++	}
++
++	selectors, err := loadSelectors(selectFiles, flag.Args(), root)
++	if err != nil {
++		fatalf("%v", err)
++	}
++	if len(selectors) == 0 {
++		fatalf("no selectors to run")
++	}
++
++	results := runSelectors(root, selectors, timeout, verbose)
++	if err := writeReport(reportPath, results); err != nil {
++		fatalf("failed to write report %q: %v", reportPath, err)
++	}
++
++	failed := 0
++	for _, result := range results {
++		if result.status != "pass" {
++			failed++
++		}
++	}
++	fmt.Fprintf(os.Stderr, "p2p_junit: %d selectors, %d not passing; report: %s\n", len(results), failed, reportPath)
++	if failed > 0 {
++		os.Exit(1)
++	}
++}
++
++type multiFlag []string
++
++func (m *multiFlag) String() string { return strings.Join(*m, ",") }
++
++func (m *multiFlag) Set(value string) error {
++	*m = append(*m, value)
++	return nil
++}
++
++func fatalf(format string, args ...any) {
++	fmt.Fprintf(os.Stderr, "p2p_junit: "+format+"\n", args...)
++	os.Exit(2)
++}
++
++func findRepoRoot(explicit string) (string, error) {
++	if explicit != "" {
++		return filepath.Abs(explicit)
++	}
++	dir, err := os.Getwd()
++	if err != nil {
++		return "", err
++	}
++	for {
++		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
++			return dir, nil
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			return "", fmt.Errorf("could not locate go.mod above %q", dir)
++		}
++		dir = parent
++	}
++}
++
++func loadSelectors(files []string, args []string, root string) ([]selector, error) {
++	var lines []string
++	for _, file := range files {
++		file = strings.TrimSpace(file)
++		if file == "" || strings.Contains(file, "{") {
++			// Placeholder was not substituted at runtime; fall back below.
++			continue
++		}
++		if !filepath.IsAbs(file) {
++			file = filepath.Join(root, file)
++		}
++		content, err := os.ReadFile(file)
++		if err != nil {
++			fmt.Fprintf(os.Stderr, "p2p_junit: select file %q unavailable (%v), using the frozen plan selector set\n", file, err)
++			continue
++		}
++		lines = append(lines, parseSelection(content)...)
++	}
++	lines = append(lines, args...)
++
++	selectors, err := parseSelectors(lines, root)
++	if err != nil {
++		return nil, err
++	}
++	if len(selectors) == 0 {
++		fmt.Fprintf(os.Stderr, "p2p_junit: no usable selection input, using the frozen plan selector set\n")
++		return parseSelectors(strings.Split(defaultSelectors, "\n"), root)
++	}
++	return selectors, nil
++}
++
++// parseSelection accepts either a JSON array of selector strings or
++// newline-separated selector strings.
++func parseSelection(content []byte) []string {
++	trimmed := strings.TrimSpace(string(content))
++	if strings.HasPrefix(trimmed, "[") {
++		var values []string
++		if err := json.Unmarshal([]byte(trimmed), &values); err == nil {
++			return values
++		}
++	}
++	return strings.Split(trimmed, "\n")
++}
++
++func parseSelectors(lines []string, root string) ([]selector, error) {
++	known := map[string]string{}
++	for _, line := range strings.Split(defaultSelectors, "\n") {
++		if parts := strings.SplitN(line, "::", 2); len(parts) == 2 {
++			known[parts[1]] = parts[0]
++		}
++	}
++
++	seen := map[string]bool{}
++	var selectors []selector
++	for _, raw := range lines {
++		line := strings.TrimSpace(raw)
++		line = strings.Trim(line, "\"',")
++		if index := strings.Index(line, " #"); index >= 0 {
++			line = line[:index]
++		}
++		line = strings.TrimSpace(strings.TrimPrefix(line, "- "))
++		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
++			continue
++		}
++		if strings.HasPrefix(line, "{") || strings.HasSuffix(line, "}") {
++			continue
++		}
++		var current selector
++		if parts := strings.SplitN(line, "::", 2); len(parts) == 2 {
++			current = selector{Path: strings.TrimPrefix(strings.TrimSpace(parts[0]), "./"), Leaf: strings.TrimSpace(parts[1])}
++		} else if path, ok := known[line]; ok {
++			current = selector{Path: path, Leaf: line}
++		} else {
++			fmt.Fprintf(os.Stderr, "p2p_junit: ignoring non-selector line %q\n", raw)
++			continue
++		}
++		if current.Path == "" || current.Leaf == "" {
++			return nil, fmt.Errorf("invalid selector %q", raw)
++		}
++		current.Path = canonicalTestPath(current.Path, current.Leaf, known, root)
++		if seen[current.String()] {
++			continue
++		}
++		seen[current.String()] = true
++		selectors = append(selectors, current)
++	}
++	return selectors, nil
++}
++
++// canonicalTestPath recovers the repository-relative test file for a selector
++// whose path is missing, absolute, or expressed as a package/import path.
++func canonicalTestPath(path, leaf string, known map[string]string, root string) string {
++	resolved := path
++	if filepath.IsAbs(resolved) {
++		if rel, err := filepath.Rel(root, resolved); err == nil {
++			resolved = rel
++		}
++	}
++	if !strings.HasSuffix(resolved, ".go") {
++		if knownPath, ok := known[leaf]; ok {
++			resolved = knownPath
++		}
++	}
++	if _, err := os.Stat(filepath.Join(root, resolved)); err != nil {
++		if knownPath, ok := known[leaf]; ok {
++			resolved = knownPath
++		}
++	}
++	return resolved
++}
++
++type packageRun struct {
++	dir       string
++	selectors []selector
++}
++
++func grouping(selectors []selector) []packageRun {
++	order := []string{}
++	byDir := map[string][]selector{}
++	for _, current := range selectors {
++		dir := filepath.Dir(current.Path)
++		if !strings.Contains(current.Path, ".go") {
++			dir = current.Path
++		}
++		if _, ok := byDir[dir]; !ok {
++			order = append(order, dir)
++		}
++		byDir[dir] = append(byDir[dir], current)
++	}
++	runs := make([]packageRun, 0, len(order))
++	for _, dir := range order {
++		runs = append(runs, packageRun{dir: dir, selectors: byDir[dir]})
++	}
++	return runs
++}
++
++func runSelectors(root string, selectors []selector, timeout int, verbose bool) []leafResult {
++	bySelector := map[string]*leafResult{}
++	results := make([]leafResult, 0, len(selectors))
++	for _, current := range selectors {
++		results = append(results, leafResult{selector: current, status: "notrun"})
++	}
++	for i := range results {
++		bySelector[results[i].selector.String()] = &results[i]
++	}
++
++	for _, run := range grouping(selectors) {
++		runPackage(root, run, bySelector, timeout, verbose)
++	}
++	return results
++}
++
++func runPackage(root string, run packageRun, bySelector map[string]*leafResult, timeout int, verbose bool) {
++	leaves := make([]string, 0, len(run.selectors))
++	for _, current := range run.selectors {
++		leaves = append(leaves, regexp.QuoteMeta(current.Leaf))
++	}
++	runPattern := "^(" + strings.Join(leaves, "|") + ")$"
++
++	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout+30)*time.Second)
++	defer cancel()
++
++	args := []string{"test", "-json", "-count=1", "-timeout", fmt.Sprintf("%ds", timeout), "-run", runPattern, "./" + run.dir}
++	cmd := exec.CommandContext(ctx, "go", args...)
++	cmd.Dir = root
++	env := os.Environ()
++	env = append(env, "GOTOOLCHAIN=local", "GOPROXY=off")
++	cmd.Env = env
++
++	stdout, err := cmd.StdoutPipe()
++	if err != nil {
++		markPackageError(run, bySelector, fmt.Sprintf("failed to start go test: %v", err))
++		return
++	}
++	var stderr strings.Builder
++	cmd.Stderr = &stderr
++
++	if err := cmd.Start(); err != nil {
++		markPackageError(run, bySelector, fmt.Sprintf("failed to start go test: %v", err))
++		return
++	}
++
++	var packageOutput strings.Builder
++	statuses := map[string]string{}
++	elapsed := map[string]float64{}
++	outputs := map[string]*strings.Builder{}
++	failedTests := map[string]bool{}
++
++	scanner := bufio.NewScanner(stdout)
++	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
++	for scanner.Scan() {
++		line := scanner.Bytes()
++		if verbose {
++			fmt.Fprintln(os.Stderr, string(line))
++		}
++		var event testEvent
++		if err := json.Unmarshal(line, &event); err != nil {
++			packageOutput.Write(line)
++			packageOutput.WriteByte('\n')
++			continue
++		}
++		if event.Test == "" {
++			if event.Action == "output" || event.Action == "build-output" {
++				packageOutput.WriteString(event.Output)
++			}
++			continue
++		}
++		top := topLevelTest(event.Test)
++		if _, ok := bySelector[selectorForPath(run, top)]; !ok {
++			continue
++		}
++		if outputs[event.Test] == nil {
++			outputs[event.Test] = &strings.Builder{}
++		}
++		switch event.Action {
++		case "output":
++			outputs[event.Test].WriteString(event.Output)
++		case "fail":
++			failedTests[top] = true
++		case "pass":
++			if !failedTests[top] {
++				statuses[top] = "pass"
++				elapsed[top] = event.Elapsed
++			}
++		case "skip":
++			if !failedTests[top] {
++				statuses[top] = "skip"
++				elapsed[top] = event.Elapsed
++			}
++		}
++	}
++	waitErr := cmd.Wait()
++
++	for _, current := range run.selectors {
++		result := bySelector[current.String()]
++		if failedTests[current.Leaf] {
++			result.status = "fail"
++			result.elapsed = elapsed[current.Leaf]
++			var parts []string
++			for name, buffer := range outputs {
++				if topLevelTest(name) == current.Leaf {
++					parts = append(parts, buffer.String())
++				}
++			}
++			result.output.WriteString(strings.Join(parts, ""))
++			if result.output.Len() == 0 {
++				result.output.WriteString(packageOutput.String())
++			}
++			continue
++		}
++		if status, ok := statuses[current.Leaf]; ok {
++			result.status = status
++			result.elapsed = elapsed[current.Leaf]
++			continue
++		}
++		// No per-test event: the package did not build or the selector was not
++		// collected. Surface it as an error, never as a silent pass.
++		result.status = "notrun"
++		detail := strings.TrimSpace(packageOutput.String())
++		if detail == "" {
++			detail = strings.TrimSpace(stderr.String())
++		}
++		if detail == "" && waitErr != nil {
++			detail = waitErr.Error()
++		}
++		if detail == "" {
++			detail = fmt.Sprintf("go test did not report a result for %s", current.Leaf)
++		}
++		result.output.WriteString(detail)
++	}
++}
++
++func selectorForPath(run packageRun, leaf string) string {
++	for _, current := range run.selectors {
++		if current.Leaf == leaf {
++			return current.String()
++		}
++	}
++	return ""
++}
++
++func topLevelTest(name string) string {
++	if index := strings.Index(name, "/"); index >= 0 {
++		return name[:index]
++	}
++	return name
++}
++
++func markPackageError(run packageRun, bySelector map[string]*leafResult, message string) {
++	for _, current := range run.selectors {
++		result := bySelector[current.String()]
++		result.status = "notrun"
++		result.output.WriteString(message)
++	}
++}
++
++// failureType distinguishes completed test failures from Go runtime failures.
++// Runtime diagnostics begin at column zero; assertion messages are indented.
++func failureType(output string) string {
++	for _, line := range strings.Split(output, "\n") {
++		if strings.HasPrefix(line, "panic: test timed out after ") {
++			return "Timeout"
++		}
++		if strings.HasPrefix(line, "panic:") || strings.HasPrefix(line, "fatal error:") ||
++			regexp.MustCompile(`^SIG[A-Z0-9]+:`).MatchString(line) {
++			return "Process Crash"
++		}
++	}
++	return ""
++}
++
++func writeReport(path string, results []leafResult) error {
++	timestamp := time.Now().UTC().Format(time.RFC3339)
++	suite := junitTestsuite{Timestamp: timestamp, Name: "p2p"}
++	totalTime := 0.0
++
++	for _, result := range results {
++		testCase := junitTestcase{
++			Classname: result.selector.Path,
++			Name:      result.selector.Leaf,
++			Time:      fmt.Sprintf("%.3f", result.elapsed),
++		}
++		totalTime += result.elapsed
++		//nolint:exhaustive
++		switch result.status {
++		case "pass":
++		case "skip":
++			suite.Skipped++
++			testCase.Skipped = &junitSkipped{Message: "skipped"}
++		case "fail":
++			failure := &junitFailure{
++				Type:    "AssertionFailure",
++				Message: fmt.Sprintf("%s failed", result.selector.Leaf),
++				Body:    result.output.String(),
++			}
++			if kind := failureType(result.output.String()); kind != "" {
++				suite.Errors++
++				failure.Type = kind
++				testCase.Error = failure
++			} else {
++				suite.Failures++
++				testCase.Failure = failure
++			}
++		default:
++			suite.Errors++
++			testCase.Error = &junitFailure{
++				Type:    failureType(result.output.String()),
++				Message: fmt.Sprintf("%s was not executed", result.selector.Leaf),
++				Body:    result.output.String(),
++			}
++		}
++		suite.Cases = append(suite.Cases, testCase)
++	}
++	suite.Tests = len(suite.Cases)
++	suite.Time = fmt.Sprintf("%.3f", totalTime)
++
++	report := junitTestsuites{
++		Tests:    suite.Tests,
++		Failures: suite.Failures,
++		Errors:   suite.Errors,
++		Skipped:  suite.Skipped,
++		Time:     suite.Time,
++		Suites:   []junitTestsuite{suite},
++	}
++
++	if dir := filepath.Dir(path); dir != "" && dir != "." {
++		if err := os.MkdirAll(dir, 0o755); err != nil {
++			return err
++		}
++	}
++	file, err := os.Create(path)
++	if err != nil {
++		return err
++	}
++	defer file.Close()
++	if _, err := io.WriteString(file, xml.Header); err != nil {
++		return err
++	}
++	encoder := xml.NewEncoder(file)
++	encoder.Indent("", "  ")
++	if err := encoder.Encode(report); err != nil {
++		return err
++	}
++	return encoder.Flush()
++}
+diff --git a/ingest/tests/p2p_junit/run_p2p.sh b/ingest/tests/p2p_junit/run_p2p.sh
+new file mode 100644
+index 00000000..4f931fe6
+--- /dev/null
++++ b/ingest/tests/p2p_junit/run_p2p.sh
+@@ -0,0 +1,29 @@
++#!/usr/bin/env bash
++# Build and run the P2P JUnit runner with every build artifact placed in an
++# exec-capable directory.
++#
++# The replay sandbox mounts TMPDIR (and therefore go's default GOTMPDIR) with
++# noexec, so `go run`/`go test` cannot execute the binaries they link there.
++# The frozen plan declares require_exec, so the pipeline provides
++# VERIFIER_EXEC_DIR: the compiled runner and every `go test` binary are placed
++# below it (TMPDIR is only a fallback for local runs). GOTOOLCHAIN=local and
++# GOPROXY=off keep the run fully offline, and the caller's working directory is
++# preserved so relative {report} and {p2p_select} paths keep their
++# caller-relative meaning.
++set -euo pipefail
++
++script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
++repo_root="$(cd -- "${script_dir}/../../.." && pwd)"
++
++base_dir="${VERIFIER_EXEC_DIR:-${TMPDIR:-/tmp}}"
++exec_dir="${base_dir}/p2p-junit"
++mkdir -p "$exec_dir"
++export GOTMPDIR="${exec_dir}/go-build-tmp"
++mkdir -p "$GOTMPDIR"
++export GOTOOLCHAIN=local
++export GOPROXY=off
++echo "run_p2p.sh: building P2P runner into ${exec_dir}" >&2
++
++runner_bin="${exec_dir}/p2p_junit"
++go -C "$repo_root" build -o "$runner_bin" ./ingest/tests/p2p_junit
++exec "$runner_bin" --repo "$repo_root" "$@"
+diff --git a/processors/token_transfer/contract_events_test.go b/processors/token_transfer/contract_events_test.go
+index b5844530..039c909f 100644
+--- a/processors/token_transfer/contract_events_test.go
++++ b/processors/token_transfer/contract_events_test.go
+@@ -24,9 +24,7 @@ var (
+ 
+ 	someContract2 = strkey.MustEncode(strkey.VersionByteContract, someContractId2[:])
+ 
+-	processor = &EventsProcessor{
+-		networkPassphrase: someNetworkPassphrase,
+-	}
++	processor           = NewEventsProcessor(someNetworkPassphrase)
+ 	contractIdFromAsset = func(asset xdr.Asset) *xdr.ContractId {
+ 		contractId, _ := asset.ContractID(someNetworkPassphrase)
+ 		hash := xdr.ContractId(contractId)
+@@ -221,6 +219,9 @@ func createContractEvent(
+ }
+ 
+ func TestValidContractEventsV3(t *testing.T) {
++	t.Run("non-contract-event-types", func(t *testing.T) { p2pCheckContractEventTypes(t, 3) })
++	t.Run("issuer-transfer-classification", func(t *testing.T) { p2pCheckIssuerTransfers(t, 3) })
++
+ 	testCases := []struct {
+ 		name          string
+ 		eventType     string
+@@ -454,7 +455,7 @@ func TestValidContractEventsV3(t *testing.T) {
+ 					)
+ 				}
+ 
+-				event, err := processor.parseEvent(someTxV3(), &someOperationIndex, contractEvent)
++				event, err := p2pPublicContractEvent(processor, someTxV3(), &someOperationIndex, contractEvent)
+ 
+ 				require.NoError(t, err)
+ 				require.NotNil(t, event)
+@@ -471,951 +472,12 @@ func TestValidContractEventsV3(t *testing.T) {
+ 	}
+ }
+ 
+-func TestInvalidEventsV3(t *testing.T) {
+-	testCases := []struct {
+-		name           string
+-		setupEvent     func() xdr.ContractEvent
+-		expectedErrMsg string
+-	}{
+-		{
+-			name: "Invalid contract event type",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Use a non-contract event type
+-				event := createContractEvent(TransferEvent, randomAccount, someContract1, 1000, nil, "asset", &someContractId1)
+-				event.Type = xdr.ContractEventTypeSystem // Invalid type
+-				return event
+-			},
+-			expectedErrMsg: "invalid contractEvent",
+-		},
+-		{
+-			name: "Missing contract ID",
+-			setupEvent: func() xdr.ContractEvent {
+-				event := createContractEvent(TransferEvent, randomAccount, someContract1, 1000, nil, "asset", nil)
+-				return event
+-			},
+-			expectedErrMsg: "invalid contractEvent",
+-		},
+-		{
+-			name: "Invalid body version",
+-			setupEvent: func() xdr.ContractEvent {
+-				event := createContractEvent(TransferEvent, randomAccount, someContract1, 1000, nil, "asset", &someContractId1)
+-				event.Body.V = 1 // Invalid version
+-				return event
+-			},
+-			expectedErrMsg: "invalid contractEvent",
+-		},
+-		{
+-			name: "Insufficient topics",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Create event with only one topic (the function name)
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "insufficient topics in contract event",
+-		},
+-		{
+-			name: "Invalid function name type",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Use a string instead of a symbol for function name
+-				topics := []xdr.ScVal{
+-					createString(TransferEvent), // Should be a symbol
+-					createAddress(randomAccount),
+-					createAddress(someContract1),
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "invalid function name",
+-		},
+-		{
+-			name: "Invalid amount format",
+-			setupEvent: func() xdr.ContractEvent {
+-				event := createContractEvent(TransferEvent, randomAccount, someContract1, 1000, nil, "asset", &someContractId1)
+-				// Replace the amount with a string value instead of Int128
+-				event.Body.V0.Data = createString("1000")
+-				return event
+-			},
+-			expectedErrMsg: "invalid event amount",
+-		},
+-		{
+-			name: "Transfer: Too few topics",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Only include function name and from address, missing to address
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-					createAddress(randomAccount),
+-					// Missing to address
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "transfer event requires minimum 3 topics, found: 2",
+-		},
+-		{
+-			name: "Transfer: Invalid from address",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Use an invalid value for from address (not an address)
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-					createString("not an address"), // Invalid from address
+-					createAddress(someContract1),
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "invalid fromAddress",
+-		},
+-		{
+-			name: "Transfer: Invalid to address",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Use an invalid value for to address (not an address)
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-					createAddress(randomAccount),
+-					createString("not an address"), // Invalid to address
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "invalid toAddress",
+-		},
+-		{
+-			name: "Mint: Too few topics",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Only include function name and admin, missing to address
+-				topics := []xdr.ScVal{
+-					createSymbol(MintEvent),
+-					createAddress(randomAccount),
+-					// Missing to address
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "mint event requires minimum 3 topics",
+-		},
+-		{
+-			name: "Mint: Invalid admin address",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Use an invalid value for admin address (not an address)
+-				topics := []xdr.ScVal{
+-					createSymbol(MintEvent),
+-					createString("not an address"), // Invalid admin address
+-					createAddress(someContract1),
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "invalid adminAddress",
+-		},
+-		{
+-			name: "Mint: Invalid to address",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Use an invalid value for to address (not an address)
+-				topics := []xdr.ScVal{
+-					createSymbol(MintEvent),
+-					createAddress(randomAccount),
+-					createString("not an address"), // Invalid to address
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "invalid toAddress",
+-		},
+-		{
+-			name: "Clawback: Too few topics",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Only include function name and admin, missing from address
+-				topics := []xdr.ScVal{
+-					createSymbol(ClawbackEvent),
+-					createAddress(randomAccount),
+-					// Missing from address
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "clawback event requires minimum 3 topics",
+-		},
+-		{
+-			name: "Clawback: Invalid admin address",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Use an invalid value for admin address (not an address)
+-				topics := []xdr.ScVal{
+-					createSymbol(ClawbackEvent),
+-					createString("not an address"), // Invalid admin address
+-					createAddress(randomAccount),
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "invalid adminAddress",
+-		},
+-		{
+-			name: "Clawback: Invalid from address",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Use an invalid value for from address (not an address)
+-				topics := []xdr.ScVal{
+-					createSymbol(ClawbackEvent),
+-					createAddress(someContract1),
+-					createString("not an address"), // Invalid from address
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "invalid fromAddress",
+-		},
+-		{
+-			name: "Burn: Too few topics",
+-			// this is true for any event really. Minimum number of topics is 2.
+-			setupEvent: func() xdr.ContractEvent {
+-				// Only include function name, missing from address
+-				topics := []xdr.ScVal{
+-					createSymbol(BurnEvent),
+-					// Missing from address
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "insufficient topics in contract event",
+-		},
+-		{
+-			name: "Burn: Invalid from address",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Use an invalid value for from address (not an address)
+-				topics := []xdr.ScVal{
+-					createSymbol(BurnEvent),
+-					createString("not an address"), // Invalid from address
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "invalid fromAddress",
+-		},
+-		{
+-			name: "Unsupported event type",
+-			setupEvent: func() xdr.ContractEvent {
+-				return createContractEvent(
+-					"unknown_event", // Unsupported event type
+-					randomAccount,
+-					someContract1,
+-					1000,
+-					nil,
+-					"asset",
+-					&someContractId1,
+-				)
+-			},
+-			expectedErrMsg: "unsupported custom token event type",
+-		},
+-		{
+-			name: "Invalid SAC asset string",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Create transfer event with invalid asset string that can't be parsed
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-					createAddress(randomAccount),
+-					createAddress(someContract1),
+-					createString("not:a:valid:asset"), // Invalid asset string
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "", // This should not error as SAC validation is only for enhancement
+-		},
+-	}
+-
+-	for _, tc := range testCases {
+-		t.Run(tc.name, func(t *testing.T) {
+-			contractEvent := tc.setupEvent()
+-			event, err := processor.parseEvent(someTxV3(), &someOperationIndex, contractEvent)
+-
+-			if tc.expectedErrMsg == "" {
+-				// If no error is expected, the test should pass
+-				require.NoError(t, err)
+-				require.NotNil(t, event)
+-			} else {
+-				// If an error is expected
+-				require.Error(t, err)
+-				assert.Nil(t, event)
+-				assert.Contains(t, err.Error(), tc.expectedErrMsg, "Error message should contain expected text")
+-
+-				// Verify it's the right error type
+-				_, ok := err.(ErrNotSep41TokenEvent)
+-				assert.True(t, ok, "Error should be of type ErrNotSep41TokenEvent")
+-			}
+-		})
+-	}
+-}
+-
+-func TestSacAssetValidation(t *testing.T) {
+-	// None of the test fixtures here will result in errors
+-	// They simply might not pass the additional validation required to qualify as a SAC event, is all
+-	xlmContractId := contractIdFromAsset(xlmAsset)
+-
+-	testCases := []struct {
+-		name              string
+-		setupEvent        func() xdr.ContractEvent
+-		isAssetSetInEvent bool // Whether to check if the asset is set in the event
+-	}{
+-		{
+-			name: "Valid SAC asset with matching contract ID",
+-			setupEvent: func() xdr.ContractEvent {
+-				return createContractEvent(
+-					TransferEvent,
+-					randomAccount,
+-					someContract1,
+-					1000,
+-					nil,
+-					xlmAsset.StringCanonical(),
+-					xlmContractId,
+-				)
+-			},
+-			isAssetSetInEvent: true,
+-		},
+-		{
+-			name: "Valid SAC asset string but mismatched contract ID",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Use valid asset string but wrong contract ID
+-				return createContractEvent(
+-					TransferEvent,
+-					randomAccount,
+-					someContract1,
+-					1000,
+-					nil,
+-					xlmAsset.StringCanonical(),
+-					&someContractId2, // Different from xlmContractId
+-				)
+-			},
+-			isAssetSetInEvent: false, // Asset should not be set due to mismatch
+-		},
+-		{
+-			name: "Valid SAC asset with correct format but not exactly 4 topics",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Add an extra topic to make it 5 instead of 4
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-					createAddress(randomAccount),
+-					createAddress(someContract1),
+-					createString(xlmAsset.StringCanonical()),
+-					createString("extra topic"),
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: xlmContractId,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			isAssetSetInEvent: false, // Should not set asset due to wrong topic count
+-		},
+-		{
+-			name: "Valid burn event with exactly 3 topics and valid asset",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(BurnEvent),
+-					createAddress(randomAccount),
+-					createString(xlmAsset.StringCanonical()),
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: xlmContractId,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			isAssetSetInEvent: true, // Should set asset for burn with 3 topics
+-		},
+-		{
+-			name: "Valid token event but last topic is not a string",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-					createAddress(randomAccount),
+-					createAddress(someContract1),
+-					createInt128(12345), // Not a string
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: xlmContractId,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			isAssetSetInEvent: false, // Should not set asset due to non-string
+-		},
+-		{
+-			name: "Valid token event but asset string is empty",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-					createAddress(randomAccount),
+-					createAddress(someContract1),
+-					createString(""), // Empty string
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: xlmContractId,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			isAssetSetInEvent: false, // Should not set asset due to empty string
+-		},
+-		{
+-			name: "Valid token event but BuildAssets returns multiple assets",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Make it so that some custom token emits a string that is a SEP-11 representation of multiple assets
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-					createAddress(randomAccount),
+-					createAddress(someContract1),
+-					createString(
+-						fmt.Sprintf("%s,%s",
+-							xlmAsset.StringCanonical(), xlmAsset.StringCanonical()),
+-					),
+-				}
+-
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: xlmContractId,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: topics,
+-							Data:   createInt128(1000),
+-						},
+-					},
+-				}
+-			},
+-			isAssetSetInEvent: false, // Asset shouldn't be set due to buildAssets returning multiple assets
+-		},
+-	}
+-
+-	for _, tc := range testCases {
+-		t.Run(tc.name, func(t *testing.T) {
+-			contractEvent := tc.setupEvent()
+-			event, err := processor.parseEvent(someTxV3(), &someOperationIndex, contractEvent)
+-
+-			require.NoError(t, err, "Should not error for this test case")
+-			require.NotNil(t, event, "Event should be returned")
+-
+-			// Check if we need to verify asset is set or not set
+-			if tc.isAssetSetInEvent {
+-				eventAsset := event.GetAsset()
+-
+-				assert.NotNil(t, eventAsset, "Asset should be set for this event")
+-				assert.True(t, eventAsset.ToXdrAsset().Equals(xlmAsset))
+-			} else {
+-				eventAsset := event.GetAsset()
+-				assert.Nil(t, eventAsset, "Asset should not be set for this event")
+-			}
+-
+-		})
+-	}
+-}
+-
+ // ------ V4 Testing -----
+ 
+-func TestValidSep41EventsWithExtraTopicsAndDataV4(t *testing.T) {
+-	// Create V4 transaction
+-	v4Tx := someTxV3()
+-	v4Tx.UnsafeMeta.V = 4
+-	v4Tx.UnsafeMeta.V4 = &xdr.TransactionMetaV4{
+-		Operations: []xdr.OperationMetaV2{{}},
+-	}
+-
+-	mapWithAmountMuxedInfoAndExtraFields := createScMap(
+-		"amount", createInt128(thousand),
+-		"to_muxed_id", uint64(999),
+-		"some random key", "some random value",
+-	)
+-
+-	// The two encodings of a to_muxed_id holding None: contracts built against
+-	// the CAP-86 sparse map host functions omit the key, while contracts built
+-	// before that store it bound to Void.
+-	mapWithJustAmount := createScMap("amount", createInt128(thousand))
+-	mapWithVoidMuxedInfo := createScMap(
+-		"amount", createInt128(thousand),
+-		"to_muxed_id", xdr.ScVal{Type: xdr.ScValTypeScvVoid},
+-	)
+-
+-	createContract := func(contractId *xdr.ContractId, topics []xdr.ScVal, data xdr.ScVal) xdr.ContractEvent {
+-		return xdr.ContractEvent{
+-			Type:       xdr.ContractEventTypeContract,
+-			ContractId: contractId,
+-			Body: xdr.ContractEventBody{
+-				V: 0,
+-				V0: &xdr.ContractEventV0{
+-					Topics: topics,
+-					Data:   data,
+-				},
+-			},
+-		}
+-	}
+-
+-	testCases := []struct {
+-		name          string
+-		setupEvent    func() xdr.ContractEvent
+-		validateEvent func(t *testing.T, event *TokenTransferEvent)
+-	}{
+-		{
+-			name: "Transfer Event with extra topics and i128 amount - Valid SEP-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-					createAddress(randomAccount),              // from
+-					createAddress(someContract1),              // to
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-					createString(
+-						fmt.Sprintf("%s,%s", xlmAsset.StringCanonical(), xlmAsset.StringCanonical()), // spoofing a SAC event
+-					),
+-				}
+-				data := createInt128(thousand)
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetTransfer())
+-				assert.Equal(t, randomAccount, event.GetTransfer().From)
+-				assert.Equal(t, someContract1, event.GetTransfer().To)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetTransfer().Amount)
+-			},
+-		},
+-		{
+-			name: "Transfer Event with extra topics and map data with extra fields - Valid Sep-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-					createAddress(randomAccount),              // from
+-					createAddress(someContract1),              // to
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-				}
+-				data := mapWithAmountMuxedInfoAndExtraFields
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetTransfer())
+-				assert.Equal(t, randomAccount, event.GetTransfer().From)
+-				assert.Equal(t, someContract1, event.GetTransfer().To)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetTransfer().Amount)
+-				assert.NotNil(t, event.Meta.GetToMuxedInfo())
+-				assert.Equal(t, uint64(999), event.Meta.GetToMuxedInfo().GetId())
+-			},
+-		}, {
+-			name: "Transfer Event with extra topics and just amount as map data - Valid Sep-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-					createAddress(randomAccount),              // from
+-					createAddress(someContract1),              // to
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-				}
+-				data := mapWithJustAmount
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetTransfer())
+-				assert.Equal(t, randomAccount, event.GetTransfer().From)
+-				assert.Equal(t, someContract1, event.GetTransfer().To)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetTransfer().Amount)
+-				assert.Nil(t, event.Meta.GetToMuxedInfo())
+-			},
+-		}, {
+-			name: "Transfer Event with extra topics and void to_muxed_id in map data - Valid Sep-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(TransferEvent),
+-					createAddress(randomAccount),              // from
+-					createAddress(someContract1),              // to
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-				}
+-				data := mapWithVoidMuxedInfo
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetTransfer())
+-				assert.Equal(t, randomAccount, event.GetTransfer().From)
+-				assert.Equal(t, someContract1, event.GetTransfer().To)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetTransfer().Amount)
+-				assert.Nil(t, event.Meta.GetToMuxedInfo())
+-			},
+-		},
+-
+-		{
+-			name: "Mint Event with extra topics and i128 amount - Valid SEP-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(MintEvent),
+-					createAddress(someContract1),              // to
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-					createString(
+-						fmt.Sprintf("%s,%s", xlmAsset.StringCanonical(), xlmAsset.StringCanonical()), // spoofing a SAC event
+-					),
+-				}
+-				data := createInt128(thousand)
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetMint())
+-				assert.Equal(t, someContract1, event.GetMint().To)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetMint().Amount)
+-			},
+-		},
+-		{
+-			name: "Mint Event with extra topics and map data with extra fields - Valid Sep-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(MintEvent),
+-					createAddress(someContract1),              // to
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-				}
+-				data := mapWithAmountMuxedInfoAndExtraFields
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetMint())
+-				assert.Equal(t, someContract1, event.GetMint().To)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetMint().Amount)
+-				assert.NotNil(t, event.Meta.GetToMuxedInfo())
+-				assert.Equal(t, uint64(999), event.Meta.GetToMuxedInfo().GetId())
+-			},
+-		}, {
+-			name: "Mint Event with extra topics and just amount as map data - Valid Sep-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(MintEvent),
+-					createAddress(someContract1),              // to
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-				}
+-				data := mapWithJustAmount
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetMint())
+-				assert.Equal(t, someContract1, event.GetMint().To)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetMint().Amount)
+-				assert.Nil(t, event.Meta.GetToMuxedInfo())
+-			},
+-		},
+-
+-		{
+-			name: "Burn Event with extra topics and i128 amount - Valid SEP-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(BurnEvent),
+-					createAddress(someContract1),              // from
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-					createString(
+-						fmt.Sprintf("%s,%s", xlmAsset.StringCanonical(), xlmAsset.StringCanonical()), // spoofing a SAC event
+-					),
+-				}
+-				data := createInt128(thousand)
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetBurn())
+-				assert.Equal(t, someContract1, event.GetBurn().From)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetBurn().Amount)
+-			},
+-		},
+-		{
+-			name: "Burn Event with extra topics and map data with extra fields - Valid Sep-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(BurnEvent),
+-					createAddress(someContract1),              // from
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-				}
+-				data := mapWithAmountMuxedInfoAndExtraFields
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetBurn())
+-				assert.Equal(t, someContract1, event.GetBurn().From)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetBurn().Amount)
+-				assert.NotNil(t, event.Meta.GetToMuxedInfo())
+-				assert.Equal(t, uint64(999), event.Meta.GetToMuxedInfo().GetId())
+-			},
+-		}, {
+-			name: "Burn Event with extra topics and just amount as map data - Valid Sep-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(BurnEvent),
+-					createAddress(someContract1),              // from
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-				}
+-				data := mapWithJustAmount
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetBurn())
+-				assert.Equal(t, someContract1, event.GetBurn().From)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetBurn().Amount)
+-				assert.Nil(t, event.Meta.GetToMuxedInfo())
+-			},
+-		},
+-
+-		{
+-			name: "Clawback Event with extra topics and i128 amount - Valid SEP-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(ClawbackEvent),
+-					createAddress(someContract1),              // from
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-					createString(
+-						fmt.Sprintf("%s,%s", xlmAsset.StringCanonical(), xlmAsset.StringCanonical()), // spoofing a SAC event
+-					),
+-				}
+-				data := createInt128(thousand)
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetClawback())
+-				assert.Equal(t, someContract1, event.GetClawback().From)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetClawback().Amount)
+-			},
+-		},
+-		{
+-			name: "Clawback Event with extra topics and map data with extra fields - Valid Sep-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(ClawbackEvent),
+-					createAddress(someContract1),              // from
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-				}
+-				data := mapWithAmountMuxedInfoAndExtraFields
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetClawback())
+-				assert.Equal(t, someContract1, event.GetClawback().From)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetClawback().Amount)
+-				assert.NotNil(t, event.Meta.GetToMuxedInfo())
+-				assert.Equal(t, uint64(999), event.Meta.GetToMuxedInfo().GetId())
+-			},
+-		}, {
+-			name: "Clawback Event with extra topics and just amount as map data - Valid Sep-41 token",
+-			setupEvent: func() xdr.ContractEvent {
+-				topics := []xdr.ScVal{
+-					createSymbol(ClawbackEvent),
+-					createAddress(someContract1),              // from
+-					createString("some random extra topic 1"), // extra
+-					createString("some random extra topic 2"), // extra
+-				}
+-				data := mapWithJustAmount
+-				return createContract(&someContractId1, topics, data)
+-			},
+-			validateEvent: func(t *testing.T, event *TokenTransferEvent) {
+-				assert.NotNil(t, event.GetClawback())
+-				assert.Equal(t, someContract1, event.GetClawback().From)
+-				assert.Nil(t, event.GetAsset())
+-				assert.Equal(t, thousandStr, event.GetClawback().Amount)
+-				assert.Nil(t, event.Meta.GetToMuxedInfo())
+-			},
+-		},
+-	}
+-
+-	for _, tc := range testCases {
+-		t.Run(tc.name, func(t *testing.T) {
+-			contractEvent := tc.setupEvent()
+-			event, err := processor.parseEvent(v4Tx, &someOperationIndex, contractEvent)
+-			require.NoError(t, err, "Should not error for this test case")
+-			require.NotNil(t, event, "Event should be returned")
+-			tc.validateEvent(t, event)
+-		})
+-	}
+-
+-}
+-
+ func TestValidContractEventsV4(t *testing.T) {
++	t.Run("non-contract-event-types", func(t *testing.T) { p2pCheckContractEventTypes(t, 4) })
++	t.Run("issuer-transfer-classification", func(t *testing.T) { p2pCheckIssuerTransfers(t, 4) })
++
+ 	// Create V4 transaction
+ 	v4Tx := someTxV3()
+ 	v4Tx.UnsafeMeta.V = 4
+@@ -1845,7 +907,7 @@ func TestValidContractEventsV4(t *testing.T) {
+ 				},
+ 			}
+ 
+-			event, err := processor.parseEvent(v4Tx, &someOperationIndex, contractEvent)
++			event, err := p2pPublicContractEvent(processor, v4Tx, &someOperationIndex, contractEvent)
+ 			require.NoError(t, err)
+ 			require.NotNil(t, event)
+ 
+@@ -2051,7 +1113,7 @@ func TestV4FeeEventParsing(t *testing.T) {
+ 		t.Run(tc.name, func(t *testing.T) {
+ 			ttp := NewEventsProcessorForUnifiedEvents(someNetworkPassphrase)
+ 			v4Tx.UnsafeMeta.V4.Events = tc.txLevelEvents
+-			protoFeeEvents, err := ttp.parseFeeEventsFromTransactionEvents(v4Tx)
++			protoFeeEvents, err := p2pPublicFeeEvents(ttp, v4Tx)
+ 			if !tc.hasError {
+ 				require.NoError(t, err)
+ 				assert.Equal(t, len(protoFeeEvents), len(tc.expectedEvents),
+@@ -2074,130 +1136,6 @@ func TestV4FeeEventParsing(t *testing.T) {
+ 	}
+ }
+ 
+-func TestV4InvalidEvents(t *testing.T) {
+-	// Create V4 transaction
+-	v4Tx := someTxV3()
+-	v4Tx.UnsafeMeta.V = 4
+-	v4Tx.UnsafeMeta.V4 = &xdr.TransactionMetaV4{
+-		Operations: []xdr.OperationMetaV2{{}},
+-	}
+-
+-	testCases := []struct {
+-		name           string
+-		setupEvent     func() xdr.ContractEvent
+-		expectedErrMsg string
+-	}{
+-		{
+-			name: "V4 Map: Missing amount field",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Create map with only to_muxed_id, missing amount
+-				mapEntries := xdr.ScMap{
+-					{
+-						Key: createSymbol("to_muxed_id"),
+-						Val: xdr.ScVal{Type: xdr.ScValTypeScvU64, U64: &[]xdr.Uint64{12345}[0]},
+-					},
+-				}
+-
+-				mapPtr := &mapEntries
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: []xdr.ScVal{
+-								createSymbol(TransferEvent),
+-								createAddress(randomAccount),
+-								createAddress(someContract1),
+-							},
+-							Data: xdr.ScVal{
+-								Type: xdr.ScValTypeScvMap,
+-								Map:  &mapPtr,
+-							},
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "amount field not found in map",
+-		},
+-		{
+-			name: "V4 Map: Invalid to_muxed_id type",
+-			setupEvent: func() xdr.ContractEvent {
+-				// Create map with invalid to_muxed_id type
+-				mapEntries := xdr.ScMap{
+-					{
+-						Key: createSymbol("amount"),
+-						Val: createInt128(1000),
+-					},
+-					{
+-						Key: createSymbol("to_muxed_id"),
+-						Val: createSymbol("invalid_type"), // Should be u64, bytes, or string
+-					},
+-				}
+-
+-				mapPtr := &mapEntries
+-				return xdr.ContractEvent{
+-					Type:       xdr.ContractEventTypeContract,
+-					ContractId: &someContractId1,
+-					Body: xdr.ContractEventBody{
+-						V: 0,
+-						V0: &xdr.ContractEventV0{
+-							Topics: []xdr.ScVal{
+-								createSymbol(TransferEvent),
+-								createAddress(randomAccount),
+-								createAddress(someContract1),
+-							},
+-							Data: xdr.ScVal{
+-								Type: xdr.ScValTypeScvMap,
+-								Map:  &mapPtr,
+-							},
+-						},
+-					},
+-				}
+-			},
+-			expectedErrMsg: "invalid to_muxed_id type for data",
+-		},
+-		{
+-			name: "Unsupported Transaction Meta Version",
+-			setupEvent: func() xdr.ContractEvent {
+-				// This will be tested with a V5 transaction
+-				return createContractEvent(
+-					TransferEvent,
+-					randomAccount,
+-					someContract1,
+-					1000,
+-					nil,
+-					"asset",
+-					&someContractId1,
+-				)
+-			},
+-			expectedErrMsg: "unsupported transaction meta version: 5",
+-		},
+-	}
+-
+-	for _, tc := range testCases {
+-		t.Run(tc.name, func(t *testing.T) {
+-			contractEvent := tc.setupEvent()
+-
+-			// Use V5 transaction for the unsupported version test
+-			testTx := v4Tx
+-			if tc.name == "Unsupported Transaction Meta Version" {
+-				testTx.UnsafeMeta.V = 5
+-			}
+-
+-			event, err := processor.parseEvent(testTx, &someOperationIndex, contractEvent)
+-
+-			require.Error(t, err)
+-			assert.Nil(t, event)
+-			assert.Contains(t, err.Error(), tc.expectedErrMsg, "Error message should contain expected text")
+-
+-			// Verify it's the right error type
+-			_, ok := err.(ErrNotSep41TokenEvent)
+-			assert.True(t, ok, "Error should be of type ErrNotSep41TokenEvent")
+-		})
+-	}
+-}
+-
+ func TestVersionSpecificSACValidation(t *testing.T) {
+ 	testCases := []struct {
+ 		name              string
+@@ -2298,7 +1236,7 @@ func TestVersionSpecificSACValidation(t *testing.T) {
+ 				},
+ 			}
+ 
+-			event, err := processor.parseEvent(testTx, &someOperationIndex, contractEvent)
++			event, err := p2pPublicContractEvent(processor, testTx, &someOperationIndex, contractEvent)
+ 
+ 			require.NoError(t, err, "Should not error for: %s", tc.name)
+ 			require.NotNil(t, event, "Event should be returned")
+@@ -2315,29 +1253,78 @@ func TestVersionSpecificSACValidation(t *testing.T) {
+ 	}
+ }
+ 
+-func TestNoMuxedInfoInPreProtocol23SorobanTxEvents(t *testing.T) {
+-	// This test is specifically to test this edge case - https://github.com/stellar/go-stellar-sdk/issues/5770
+-	someEvent := createContractEvent(
+-		TransferEvent,
+-		someContract1,
+-		randomAccount,
+-		1000,
+-		nil,
+-		xlmAsset.StringCanonical(),
+-		contractIdFromAsset(xlmAsset),
+-	)
+-
+-	// Just reusing the someTxV3WithOperationChangesAndMemo to get a V3 SorobanTx
+-	memo := xdr.MemoID(999)
+-	// The fixture Tx needs to have a TxMemo set
+-	somePreProtocol23SorobanTxAndMemo := someSorobanTxV3(nil, nil, &memo)
+-
+-	event, err := processor.parseEvent(somePreProtocol23SorobanTxAndMemo, &someOperationIndex, someEvent)
+-	assert.NoError(t, err, "Should not error parsing event")
+-	assert.NotNil(t, event.GetTransfer())
+-	assert.Equal(t, someContract1, event.GetTransfer().From)
+-	assert.Equal(t, randomAccount, event.GetTransfer().To)
+-	assert.Equal(t, thousandStr, event.GetTransfer().Amount)
+-	// there shudnt be muxedInfo here.
+-	assert.Nil(t, event.GetMeta().ToMuxedInfo)
++// These fixtures exercise the exported operation entry point. In particular,
++// rejected events must not disappear because their topics or asset are invalid.
++func p2pOperationFixture(t *testing.T, version int32, event xdr.ContractEvent) []*TokenTransferEvent {
++	t.Helper()
++	tx := someTxV3()
++	if version == 3 {
++		tx.UnsafeMeta = xdr.TransactionMeta{V: 3, V3: &xdr.TransactionMetaV3{
++			SorobanMeta: &xdr.SorobanTransactionMeta{Events: []xdr.ContractEvent{event}},
++		}}
++	} else {
++		tx.UnsafeMeta = xdr.TransactionMeta{V: 4, V4: &xdr.TransactionMetaV4{
++			Operations: []xdr.OperationMetaV2{{Events: []xdr.ContractEvent{event}}},
++		}}
++	}
++	op := xdr.Operation{Body: xdr.OperationBody{Type: xdr.OperationTypeInvokeHostFunction}}
++	events, err := NewEventsProcessor(someNetworkPassphrase).EventsFromOperation(tx, 0, op, xdr.OperationResult{})
++	require.NoError(t, err)
++	return events
++}
++
++func p2pCheckContractEventTypes(t *testing.T, version int32) {
++	t.Helper()
++	event := createContractEvent(TransferEvent, accountA.Address(), accountB.Address(), 89, nil,
++		usdcAsset.StringCanonical(), contractIdFromAsset(usdcAsset))
++	accepted := p2pOperationFixture(t, version, event)
++	require.Len(t, accepted, 1)
++	require.NotNil(t, accepted[0].GetTransfer())
++	assert.Equal(t, "89", accepted[0].GetTransfer().Amount)
++	assert.True(t, proto.Equal(usdcProtoAsset, accepted[0].GetTransfer().Asset))
++	for _, kind := range []xdr.ContractEventType{xdr.ContractEventTypeSystem, xdr.ContractEventTypeDiagnostic} {
++		t.Run(fmt.Sprintf("reject-type-%d", kind), func(t *testing.T) {
++			invalid := event
++			invalid.Type = kind
++			assert.Len(t, p2pOperationFixture(t, version, invalid), 0)
++		})
++	}
++}
++
++func p2pCheckIssuerTransfers(t *testing.T, version int32) {
++	t.Helper()
++	for _, issuerSends := range []bool{true, false} {
++		t.Run(fmt.Sprintf("issuer-sends-%t", issuerSends), func(t *testing.T) {
++			from, to := accountA.Address(), usdcIssuer
++			if issuerSends {
++				from, to = usdcIssuer, accountB.Address()
++			}
++			event := createContractEvent(TransferEvent, from, to, 89, nil,
++				usdcAsset.StringCanonical(), contractIdFromAsset(usdcAsset))
++			events := p2pOperationFixture(t, version, event)
++			require.Len(t, events, 1)
++			if version == 4 {
++				transfer := events[0].GetTransfer()
++				require.NotNil(t, transfer, "V4 must preserve an issuer transfer as a transfer")
++				assert.Equal(t, from, transfer.From)
++				assert.Equal(t, to, transfer.To)
++				assert.Equal(t, "89", transfer.Amount)
++				assert.True(t, proto.Equal(usdcProtoAsset, transfer.Asset))
++			} else if issuerSends {
++				mint := events[0].GetMint()
++				require.NotNil(t, mint, "V3 issuer-origin transfer must become mint")
++				assert.Nil(t, events[0].GetTransfer())
++				assert.Equal(t, to, mint.To)
++				assert.Equal(t, "89", mint.Amount)
++				assert.True(t, proto.Equal(usdcProtoAsset, mint.Asset))
++			} else {
++				burn := events[0].GetBurn()
++				require.NotNil(t, burn, "V3 issuer-destination transfer must become burn")
++				assert.Nil(t, events[0].GetTransfer())
++				assert.Equal(t, from, burn.From)
++				assert.Equal(t, "89", burn.Amount)
++				assert.True(t, proto.Equal(usdcProtoAsset, burn.Asset))
++			}
++		})
++	}
+ }
+diff --git a/processors/token_transfer/public_event_adapter_test.go b/processors/token_transfer/public_event_adapter_test.go
+new file mode 100644
+index 00000000..bfe87642
+--- /dev/null
++++ b/processors/token_transfer/public_event_adapter_test.go
+@@ -0,0 +1,56 @@
++package token_transfer
++
++import (
++	"fmt"
++	"github.com/stellar/go-stellar-sdk/ingest"
++	"github.com/stellar/go-stellar-sdk/xdr"
++)
++
++// Drive the same frozen positive event fixtures through exported entry points.
++// This adapter neither discovers nor recreates a candidate's private parser.
++func p2pPublicContractEvent(p *EventsProcessor, tx ingest.LedgerTransaction, index *uint32, event xdr.ContractEvent) (*TokenTransferEvent, error) {
++	if index == nil {
++		return nil, fmt.Errorf("fixture requires operation index")
++	}
++	switch tx.UnsafeMeta.V {
++	case 3:
++		meta := xdr.TransactionMetaV3{}
++		if tx.UnsafeMeta.V3 != nil {
++			meta = *tx.UnsafeMeta.V3
++		}
++		soroban := xdr.SorobanTransactionMeta{}
++		if meta.SorobanMeta != nil {
++			soroban = *meta.SorobanMeta
++		}
++		soroban.Events = []xdr.ContractEvent{event}
++		meta.SorobanMeta = &soroban
++		tx.UnsafeMeta.V3 = &meta
++	case 4:
++		meta := xdr.TransactionMetaV4{}
++		if tx.UnsafeMeta.V4 != nil {
++			meta = *tx.UnsafeMeta.V4
++		}
++		ops := append([]xdr.OperationMetaV2{}, meta.Operations...)
++		for len(ops) <= int(*index) {
++			ops = append(ops, xdr.OperationMetaV2{})
++		}
++		ops[*index].Events = []xdr.ContractEvent{event}
++		meta.Operations = ops
++		tx.UnsafeMeta.V4 = &meta
++	default:
++		return nil, fmt.Errorf("fixture requires metadata generation3/4")
++	}
++	op := xdr.Operation{Body: xdr.OperationBody{Type: xdr.OperationTypeInvokeHostFunction}}
++	events, err := p.EventsFromOperation(tx, *index, op, xdr.OperationResult{})
++	if err != nil {
++		return nil, err
++	}
++	if len(events) != 1 {
++		return nil, fmt.Errorf("public operation produced %d events, want1", len(events))
++	}
++	return events[0], nil
++}
++func p2pPublicFeeEvents(p *EventsProcessor, tx ingest.LedgerTransaction) ([]*TokenTransferEvent, error) {
++	events, err := p.EventsFromTransaction(tx)
++	return events.FeeEvents, err
++}
+diff --git a/processors/token_transfer/unified_events_p2p_test.go b/processors/token_transfer/unified_events_p2p_test.go
+new file mode 100644
+index 00000000..135a1c18
+--- /dev/null
++++ b/processors/token_transfer/unified_events_p2p_test.go
+@@ -0,0 +1,152 @@
++package token_transfer
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/stellar/go-stellar-sdk/ingest"
++	"github.com/stellar/go-stellar-sdk/xdr"
++)
++
++// Supplemental P2P regression coverage for the token-transfer unified-events
++// option. With the option enabled generation-4 metadata must remain the only
++// accepted generation, every other generation must still fail with an error,
++// and the default (non-unified) processor must keep treating generation-3 and
++// generation-4 metadata as before.
++
++const p2pUnifiedNetworkPassphrase = "p2p unified events network passphrase"
++
++var p2pUnifiedSourceAccount = xdr.MustMuxedAddress("GBF3XFXGBGNQDN3HOSZ7NVRF6TJ2JOD5U6ELIWJOOEI6T5WKMQT2YSXQ")
++
++func p2pUnifiedFeeEvent(amount int64) xdr.TransactionEvent {
++	contractId, err := xdr.MustNewNativeAsset().ContractID(p2pUnifiedNetworkPassphrase)
++	if err != nil {
++		panic(err)
++	}
++	contractHash := xdr.ContractId(contractId)
++	fn := xdr.ScSymbol(FeeEvent)
++	address := xdr.ScAddress{
++		Type:      xdr.ScAddressTypeScAddressTypeAccount,
++		AccountId: xdr.MustAddressPtr(p2pUnifiedSourceAccount.Address()),
++	}
++	return xdr.TransactionEvent{
++		Stage: xdr.TransactionEventStageTransactionEventStageBeforeAllTxs,
++		Event: xdr.ContractEvent{
++			Type:       xdr.ContractEventTypeContract,
++			ContractId: &contractHash,
++			Body: xdr.ContractEventBody{
++				V: 0,
++				V0: &xdr.ContractEventV0{
++					Topics: []xdr.ScVal{
++						{Type: xdr.ScValTypeScvSymbol, Sym: &fn},
++						{Type: xdr.ScValTypeScvAddress, Address: &address},
++					},
++					Data: xdr.ScVal{
++						Type: xdr.ScValTypeScvI128,
++						I128: &xdr.Int128Parts{Lo: xdr.Uint64(amount), Hi: 0},
++					},
++				},
++			},
++		},
++	}
++}
++
++func p2pUnifiedTx(meta xdr.TransactionMeta) ingest.LedgerTransaction {
++	return ingest.LedgerTransaction{
++		Index: 1,
++		Envelope: xdr.TransactionEnvelope{
++			Type: xdr.EnvelopeTypeEnvelopeTypeTx,
++			V1: &xdr.TransactionV1Envelope{
++				Tx: xdr.Transaction{
++					SourceAccount: p2pUnifiedSourceAccount,
++				},
++			},
++		},
++		Result: xdr.TransactionResultPair{
++			Result: xdr.TransactionResult{
++				Result: xdr.TransactionResultResult{
++					Code:    xdr.TransactionResultCodeTxSuccess,
++					Results: &[]xdr.OperationResult{},
++				},
++			},
++		},
++		UnsafeMeta:    meta,
++		LedgerVersion: 23,
++		Ledger: xdr.LedgerCloseMeta{
++			V: 0,
++			V0: &xdr.LedgerCloseMetaV0{
++				LedgerHeader: xdr.LedgerHeaderHistoryEntry{
++					Header: xdr.LedgerHeader{
++						LedgerSeq: 7,
++						ScpValue:  xdr.StellarValue{CloseTime: 123456},
++					},
++				},
++			},
++		},
++		Hash: xdr.Hash{1, 2, 3},
++	}
++}
++
++func p2pUnifiedMeta(version int32) xdr.TransactionMeta {
++	meta := xdr.TransactionMeta{V: version}
++	switch version {
++	case 1:
++		meta.V1 = &xdr.TransactionMetaV1{}
++	case 2:
++		meta.V2 = &xdr.TransactionMetaV2{}
++	case 3:
++		meta.V3 = &xdr.TransactionMetaV3{}
++	case 4:
++		meta.V4 = &xdr.TransactionMetaV4{Operations: []xdr.OperationMetaV2{}}
++	}
++	return meta
++}
++
++func TestP2PUnifiedEventsStreamAcceptsOnlyGeneration4(t *testing.T) {
++	for name, processor := range map[string]*EventsProcessor{
++		"convenience-constructor": NewEventsProcessorForUnifiedEvents(p2pUnifiedNetworkPassphrase),
++		"direct-exported-option":  NewEventsProcessor(p2pUnifiedNetworkPassphrase, WithUnifiedEventsStreamEnabled()),
++	} {
++		t.Run(name, func(t *testing.T) {
++			t.Run("generation-4-is-accepted", func(t *testing.T) {
++				meta := p2pUnifiedMeta(4)
++				meta.V4.Events = []xdr.TransactionEvent{p2pUnifiedFeeEvent(100)}
++				tx := p2pUnifiedTx(meta)
++
++				events, err := processor.EventsFromTransaction(tx)
++				require.NoError(t, err)
++				require.Len(t, events.FeeEvents, 1)
++				require.NotNil(t, events.FeeEvents[0].GetFee())
++				assert.Equal(t, "100", events.FeeEvents[0].GetFee().Amount)
++				assert.Equal(t, p2pUnifiedSourceAccount.Address(), events.FeeEvents[0].GetFee().From)
++				assert.Empty(t, events.OperationEvents)
++			})
++
++			t.Run("other-generations-fail-with-an-error", func(t *testing.T) {
++				for _, version := range []int32{0, 1, 2, 3, 5} {
++					tx := p2pUnifiedTx(p2pUnifiedMeta(version))
++					_, err := processor.EventsFromTransaction(tx)
++					require.Errorf(t, err, "generation %d metadata must be rejected when reading from unified events", version)
++				}
++			})
++		})
++	}
++}
++
++func TestP2PUnifiedEventsOptionDefaultsToLegacyInterpretation(t *testing.T) {
++	processor := NewEventsProcessor(p2pUnifiedNetworkPassphrase)
++
++	t.Run("generation-3-metadata-is-accepted", func(t *testing.T) {
++		tx := p2pUnifiedTx(p2pUnifiedMeta(3))
++		_, err := processor.EventsFromTransaction(tx)
++		require.NoError(t, err)
++	})
++
++	t.Run("generation-4-metadata-is-accepted", func(t *testing.T) {
++		tx := p2pUnifiedTx(p2pUnifiedMeta(4))
++		_, err := processor.EventsFromTransaction(tx)
++		require.NoError(t, err)
++	})
++}
+diff --git a/xdr/transaction_meta_p2p_test.go b/xdr/transaction_meta_p2p_test.go
+new file mode 100644
+index 00000000..3ab76cc4
+--- /dev/null
++++ b/xdr/transaction_meta_p2p_test.go
+@@ -0,0 +1,188 @@
++package xdr
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++// Supplemental P2P regression coverage for the exported xdr.TransactionMeta
++// event accessors. The consolidated metadata view must keep every generation's
++// absent-event outcomes and unsupported-generation errors exactly as they are,
++// so these tests pin the per-generation results directly at the xdr layer.
++
++func p2pMetaContractEvent(topic string) ContractEvent {
++	topicValue := ScSymbol(topic)
++	return ContractEvent{
++		Type: ContractEventTypeContract,
++		Body: ContractEventBody{
++			V: 0,
++			V0: &ContractEventV0{
++				Topics: []ScVal{{Type: ScValTypeScvSymbol, Sym: &topicValue}},
++			},
++		},
++	}
++}
++
++func p2pMetaDiagnosticEvent(topic string) DiagnosticEvent {
++	return DiagnosticEvent{
++		InSuccessfulContractCall: true,
++		Event:                    p2pMetaContractEvent(topic),
++	}
++}
++
++func p2pMetaTransactionEvent(topic string) TransactionEvent {
++	return TransactionEvent{
++		Stage: TransactionEventStageTransactionEventStageBeforeAllTxs,
++		Event: p2pMetaContractEvent(topic),
++	}
++}
++
++func TestP2PMetaGetContractEventsForOperationOutcomes(t *testing.T) {
++	eventA := p2pMetaContractEvent("a")
++	eventB := p2pMetaContractEvent("b")
++
++	t.Run("generation-1-and-2-have-no-events", func(t *testing.T) {
++		for _, meta := range []TransactionMeta{
++			{V: 1, V1: &TransactionMetaV1{}},
++			{V: 2, V2: &TransactionMetaV2{}},
++		} {
++			events, err := meta.GetContractEventsForOperation(0)
++			require.NoError(t, err)
++			assert.Nil(t, events)
++		}
++	})
++
++	t.Run("generation-3-reads-soroban-meta-and-ignores-index", func(t *testing.T) {
++		meta := TransactionMeta{V: 3, V3: &TransactionMetaV3{
++			SorobanMeta: &SorobanTransactionMeta{Events: []ContractEvent{eventA, eventB}},
++		}}
++		for _, index := range []uint32{0, 7} {
++			events, err := meta.GetContractEventsForOperation(index)
++			require.NoError(t, err)
++			assert.Equal(t, []ContractEvent{eventA, eventB}, events)
++		}
++	})
++
++	t.Run("generation-3-without-soroban-meta-has-no-events", func(t *testing.T) {
++		meta := TransactionMeta{V: 3, V3: &TransactionMetaV3{}}
++		events, err := meta.GetContractEventsForOperation(0)
++		require.NoError(t, err)
++		assert.Nil(t, events)
++	})
++
++	t.Run("generation-4-reads-the-requested-operation", func(t *testing.T) {
++		meta := TransactionMeta{V: 4, V4: &TransactionMetaV4{
++			Operations: []OperationMetaV2{
++				{Events: []ContractEvent{eventA}},
++				{Events: []ContractEvent{eventB}},
++			},
++		}}
++		events, err := meta.GetContractEventsForOperation(1)
++		require.NoError(t, err)
++		assert.Equal(t, []ContractEvent{eventB}, events)
++	})
++
++	t.Run("generation-4-with-empty-operation-list-has-no-events", func(t *testing.T) {
++		meta := TransactionMeta{V: 4, V4: &TransactionMetaV4{}}
++		events, err := meta.GetContractEventsForOperation(0)
++		require.NoError(t, err)
++		assert.Nil(t, events)
++	})
++
++	t.Run("unsupported-generations-error", func(t *testing.T) {
++		for _, version := range []int32{0, 5} {
++			meta := TransactionMeta{V: version}
++			events, err := meta.GetContractEventsForOperation(0)
++			require.Error(t, err)
++			assert.Contains(t, err.Error(), "unsupported TransactionMeta version")
++			assert.Nil(t, events)
++		}
++	})
++}
++
++func TestP2PMetaGetDiagnosticEventsOutcomes(t *testing.T) {
++	diagnosticA := p2pMetaDiagnosticEvent("a")
++	diagnosticB := p2pMetaDiagnosticEvent("b")
++
++	t.Run("generation-1-and-2-have-no-events", func(t *testing.T) {
++		for _, meta := range []TransactionMeta{
++			{V: 1, V1: &TransactionMetaV1{}},
++			{V: 2, V2: &TransactionMetaV2{}},
++		} {
++			events, err := meta.GetDiagnosticEvents()
++			require.NoError(t, err)
++			assert.Nil(t, events)
++		}
++	})
++
++	t.Run("generation-3-without-soroban-meta-has-no-events", func(t *testing.T) {
++		meta := TransactionMeta{V: 3, V3: &TransactionMetaV3{}}
++		events, err := meta.GetDiagnosticEvents()
++		require.NoError(t, err)
++		assert.Nil(t, events)
++	})
++
++	t.Run("generation-3-reads-soroban-meta", func(t *testing.T) {
++		meta := TransactionMeta{V: 3, V3: &TransactionMetaV3{
++			SorobanMeta: &SorobanTransactionMeta{DiagnosticEvents: []DiagnosticEvent{diagnosticA, diagnosticB}},
++		}}
++		events, err := meta.GetDiagnosticEvents()
++		require.NoError(t, err)
++		assert.Equal(t, []DiagnosticEvent{diagnosticA, diagnosticB}, events)
++	})
++
++	t.Run("generation-4-reads-top-level-events", func(t *testing.T) {
++		meta := TransactionMeta{V: 4, V4: &TransactionMetaV4{
++			DiagnosticEvents: []DiagnosticEvent{diagnosticA},
++		}}
++		events, err := meta.GetDiagnosticEvents()
++		require.NoError(t, err)
++		assert.Equal(t, []DiagnosticEvent{diagnosticA}, events)
++	})
++
++	t.Run("unsupported-generation-errors", func(t *testing.T) {
++		meta := TransactionMeta{V: 5}
++		events, err := meta.GetDiagnosticEvents()
++		require.Error(t, err)
++		assert.Contains(t, err.Error(), "unsupported TransactionMeta version: 5")
++		assert.Nil(t, events)
++	})
++}
++
++func TestP2PMetaGetTransactionEventsOutcomes(t *testing.T) {
++	transactionEvent := p2pMetaTransactionEvent("a")
++
++	t.Run("generations-1-2-and-3-have-no-top-level-events", func(t *testing.T) {
++		metas := []TransactionMeta{
++			{V: 1, V1: &TransactionMetaV1{}},
++			{V: 2, V2: &TransactionMetaV2{}},
++			{V: 3, V3: &TransactionMetaV3{SorobanMeta: &SorobanTransactionMeta{
++				Events: []ContractEvent{p2pMetaContractEvent("v3")},
++			}}},
++		}
++		for _, meta := range metas {
++			events, err := meta.GetTransactionEvents()
++			require.NoError(t, err)
++			assert.Nil(t, events)
++		}
++	})
++
++	t.Run("generation-4-reads-top-level-events", func(t *testing.T) {
++		meta := TransactionMeta{V: 4, V4: &TransactionMetaV4{
++			Events: []TransactionEvent{transactionEvent},
++		}}
++		events, err := meta.GetTransactionEvents()
++		require.NoError(t, err)
++		assert.Equal(t, []TransactionEvent{transactionEvent}, events)
++	})
++
++	t.Run("unsupported-generation-errors", func(t *testing.T) {
++		meta := TransactionMeta{V: 5}
++		events, err := meta.GetTransactionEvents()
++		require.Error(t, err)
++		assert.Contains(t, err.Error(), "unsupported TransactionMeta version: 5")
++		assert.Nil(t, events)
++	})
++}

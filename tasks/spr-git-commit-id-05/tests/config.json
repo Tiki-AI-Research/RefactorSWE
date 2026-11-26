@@ -1,0 +1,2408 @@
+{
+  "base_commit": "0767a458e50fa1f7ae203b73e50298ab201c80bb",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "python3",
+    "test/f2p_runner.py",
+    "--report",
+    "{report}"
+  ],
+  "evaluation_files": {
+    "cmd/reword/p2p_reword_regression_test.go": "4b67a9c7e5fbfbc644de5518f850a8a33984405b77d758b78e01a1236ad3e443",
+    "git/mockgit/p2p_mockgit_regression_test.go": "30ecaf2cc5b1ab077096127a884054d9435b16aceff97e32c222b62dd7b16d16",
+    "git/p2p_commitid_regression_test.go": "df1bb344d31651a1172622393827fb1e54df2851c60f25abac7a5e5e6fb88ba9",
+    "github/githubclient/p2p_graphql_regression_test.go": "4eb2fd69ad75ccf45a4e4235b05d639bc932044f6003c94fd75867ea884a09cc",
+    "test/f2p/capability_test.go": "b7c889ac31c16df0ff24ecad892c6f8a0019483b56e52dd372d5d6e9098c3cba",
+    "test/f2p/emission_test.go": "616cb7d918bdeb9a27f944bbe830cca9a654eceba5b1e51bd3014f429943c423",
+    "test/f2p/model_test.go": "188baa0645f0a40847bcf4e953787b65e7a35f135a0fb63c2788f10d1f2f939f",
+    "test/f2p/parsing_test.go": "abf448c973f33ec34f1409f4c013eec391d08c24aff4eac70a2c3278843d5964",
+    "test/f2p/sites_test.go": "2aaf35e33adf79e4011a0a584e83bf223464cd633b9a28db9ad69f0d5534bf40",
+    "test/f2p_runner.py": "65842ea1c79dc13c92b9c1aae19db2bbb2163f770631428875a0db43020028d3",
+    "test/p2p_runner.py": "31250b03704c89fb38faa5817959cb39f1657346188b183d5dceadcc860500ac"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 3600.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 240.0,
+    "per_subject_timeout_seconds": 1500.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 6000.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 1500.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 1500.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 1500.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 1500.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "role": "P2P",
+        "selector": "config/config_test.go::TestEmptyConfig"
+      },
+      {
+        "role": "P2P",
+        "selector": "config/config_test.go::TestDefaultConfig"
+      },
+      {
+        "role": "P2P",
+        "selector": "config/config_test.go::TestMergeMethodHelper/rebase"
+      },
+      {
+        "role": "P2P",
+        "selector": "config/config_test.go::TestMergeMethodHelper/<EMPTY>"
+      },
+      {
+        "role": "P2P",
+        "selector": "config/config_test.go::TestMergeMethodHelper/Merge"
+      },
+      {
+        "role": "P2P",
+        "selector": "config/config_test.go::TestMergeMethodHelper/SQUASH"
+      },
+      {
+        "role": "P2P",
+        "selector": "config/config_test.go::TestMergeMethodHelper/invalid"
+      },
+      {
+        "role": "P2P",
+        "selector": "config/config_test.go::TestNormalizeConfig/PRTemplatePath_provided_sets_PRTemplateType_to_custom"
+      },
+      {
+        "role": "P2P",
+        "selector": "config/config_test.go::TestNormalizeConfig/PRTemplatePath_empty_does_not_change_PRTemplateType"
+      },
+      {
+        "role": "P2P",
+        "selector": "config/config_test.go::TestNormalizeConfig/PRTemplatePath_provided_overrides_existing_PRTemplateType"
+      },
+      {
+        "role": "P2P",
+        "selector": "config/config_test.go::TestNormalizeConfig/DefaultConfig_with_PRTemplatePath_sets_PRTemplateType_to_custom"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/commit_test.go::TestParseLocalCommitStack"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/helpers_test.go::TestBranchNameRegex/spr/b1/deadbeef"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/helpers_test.go::TestBranchNameRegex/spr/main/abcd1234"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/helpers_test.go::TestBranchNameRegex/custom/main/deadbeef"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/helpers_test.go::TestBranchNameRegex/my-team/develop/abcd1234"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/helpers_test.go::TestBranchNameRegexNoMatch/other/main/deadbeef"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/helpers_test.go::TestBranchNameRegexNoMatch/spr/main/deadbeef"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/helpers_test.go::TestBranchNameFromCommit/default_prefix"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/helpers_test.go::TestBranchNameFromCommit/custom_prefix"
+      },
+      {
+        "role": "P2P",
+        "selector": "config/config_parser/config_parser_test.go::TestGetRepoDetailsFromRemote"
+      },
+      {
+        "role": "P2P",
+        "selector": "config/config_parser/config_parser_test.go::TestGitHubRemoteSource"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/pullrequest_test.go::TestMergable"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/pullrequest_test.go::TestReady"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/pullrequest_test.go::TestStatusString"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/pullrequest_test.go::TestString"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/pullrequest_test.go::TestTextString"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestMatchPullRequestStack/ThirdCommitQueue"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestMatchPullRequestStack/FourthCommitQueue"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestMatchPullRequestStack/Empty"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestMatchPullRequestStack/FirstCommit"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestMatchPullRequestStack/SecondCommit"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestMatchPullRequestStack/ThirdCommit"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveOnlyCommit"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveTopCommit"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveMiddleCommit"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveBottomCommit"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/NoContexts_NoRequired"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/NoContexts_EmptyRequired"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredPasses"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredFails"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredPending"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredQueued"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_NeutralPasses"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_SkippedPasses"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_TimedOut"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_Cancelled"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_NilConclusion"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredSuccess"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredFailure"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredPending"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredExpected"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/NonRequiredFails_RequiredPasses"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/MixedTypes_NonRequiredFails_RequiredPasses"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/MixedTypes_RequiredFails"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/FailTakesPrecedenceOverPending"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/AllRequiredPass_MultipleChecks"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/RequiredCheckNotReportedYet"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/RealWorld_SemaphoreFails_OnlyItRequired"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/RealWorld_SemaphorePasses_OthersFail"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestTitle/simple_subject"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestTitle/empty_subject"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestTitle/subject_with_special_characters"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestTitle/subject_with_newline"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestTitle/long_subject"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBody/empty_body"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBody/simple_body"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBody/body_with_newlines"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBody/body_with_multiple_paragraphs"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBody/body_with_trailing_newline"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBody/body_with_markdown"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBody/body_with_special_characters"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBody/body_with_unicode_characters"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBodyManualMergeNoticeFormat"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_exact_body_content"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_body_with_whitespace"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_body_with_newlines"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_empty_body"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/typical_feature_commit"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/bug_fix_commit"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/documentation_commit"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/multi-line_detailed_commit"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestTitle/simple_subject"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestTitle/empty_subject"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestTitle/subject_with_special_characters"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestTitle/subject_with_newline"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestTitle/long_subject"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestTitle/simple_subject"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestTitle/empty_subject"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestTitle/subject_with_special_characters"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestFormatBody/single_commit_in_stack"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestFormatBody/empty_stack"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestBody_EmptyStack"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestBody_WithStack_NoTitles"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestBody_WithStack_WithTitles"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestBody_StackOrder"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestBody_CurrentCommitAtStart"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestBody_CurrentCommitAtEnd"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestFormatBody/multiple_commits_with_body"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestFormatBody/multiple_commits_with_empty_body"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestFormatBody/stack_with_PR_titles"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestFormatBodyWithPRTitles"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestBody_EmptyBody"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestBody_SinglePRInStack"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestBody_WithTitlesVsWithoutTitles"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestBody_Structure"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestBody_RealWorldExample"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestNewStackTemplatizer"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestFormatPullRequestBody/EmptyStack"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestFormatPullRequestBody/SinglePRStack"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_stack/template_test.go::TestFormatPullRequestBody/TwoPRStack"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestReadPRTemplate"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestReadPRTemplateNotFound"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestReadPRTemplateWithSubdirectory"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/before_match"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/after_match"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/no_match_found"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/multiple_matches"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/empty_search_string"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/match_at_start"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/match_at_end"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplate"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateWithExistingPR"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateMissingStartMarker"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateMissingEndMarker"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateMultipleStartMarkers"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestNewCustomTemplatizer"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestFormatBodyStackOrder"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestFormatBodyCurrentCommitIndicator"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/no_markers_exist_append_with_default_anchors"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/existing_markers_replace_content_between_default_anchors"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/pr_update_use_existing_PR_body_and_replace_content"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/error_missing_end_anchor_in_existing_PR_body"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/error_multiple_start_anchors_in_existing_PR_body"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/error_multiple_end_anchors_in_existing_PR_body"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestTitle/simple_subject"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestTitle/empty_subject"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestTitle/subject_with_special_characters"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBody/all_three_sections_provided"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBody/only_why_section_provided"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBody/why_and_what_changed_sections_provided"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBody/empty_body"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBody/body_with_only_whitespace"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBody/sections_with_extra_whitespace"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBody/multiple_empty_lines_between_sections"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBody/sections_with_newlines_within_them"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBody/only_second_section_(what_changed)_provided"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBody/only_third_section_(test_plan)_provided"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/empty_string"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/single_section"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/single_section_with_whitespace"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/two_sections"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/three_sections"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/sections_with_leading/trailing_whitespace"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/multiple_empty_lines_between_sections"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/sections_with_internal_newlines"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/only_whitespace"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/empty_lines_at_start_and_end"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/single_newline_(not_empty_line)"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/mixed_single_and_double_newlines"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBodyTemplateStructure"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBodyWithRealWorldExamples/real_commit_message_format"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBodyWithRealWorldExamples/commit_with_only_why"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/template/template_why_what/template_test.go::TestBodyWithRealWorldExamples/commit_with_markdown-like_content"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRBasicFlowFourCommitsQueue/Sync:_true"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRBasicFlowFourCommitsQueue/Sync:_false"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRBasicFlowFourCommits/Sync:_true"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRBasicFlowFourCommits/Sync:_false"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRBasicFlowDeleteBranch/Sync:_true"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRBasicFlowDeleteBranch/Sync:_false"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRMergeCount/Sync:_true"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRMergeCount/Sync:_false"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRAmendCommit/Sync:_true"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRAmendCommit/Sync:_false"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRReorderCommit/Sync:_true"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRReorderCommit/Sync:_false"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRDeleteCommit/Sync:_true"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRDeleteCommit/Sync:_false"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestAmendNoCommits/Sync:_true"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestAmendNoCommits/Sync:_false"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestAmendOneCommit/Sync:_true"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestAmendOneCommit/Sync:_false"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestAmendTwoCommits/Sync:_true"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestAmendTwoCommits/Sync:_false"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestAmendInvalidInput/Sync:_true"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestAmendInvalidInput/Sync:_false"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestSPRFetchOverridesNoFetchConfig"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestEditCommitNoCommits"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestEditCommitSelectCommit"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestEditCommitAlreadyEditing"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestEditCommitInvalidInput"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestEditCommitDoneNotEditing"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestEditCommitDoneHappyPath"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestEditCommitDoneWithConflict"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestEditCommitDoneConflictResolution"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestEditCommitDoneConflictThenResolution"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestEditCommitAbort"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestEditCommitAbortNotEditing"
+      },
+      {
+        "role": "P2P",
+        "selector": "spr/spr_test.go::TestStatusPullRequestsTextMode"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/p2p_commitid_regression_test.go::TestParseLocalCommitStackIdentifierTolerance"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/p2p_commitid_regression_test.go::TestParseLocalCommitStackWIPFlag"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/p2p_commitid_regression_test.go::TestParseLocalCommitStackAllOrNothingOnInvalidEntry"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackOrderingAndTopCommit"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackPanicsAfterRewordRetry"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackTrimsSubjectWhitespace"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackReturnsRecoveredStack"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/p2p_graphql_regression_test.go::TestMatchPullRequestStackGraphQLTolerance"
+      },
+      {
+        "role": "P2P",
+        "selector": "github/githubclient/p2p_graphql_regression_test.go::TestGetInfoMatchesConfiguredBranchPrefix"
+      },
+      {
+        "selector": "github/githubclient/p2p_graphql_regression_test.go::TestGetInfoPreservesEmptyPullRequestSlice",
+        "role": "P2P"
+      },
+      {
+        "role": "P2P",
+        "selector": "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperAppendsCommitIDToSingleLineMessage"
+      },
+      {
+        "role": "P2P",
+        "selector": "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperAppendsCommitIDToMultiLineMessage"
+      },
+      {
+        "role": "P2P",
+        "selector": "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperLeavesFileWithExistingCommitIDUnchanged"
+      },
+      {
+        "role": "P2P",
+        "selector": "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperLeavesEmptyMessageUnchanged"
+      },
+      {
+        "role": "P2P",
+        "selector": "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperLeavesCommentOnlyMessageUnchanged"
+      },
+      {
+        "role": "P2P",
+        "selector": "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperRewritesOnlyPickEntriesWithoutCommitID"
+      },
+      {
+        "role": "P2P",
+        "selector": "git/mockgit/p2p_mockgit_regression_test.go::TestMockGitFabricatedLogTextByteIdentical"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/f2p/capability_test.go::TestExistingGitFunctionsPreserved"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/f2p/capability_test.go::TestExistingCommitFieldsPreserved"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/f2p/capability_test.go::TestExistingGitInterfacePreserved"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/f2p/capability_test.go::TestConsolidationAddsNoModuleDependency"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/f2p/capability_test.go::TestExistingCLICommandsPreserved"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/f2p/capability_test.go::TestExistingCLIFlagsPreserved"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/f2p/capability_test.go::TestExistingConfigurationOptionsPreserved"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/f2p/capability_test.go::TestGitCapabilityReturnsOperationResult"
+      },
+      {
+        "role": "P2P",
+        "selector": "test/f2p/capability_test.go::TestCrossPackageCapabilityCallsReturnUsableValues"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/capability_test.go::TestGitCapabilityExportsPrefixAwareParser"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/capability_test.go::TestGitCapabilityExportsPrefixAwareFormatter"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/capability_test.go::TestGitCapabilityEnforcesIdentifierShape"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/capability_test.go::TestSharedCapabilityReachedFromAnotherPackage"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/parsing_test.go::TestLocalLogParserObtainsIdentifierThroughCapability"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/parsing_test.go::TestLocalLogParserKeepsNoPrivateProtocolRule"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/parsing_test.go::TestGraphQLMatcherObtainsIdentifierThroughCapability"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/parsing_test.go::TestGraphQLMatcherKeepsNoPrivateProtocolRule"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/parsing_test.go::TestLocalParserUsesStrictSharedCapability"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/parsing_test.go::TestGraphQLMatcherUsesLooseSharedCapability"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestRewordAppendUsesSharedFormatter"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestRewordAppendKeepsNoPrivateProtocolText"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestRewordExistingIDScanUsesSharedCapability"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestRewordExistingIDScanKeepsNoPrivateProtocolPrefix"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestMockGitFabricatorUsesSharedFormatter"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestMockGitFabricatorKeepsNoPrivateProtocolText"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/git_format"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/local_log"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/graphql"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/reword_append"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/reword_scan"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/mockgit"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestNoDuplicatedProtocolLiteralOutsideGitPackage/reword"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestNoDuplicatedProtocolLiteralOutsideGitPackage/graphql"
+      },
+      {
+        "role": "F2P",
+        "selector": "test/f2p/emission_test.go::TestNoDuplicatedProtocolLiteralOutsideGitPackage/mockgit"
+      }
+    ],
+    "selector_timeout_seconds": 240.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "config/config_test.go::TestEmptyConfig",
+          "config/config_test.go::TestDefaultConfig",
+          "config/config_test.go::TestMergeMethodHelper/rebase",
+          "config/config_test.go::TestMergeMethodHelper/<EMPTY>",
+          "config/config_test.go::TestMergeMethodHelper/Merge",
+          "config/config_test.go::TestMergeMethodHelper/SQUASH",
+          "config/config_test.go::TestMergeMethodHelper/invalid",
+          "config/config_test.go::TestNormalizeConfig/PRTemplatePath_provided_sets_PRTemplateType_to_custom"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-002",
+        "selectors": [
+          "config/config_test.go::TestNormalizeConfig/PRTemplatePath_empty_does_not_change_PRTemplateType",
+          "config/config_test.go::TestNormalizeConfig/PRTemplatePath_provided_overrides_existing_PRTemplateType",
+          "config/config_test.go::TestNormalizeConfig/DefaultConfig_with_PRTemplatePath_sets_PRTemplateType_to_custom",
+          "git/commit_test.go::TestParseLocalCommitStack",
+          "git/helpers_test.go::TestBranchNameRegex/spr/b1/deadbeef",
+          "git/helpers_test.go::TestBranchNameRegex/spr/main/abcd1234",
+          "git/helpers_test.go::TestBranchNameRegex/custom/main/deadbeef",
+          "git/helpers_test.go::TestBranchNameRegex/my-team/develop/abcd1234"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-003",
+        "selectors": [
+          "git/helpers_test.go::TestBranchNameRegexNoMatch/other/main/deadbeef",
+          "git/helpers_test.go::TestBranchNameRegexNoMatch/spr/main/deadbeef",
+          "git/helpers_test.go::TestBranchNameFromCommit/default_prefix",
+          "git/helpers_test.go::TestBranchNameFromCommit/custom_prefix",
+          "config/config_parser/config_parser_test.go::TestGetRepoDetailsFromRemote",
+          "config/config_parser/config_parser_test.go::TestGitHubRemoteSource",
+          "github/pullrequest_test.go::TestMergable",
+          "github/pullrequest_test.go::TestReady"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-004",
+        "selectors": [
+          "github/pullrequest_test.go::TestStatusString",
+          "github/pullrequest_test.go::TestString",
+          "github/pullrequest_test.go::TestTextString",
+          "github/githubclient/client_test.go::TestMatchPullRequestStack/ThirdCommitQueue",
+          "github/githubclient/client_test.go::TestMatchPullRequestStack/FourthCommitQueue",
+          "github/githubclient/client_test.go::TestMatchPullRequestStack/Empty",
+          "github/githubclient/client_test.go::TestMatchPullRequestStack/FirstCommit",
+          "github/githubclient/client_test.go::TestMatchPullRequestStack/SecondCommit"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-005",
+        "selectors": [
+          "github/githubclient/client_test.go::TestMatchPullRequestStack/ThirdCommit",
+          "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveOnlyCommit",
+          "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveTopCommit",
+          "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveMiddleCommit",
+          "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveBottomCommit",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/NoContexts_NoRequired",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/NoContexts_EmptyRequired",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredPasses"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-006",
+        "selectors": [
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredFails",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredPending",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredQueued",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_NeutralPasses",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_SkippedPasses",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_TimedOut",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_Cancelled",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_NilConclusion"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-007",
+        "selectors": [
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredSuccess",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredFailure",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredPending",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredExpected",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/NonRequiredFails_RequiredPasses",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/MixedTypes_NonRequiredFails_RequiredPasses",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/MixedTypes_RequiredFails",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/FailTakesPrecedenceOverPending"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-008",
+        "selectors": [
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/AllRequiredPass_MultipleChecks",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/RequiredCheckNotReportedYet",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/RealWorld_SemaphoreFails_OnlyItRequired",
+          "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/RealWorld_SemaphorePasses_OthersFail",
+          "github/template/template_basic/template_test.go::TestTitle/simple_subject",
+          "github/template/template_basic/template_test.go::TestTitle/empty_subject",
+          "github/template/template_basic/template_test.go::TestTitle/subject_with_special_characters",
+          "github/template/template_basic/template_test.go::TestTitle/subject_with_newline"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-009",
+        "selectors": [
+          "github/template/template_basic/template_test.go::TestTitle/long_subject",
+          "github/template/template_basic/template_test.go::TestBody/empty_body",
+          "github/template/template_basic/template_test.go::TestBody/simple_body",
+          "github/template/template_basic/template_test.go::TestBody/body_with_newlines",
+          "github/template/template_basic/template_test.go::TestBody/body_with_multiple_paragraphs",
+          "github/template/template_basic/template_test.go::TestBody/body_with_trailing_newline",
+          "github/template/template_basic/template_test.go::TestBody/body_with_markdown",
+          "github/template/template_basic/template_test.go::TestBody/body_with_special_characters"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-010",
+        "selectors": [
+          "github/template/template_basic/template_test.go::TestBody/body_with_unicode_characters",
+          "github/template/template_basic/template_test.go::TestBodyManualMergeNoticeFormat",
+          "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_exact_body_content",
+          "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_body_with_whitespace",
+          "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_body_with_newlines",
+          "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_empty_body",
+          "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/typical_feature_commit",
+          "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/bug_fix_commit"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-011",
+        "selectors": [
+          "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/documentation_commit",
+          "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/multi-line_detailed_commit",
+          "github/template/template_stack/template_test.go::TestTitle/simple_subject",
+          "github/template/template_stack/template_test.go::TestTitle/empty_subject",
+          "github/template/template_stack/template_test.go::TestTitle/subject_with_special_characters",
+          "github/template/template_stack/template_test.go::TestTitle/subject_with_newline",
+          "github/template/template_stack/template_test.go::TestTitle/long_subject",
+          "github/template/template_custom/template_test.go::TestTitle/simple_subject"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-012",
+        "selectors": [
+          "github/template/template_custom/template_test.go::TestTitle/empty_subject",
+          "github/template/template_custom/template_test.go::TestTitle/subject_with_special_characters",
+          "github/template/template_custom/template_test.go::TestFormatBody/single_commit_in_stack",
+          "github/template/template_custom/template_test.go::TestFormatBody/empty_stack",
+          "github/template/template_stack/template_test.go::TestBody_EmptyStack",
+          "github/template/template_stack/template_test.go::TestBody_WithStack_NoTitles",
+          "github/template/template_stack/template_test.go::TestBody_WithStack_WithTitles",
+          "github/template/template_stack/template_test.go::TestBody_StackOrder"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-013",
+        "selectors": [
+          "github/template/template_stack/template_test.go::TestBody_CurrentCommitAtStart",
+          "github/template/template_stack/template_test.go::TestBody_CurrentCommitAtEnd",
+          "github/template/template_custom/template_test.go::TestFormatBody/multiple_commits_with_body",
+          "github/template/template_custom/template_test.go::TestFormatBody/multiple_commits_with_empty_body",
+          "github/template/template_custom/template_test.go::TestFormatBody/stack_with_PR_titles",
+          "github/template/template_custom/template_test.go::TestFormatBodyWithPRTitles",
+          "github/template/template_stack/template_test.go::TestBody_EmptyBody",
+          "github/template/template_stack/template_test.go::TestBody_SinglePRInStack"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-014",
+        "selectors": [
+          "github/template/template_stack/template_test.go::TestBody_WithTitlesVsWithoutTitles",
+          "github/template/template_stack/template_test.go::TestBody_Structure",
+          "github/template/template_stack/template_test.go::TestBody_RealWorldExample",
+          "github/template/template_stack/template_test.go::TestNewStackTemplatizer",
+          "github/template/template_stack/template_test.go::TestFormatPullRequestBody/EmptyStack",
+          "github/template/template_stack/template_test.go::TestFormatPullRequestBody/SinglePRStack",
+          "github/template/template_stack/template_test.go::TestFormatPullRequestBody/TwoPRStack",
+          "github/template/template_custom/template_test.go::TestReadPRTemplate"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-015",
+        "selectors": [
+          "github/template/template_custom/template_test.go::TestReadPRTemplateNotFound",
+          "github/template/template_custom/template_test.go::TestReadPRTemplateWithSubdirectory",
+          "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/before_match",
+          "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/after_match",
+          "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/no_match_found",
+          "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/multiple_matches",
+          "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/empty_search_string",
+          "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/match_at_start"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-016",
+        "selectors": [
+          "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/match_at_end",
+          "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplate",
+          "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateWithExistingPR",
+          "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateMissingStartMarker",
+          "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateMissingEndMarker",
+          "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateMultipleStartMarkers",
+          "github/template/template_custom/template_test.go::TestNewCustomTemplatizer",
+          "github/template/template_custom/template_test.go::TestFormatBodyStackOrder"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-017",
+        "selectors": [
+          "github/template/template_custom/template_test.go::TestFormatBodyCurrentCommitIndicator",
+          "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/no_markers_exist_append_with_default_anchors",
+          "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/existing_markers_replace_content_between_default_anchors",
+          "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/pr_update_use_existing_PR_body_and_replace_content",
+          "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/error_missing_end_anchor_in_existing_PR_body",
+          "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/error_multiple_start_anchors_in_existing_PR_body",
+          "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/error_multiple_end_anchors_in_existing_PR_body",
+          "github/template/template_why_what/template_test.go::TestTitle/simple_subject"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-018",
+        "selectors": [
+          "github/template/template_why_what/template_test.go::TestTitle/empty_subject",
+          "github/template/template_why_what/template_test.go::TestTitle/subject_with_special_characters",
+          "github/template/template_why_what/template_test.go::TestBody/all_three_sections_provided",
+          "github/template/template_why_what/template_test.go::TestBody/only_why_section_provided",
+          "github/template/template_why_what/template_test.go::TestBody/why_and_what_changed_sections_provided",
+          "github/template/template_why_what/template_test.go::TestBody/empty_body",
+          "github/template/template_why_what/template_test.go::TestBody/body_with_only_whitespace",
+          "github/template/template_why_what/template_test.go::TestBody/sections_with_extra_whitespace"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-019",
+        "selectors": [
+          "github/template/template_why_what/template_test.go::TestBody/multiple_empty_lines_between_sections",
+          "github/template/template_why_what/template_test.go::TestBody/sections_with_newlines_within_them",
+          "github/template/template_why_what/template_test.go::TestBody/only_second_section_(what_changed)_provided",
+          "github/template/template_why_what/template_test.go::TestBody/only_third_section_(test_plan)_provided",
+          "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/empty_string",
+          "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/single_section",
+          "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/single_section_with_whitespace",
+          "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/two_sections"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-020",
+        "selectors": [
+          "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/three_sections",
+          "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/sections_with_leading/trailing_whitespace",
+          "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/multiple_empty_lines_between_sections",
+          "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/sections_with_internal_newlines",
+          "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/only_whitespace",
+          "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/empty_lines_at_start_and_end",
+          "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/single_newline_(not_empty_line)",
+          "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/mixed_single_and_double_newlines"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-021",
+        "selectors": [
+          "github/template/template_why_what/template_test.go::TestBodyTemplateStructure",
+          "github/template/template_why_what/template_test.go::TestBodyWithRealWorldExamples/real_commit_message_format",
+          "github/template/template_why_what/template_test.go::TestBodyWithRealWorldExamples/commit_with_only_why",
+          "github/template/template_why_what/template_test.go::TestBodyWithRealWorldExamples/commit_with_markdown-like_content",
+          "spr/spr_test.go::TestSPRBasicFlowFourCommitsQueue/Sync:_true",
+          "spr/spr_test.go::TestSPRBasicFlowFourCommitsQueue/Sync:_false",
+          "spr/spr_test.go::TestSPRBasicFlowFourCommits/Sync:_true",
+          "spr/spr_test.go::TestSPRBasicFlowFourCommits/Sync:_false"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-022",
+        "selectors": [
+          "spr/spr_test.go::TestSPRBasicFlowDeleteBranch/Sync:_true",
+          "spr/spr_test.go::TestSPRBasicFlowDeleteBranch/Sync:_false",
+          "spr/spr_test.go::TestSPRMergeCount/Sync:_true",
+          "spr/spr_test.go::TestSPRMergeCount/Sync:_false",
+          "spr/spr_test.go::TestSPRAmendCommit/Sync:_true",
+          "spr/spr_test.go::TestSPRAmendCommit/Sync:_false",
+          "spr/spr_test.go::TestSPRReorderCommit/Sync:_true",
+          "spr/spr_test.go::TestSPRReorderCommit/Sync:_false"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-023",
+        "selectors": [
+          "spr/spr_test.go::TestSPRDeleteCommit/Sync:_true",
+          "spr/spr_test.go::TestSPRDeleteCommit/Sync:_false",
+          "spr/spr_test.go::TestAmendNoCommits/Sync:_true",
+          "spr/spr_test.go::TestAmendNoCommits/Sync:_false",
+          "spr/spr_test.go::TestAmendOneCommit/Sync:_true",
+          "spr/spr_test.go::TestAmendOneCommit/Sync:_false",
+          "spr/spr_test.go::TestAmendTwoCommits/Sync:_true",
+          "spr/spr_test.go::TestAmendTwoCommits/Sync:_false"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-024",
+        "selectors": [
+          "spr/spr_test.go::TestAmendInvalidInput/Sync:_true",
+          "spr/spr_test.go::TestAmendInvalidInput/Sync:_false",
+          "spr/spr_test.go::TestSPRFetchOverridesNoFetchConfig",
+          "spr/spr_test.go::TestEditCommitNoCommits",
+          "spr/spr_test.go::TestEditCommitSelectCommit",
+          "spr/spr_test.go::TestEditCommitAlreadyEditing",
+          "spr/spr_test.go::TestEditCommitInvalidInput",
+          "spr/spr_test.go::TestEditCommitDoneNotEditing"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-025",
+        "selectors": [
+          "spr/spr_test.go::TestEditCommitDoneHappyPath",
+          "spr/spr_test.go::TestEditCommitDoneWithConflict",
+          "spr/spr_test.go::TestEditCommitDoneConflictResolution",
+          "spr/spr_test.go::TestEditCommitDoneConflictThenResolution",
+          "spr/spr_test.go::TestEditCommitAbort",
+          "spr/spr_test.go::TestEditCommitAbortNotEditing",
+          "spr/spr_test.go::TestStatusPullRequestsTextMode",
+          "git/p2p_commitid_regression_test.go::TestParseLocalCommitStackIdentifierTolerance"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-026",
+        "selectors": [
+          "git/p2p_commitid_regression_test.go::TestParseLocalCommitStackWIPFlag",
+          "git/p2p_commitid_regression_test.go::TestParseLocalCommitStackAllOrNothingOnInvalidEntry",
+          "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackOrderingAndTopCommit",
+          "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackPanicsAfterRewordRetry",
+          "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackTrimsSubjectWhitespace",
+          "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackReturnsRecoveredStack",
+          "github/githubclient/p2p_graphql_regression_test.go::TestMatchPullRequestStackGraphQLTolerance",
+          "github/githubclient/p2p_graphql_regression_test.go::TestGetInfoMatchesConfiguredBranchPrefix"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-027",
+        "selectors": [
+          "github/githubclient/p2p_graphql_regression_test.go::TestGetInfoPreservesEmptyPullRequestSlice",
+          "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperAppendsCommitIDToSingleLineMessage",
+          "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperAppendsCommitIDToMultiLineMessage",
+          "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperLeavesFileWithExistingCommitIDUnchanged",
+          "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperLeavesEmptyMessageUnchanged",
+          "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperLeavesCommentOnlyMessageUnchanged",
+          "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperRewritesOnlyPickEntriesWithoutCommitID",
+          "git/mockgit/p2p_mockgit_regression_test.go::TestMockGitFabricatedLogTextByteIdentical",
+          "test/f2p/capability_test.go::TestExistingGitFunctionsPreserved"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-028",
+        "selectors": [
+          "test/f2p/capability_test.go::TestExistingCommitFieldsPreserved",
+          "test/f2p/capability_test.go::TestExistingGitInterfacePreserved",
+          "test/f2p/capability_test.go::TestConsolidationAddsNoModuleDependency",
+          "test/f2p/capability_test.go::TestExistingCLICommandsPreserved",
+          "test/f2p/capability_test.go::TestExistingCLIFlagsPreserved",
+          "test/f2p/capability_test.go::TestExistingConfigurationOptionsPreserved",
+          "test/f2p/capability_test.go::TestGitCapabilityReturnsOperationResult",
+          "test/f2p/capability_test.go::TestCrossPackageCapabilityCallsReturnUsableValues"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-029",
+        "selectors": [
+          "test/f2p/capability_test.go::TestGitCapabilityExportsPrefixAwareParser",
+          "test/f2p/capability_test.go::TestGitCapabilityExportsPrefixAwareFormatter",
+          "test/f2p/capability_test.go::TestGitCapabilityEnforcesIdentifierShape",
+          "test/f2p/capability_test.go::TestSharedCapabilityReachedFromAnotherPackage",
+          "test/f2p/parsing_test.go::TestLocalLogParserObtainsIdentifierThroughCapability",
+          "test/f2p/parsing_test.go::TestLocalLogParserKeepsNoPrivateProtocolRule",
+          "test/f2p/parsing_test.go::TestGraphQLMatcherObtainsIdentifierThroughCapability",
+          "test/f2p/parsing_test.go::TestGraphQLMatcherKeepsNoPrivateProtocolRule"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-030",
+        "selectors": [
+          "test/f2p/parsing_test.go::TestLocalParserUsesStrictSharedCapability",
+          "test/f2p/parsing_test.go::TestGraphQLMatcherUsesLooseSharedCapability",
+          "test/f2p/emission_test.go::TestRewordAppendUsesSharedFormatter",
+          "test/f2p/emission_test.go::TestRewordAppendKeepsNoPrivateProtocolText",
+          "test/f2p/emission_test.go::TestRewordExistingIDScanUsesSharedCapability",
+          "test/f2p/emission_test.go::TestRewordExistingIDScanKeepsNoPrivateProtocolPrefix",
+          "test/f2p/emission_test.go::TestMockGitFabricatorUsesSharedFormatter",
+          "test/f2p/emission_test.go::TestMockGitFabricatorKeepsNoPrivateProtocolText"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-031",
+        "selectors": [
+          "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/git_format",
+          "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/local_log",
+          "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/graphql",
+          "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/reword_append",
+          "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/reword_scan",
+          "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/mockgit",
+          "test/f2p/emission_test.go::TestNoDuplicatedProtocolLiteralOutsideGitPackage/reword",
+          "test/f2p/emission_test.go::TestNoDuplicatedProtocolLiteralOutsideGitPackage/graphql"
+        ],
+        "timeout_seconds": 300.0
+      },
+      {
+        "id": "shard-032",
+        "selectors": [
+          "test/f2p/emission_test.go::TestNoDuplicatedProtocolLiteralOutsideGitPackage/mockgit"
+        ],
+        "timeout_seconds": 300.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "test/f2p/capability_test.go::TestGitCapabilityExportsPrefixAwareParser",
+    "test/f2p/capability_test.go::TestGitCapabilityExportsPrefixAwareFormatter",
+    "test/f2p/capability_test.go::TestGitCapabilityEnforcesIdentifierShape",
+    "test/f2p/capability_test.go::TestSharedCapabilityReachedFromAnotherPackage",
+    "test/f2p/parsing_test.go::TestLocalLogParserObtainsIdentifierThroughCapability",
+    "test/f2p/parsing_test.go::TestLocalLogParserKeepsNoPrivateProtocolRule",
+    "test/f2p/parsing_test.go::TestGraphQLMatcherObtainsIdentifierThroughCapability",
+    "test/f2p/parsing_test.go::TestGraphQLMatcherKeepsNoPrivateProtocolRule",
+    "test/f2p/parsing_test.go::TestLocalParserUsesStrictSharedCapability",
+    "test/f2p/parsing_test.go::TestGraphQLMatcherUsesLooseSharedCapability",
+    "test/f2p/emission_test.go::TestRewordAppendUsesSharedFormatter",
+    "test/f2p/emission_test.go::TestRewordAppendKeepsNoPrivateProtocolText",
+    "test/f2p/emission_test.go::TestRewordExistingIDScanUsesSharedCapability",
+    "test/f2p/emission_test.go::TestRewordExistingIDScanKeepsNoPrivateProtocolPrefix",
+    "test/f2p/emission_test.go::TestMockGitFabricatorUsesSharedFormatter",
+    "test/f2p/emission_test.go::TestMockGitFabricatorKeepsNoPrivateProtocolText",
+    "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/git_format",
+    "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/local_log",
+    "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/graphql",
+    "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/reword_append",
+    "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/reword_scan",
+    "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/mockgit",
+    "test/f2p/emission_test.go::TestNoDuplicatedProtocolLiteralOutsideGitPackage/reword",
+    "test/f2p/emission_test.go::TestNoDuplicatedProtocolLiteralOutsideGitPackage/graphql",
+    "test/f2p/emission_test.go::TestNoDuplicatedProtocolLiteralOutsideGitPackage/mockgit"
+  ],
+  "gates": [
+    {
+      "id": "P2P-LOCAL-COMMIT-LOG",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B1",
+        "REQ-BEH-T5:B2",
+        "REQ-BEH-T5:C1",
+        "REQ-BEH-T5:C2",
+        "REQ-INTEGRITY-001",
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "git/p2p_commitid_regression_test.go::TestParseLocalCommitStackIdentifierTolerance",
+        "git/p2p_commitid_regression_test.go::TestParseLocalCommitStackWIPFlag",
+        "git/p2p_commitid_regression_test.go::TestParseLocalCommitStackAllOrNothingOnInvalidEntry",
+        "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackOrderingAndTopCommit",
+        "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackPanicsAfterRewordRetry",
+        "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackTrimsSubjectWhitespace",
+        "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackReturnsRecoveredStack"
+      ]
+    },
+    {
+      "id": "P2P-GRAPHQL-MATCH",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B3",
+        "REQ-BEH-T5:B4",
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "github/githubclient/p2p_graphql_regression_test.go::TestMatchPullRequestStackGraphQLTolerance",
+        "github/githubclient/p2p_graphql_regression_test.go::TestGetInfoMatchesConfiguredBranchPrefix",
+        "github/githubclient/p2p_graphql_regression_test.go::TestGetInfoPreservesEmptyPullRequestSlice"
+      ]
+    },
+    {
+      "id": "P2P-REWORD-HELPER",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B5",
+        "REQ-BEH-T5:B6",
+        "REQ-BEH-T5:C5",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperAppendsCommitIDToSingleLineMessage",
+        "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperAppendsCommitIDToMultiLineMessage",
+        "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperLeavesFileWithExistingCommitIDUnchanged",
+        "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperLeavesEmptyMessageUnchanged",
+        "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperLeavesCommentOnlyMessageUnchanged",
+        "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperRewritesOnlyPickEntriesWithoutCommitID"
+      ]
+    },
+    {
+      "id": "P2P-MOCKGIT-LOG-TEXT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B7"
+      ],
+      "tests": [
+        "git/mockgit/p2p_mockgit_regression_test.go::TestMockGitFabricatedLogTextByteIdentical"
+      ]
+    },
+    {
+      "id": "F2P-EXPORTED-PARSER",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "test/f2p/capability_test.go::TestGitCapabilityExportsPrefixAwareParser"
+      ]
+    },
+    {
+      "id": "F2P-EXPORTED-FORMATTER",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "test/f2p/capability_test.go::TestGitCapabilityExportsPrefixAwareFormatter"
+      ]
+    },
+    {
+      "id": "F2P-IDENTIFIER-SHAPE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T5:C6"
+      ],
+      "tests": [
+        "test/f2p/capability_test.go::TestGitCapabilityEnforcesIdentifierShape"
+      ]
+    },
+    {
+      "id": "F2P-CROSS-PACKAGE-CAPABILITY",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "test/f2p/capability_test.go::TestSharedCapabilityReachedFromAnotherPackage"
+      ]
+    },
+    {
+      "id": "F2P-LOCAL-USES-SHARED-PARSER",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "test/f2p/parsing_test.go::TestLocalLogParserObtainsIdentifierThroughCapability"
+      ]
+    },
+    {
+      "id": "F2P-LOCAL-NO-PRIVATE-RULE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "test/f2p/parsing_test.go::TestLocalLogParserKeepsNoPrivateProtocolRule"
+      ]
+    },
+    {
+      "id": "F2P-GRAPHQL-USES-SHARED-PARSER",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "test/f2p/parsing_test.go::TestGraphQLMatcherObtainsIdentifierThroughCapability"
+      ]
+    },
+    {
+      "id": "F2P-GRAPHQL-NO-PRIVATE-RULE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "test/f2p/parsing_test.go::TestGraphQLMatcherKeepsNoPrivateProtocolRule"
+      ]
+    },
+    {
+      "id": "F2P-LOCAL-STRICT-TOLERANCE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "test/f2p/parsing_test.go::TestLocalParserUsesStrictSharedCapability"
+      ]
+    },
+    {
+      "id": "F2P-GRAPHQL-LOOSE-TOLERANCE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "test/f2p/parsing_test.go::TestGraphQLMatcherUsesLooseSharedCapability"
+      ]
+    },
+    {
+      "id": "F2P-REWORD-APPEND-SHARED",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestRewordAppendUsesSharedFormatter"
+      ]
+    },
+    {
+      "id": "F2P-REWORD-APPEND-NO-PRIVATE-RULE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestRewordAppendKeepsNoPrivateProtocolText"
+      ]
+    },
+    {
+      "id": "F2P-REWORD-SCAN-SHARED",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestRewordExistingIDScanUsesSharedCapability"
+      ]
+    },
+    {
+      "id": "F2P-REWORD-SCAN-NO-PRIVATE-RULE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestRewordExistingIDScanKeepsNoPrivateProtocolPrefix"
+      ]
+    },
+    {
+      "id": "F2P-MOCKGIT-SHARED-FORMATTER",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestMockGitFabricatorUsesSharedFormatter"
+      ]
+    },
+    {
+      "id": "F2P-MOCKGIT-NO-PRIVATE-RULE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestMockGitFabricatorKeepsNoPrivateProtocolText"
+      ]
+    },
+    {
+      "id": "F2P-COMMON-PREFIX-GIT-FORMAT",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/git_format"
+      ]
+    },
+    {
+      "id": "F2P-COMMON-PREFIX-LOCAL-LOG",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/local_log"
+      ]
+    },
+    {
+      "id": "F2P-COMMON-PREFIX-GRAPHQL",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/graphql"
+      ]
+    },
+    {
+      "id": "F2P-COMMON-PREFIX-REWORD-APPEND",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/reword_append"
+      ]
+    },
+    {
+      "id": "F2P-COMMON-PREFIX-REWORD-SCAN",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/reword_scan"
+      ]
+    },
+    {
+      "id": "F2P-COMMON-PREFIX-MOCKGIT",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestAllConsumerSitesShareOnePrefixSource/mockgit"
+      ]
+    },
+    {
+      "id": "F2P-NO-REWORD-PROTOCOL-LITERAL",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestNoDuplicatedProtocolLiteralOutsideGitPackage/reword"
+      ]
+    },
+    {
+      "id": "F2P-NO-GRAPHQL-PROTOCOL-LITERAL",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestNoDuplicatedProtocolLiteralOutsideGitPackage/graphql"
+      ]
+    },
+    {
+      "id": "F2P-NO-MOCKGIT-PROTOCOL-LITERAL",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "test/f2p/emission_test.go::TestNoDuplicatedProtocolLiteralOutsideGitPackage/mockgit"
+      ]
+    },
+    {
+      "id": "P2P-UPSTREAM-UNITS",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "config/config_test.go::TestEmptyConfig",
+        "config/config_test.go::TestDefaultConfig",
+        "config/config_test.go::TestMergeMethodHelper/rebase",
+        "config/config_test.go::TestMergeMethodHelper/<EMPTY>",
+        "config/config_test.go::TestMergeMethodHelper/Merge",
+        "config/config_test.go::TestMergeMethodHelper/SQUASH",
+        "config/config_test.go::TestMergeMethodHelper/invalid",
+        "config/config_test.go::TestNormalizeConfig/PRTemplatePath_provided_sets_PRTemplateType_to_custom",
+        "config/config_test.go::TestNormalizeConfig/PRTemplatePath_empty_does_not_change_PRTemplateType",
+        "config/config_test.go::TestNormalizeConfig/PRTemplatePath_provided_overrides_existing_PRTemplateType",
+        "config/config_test.go::TestNormalizeConfig/DefaultConfig_with_PRTemplatePath_sets_PRTemplateType_to_custom",
+        "git/commit_test.go::TestParseLocalCommitStack",
+        "git/helpers_test.go::TestBranchNameRegex/spr/b1/deadbeef",
+        "git/helpers_test.go::TestBranchNameRegex/spr/main/abcd1234",
+        "git/helpers_test.go::TestBranchNameRegex/custom/main/deadbeef",
+        "git/helpers_test.go::TestBranchNameRegex/my-team/develop/abcd1234",
+        "git/helpers_test.go::TestBranchNameRegexNoMatch/other/main/deadbeef",
+        "git/helpers_test.go::TestBranchNameRegexNoMatch/spr/main/deadbeef",
+        "git/helpers_test.go::TestBranchNameFromCommit/default_prefix",
+        "git/helpers_test.go::TestBranchNameFromCommit/custom_prefix",
+        "config/config_parser/config_parser_test.go::TestGetRepoDetailsFromRemote",
+        "config/config_parser/config_parser_test.go::TestGitHubRemoteSource",
+        "github/pullrequest_test.go::TestMergable",
+        "github/pullrequest_test.go::TestReady",
+        "github/pullrequest_test.go::TestStatusString",
+        "github/pullrequest_test.go::TestString",
+        "github/pullrequest_test.go::TestTextString",
+        "github/githubclient/client_test.go::TestMatchPullRequestStack/ThirdCommitQueue",
+        "github/githubclient/client_test.go::TestMatchPullRequestStack/FourthCommitQueue",
+        "github/githubclient/client_test.go::TestMatchPullRequestStack/Empty",
+        "github/githubclient/client_test.go::TestMatchPullRequestStack/FirstCommit",
+        "github/githubclient/client_test.go::TestMatchPullRequestStack/SecondCommit",
+        "github/githubclient/client_test.go::TestMatchPullRequestStack/ThirdCommit",
+        "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveOnlyCommit",
+        "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveTopCommit",
+        "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveMiddleCommit",
+        "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveBottomCommit",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/NoContexts_NoRequired",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/NoContexts_EmptyRequired",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredPasses",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredFails",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredPending",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredQueued",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_NeutralPasses",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_SkippedPasses",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_TimedOut",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_Cancelled",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_NilConclusion",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredSuccess",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredFailure",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredPending",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredExpected",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/NonRequiredFails_RequiredPasses",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/MixedTypes_NonRequiredFails_RequiredPasses",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/MixedTypes_RequiredFails",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/FailTakesPrecedenceOverPending",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/AllRequiredPass_MultipleChecks",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/RequiredCheckNotReportedYet",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/RealWorld_SemaphoreFails_OnlyItRequired",
+        "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/RealWorld_SemaphorePasses_OthersFail",
+        "github/template/template_basic/template_test.go::TestTitle/simple_subject",
+        "github/template/template_basic/template_test.go::TestTitle/empty_subject",
+        "github/template/template_basic/template_test.go::TestTitle/subject_with_special_characters",
+        "github/template/template_basic/template_test.go::TestTitle/subject_with_newline",
+        "github/template/template_basic/template_test.go::TestTitle/long_subject",
+        "github/template/template_basic/template_test.go::TestBody/empty_body",
+        "github/template/template_basic/template_test.go::TestBody/simple_body",
+        "github/template/template_basic/template_test.go::TestBody/body_with_newlines",
+        "github/template/template_basic/template_test.go::TestBody/body_with_multiple_paragraphs",
+        "github/template/template_basic/template_test.go::TestBody/body_with_trailing_newline",
+        "github/template/template_basic/template_test.go::TestBody/body_with_markdown",
+        "github/template/template_basic/template_test.go::TestBody/body_with_special_characters",
+        "github/template/template_basic/template_test.go::TestBody/body_with_unicode_characters",
+        "github/template/template_basic/template_test.go::TestBodyManualMergeNoticeFormat",
+        "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_exact_body_content",
+        "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_body_with_whitespace",
+        "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_body_with_newlines",
+        "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_empty_body",
+        "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/typical_feature_commit",
+        "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/bug_fix_commit",
+        "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/documentation_commit",
+        "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/multi-line_detailed_commit",
+        "github/template/template_stack/template_test.go::TestTitle/simple_subject",
+        "github/template/template_stack/template_test.go::TestTitle/empty_subject",
+        "github/template/template_stack/template_test.go::TestTitle/subject_with_special_characters",
+        "github/template/template_stack/template_test.go::TestTitle/subject_with_newline",
+        "github/template/template_stack/template_test.go::TestTitle/long_subject",
+        "github/template/template_custom/template_test.go::TestTitle/simple_subject",
+        "github/template/template_custom/template_test.go::TestTitle/empty_subject",
+        "github/template/template_custom/template_test.go::TestTitle/subject_with_special_characters",
+        "github/template/template_custom/template_test.go::TestFormatBody/single_commit_in_stack",
+        "github/template/template_custom/template_test.go::TestFormatBody/empty_stack",
+        "github/template/template_stack/template_test.go::TestBody_EmptyStack",
+        "github/template/template_stack/template_test.go::TestBody_WithStack_NoTitles",
+        "github/template/template_stack/template_test.go::TestBody_WithStack_WithTitles",
+        "github/template/template_stack/template_test.go::TestBody_StackOrder",
+        "github/template/template_stack/template_test.go::TestBody_CurrentCommitAtStart",
+        "github/template/template_stack/template_test.go::TestBody_CurrentCommitAtEnd",
+        "github/template/template_custom/template_test.go::TestFormatBody/multiple_commits_with_body",
+        "github/template/template_custom/template_test.go::TestFormatBody/multiple_commits_with_empty_body",
+        "github/template/template_custom/template_test.go::TestFormatBody/stack_with_PR_titles",
+        "github/template/template_custom/template_test.go::TestFormatBodyWithPRTitles",
+        "github/template/template_stack/template_test.go::TestBody_EmptyBody",
+        "github/template/template_stack/template_test.go::TestBody_SinglePRInStack",
+        "github/template/template_stack/template_test.go::TestBody_WithTitlesVsWithoutTitles",
+        "github/template/template_stack/template_test.go::TestBody_Structure",
+        "github/template/template_stack/template_test.go::TestBody_RealWorldExample",
+        "github/template/template_stack/template_test.go::TestNewStackTemplatizer",
+        "github/template/template_stack/template_test.go::TestFormatPullRequestBody/EmptyStack",
+        "github/template/template_stack/template_test.go::TestFormatPullRequestBody/SinglePRStack",
+        "github/template/template_stack/template_test.go::TestFormatPullRequestBody/TwoPRStack",
+        "github/template/template_custom/template_test.go::TestReadPRTemplate",
+        "github/template/template_custom/template_test.go::TestReadPRTemplateNotFound",
+        "github/template/template_custom/template_test.go::TestReadPRTemplateWithSubdirectory",
+        "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/before_match",
+        "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/after_match",
+        "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/no_match_found",
+        "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/multiple_matches",
+        "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/empty_search_string",
+        "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/match_at_start",
+        "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/match_at_end",
+        "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplate",
+        "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateWithExistingPR",
+        "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateMissingStartMarker",
+        "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateMissingEndMarker",
+        "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateMultipleStartMarkers",
+        "github/template/template_custom/template_test.go::TestNewCustomTemplatizer",
+        "github/template/template_custom/template_test.go::TestFormatBodyStackOrder",
+        "github/template/template_custom/template_test.go::TestFormatBodyCurrentCommitIndicator",
+        "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/no_markers_exist_append_with_default_anchors",
+        "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/existing_markers_replace_content_between_default_anchors",
+        "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/pr_update_use_existing_PR_body_and_replace_content",
+        "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/error_missing_end_anchor_in_existing_PR_body",
+        "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/error_multiple_start_anchors_in_existing_PR_body",
+        "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/error_multiple_end_anchors_in_existing_PR_body",
+        "github/template/template_why_what/template_test.go::TestTitle/simple_subject",
+        "github/template/template_why_what/template_test.go::TestTitle/empty_subject",
+        "github/template/template_why_what/template_test.go::TestTitle/subject_with_special_characters",
+        "github/template/template_why_what/template_test.go::TestBody/all_three_sections_provided",
+        "github/template/template_why_what/template_test.go::TestBody/only_why_section_provided",
+        "github/template/template_why_what/template_test.go::TestBody/why_and_what_changed_sections_provided",
+        "github/template/template_why_what/template_test.go::TestBody/empty_body",
+        "github/template/template_why_what/template_test.go::TestBody/body_with_only_whitespace",
+        "github/template/template_why_what/template_test.go::TestBody/sections_with_extra_whitespace",
+        "github/template/template_why_what/template_test.go::TestBody/multiple_empty_lines_between_sections",
+        "github/template/template_why_what/template_test.go::TestBody/sections_with_newlines_within_them",
+        "github/template/template_why_what/template_test.go::TestBody/only_second_section_(what_changed)_provided",
+        "github/template/template_why_what/template_test.go::TestBody/only_third_section_(test_plan)_provided",
+        "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/empty_string",
+        "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/single_section",
+        "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/single_section_with_whitespace",
+        "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/two_sections",
+        "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/three_sections",
+        "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/sections_with_leading/trailing_whitespace",
+        "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/multiple_empty_lines_between_sections",
+        "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/sections_with_internal_newlines",
+        "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/only_whitespace",
+        "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/empty_lines_at_start_and_end",
+        "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/single_newline_(not_empty_line)",
+        "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/mixed_single_and_double_newlines",
+        "github/template/template_why_what/template_test.go::TestBodyTemplateStructure",
+        "github/template/template_why_what/template_test.go::TestBodyWithRealWorldExamples/real_commit_message_format",
+        "github/template/template_why_what/template_test.go::TestBodyWithRealWorldExamples/commit_with_only_why",
+        "github/template/template_why_what/template_test.go::TestBodyWithRealWorldExamples/commit_with_markdown-like_content",
+        "spr/spr_test.go::TestSPRBasicFlowFourCommitsQueue/Sync:_true",
+        "spr/spr_test.go::TestSPRBasicFlowFourCommitsQueue/Sync:_false",
+        "spr/spr_test.go::TestSPRBasicFlowFourCommits/Sync:_true",
+        "spr/spr_test.go::TestSPRBasicFlowFourCommits/Sync:_false",
+        "spr/spr_test.go::TestSPRBasicFlowDeleteBranch/Sync:_true",
+        "spr/spr_test.go::TestSPRBasicFlowDeleteBranch/Sync:_false",
+        "spr/spr_test.go::TestSPRMergeCount/Sync:_true",
+        "spr/spr_test.go::TestSPRMergeCount/Sync:_false",
+        "spr/spr_test.go::TestSPRAmendCommit/Sync:_true",
+        "spr/spr_test.go::TestSPRAmendCommit/Sync:_false",
+        "spr/spr_test.go::TestSPRReorderCommit/Sync:_true",
+        "spr/spr_test.go::TestSPRReorderCommit/Sync:_false",
+        "spr/spr_test.go::TestSPRDeleteCommit/Sync:_true",
+        "spr/spr_test.go::TestSPRDeleteCommit/Sync:_false",
+        "spr/spr_test.go::TestAmendNoCommits/Sync:_true",
+        "spr/spr_test.go::TestAmendNoCommits/Sync:_false",
+        "spr/spr_test.go::TestAmendOneCommit/Sync:_true",
+        "spr/spr_test.go::TestAmendOneCommit/Sync:_false",
+        "spr/spr_test.go::TestAmendTwoCommits/Sync:_true",
+        "spr/spr_test.go::TestAmendTwoCommits/Sync:_false",
+        "spr/spr_test.go::TestAmendInvalidInput/Sync:_true",
+        "spr/spr_test.go::TestAmendInvalidInput/Sync:_false",
+        "spr/spr_test.go::TestSPRFetchOverridesNoFetchConfig",
+        "spr/spr_test.go::TestEditCommitNoCommits",
+        "spr/spr_test.go::TestEditCommitSelectCommit",
+        "spr/spr_test.go::TestEditCommitAlreadyEditing",
+        "spr/spr_test.go::TestEditCommitInvalidInput",
+        "spr/spr_test.go::TestEditCommitDoneNotEditing",
+        "spr/spr_test.go::TestEditCommitDoneHappyPath",
+        "spr/spr_test.go::TestEditCommitDoneWithConflict",
+        "spr/spr_test.go::TestEditCommitDoneConflictResolution",
+        "spr/spr_test.go::TestEditCommitDoneConflictThenResolution",
+        "spr/spr_test.go::TestEditCommitAbort",
+        "spr/spr_test.go::TestEditCommitAbortNotEditing",
+        "spr/spr_test.go::TestStatusPullRequestsTextMode"
+      ]
+    },
+    {
+      "id": "P2P-PUBLIC-API",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "test/f2p/capability_test.go::TestExistingGitFunctionsPreserved",
+        "test/f2p/capability_test.go::TestExistingCommitFieldsPreserved",
+        "test/f2p/capability_test.go::TestExistingGitInterfacePreserved"
+      ]
+    },
+    {
+      "id": "P2P-MODULE-DEPENDENCIES",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "test/f2p/capability_test.go::TestConsolidationAddsNoModuleDependency"
+      ]
+    },
+    {
+      "id": "P2P-CLI-AND-CONFIG",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "test/f2p/capability_test.go::TestExistingCLICommandsPreserved",
+        "test/f2p/capability_test.go::TestExistingCLIFlagsPreserved",
+        "test/f2p/capability_test.go::TestExistingConfigurationOptionsPreserved"
+      ]
+    },
+    {
+      "id": "P2P-CAPABILITY-QUALITY",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "test/f2p/capability_test.go::TestGitCapabilityReturnsOperationResult",
+        "test/f2p/capability_test.go::TestCrossPackageCapabilityCallsReturnUsableValues"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "549eb72037e6547a0edd15a9690c3503258c86a457e23555a5b0b3c4e071c493",
+    "test_patch_sha256": "0c999fc5d93122aabf5c4614f13b08c0e7494f0d91f74cca7b543995f0534503"
+  },
+  "node_command": [
+    "python3",
+    "test/f2p_runner.py",
+    "--node",
+    "{selector}",
+    "--report",
+    "{report}"
+  ],
+  "node_relations": [],
+  "node_timeout_seconds": 240,
+  "p2p": [
+    "config/config_test.go::TestEmptyConfig",
+    "config/config_test.go::TestDefaultConfig",
+    "config/config_test.go::TestMergeMethodHelper/rebase",
+    "config/config_test.go::TestMergeMethodHelper/<EMPTY>",
+    "config/config_test.go::TestMergeMethodHelper/Merge",
+    "config/config_test.go::TestMergeMethodHelper/SQUASH",
+    "config/config_test.go::TestMergeMethodHelper/invalid",
+    "config/config_test.go::TestNormalizeConfig/PRTemplatePath_provided_sets_PRTemplateType_to_custom",
+    "config/config_test.go::TestNormalizeConfig/PRTemplatePath_empty_does_not_change_PRTemplateType",
+    "config/config_test.go::TestNormalizeConfig/PRTemplatePath_provided_overrides_existing_PRTemplateType",
+    "config/config_test.go::TestNormalizeConfig/DefaultConfig_with_PRTemplatePath_sets_PRTemplateType_to_custom",
+    "git/commit_test.go::TestParseLocalCommitStack",
+    "git/helpers_test.go::TestBranchNameRegex/spr/b1/deadbeef",
+    "git/helpers_test.go::TestBranchNameRegex/spr/main/abcd1234",
+    "git/helpers_test.go::TestBranchNameRegex/custom/main/deadbeef",
+    "git/helpers_test.go::TestBranchNameRegex/my-team/develop/abcd1234",
+    "git/helpers_test.go::TestBranchNameRegexNoMatch/other/main/deadbeef",
+    "git/helpers_test.go::TestBranchNameRegexNoMatch/spr/main/deadbeef",
+    "git/helpers_test.go::TestBranchNameFromCommit/default_prefix",
+    "git/helpers_test.go::TestBranchNameFromCommit/custom_prefix",
+    "config/config_parser/config_parser_test.go::TestGetRepoDetailsFromRemote",
+    "config/config_parser/config_parser_test.go::TestGitHubRemoteSource",
+    "github/pullrequest_test.go::TestMergable",
+    "github/pullrequest_test.go::TestReady",
+    "github/pullrequest_test.go::TestStatusString",
+    "github/pullrequest_test.go::TestString",
+    "github/pullrequest_test.go::TestTextString",
+    "github/githubclient/client_test.go::TestMatchPullRequestStack/ThirdCommitQueue",
+    "github/githubclient/client_test.go::TestMatchPullRequestStack/FourthCommitQueue",
+    "github/githubclient/client_test.go::TestMatchPullRequestStack/Empty",
+    "github/githubclient/client_test.go::TestMatchPullRequestStack/FirstCommit",
+    "github/githubclient/client_test.go::TestMatchPullRequestStack/SecondCommit",
+    "github/githubclient/client_test.go::TestMatchPullRequestStack/ThirdCommit",
+    "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveOnlyCommit",
+    "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveTopCommit",
+    "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveMiddleCommit",
+    "github/githubclient/client_test.go::TestMatchPullRequestStack/RemoveBottomCommit",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/NoContexts_NoRequired",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/NoContexts_EmptyRequired",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredPasses",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredFails",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredPending",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_RequiredQueued",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_NeutralPasses",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_SkippedPasses",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_TimedOut",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_Cancelled",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/CheckRun_NilConclusion",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredSuccess",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredFailure",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredPending",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/StatusContext_RequiredExpected",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/NonRequiredFails_RequiredPasses",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/MixedTypes_NonRequiredFails_RequiredPasses",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/MixedTypes_RequiredFails",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/FailTakesPrecedenceOverPending",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/AllRequiredPass_MultipleChecks",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/RequiredCheckNotReportedYet",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/RealWorld_SemaphoreFails_OnlyItRequired",
+    "github/githubclient/client_test.go::TestComputeRequiredCheckStatus/RealWorld_SemaphorePasses_OthersFail",
+    "github/template/template_basic/template_test.go::TestTitle/simple_subject",
+    "github/template/template_basic/template_test.go::TestTitle/empty_subject",
+    "github/template/template_basic/template_test.go::TestTitle/subject_with_special_characters",
+    "github/template/template_basic/template_test.go::TestTitle/subject_with_newline",
+    "github/template/template_basic/template_test.go::TestTitle/long_subject",
+    "github/template/template_basic/template_test.go::TestBody/empty_body",
+    "github/template/template_basic/template_test.go::TestBody/simple_body",
+    "github/template/template_basic/template_test.go::TestBody/body_with_newlines",
+    "github/template/template_basic/template_test.go::TestBody/body_with_multiple_paragraphs",
+    "github/template/template_basic/template_test.go::TestBody/body_with_trailing_newline",
+    "github/template/template_basic/template_test.go::TestBody/body_with_markdown",
+    "github/template/template_basic/template_test.go::TestBody/body_with_special_characters",
+    "github/template/template_basic/template_test.go::TestBody/body_with_unicode_characters",
+    "github/template/template_basic/template_test.go::TestBodyManualMergeNoticeFormat",
+    "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_exact_body_content",
+    "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_body_with_whitespace",
+    "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_body_with_newlines",
+    "github/template/template_basic/template_test.go::TestBodyPreservesOriginalContent/preserves_empty_body",
+    "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/typical_feature_commit",
+    "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/bug_fix_commit",
+    "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/documentation_commit",
+    "github/template/template_basic/template_test.go::TestBodyWithRealWorldExamples/multi-line_detailed_commit",
+    "github/template/template_stack/template_test.go::TestTitle/simple_subject",
+    "github/template/template_stack/template_test.go::TestTitle/empty_subject",
+    "github/template/template_stack/template_test.go::TestTitle/subject_with_special_characters",
+    "github/template/template_stack/template_test.go::TestTitle/subject_with_newline",
+    "github/template/template_stack/template_test.go::TestTitle/long_subject",
+    "github/template/template_custom/template_test.go::TestTitle/simple_subject",
+    "github/template/template_custom/template_test.go::TestTitle/empty_subject",
+    "github/template/template_custom/template_test.go::TestTitle/subject_with_special_characters",
+    "github/template/template_custom/template_test.go::TestFormatBody/single_commit_in_stack",
+    "github/template/template_custom/template_test.go::TestFormatBody/empty_stack",
+    "github/template/template_stack/template_test.go::TestBody_EmptyStack",
+    "github/template/template_stack/template_test.go::TestBody_WithStack_NoTitles",
+    "github/template/template_stack/template_test.go::TestBody_WithStack_WithTitles",
+    "github/template/template_stack/template_test.go::TestBody_StackOrder",
+    "github/template/template_stack/template_test.go::TestBody_CurrentCommitAtStart",
+    "github/template/template_stack/template_test.go::TestBody_CurrentCommitAtEnd",
+    "github/template/template_custom/template_test.go::TestFormatBody/multiple_commits_with_body",
+    "github/template/template_custom/template_test.go::TestFormatBody/multiple_commits_with_empty_body",
+    "github/template/template_custom/template_test.go::TestFormatBody/stack_with_PR_titles",
+    "github/template/template_custom/template_test.go::TestFormatBodyWithPRTitles",
+    "github/template/template_stack/template_test.go::TestBody_EmptyBody",
+    "github/template/template_stack/template_test.go::TestBody_SinglePRInStack",
+    "github/template/template_stack/template_test.go::TestBody_WithTitlesVsWithoutTitles",
+    "github/template/template_stack/template_test.go::TestBody_Structure",
+    "github/template/template_stack/template_test.go::TestBody_RealWorldExample",
+    "github/template/template_stack/template_test.go::TestNewStackTemplatizer",
+    "github/template/template_stack/template_test.go::TestFormatPullRequestBody/EmptyStack",
+    "github/template/template_stack/template_test.go::TestFormatPullRequestBody/SinglePRStack",
+    "github/template/template_stack/template_test.go::TestFormatPullRequestBody/TwoPRStack",
+    "github/template/template_custom/template_test.go::TestReadPRTemplate",
+    "github/template/template_custom/template_test.go::TestReadPRTemplateNotFound",
+    "github/template/template_custom/template_test.go::TestReadPRTemplateWithSubdirectory",
+    "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/before_match",
+    "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/after_match",
+    "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/no_match_found",
+    "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/multiple_matches",
+    "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/empty_search_string",
+    "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/match_at_start",
+    "github/template/template_custom/template_test.go::TestGetSectionOfPRTemplate/match_at_end",
+    "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplate",
+    "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateWithExistingPR",
+    "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateMissingStartMarker",
+    "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateMissingEndMarker",
+    "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateMultipleStartMarkers",
+    "github/template/template_custom/template_test.go::TestNewCustomTemplatizer",
+    "github/template/template_custom/template_test.go::TestFormatBodyStackOrder",
+    "github/template/template_custom/template_test.go::TestFormatBodyCurrentCommitIndicator",
+    "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/no_markers_exist_append_with_default_anchors",
+    "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/existing_markers_replace_content_between_default_anchors",
+    "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/pr_update_use_existing_PR_body_and_replace_content",
+    "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/error_missing_end_anchor_in_existing_PR_body",
+    "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/error_multiple_start_anchors_in_existing_PR_body",
+    "github/template/template_custom/template_test.go::TestInsertBodyIntoPRTemplateDefaultAnchors/error_multiple_end_anchors_in_existing_PR_body",
+    "github/template/template_why_what/template_test.go::TestTitle/simple_subject",
+    "github/template/template_why_what/template_test.go::TestTitle/empty_subject",
+    "github/template/template_why_what/template_test.go::TestTitle/subject_with_special_characters",
+    "github/template/template_why_what/template_test.go::TestBody/all_three_sections_provided",
+    "github/template/template_why_what/template_test.go::TestBody/only_why_section_provided",
+    "github/template/template_why_what/template_test.go::TestBody/why_and_what_changed_sections_provided",
+    "github/template/template_why_what/template_test.go::TestBody/empty_body",
+    "github/template/template_why_what/template_test.go::TestBody/body_with_only_whitespace",
+    "github/template/template_why_what/template_test.go::TestBody/sections_with_extra_whitespace",
+    "github/template/template_why_what/template_test.go::TestBody/multiple_empty_lines_between_sections",
+    "github/template/template_why_what/template_test.go::TestBody/sections_with_newlines_within_them",
+    "github/template/template_why_what/template_test.go::TestBody/only_second_section_(what_changed)_provided",
+    "github/template/template_why_what/template_test.go::TestBody/only_third_section_(test_plan)_provided",
+    "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/empty_string",
+    "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/single_section",
+    "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/single_section_with_whitespace",
+    "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/two_sections",
+    "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/three_sections",
+    "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/sections_with_leading/trailing_whitespace",
+    "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/multiple_empty_lines_between_sections",
+    "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/sections_with_internal_newlines",
+    "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/only_whitespace",
+    "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/empty_lines_at_start_and_end",
+    "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/single_newline_(not_empty_line)",
+    "github/template/template_why_what/template_test.go::TestSplitByEmptyLines/mixed_single_and_double_newlines",
+    "github/template/template_why_what/template_test.go::TestBodyTemplateStructure",
+    "github/template/template_why_what/template_test.go::TestBodyWithRealWorldExamples/real_commit_message_format",
+    "github/template/template_why_what/template_test.go::TestBodyWithRealWorldExamples/commit_with_only_why",
+    "github/template/template_why_what/template_test.go::TestBodyWithRealWorldExamples/commit_with_markdown-like_content",
+    "spr/spr_test.go::TestSPRBasicFlowFourCommitsQueue/Sync:_true",
+    "spr/spr_test.go::TestSPRBasicFlowFourCommitsQueue/Sync:_false",
+    "spr/spr_test.go::TestSPRBasicFlowFourCommits/Sync:_true",
+    "spr/spr_test.go::TestSPRBasicFlowFourCommits/Sync:_false",
+    "spr/spr_test.go::TestSPRBasicFlowDeleteBranch/Sync:_true",
+    "spr/spr_test.go::TestSPRBasicFlowDeleteBranch/Sync:_false",
+    "spr/spr_test.go::TestSPRMergeCount/Sync:_true",
+    "spr/spr_test.go::TestSPRMergeCount/Sync:_false",
+    "spr/spr_test.go::TestSPRAmendCommit/Sync:_true",
+    "spr/spr_test.go::TestSPRAmendCommit/Sync:_false",
+    "spr/spr_test.go::TestSPRReorderCommit/Sync:_true",
+    "spr/spr_test.go::TestSPRReorderCommit/Sync:_false",
+    "spr/spr_test.go::TestSPRDeleteCommit/Sync:_true",
+    "spr/spr_test.go::TestSPRDeleteCommit/Sync:_false",
+    "spr/spr_test.go::TestAmendNoCommits/Sync:_true",
+    "spr/spr_test.go::TestAmendNoCommits/Sync:_false",
+    "spr/spr_test.go::TestAmendOneCommit/Sync:_true",
+    "spr/spr_test.go::TestAmendOneCommit/Sync:_false",
+    "spr/spr_test.go::TestAmendTwoCommits/Sync:_true",
+    "spr/spr_test.go::TestAmendTwoCommits/Sync:_false",
+    "spr/spr_test.go::TestAmendInvalidInput/Sync:_true",
+    "spr/spr_test.go::TestAmendInvalidInput/Sync:_false",
+    "spr/spr_test.go::TestSPRFetchOverridesNoFetchConfig",
+    "spr/spr_test.go::TestEditCommitNoCommits",
+    "spr/spr_test.go::TestEditCommitSelectCommit",
+    "spr/spr_test.go::TestEditCommitAlreadyEditing",
+    "spr/spr_test.go::TestEditCommitInvalidInput",
+    "spr/spr_test.go::TestEditCommitDoneNotEditing",
+    "spr/spr_test.go::TestEditCommitDoneHappyPath",
+    "spr/spr_test.go::TestEditCommitDoneWithConflict",
+    "spr/spr_test.go::TestEditCommitDoneConflictResolution",
+    "spr/spr_test.go::TestEditCommitDoneConflictThenResolution",
+    "spr/spr_test.go::TestEditCommitAbort",
+    "spr/spr_test.go::TestEditCommitAbortNotEditing",
+    "spr/spr_test.go::TestStatusPullRequestsTextMode",
+    "git/p2p_commitid_regression_test.go::TestParseLocalCommitStackIdentifierTolerance",
+    "git/p2p_commitid_regression_test.go::TestParseLocalCommitStackWIPFlag",
+    "git/p2p_commitid_regression_test.go::TestParseLocalCommitStackAllOrNothingOnInvalidEntry",
+    "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackOrderingAndTopCommit",
+    "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackPanicsAfterRewordRetry",
+    "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackTrimsSubjectWhitespace",
+    "git/p2p_commitid_regression_test.go::TestGetLocalCommitStackReturnsRecoveredStack",
+    "github/githubclient/p2p_graphql_regression_test.go::TestMatchPullRequestStackGraphQLTolerance",
+    "github/githubclient/p2p_graphql_regression_test.go::TestGetInfoMatchesConfiguredBranchPrefix",
+    "github/githubclient/p2p_graphql_regression_test.go::TestGetInfoPreservesEmptyPullRequestSlice",
+    "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperAppendsCommitIDToSingleLineMessage",
+    "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperAppendsCommitIDToMultiLineMessage",
+    "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperLeavesFileWithExistingCommitIDUnchanged",
+    "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperLeavesEmptyMessageUnchanged",
+    "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperLeavesCommentOnlyMessageUnchanged",
+    "cmd/reword/p2p_reword_regression_test.go::TestRewordHelperRewritesOnlyPickEntriesWithoutCommitID",
+    "git/mockgit/p2p_mockgit_regression_test.go::TestMockGitFabricatedLogTextByteIdentical",
+    "test/f2p/capability_test.go::TestExistingGitFunctionsPreserved",
+    "test/f2p/capability_test.go::TestExistingCommitFieldsPreserved",
+    "test/f2p/capability_test.go::TestExistingGitInterfacePreserved",
+    "test/f2p/capability_test.go::TestConsolidationAddsNoModuleDependency",
+    "test/f2p/capability_test.go::TestExistingCLICommandsPreserved",
+    "test/f2p/capability_test.go::TestExistingCLIFlagsPreserved",
+    "test/f2p/capability_test.go::TestExistingConfigurationOptionsPreserved",
+    "test/f2p/capability_test.go::TestGitCapabilityReturnsOperationResult",
+    "test/f2p/capability_test.go::TestCrossPackageCapabilityCallsReturnUsableValues"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": true,
+  "restoration_paths": [
+    "config/config_parser/config_parser_test.go",
+    "config/config_test.go",
+    "git/commit_test.go",
+    "git/helpers_test.go",
+    "github/githubclient/client_test.go",
+    "github/pullrequest_test.go",
+    "github/template/template_basic/template_test.go",
+    "github/template/template_custom/template_test.go",
+    "github/template/template_stack/template_test.go",
+    "github/template/template_why_what/template_test.go",
+    "spr/spr_test.go"
+  ],
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "spr-commit-id-git-githu-9d32e0dc",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "cmd/reword/p2p_reword_regression_test.go",
+    "git/mockgit/p2p_mockgit_regression_test.go",
+    "git/p2p_commitid_regression_test.go",
+    "github/githubclient/p2p_graphql_regression_test.go",
+    "test/p2p_runner.py",
+    "test/f2p/model_test.go",
+    "test/f2p/sites_test.go",
+    "test/f2p/capability_test.go",
+    "test/f2p/parsing_test.go",
+    "test/f2p/emission_test.go",
+    "test/f2p_runner.py"
+  ],
+  "timeout_seconds": 600,
+  "verifier": "/tests/verifier/verifier.py",
+  "reward_mode": "VERIFIER_ONLY"
+}

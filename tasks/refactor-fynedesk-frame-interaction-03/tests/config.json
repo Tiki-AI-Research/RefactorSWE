@@ -1,0 +1,566 @@
+{
+  "base_commit": "7bc2c75eda3aeff73b18450fe32a656bc4af27c4",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "sh",
+    "-c",
+    "exec_dir=\"${VERIFIER_EXEC_DIR:-${TMPDIR:-/tmp}}\"; mkdir -p \"$exec_dir\" || exit 2; export VERIFIER_EXEC_DIR=\"$exec_dir\"; export GOTMPDIR=\"$exec_dir\"; export TMPDIR=\"$exec_dir\"; go build -o \"$exec_dir/f2p-runner\" ./test/f2p || exit 1; exec \"$exec_dir/f2p-runner\" \"$@\"",
+    "f2p-runner",
+    "{config}",
+    "{p2p_select}",
+    "{report}"
+  ],
+  "evaluation_files": {
+    "internal/x11/win/f2p_frame_responsibilities_test.go": "1d666f64b00032601b32cdb9af1f2009c919cd243d8c9e3e2f44e32182ce5ca8",
+    "internal/x11/win/p2p_frame_test.go": "0accd38490b8870608e57daf1d4159b8710fadeb2f51eadc768b109a1d6d978f",
+    "internal/x11/win/p2p_xserver_test.go": "29a017fd4402b6514d16b723182778c610a944dc9228af4c4f60ce3e677e001d",
+    "test/f2p/runner.go": "8b94a8f446d5c452a0bf5b92d72de313e4e9ad1e6181a6586d00459f296b1211",
+    "test/p2p/runner.go": "8bdaf5c39a00a6356a0f23a4f7d4c1b82ec2081fceaf1c0ad6bfbf46432d037c"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 2400.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 480.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 1920.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 480.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 480.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 480.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 480.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PTitleBarCenterSelectsMoveOnly"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PTitleBarEdgeStripsSelectTopResize"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PFrameSideStripsSelectResizeAtAnyHeight"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PBottomStripAndCornersSelectResize"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PFixedSizeWindowDisablesResizeFlags"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PMaximizedWindowDisablesResizeFlags"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PPressNonPrimaryButtonIsIgnored"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PPressFullscreenWindowIsIgnored"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PPressTappableChildMarksDragIgnored"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PPressUnfocusedWindowRaisesAndReturns"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PPressFocusedWindowRaisesAtEndOfProcessing"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PDragZeroDisplacementIsNoOp"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PDragResizeClampsNegativeDimensions"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedUnmaximizesOutsideTitleBarBeyondThreshold"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedStaysWithinThreshold"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedThresholdBoundary"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PMotionSelectsCloseCursorForCloseTarget"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PMotionSelectsResizeCursorWhenNoTarget"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PMotionKeepsDefaultCursorWhenNotResizable"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PMotionRefreshesThemeOnlyWhenHoverChanges"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PReleaseDoubleClickTriggersDoubleTap"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PReleaseSingleClickOnCloseTargetTaps"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PReleaseOutsideTitleBarDoesNotCountClick"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PReleaseClearsIgnoredDragForAnyButton"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/x11/win/p2p_frame_test.go::TestP2PNotificationsForwardArgumentsInOrder"
+      },
+      {
+        "role": "P2P",
+        "selector": "wm/util_test.go::TestFindObjectAtPixelPositionMatching"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsPointerOriginState"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsMoveAccumulatorState"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsResizeStartGeometryState"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsResizeEdgeFlags"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsDragModeFlags"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsHoverTargetState"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsDoubleClickTimerState"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsPixmapResources"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsGraphicsContextResources"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsDecorationCanvas"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PInteractionStateOwnedByFrameHeldCollaborator"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMousePressReachesOwnerStateHandler"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMouseDragReachesOwnerStateHandler"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMouseMotionReachesOwnerHoverHandler"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMouseReleaseReachesOwnerTimerHandler"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PInteractionMotionKeepsThemeRefreshEntryPoint"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PDecorationCollaboratorOwnsRenderResources"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PDecorationResourceLifecycleRunsThroughCollaborator"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PPureUnitTestsExerciseRelocatedPressDecision"
+      },
+      {
+        "role": "F2P",
+        "selector": "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PPureUnitTestsExerciseRelocatedDragGeometryDecision"
+      }
+    ],
+    "selector_timeout_seconds": 480.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "internal/x11/win/p2p_frame_test.go::TestP2PTitleBarCenterSelectsMoveOnly",
+          "internal/x11/win/p2p_frame_test.go::TestP2PTitleBarEdgeStripsSelectTopResize",
+          "internal/x11/win/p2p_frame_test.go::TestP2PFrameSideStripsSelectResizeAtAnyHeight",
+          "internal/x11/win/p2p_frame_test.go::TestP2PBottomStripAndCornersSelectResize",
+          "internal/x11/win/p2p_frame_test.go::TestP2PFixedSizeWindowDisablesResizeFlags",
+          "internal/x11/win/p2p_frame_test.go::TestP2PMaximizedWindowDisablesResizeFlags",
+          "internal/x11/win/p2p_frame_test.go::TestP2PPressNonPrimaryButtonIsIgnored",
+          "internal/x11/win/p2p_frame_test.go::TestP2PPressFullscreenWindowIsIgnored",
+          "internal/x11/win/p2p_frame_test.go::TestP2PPressTappableChildMarksDragIgnored",
+          "internal/x11/win/p2p_frame_test.go::TestP2PPressUnfocusedWindowRaisesAndReturns",
+          "internal/x11/win/p2p_frame_test.go::TestP2PPressFocusedWindowRaisesAtEndOfProcessing",
+          "internal/x11/win/p2p_frame_test.go::TestP2PDragZeroDisplacementIsNoOp",
+          "internal/x11/win/p2p_frame_test.go::TestP2PDragResizeClampsNegativeDimensions",
+          "internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedUnmaximizesOutsideTitleBarBeyondThreshold",
+          "internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedStaysWithinThreshold",
+          "internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedThresholdBoundary",
+          "internal/x11/win/p2p_frame_test.go::TestP2PMotionSelectsCloseCursorForCloseTarget",
+          "internal/x11/win/p2p_frame_test.go::TestP2PMotionSelectsResizeCursorWhenNoTarget",
+          "internal/x11/win/p2p_frame_test.go::TestP2PMotionKeepsDefaultCursorWhenNotResizable",
+          "internal/x11/win/p2p_frame_test.go::TestP2PMotionRefreshesThemeOnlyWhenHoverChanges",
+          "internal/x11/win/p2p_frame_test.go::TestP2PReleaseDoubleClickTriggersDoubleTap",
+          "internal/x11/win/p2p_frame_test.go::TestP2PReleaseSingleClickOnCloseTargetTaps",
+          "internal/x11/win/p2p_frame_test.go::TestP2PReleaseOutsideTitleBarDoesNotCountClick",
+          "internal/x11/win/p2p_frame_test.go::TestP2PReleaseClearsIgnoredDragForAnyButton",
+          "internal/x11/win/p2p_frame_test.go::TestP2PNotificationsForwardArgumentsInOrder",
+          "wm/util_test.go::TestFindObjectAtPixelPositionMatching",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsPointerOriginState",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsMoveAccumulatorState",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsResizeStartGeometryState",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsResizeEdgeFlags",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsDragModeFlags",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsHoverTargetState",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsDoubleClickTimerState",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsPixmapResources",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsGraphicsContextResources",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsDecorationCanvas",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PInteractionStateOwnedByFrameHeldCollaborator",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMousePressReachesOwnerStateHandler",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMouseDragReachesOwnerStateHandler",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMouseMotionReachesOwnerHoverHandler",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMouseReleaseReachesOwnerTimerHandler",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PInteractionMotionKeepsThemeRefreshEntryPoint",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PDecorationCollaboratorOwnsRenderResources",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PDecorationResourceLifecycleRunsThroughCollaborator",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PPureUnitTestsExerciseRelocatedPressDecision",
+          "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PPureUnitTestsExerciseRelocatedDragGeometryDecision"
+        ],
+        "timeout_seconds": 480.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsPointerOriginState",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsMoveAccumulatorState",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsResizeStartGeometryState",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsResizeEdgeFlags",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsDragModeFlags",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsHoverTargetState",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsDoubleClickTimerState",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsPixmapResources",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsGraphicsContextResources",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsDecorationCanvas",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PInteractionStateOwnedByFrameHeldCollaborator",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMousePressReachesOwnerStateHandler",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMouseDragReachesOwnerStateHandler",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMouseMotionReachesOwnerHoverHandler",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMouseReleaseReachesOwnerTimerHandler",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PInteractionMotionKeepsThemeRefreshEntryPoint",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PDecorationCollaboratorOwnsRenderResources",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PDecorationResourceLifecycleRunsThroughCollaborator",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PPureUnitTestsExerciseRelocatedPressDecision",
+    "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PPureUnitTestsExerciseRelocatedDragGeometryDecision"
+  ],
+  "gates": [
+    {
+      "id": "P2P-PRESS-CLASSIFICATION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B1",
+        "REQ-BEH-T4:C2"
+      ],
+      "tests": [
+        "internal/x11/win/p2p_frame_test.go::TestP2PTitleBarCenterSelectsMoveOnly",
+        "internal/x11/win/p2p_frame_test.go::TestP2PTitleBarEdgeStripsSelectTopResize",
+        "internal/x11/win/p2p_frame_test.go::TestP2PFrameSideStripsSelectResizeAtAnyHeight",
+        "internal/x11/win/p2p_frame_test.go::TestP2PBottomStripAndCornersSelectResize",
+        "internal/x11/win/p2p_frame_test.go::TestP2PFixedSizeWindowDisablesResizeFlags",
+        "internal/x11/win/p2p_frame_test.go::TestP2PMaximizedWindowDisablesResizeFlags",
+        "internal/x11/win/p2p_frame_test.go::TestP2PPressNonPrimaryButtonIsIgnored",
+        "internal/x11/win/p2p_frame_test.go::TestP2PPressFullscreenWindowIsIgnored",
+        "internal/x11/win/p2p_frame_test.go::TestP2PPressTappableChildMarksDragIgnored",
+        "internal/x11/win/p2p_frame_test.go::TestP2PPressUnfocusedWindowRaisesAndReturns",
+        "internal/x11/win/p2p_frame_test.go::TestP2PPressFocusedWindowRaisesAtEndOfProcessing"
+      ]
+    },
+    {
+      "id": "P2P-DRAG-GEOMETRY",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B2",
+        "REQ-BEH-T4:C3"
+      ],
+      "tests": [
+        "internal/x11/win/p2p_frame_test.go::TestP2PDragZeroDisplacementIsNoOp",
+        "internal/x11/win/p2p_frame_test.go::TestP2PDragResizeClampsNegativeDimensions",
+        "internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedUnmaximizesOutsideTitleBarBeyondThreshold",
+        "internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedStaysWithinThreshold",
+        "internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedThresholdBoundary"
+      ]
+    },
+    {
+      "id": "P2P-MOTION-HOVER-CURSOR",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B3",
+        "REQ-BEH-T4:C4"
+      ],
+      "tests": [
+        "internal/x11/win/p2p_frame_test.go::TestP2PMotionSelectsCloseCursorForCloseTarget",
+        "internal/x11/win/p2p_frame_test.go::TestP2PMotionSelectsResizeCursorWhenNoTarget",
+        "internal/x11/win/p2p_frame_test.go::TestP2PMotionKeepsDefaultCursorWhenNotResizable",
+        "internal/x11/win/p2p_frame_test.go::TestP2PMotionRefreshesThemeOnlyWhenHoverChanges"
+      ]
+    },
+    {
+      "id": "P2P-RELEASE-CLICK-DOUBLECLICK",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B4"
+      ],
+      "tests": [
+        "internal/x11/win/p2p_frame_test.go::TestP2PReleaseDoubleClickTriggersDoubleTap",
+        "internal/x11/win/p2p_frame_test.go::TestP2PReleaseSingleClickOnCloseTargetTaps",
+        "internal/x11/win/p2p_frame_test.go::TestP2PReleaseOutsideTitleBarDoesNotCountClick",
+        "internal/x11/win/p2p_frame_test.go::TestP2PReleaseClearsIgnoredDragForAnyButton"
+      ]
+    },
+    {
+      "id": "P2P-NOTIFICATION-ROUTING",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B5",
+        "REQ-BEH-T4:C1"
+      ],
+      "tests": [
+        "internal/x11/win/p2p_frame_test.go::TestP2PNotificationsForwardArgumentsInOrder"
+      ]
+    },
+    {
+      "id": "P2P-ORIGINAL-HITTEST",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B1"
+      ],
+      "tests": [
+        "wm/util_test.go::TestFindObjectAtPixelPositionMatching"
+      ]
+    },
+    {
+      "id": "F2P-FRAME-RELEASES-INTERACTION-STATE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsPointerOriginState",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsMoveAccumulatorState",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsResizeStartGeometryState",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsResizeEdgeFlags",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsDragModeFlags",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsHoverTargetState",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsDoubleClickTimerState"
+      ]
+    },
+    {
+      "id": "F2P-FRAME-RELEASES-DECORATION-RESOURCES",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsPixmapResources",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsGraphicsContextResources",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PFrameDropsDecorationCanvas"
+      ]
+    },
+    {
+      "id": "F2P-INTERACTION-COLLABORATOR-WIRING",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T4:C1",
+        "REQ-BEH-T4:C2",
+        "REQ-BEH-T4:B4",
+        "REQ-BEH-T4:B5",
+        "REQ-BEH-T4:C4",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PInteractionStateOwnedByFrameHeldCollaborator",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMousePressReachesOwnerStateHandler",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMouseDragReachesOwnerStateHandler",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMouseMotionReachesOwnerHoverHandler",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PNotifyMouseReleaseReachesOwnerTimerHandler",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PInteractionMotionKeepsThemeRefreshEntryPoint"
+      ]
+    },
+    {
+      "id": "F2P-DECORATION-COLLABORATOR-WIRING",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PDecorationCollaboratorOwnsRenderResources",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PDecorationResourceLifecycleRunsThroughCollaborator"
+      ]
+    },
+    {
+      "id": "F2P-PURE-UNIT-TEST-DELIVERABLE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-005"
+      ],
+      "tests": [
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PPureUnitTestsExerciseRelocatedPressDecision",
+        "internal/x11/win/f2p_frame_responsibilities_test.go::TestF2PPureUnitTestsExerciseRelocatedDragGeometryDecision"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "5c0fc7699d1b88bb8f0e279ed6fdaa1a463bf69b198fd28d67f051af8dd87bb4",
+    "test_patch_sha256": "77c9f44a63460f79549e53096433a94f17471fcb3ad44aad2a7ae71c27a8ba50"
+  },
+  "node_relations": [],
+  "p2p": [
+    "internal/x11/win/p2p_frame_test.go::TestP2PTitleBarCenterSelectsMoveOnly",
+    "internal/x11/win/p2p_frame_test.go::TestP2PTitleBarEdgeStripsSelectTopResize",
+    "internal/x11/win/p2p_frame_test.go::TestP2PFrameSideStripsSelectResizeAtAnyHeight",
+    "internal/x11/win/p2p_frame_test.go::TestP2PBottomStripAndCornersSelectResize",
+    "internal/x11/win/p2p_frame_test.go::TestP2PFixedSizeWindowDisablesResizeFlags",
+    "internal/x11/win/p2p_frame_test.go::TestP2PMaximizedWindowDisablesResizeFlags",
+    "internal/x11/win/p2p_frame_test.go::TestP2PPressNonPrimaryButtonIsIgnored",
+    "internal/x11/win/p2p_frame_test.go::TestP2PPressFullscreenWindowIsIgnored",
+    "internal/x11/win/p2p_frame_test.go::TestP2PPressTappableChildMarksDragIgnored",
+    "internal/x11/win/p2p_frame_test.go::TestP2PPressUnfocusedWindowRaisesAndReturns",
+    "internal/x11/win/p2p_frame_test.go::TestP2PPressFocusedWindowRaisesAtEndOfProcessing",
+    "internal/x11/win/p2p_frame_test.go::TestP2PDragZeroDisplacementIsNoOp",
+    "internal/x11/win/p2p_frame_test.go::TestP2PDragResizeClampsNegativeDimensions",
+    "internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedUnmaximizesOutsideTitleBarBeyondThreshold",
+    "internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedStaysWithinThreshold",
+    "internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedThresholdBoundary",
+    "internal/x11/win/p2p_frame_test.go::TestP2PMotionSelectsCloseCursorForCloseTarget",
+    "internal/x11/win/p2p_frame_test.go::TestP2PMotionSelectsResizeCursorWhenNoTarget",
+    "internal/x11/win/p2p_frame_test.go::TestP2PMotionKeepsDefaultCursorWhenNotResizable",
+    "internal/x11/win/p2p_frame_test.go::TestP2PMotionRefreshesThemeOnlyWhenHoverChanges",
+    "internal/x11/win/p2p_frame_test.go::TestP2PReleaseDoubleClickTriggersDoubleTap",
+    "internal/x11/win/p2p_frame_test.go::TestP2PReleaseSingleClickOnCloseTargetTaps",
+    "internal/x11/win/p2p_frame_test.go::TestP2PReleaseOutsideTitleBarDoesNotCountClick",
+    "internal/x11/win/p2p_frame_test.go::TestP2PReleaseClearsIgnoredDragForAnyButton",
+    "internal/x11/win/p2p_frame_test.go::TestP2PNotificationsForwardArgumentsInOrder",
+    "wm/util_test.go::TestFindObjectAtPixelPositionMatching"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": true,
+  "restoration_paths": [
+    "internal/x11/screenshot_test.go",
+    "internal/x11/wm/desk_test.go",
+    "internal/x11/wm/stack_test.go",
+    "theme/theme_test.go",
+    "wm/notifications_test.go",
+    "wm/position_test.go",
+    "wm/shortcut_test.go",
+    "wm/util_test.go"
+  ],
+  "reward_mode": "VERIFIER_ONLY",
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-fynedesk-frame-ad6522ad",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "internal/x11/win/f2p_frame_responsibilities_test.go",
+    "internal/x11/win/p2p_frame_test.go",
+    "internal/x11/win/p2p_xserver_test.go",
+    "test/f2p/runner.go",
+    "test/p2p/runner.go"
+  ],
+  "timeout_seconds": 480,
+  "verifier": "/tests/verifier/verifier.py"
+}

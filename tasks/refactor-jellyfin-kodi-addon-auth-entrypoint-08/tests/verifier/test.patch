@@ -1,0 +1,2005 @@
+diff --git a/tests/test_f2p_single_stored_data_load.py b/tests/test_f2p_single_stored_data_load.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8e8488aa4c6d25cc402cb78c3400482857f7129a
+--- /dev/null
++++ b/tests/test_f2p_single_stored_data_load.py
+@@ -0,0 +1,726 @@
++# -*- coding: utf-8 -*-
++"""F2P coverage for the single stored-connection-data load.
++
++The refactor moves the addon data read out of the four call sites and into the
++communication layer, so the stored file must be loaded once and reused instead
++of being read again by every item helper instance or every entry-point
++invocation.  The behaviour the addon exposes for configured and unconfigured
++data is already pinned by the P2P suite; the observable delta owned here is the
++disk-read side effect and the loaded state it leaves behind.
++
++Every scenario runs in a fresh interpreter: the load may be cached for the rest
++of a run, so scenarios must not share a process.  Each child installs an audit
++hook that counts *read* opens of the addon data file, which makes the number of
++stored-data reads observable without pinning where the loader lives.  Both the
++``special://profile/addon_data`` route and the ``database.ADDON_DATA`` route
++resolve to the scenario's temporary addon data directory.
++
++The logging handler reads the stored data through the stored-credential
++accessor when it is first imported.  That read belongs to the logging consumer
++and is therefore done before the counter is reset, so the counted region only
++contains the reads caused by the consumer under test.
++"""
++
++import json
++import os
++import subprocess
++import sys
++from pathlib import Path
++
++REPO_ROOT = Path(__file__).resolve().parents[1]
++
++WARNING = "Addon appears to not be configured yet"
++RESULT_PREFIX = "F2P_RESULT "
++
++SERVER = {
++    "Id": "server-1",
++    "address": "http://jellyfin.example:8096",
++    "Name": "Jellyfin",
++    "UserId": "user-1",
++    "AccessToken": "token-1",
++    "paths": {"/media/remote": "/media/local"},
++}
++
++MOVIE = {"Type": "Movie", "Name": "Movie", "Path": "/media/remote/movie.mkv"}
++
++AUTH_KEYS = ("auth.server", "auth.server-name", "auth.user_id", "auth.token")
++
++EXPECTED_AUTH = {
++    "auth.server": SERVER["address"],
++    "auth.server-name": SERVER["Name"],
++    "auth.user_id": SERVER["UserId"],
++    "auth.token": SERVER["AccessToken"],
++}
++
++DRIVER_SOURCE = r'''# -*- coding: utf-8 -*-
++"""Execute one stored-data-load scenario in a fresh interpreter."""
++
++import json
++import logging
++import os
++import sys
++
++DATA_DIR = os.environ["F2P_DATA_DIR"]
++SCENARIO = os.environ["F2P_SCENARIO"]
++DATA_FILE = os.path.join(DATA_DIR, "data.json")
++
++sys.path.insert(0, os.environ["F2P_REPO_ROOT"])
++
++import xbmcvfs  # noqa: E402
++
++_ADDON_DATA_PREFIX = "special://profile/addon_data/plugin.video.jellyfin"
++_real_translate_path = xbmcvfs.translatePath
++
++
++def _translate_path(path):
++    if path.startswith(_ADDON_DATA_PREFIX):
++        return DATA_DIR + path[len(_ADDON_DATA_PREFIX):]
++
++    return _real_translate_path(path)
++
++
++xbmcvfs.translatePath = _translate_path
++os.chdir(DATA_DIR)
++
++_ABSOLUTE_DATA_FILE = os.path.abspath(DATA_FILE)
++READ_OPENS = []
++IMPORT_OPENS = []
++
++
++def _count_read_open(event, args):
++    """Count read opens of the stored addon data file."""
++
++    if event != "open":
++        return
++
++    try:
++        path = args[0]
++        mode = args[1]
++        flags = args[2] if len(args) > 2 else None
++    except (IndexError, TypeError):
++        return
++
++    if isinstance(path, int):
++        return
++
++    try:
++        if os.path.abspath(str(path)) != _ABSOLUTE_DATA_FILE:
++            return
++    except (TypeError, ValueError):
++        return
++
++    if isinstance(mode, str):
++        if any(flag in mode for flag in "wax+"):
++            return
++    elif isinstance(flags, int):
++        if flags & (
++            os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
++        ):
++            return
++
++    READ_OPENS.append(str(path))
++
++
++sys.addaudithook(_count_read_open)
++
++MOVIE = {"Type": "Movie", "Name": "Movie", "Path": "/media/remote/movie.mkv"}
++
++WARNING_TEXT = "Addon appears to not be configured yet"
++WARNINGS = []
++
++
++class _WarningCapture(logging.Handler):
++    def emit(self, record):
++        try:
++            message = record.getMessage()
++        except Exception:
++            return
++
++        if WARNING_TEXT in message:
++            WARNINGS.append(message)
++
++
++logging.getLogger().addHandler(_WarningCapture())
++logging.getLogger("JELLYFIN").setLevel(logging.DEBUG)
++
++
++def _load_modules():
++    """Import the modules a scenario uses, including the logging handler."""
++
++    import jellyfin_kodi.helper.loghandler  # noqa: F401
++    from jellyfin_kodi.jellyfin import Jellyfin  # noqa: F401
++    from jellyfin_kodi.entrypoint import default  # noqa: F401
++    from jellyfin_kodi.entrypoint.context import Context  # noqa: F401
++    from jellyfin_kodi.objects.actions import Actions  # noqa: F401
++    from jellyfin_kodi.helper.api import API  # noqa: F401
++
++
++def _begin():
++    """Start the counted region after the consumer-independent reads."""
++
++    global IMPORT_OPENS
++
++    _load_modules()
++    data_contents = os.environ.get("F2P_DATA_CONTENTS")
++    if data_contents is not None:
++        with open(DATA_FILE, "w") as outfile:
++            outfile.write(data_contents)
++    IMPORT_OPENS = list(READ_OPENS)
++    del READ_OPENS[:]
++
++
++def _client():
++    from jellyfin_kodi.jellyfin import Jellyfin
++
++    Jellyfin().construct()
++
++    return Jellyfin(None).get_client()
++
++
++def _list_item():
++    class VideoInfoTag(object):
++        def getDbId(self):
++            return None
++
++        def getMediaType(self):
++            return None
++
++    class ListItem(object):
++        def getVideoInfoTag(self):
++            return VideoInfoTag()
++
++        def getProperty(self, name):
++            return {"jellyfinid": "item-1"}.get(name)
++
++    return ListItem()
++
++
++def _error_name(error):
++    return None if error is None else type(error).__name__
++
++
++def _call(func):
++    """Run one site call and report its result or the raised error name."""
++
++    try:
++        return func(), None
++    except BaseException as error:
++        return None, _error_name(error)
++
++
++def _path_data(helper):
++    return getattr(helper, "path_data", None)
++
++
++def _emit(payload):
++    payload = dict(payload)
++    payload["warnings"] = list(WARNINGS)
++    payload["import_opens"] = len(IMPORT_OPENS)
++    payload["opens"] = len(READ_OPENS)
++    sys.stdout.write("F2P_RESULT " + json.dumps(payload) + "\n")
++    sys.stdout.flush()
++
++
++def _swap_stored_data():
++    """Rewrite the stored file as invalid data without changing its identity."""
++
++    stat = os.stat(DATA_FILE)
++
++    with open(DATA_FILE, "wb") as outfile:
++        outfile.write(b"!" * stat.st_size)
++
++    os.utime(DATA_FILE, ns=(stat.st_atime_ns, stat.st_mtime_ns))
++
++    after = os.stat(DATA_FILE)
++
++    return {
++        "identity_preserved": (
++            after.st_mtime_ns == stat.st_mtime_ns and after.st_size == stat.st_size
++        ),
++        "size": after.st_size,
++    }
++
++
++def helper_three():
++    from jellyfin_kodi.helper.api import API
++
++    _begin()
++    _client()
++
++    helpers = [API(dict(MOVIE)) for _ in range(3)]
++
++    _emit({"path_data": [_path_data(helper) for helper in helpers]})
++
++
++def helper_shapes():
++    from jellyfin_kodi.helper.api import API
++
++    _begin()
++    _client()
++
++    plain = API(dict(MOVIE))
++    with_server = API(dict(MOVIE), "http://artwork.example")
++    again = API(dict(MOVIE), "http://artwork.example")
++
++    _emit(
++        {
++            "path_data": [
++                _path_data(plain),
++                _path_data(with_server),
++                _path_data(again),
++            ],
++            "server": with_server.server,
++            "artwork": with_server.get_artwork("item-1", "Primary"),
++        }
++    )
++
++
++def helper_delta():
++    from jellyfin_kodi.helper.api import API
++
++    _begin()
++    _client()
++
++    first = API(dict(MOVIE))
++    opens_after_first = len(READ_OPENS)
++    rest = [API(dict(MOVIE)) for _ in range(3)]
++
++    _emit(
++        {
++            "opens_after_first": opens_after_first,
++            "extra_opens": len(READ_OPENS) - opens_after_first,
++            "path_data": [_path_data(first)]
++            + [_path_data(helper) for helper in rest],
++        }
++    )
++
++
++def playback_twice():
++    sys.argv = ["plugin://plugin.video.jellyfin/", "1", "?mode=settings"]
++
++    from jellyfin_kodi.entrypoint import default as default_module
++
++    _begin()
++
++    client = _client()
++    client.jellyfin.config.data["app.session"] = "session-1"
++    client.jellyfin.post_session = lambda *args, **kwargs: None
++
++    errors = []
++    _, error = _call(default_module.Events)
++    errors.append(error)
++
++    default_module.QUERY_STRING = "?mode=playlist&id=item-1"
++    _, error = _call(default_module.Events)
++    errors.append(error)
++
++    _emit({"data": dict(client.jellyfin.config.data), "errors": errors})
++
++
++def actions_twice():
++    from jellyfin_kodi.objects.actions import Actions
++
++    _begin()
++    client = _client()
++
++    errors = []
++    servers = []
++
++    for _ in range(2):
++        actions, error = _call(lambda: Actions(None, None))
++        errors.append(error)
++        servers.append(None if actions is None else actions.server)
++
++    _emit(
++        {
++            "servers": servers,
++            "errors": errors,
++            "data": dict(client.jellyfin.config.data),
++        }
++    )
++
++
++def context_twice():
++    sys.listitem = _list_item()
++
++    from jellyfin_kodi.entrypoint.context import Context
++
++    _begin()
++    client = _client()
++    client.jellyfin.get_item = lambda item_id: None
++
++    errors = []
++
++    for transcode in (False, True):
++        _, error = _call(lambda: Context(transcode))
++        errors.append(error)
++
++    _emit({"data": dict(client.jellyfin.config.data), "errors": errors})
++
++
++def all_sites():
++    sys.argv = ["plugin://plugin.video.jellyfin/", "1", "?mode=settings"]
++    sys.listitem = _list_item()
++
++    from jellyfin_kodi.entrypoint import default as default_module
++    from jellyfin_kodi.entrypoint.context import Context
++    from jellyfin_kodi.objects.actions import Actions
++    from jellyfin_kodi.helper.api import API
++
++    _begin()
++    client = _client()
++    client.jellyfin.get_item = lambda item_id: None
++
++    errors = []
++
++    for site in (
++        default_module.Events,
++        Context,
++        lambda: Actions(None, None),
++        lambda: API(dict(MOVIE)),
++    ):
++        _, error = _call(site)
++        errors.append(error)
++
++    actions = Actions(None, None)
++    helper = API(dict(MOVIE))
++
++    _emit(
++        {
++            "data": dict(client.jellyfin.config.data),
++            "errors": errors,
++            "server": actions.server,
++            "path_data": _path_data(helper),
++        }
++    )
++
++
++def helper_after_playback():
++    sys.argv = ["plugin://plugin.video.jellyfin/", "1", "?mode=settings"]
++
++    from jellyfin_kodi.entrypoint import default as default_module
++    from jellyfin_kodi.helper.api import API
++
++    _begin()
++    client = _client()
++
++    default_module.Events()
++    opens_after_playback = len(READ_OPENS)
++
++    helpers = [API(dict(MOVIE)) for _ in range(3)]
++
++    _emit(
++        {
++            "opens_after_playback": opens_after_playback,
++            "extra_opens": len(READ_OPENS) - opens_after_playback,
++            "path_data": [_path_data(helper) for helper in helpers],
++            "data": dict(client.jellyfin.config.data),
++        }
++    )
++
++
++def playback_after_helper():
++    sys.argv = ["plugin://plugin.video.jellyfin/", "1", "?mode=settings"]
++
++    from jellyfin_kodi.entrypoint import default as default_module
++    from jellyfin_kodi.helper.api import API
++
++    _begin()
++    client = _client()
++
++    helper = API(dict(MOVIE))
++    opens_after_helper = len(READ_OPENS)
++
++    default_module.Events()
++
++    _emit(
++        {
++            "opens_after_helper": opens_after_helper,
++            "extra_opens": len(READ_OPENS) - opens_after_helper,
++            "path_data": _path_data(helper),
++            "data": dict(client.jellyfin.config.data),
++        }
++    )
++
++
++def swap_helper():
++    from jellyfin_kodi.helper.api import API
++
++    _begin()
++    _client()
++
++    loaded = API(dict(MOVIE))
++    swap = _swap_stored_data()
++    helpers = [API(dict(MOVIE)) for _ in range(3)]
++
++    _emit(
++        {
++            "swap": swap,
++            "loaded_path_data": _path_data(loaded),
++            "path_data": [_path_data(helper) for helper in helpers],
++        }
++    )
++
++
++def swap_playback():
++    sys.argv = ["plugin://plugin.video.jellyfin/", "1", "?mode=settings"]
++
++    from jellyfin_kodi.entrypoint import default as default_module
++    from jellyfin_kodi.helper.api import API
++
++    _begin()
++    client = _client()
++
++    API(dict(MOVIE))
++    swap = _swap_stored_data()
++
++    _, error = _call(default_module.Events)
++
++    _emit(
++        {
++            "swap": swap,
++            "error": error,
++            "data": dict(client.jellyfin.config.data),
++        }
++    )
++
++
++def swap_actions():
++    from jellyfin_kodi.objects.actions import Actions
++    from jellyfin_kodi.helper.api import API
++
++    _begin()
++    client = _client()
++
++    API(dict(MOVIE))
++    swap = _swap_stored_data()
++
++    actions, error = _call(lambda: Actions(None, None))
++
++    _emit(
++        {
++            "swap": swap,
++            "error": error,
++            "server": None if actions is None else actions.server,
++            "data": dict(client.jellyfin.config.data),
++        }
++    )
++
++
++def swap_context():
++    sys.listitem = _list_item()
++
++    from jellyfin_kodi.entrypoint.context import Context
++    from jellyfin_kodi.helper.api import API
++
++    _begin()
++    client = _client()
++    client.jellyfin.get_item = lambda item_id: None
++
++    API(dict(MOVIE))
++    swap = _swap_stored_data()
++
++    _, error = _call(Context)
++
++    _emit(
++        {
++            "swap": swap,
++            "error": error,
++            "data": dict(client.jellyfin.config.data),
++        }
++    )
++
++
++SCENARIOS = {
++    "helper_three": helper_three,
++    "helper_shapes": helper_shapes,
++    "helper_delta": helper_delta,
++    "playback_twice": playback_twice,
++    "actions_twice": actions_twice,
++    "context_twice": context_twice,
++    "all_sites": all_sites,
++    "helper_after_playback": helper_after_playback,
++    "playback_after_helper": playback_after_helper,
++    "swap_helper": swap_helper,
++    "swap_playback": swap_playback,
++    "swap_actions": swap_actions,
++    "swap_context": swap_context,
++}
++
++SCENARIOS[SCENARIO]()
++'''
++
++
++def run_scenario(tmp_path, scenario, data_contents=None):
++    """Run one scenario in a fresh interpreter and return its reported values."""
++
++    data_dir = tmp_path / "addon_data"
++    data_dir.mkdir()
++
++    (data_dir / "data.json").write_text(json.dumps({"Servers": [SERVER]}))
++
++    driver = tmp_path / "f2p_scenario_driver.py"
++    driver.write_text(DRIVER_SOURCE)
++
++    env = dict(os.environ)
++    env["F2P_REPO_ROOT"] = str(REPO_ROOT)
++    env["F2P_DATA_DIR"] = str(data_dir)
++    env["F2P_SCENARIO"] = scenario
++    if data_contents is not None:
++        env["F2P_DATA_CONTENTS"] = data_contents
++    env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
++
++    completed = subprocess.run(
++        [sys.executable, str(driver)],
++        cwd=str(data_dir),
++        env=env,
++        stdout=subprocess.PIPE,
++        stderr=subprocess.PIPE,
++        timeout=120,
++    )
++
++    stdout = completed.stdout.decode("utf-8", "replace")
++    stderr = completed.stderr.decode("utf-8", "replace")
++
++    results = [
++        line[len(RESULT_PREFIX):]
++        for line in stdout.splitlines()
++        if line.startswith(RESULT_PREFIX)
++    ]
++
++    assert results, "scenario {!r} produced no result\nstdout:\n{}\nstderr:\n{}".format(
++        scenario, stdout, stderr
++    )
++
++    return json.loads(results[-1])
++
++
++def auth_values(payload):
++    data = payload["data"]
++
++    return {key: data.get(key) for key in AUTH_KEYS}
++
++
++def assert_swap_preserved(payload):
++    assert payload["swap"]["identity_preserved"] is True, (
++        "the stored data file identity changed, so the scenario premise is "
++        "broken: {!r}".format(payload["swap"])
++    )
++
++
++def test_item_helper_reads_stored_data_once_for_three_instances(tmp_path):
++    payload = run_scenario(tmp_path, "helper_three")
++
++    assert payload["opens"] <= 1
++    assert payload["path_data"] == [SERVER["paths"]] * 3
++
++
++def test_item_helper_reads_stored_data_once_for_both_construction_shapes(tmp_path):
++    payload = run_scenario(tmp_path, "helper_shapes")
++
++    assert payload["opens"] <= 1
++    assert payload["path_data"] == [SERVER["paths"]] * 3
++    assert payload["server"] == "http://artwork.example"
++    assert payload["artwork"] == (
++        "http://artwork.example/Items/item-1/Images/Primary/0?Format=original"
++    )
++
++
++def test_item_helper_adds_no_stored_data_read_after_first_instance(tmp_path):
++    cases = (("configured", None), ("unreadable_json", "{invalid"))
++    for name, data_contents in cases:
++        directory = tmp_path / name
++        directory.mkdir()
++        payload = run_scenario(directory, "helper_delta", data_contents=data_contents)
++
++        assert payload["extra_opens"] == 0
++        if data_contents is None:
++            assert payload["path_data"] == [SERVER["paths"]] * 4
++
++
++def test_playback_entry_point_reads_stored_data_once_across_modes(tmp_path):
++    payload = run_scenario(tmp_path, "playback_twice")
++
++    assert payload["opens"] <= 1
++    assert payload["errors"] == [None, None]
++    assert auth_values(payload) == EXPECTED_AUTH
++
++
++def test_playback_actions_read_stored_data_once_across_constructions(tmp_path):
++    payload = run_scenario(tmp_path, "actions_twice")
++
++    assert payload["opens"] <= 1
++    assert payload["errors"] == [None, None]
++    assert payload["servers"] == [SERVER["address"], SERVER["address"]]
++    assert auth_values(payload) == EXPECTED_AUTH
++
++
++def test_context_entry_point_reads_stored_data_once_across_modes(tmp_path):
++    payload = run_scenario(tmp_path, "context_twice")
++
++    assert payload["opens"] <= 1
++    assert payload["errors"] == [None, None]
++    assert auth_values(payload) == EXPECTED_AUTH
++
++
++def test_all_four_consumers_share_one_stored_data_read(tmp_path):
++    payload = run_scenario(tmp_path, "all_sites")
++
++    assert payload["opens"] <= 1
++    assert payload["errors"] == [None, None, None, None]
++    assert auth_values(payload) == EXPECTED_AUTH
++    assert payload["server"] == SERVER["address"]
++    assert payload["path_data"] == SERVER["paths"]
++
++
++def test_item_helper_adds_no_stored_data_read_after_playback_entry_point(tmp_path):
++    payload = run_scenario(tmp_path, "helper_after_playback")
++
++    assert payload["extra_opens"] == 0
++    assert payload["path_data"] == [SERVER["paths"]] * 3
++    assert auth_values(payload) == EXPECTED_AUTH
++
++
++def test_playback_entry_point_adds_no_stored_data_read_after_item_helper(tmp_path):
++    payload = run_scenario(tmp_path, "playback_after_helper")
++
++    assert payload["extra_opens"] == 0
++    assert payload["path_data"] == SERVER["paths"]
++    assert auth_values(payload) == EXPECTED_AUTH
++
++
++def test_item_helper_paths_survive_stored_data_change_after_load(tmp_path):
++    payload = run_scenario(tmp_path, "swap_helper")
++
++    assert_swap_preserved(payload)
++    assert payload["loaded_path_data"] == SERVER["paths"]
++    assert payload["path_data"] == [SERVER["paths"]] * 3
++    assert payload["warnings"] == []
++
++
++def test_playback_entry_point_injects_loaded_values_after_stored_data_change(tmp_path):
++    payload = run_scenario(tmp_path, "swap_playback")
++
++    assert_swap_preserved(payload)
++    assert payload["error"] is None
++    assert auth_values(payload) == EXPECTED_AUTH
++    assert payload["warnings"] == []
++
++
++def test_playback_actions_inject_loaded_values_after_stored_data_change(tmp_path):
++    payload = run_scenario(tmp_path, "swap_actions")
++
++    assert_swap_preserved(payload)
++    assert payload["error"] is None
++    assert payload["server"] == SERVER["address"]
++    assert auth_values(payload) == EXPECTED_AUTH
++    assert payload["warnings"] == []
++
++
++def test_context_entry_point_injects_loaded_values_after_stored_data_change(tmp_path):
++    payload = run_scenario(tmp_path, "swap_context")
++
++    assert_swap_preserved(payload)
++    assert payload["error"] is None
++    assert auth_values(payload) == EXPECTED_AUTH
++    assert payload["warnings"] == []
+diff --git a/tests/test_p2p_connection_data_regression.py b/tests/test_p2p_connection_data_regression.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e8fc687833a034adb1c47636ea408804dc6cb293
+--- /dev/null
++++ b/tests/test_p2p_connection_data_regression.py
+@@ -0,0 +1,744 @@
++# -*- coding: utf-8 -*-
++"""P2P regression coverage for the stored addon connection data refactor.
++
++The addon stores its connection data (server address, server name, signed-in
++user id, access token and per-server path replacements) in one data file that
++used to be read by four independent call sites.  The refactor moves that read
++into the communication layer, so the tests here pin down the behaviour that
++must survive it: which values reach ``api_client.config.data``, how an
++unconfigured addon is reported, which failure the context entry point keeps
++propagating, and which path replacements the item helper applies.
++
++Every scenario runs in a fresh interpreter.  The refactor is allowed to load
++the stored connection data once and reuse it for the rest of a run, so
++scenarios that use different stored data must not share a process.  The child
++process resolves both the ``translate_path`` route and the ``database.ADDON_DATA``
++route to the scenario's temporary addon data directory, which keeps the
++scenarios independent of where the loader lives.
++"""
++
++import json
++import os
++import subprocess
++import sys
++from pathlib import Path
++
++REPO_ROOT = Path(__file__).resolve().parents[1]
++
++WARNING = "Addon appears to not be configured yet"
++RESULT_PREFIX = "P2P_RESULT "
++
++SERVER = {
++    "Id": "server-1",
++    "address": "http://jellyfin.example:8096",
++    "Name": "Jellyfin",
++    "UserId": "user-1",
++    "AccessToken": "token-1",
++    "paths": {"/media/remote": "/media/local"},
++}
++
++SECOND_SERVER = {
++    "Id": "server-2",
++    "address": "http://second.example:8096",
++    "Name": "Second",
++    "UserId": "user-2",
++    "AccessToken": "token-2",
++    "paths": {"/other/remote": "/other/local"},
++}
++
++SERVER_WITHOUT_PATHS = {
++    "Id": "server-1",
++    "address": "http://jellyfin.example:8096",
++    "Name": "Jellyfin",
++    "UserId": "user-1",
++    "AccessToken": "token-1",
++}
++
++SERVER_WITHOUT_OPTIONAL_FIELDS = {
++    "Id": "server-1",
++    "address": "http://only-address.example:8096",
++}
++
++LEGACY_SERVER = {
++    "Id": "server-1",
++    "RemoteAddress": "http://remote.example:8096",
++    "ManualAddress": "http://manual.example:8096",
++    "LocalAddress": "http://local.example:8096",
++    "LastConnectionMode": "Manual",
++    "Name": "Jellyfin",
++    "UserId": "user-1",
++    "AccessToken": "token-1",
++}
++
++MOVIE = {"Type": "Movie", "Name": "Movie", "Path": "/media/remote/movie.mkv"}
++
++DRIVER_SOURCE = r'''# -*- coding: utf-8 -*-
++"""Execute one stored connection data scenario in a fresh interpreter."""
++
++import json
++import logging
++import os
++import sys
++
++DATA_DIR = os.environ["P2P_DATA_DIR"]
++SCENARIO = os.environ["P2P_SCENARIO"]
++
++sys.path.insert(0, os.environ["P2P_REPO_ROOT"])
++
++import xbmcvfs  # noqa: E402
++
++_ADDON_DATA_PREFIX = "special://profile/addon_data/plugin.video.jellyfin"
++_real_translate_path = xbmcvfs.translatePath
++
++
++def _translate_path(path):
++    if path.startswith(_ADDON_DATA_PREFIX):
++        return DATA_DIR + path[len(_ADDON_DATA_PREFIX):]
++
++    return _real_translate_path(path)
++
++
++xbmcvfs.translatePath = _translate_path
++os.chdir(DATA_DIR)
++
++WARNING_TEXT = "Addon appears to not be configured yet"
++WARNINGS = []
++
++
++class _WarningCapture(logging.Handler):
++    def emit(self, record):
++        try:
++            message = record.getMessage()
++        except Exception:
++            return
++
++        if WARNING_TEXT in message:
++            WARNINGS.append(message)
++
++
++logging.getLogger().addHandler(_WarningCapture())
++logging.getLogger("JELLYFIN").setLevel(logging.DEBUG)
++
++
++def _client():
++    from jellyfin_kodi.jellyfin import Jellyfin
++
++    Jellyfin().construct()
++
++    return Jellyfin(None).get_client()
++
++
++def _list_item():
++    class VideoInfoTag(object):
++        def getDbId(self):
++            return None
++
++        def getMediaType(self):
++            return None
++
++    class ListItem(object):
++        def getVideoInfoTag(self):
++            return VideoInfoTag()
++
++        def getProperty(self, name):
++            return {"jellyfinid": "item-1"}.get(name)
++
++    return ListItem()
++
++
++def _error_name(error):
++    return None if error is None else type(error).__name__
++
++
++def _emit(payload):
++    payload = dict(payload)
++    payload["warnings"] = list(WARNINGS)
++    sys.stdout.write("P2P_RESULT " + json.dumps(payload) + "\n")
++    sys.stdout.flush()
++
++
++def actions_configured():
++    from jellyfin_kodi.objects.actions import Actions
++
++    client = _client()
++    actions = Actions(None, None)
++
++    _emit({"data": dict(client.jellyfin.config.data), "server": actions.server})
++
++
++def actions_unconfigured():
++    from jellyfin_kodi.objects.actions import Actions
++
++    client = _client()
++    client.jellyfin.config.data["auth.server"] = "http://preexisting.example"
++
++    error = None
++    server = None
++
++    try:
++        server = Actions(None, None).server
++    except BaseException as exc:
++        error = exc
++
++    _emit(
++        {
++            "data": dict(client.jellyfin.config.data),
++            "server": server,
++            "error": _error_name(error),
++        }
++    )
++
++
++def events_configured():
++    sys.argv = ["plugin://plugin.video.jellyfin/", "1", ""]
++
++    from jellyfin_kodi.entrypoint.default import Events
++
++    client = _client()
++
++    error = None
++
++    try:
++        Events()
++    except BaseException as exc:
++        error = exc
++
++    _emit({"data": dict(client.jellyfin.config.data), "error": _error_name(error)})
++
++
++def context_configured():
++    sys.listitem = _list_item()
++
++    from jellyfin_kodi.entrypoint.context import Context
++
++    client = _client()
++    client.jellyfin.get_item = lambda item_id: None
++
++    error = None
++
++    try:
++        Context()
++    except BaseException as exc:
++        error = exc
++
++    _emit(
++        {
++            "data": dict(client.jellyfin.config.data),
++            "error": _error_name(error),
++            "error_is_oserror": isinstance(error, OSError),
++        }
++    )
++
++
++def api_configured():
++    from jellyfin_kodi.helper.api import API
++
++    api = API(dict(MOVIE))
++
++    _emit(
++        {
++            "path_data": api.path_data,
++            "file_path": api.get_file_path(),
++            "unmatched": api.get_file_path("/other/place/movie.mkv"),
++        }
++    )
++
++
++def api_server_argument():
++    from jellyfin_kodi.helper.api import API
++
++    api = API(dict(MOVIE), "http://artwork.example")
++
++    _emit(
++        {
++            "server": api.server,
++            "file_path": api.get_file_path(),
++            "artwork": api.get_artwork("item-1", "Primary"),
++        }
++    )
++
++
++def api_unconfigured():
++    from jellyfin_kodi.helper.api import API
++
++    error = None
++
++    try:
++        API(dict(MOVIE))
++    except BaseException as exc:
++        error = exc
++
++    _emit({"error": _error_name(error)})
++
++
++def stored_accessor():
++    from jellyfin_kodi import database
++
++    error = None
++    credentials = None
++
++    try:
++        credentials = database.get_credentials()
++    except BaseException as exc:
++        error = exc
++
++    _emit({"credentials": credentials, "error": _error_name(error)})
++
++
++def stored_accessor_round_trip():
++    from jellyfin_kodi import database
++
++    database.get_credentials()
++
++    database.save_credentials(
++        {
++            "Servers": [
++                {
++                    "Id": "server-2",
++                    "address": "http://saved.example:8096",
++                    "Name": "Saved",
++                    "UserId": "user-2",
++                    "AccessToken": "token-2",
++                    "paths": {"/saved/remote": "/saved/local"},
++                }
++            ]
++        }
++    )
++
++    _emit({"credentials": database.get_credentials()})
++
++
++
++def actions_server_id():
++    from jellyfin_kodi.jellyfin import Jellyfin
++    from jellyfin_kodi.objects.actions import Actions
++
++    Jellyfin().construct()
++    Jellyfin("server-1").construct()
++
++    default_client = Jellyfin(None).get_client()
++    server_client = Jellyfin("server-1").get_client()
++
++    actions = Actions("server-1", None)
++
++    _emit(
++        {
++            "server": actions.server,
++            "server_data": dict(server_client.jellyfin.config.data),
++            "default_data": dict(default_client.jellyfin.config.data),
++        }
++    )
++
++
++def stored_accessor_legacy_migration():
++    from jellyfin_kodi import database
++
++    _emit({"credentials": database.get_credentials()})
++
++
++def stored_accessor_logging_consumer():
++    from jellyfin_kodi.helper import loghandler
++
++    handler = loghandler.LogHandler()
++
++    _emit(
++        {
++            "servers": handler.sensitive["Server"],
++            "tokens": handler.sensitive["Token"],
++        }
++    )
++
++
++def stored_accessor_path_replacements_consumer():
++    import jellyfin_kodi.helper.utils as utils
++
++    utils.dialog = lambda *args, **kwargs: -1
++    utils.path_replacements()
++
++    from jellyfin_kodi import database
++
++    _emit({"credentials": database.get_credentials()})
++
++MOVIE = {"Type": "Movie", "Name": "Movie", "Path": "/media/remote/movie.mkv"}
++
++SCENARIOS = {
++    "actions_configured": actions_configured,
++    "actions_unconfigured": actions_unconfigured,
++    "events_configured": events_configured,
++    "context_configured": context_configured,
++    "api_configured": api_configured,
++    "api_server_argument": api_server_argument,
++    "api_unconfigured": api_unconfigured,
++    "stored_accessor": stored_accessor,
++    "stored_accessor_round_trip": stored_accessor_round_trip,
++    "actions_server_id": actions_server_id,
++    "stored_accessor_legacy_migration": stored_accessor_legacy_migration,
++    "stored_accessor_logging_consumer": stored_accessor_logging_consumer,
++    "stored_accessor_path_replacements_consumer": stored_accessor_path_replacements_consumer,
++}
++
++SCENARIOS[SCENARIO]()
++'''
++
++
++def run_scenario(tmp_path, scenario, servers=None, data_file="file", payload=None,
++                 driver_source=None):
++    """Run one scenario in a fresh interpreter and return its reported values."""
++
++    data_dir = tmp_path / "addon_data"
++    data_dir.mkdir()
++
++    if data_file == "file":
++        stored = (
++            payload
++            if payload is not None
++            else {"Servers": [SERVER] if servers is None else servers}
++        )
++        (data_dir / "data.json").write_text(json.dumps(stored))
++    elif data_file == "directory":
++        (data_dir / "data.json").mkdir()
++
++    driver = tmp_path / "scenario_driver.py"
++    driver.write_text(DRIVER_SOURCE if driver_source is None else driver_source)
++
++    env = dict(os.environ)
++    env["P2P_REPO_ROOT"] = str(REPO_ROOT)
++    env["P2P_DATA_DIR"] = str(data_dir)
++    env["P2P_SCENARIO"] = scenario
++    env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
++
++    completed = subprocess.run(
++        [sys.executable, str(driver)],
++        cwd=str(data_dir),
++        env=env,
++        stdout=subprocess.PIPE,
++        stderr=subprocess.PIPE,
++        timeout=120,
++    )
++
++    stdout = completed.stdout.decode("utf-8", "replace")
++    stderr = completed.stderr.decode("utf-8", "replace")
++
++    results = [
++        line[len(RESULT_PREFIX):]
++        for line in stdout.splitlines()
++        if line.startswith(RESULT_PREFIX)
++    ]
++
++    assert results, "scenario {!r} produced no result\nstdout:\n{}\nstderr:\n{}".format(
++        scenario, stdout, stderr
++    )
++
++    return json.loads(results[-1])
++
++
++def auth_values(payload):
++    data = payload["data"]
++
++    return {
++        key: data.get(key)
++        for key in ("auth.server", "auth.server-name", "auth.user_id", "auth.token")
++    }
++
++
++def assert_warned(payload):
++    assert any(
++        message.startswith(WARNING) for message in payload["warnings"]
++    ), "expected the stored-data warning, got {!r}".format(payload["warnings"])
++
++
++def test_actions_without_client_injects_first_server_auth(tmp_path):
++    payload = run_scenario(
++        tmp_path, "actions_configured", servers=[SERVER, SECOND_SERVER]
++    )
++
++    assert auth_values(payload) == {
++        "auth.server": SERVER["address"],
++        "auth.server-name": SERVER["Name"],
++        "auth.user_id": SERVER["UserId"],
++        "auth.token": SERVER["AccessToken"],
++    }
++    assert payload["server"] == SERVER["address"]
++
++
++def test_actions_ignores_second_stored_server(tmp_path):
++    payload = run_scenario(
++        tmp_path, "actions_configured", servers=[SERVER, SECOND_SERVER]
++    )
++
++    data = payload["data"]
++
++    assert data["auth.server"] == SERVER["address"]
++    assert data["auth.server-name"] == SERVER["Name"]
++    assert data["auth.user_id"] == SERVER["UserId"]
++    assert data["auth.token"] == SERVER["AccessToken"]
++    assert SECOND_SERVER["address"] not in data.values()
++
++
++def test_actions_sets_none_for_absent_auth_fields(tmp_path):
++    payload = run_scenario(
++        tmp_path, "actions_configured", servers=[SERVER_WITHOUT_OPTIONAL_FIELDS]
++    )
++
++    data = payload["data"]
++
++    assert data["auth.server"] == SERVER_WITHOUT_OPTIONAL_FIELDS["address"]
++    assert "auth.server-name" in data and data["auth.server-name"] is None
++    assert "auth.user_id" in data and data["auth.user_id"] is None
++    assert "auth.token" in data and data["auth.token"] is None
++    assert payload["server"] == SERVER_WITHOUT_OPTIONAL_FIELDS["address"]
++
++
++def test_actions_without_client_warns_and_continues_when_unconfigured(tmp_path):
++    payload = run_scenario(tmp_path, "actions_unconfigured", data_file="missing")
++
++    assert payload["error"] is None
++    assert payload["server"] == "http://preexisting.example"
++    assert_warned(payload)
++
++
++def test_playback_entry_point_injects_first_server_auth(tmp_path):
++    payload = run_scenario(
++        tmp_path, "events_configured", servers=[SERVER, SECOND_SERVER]
++    )
++
++    assert payload["error"] is None
++    assert auth_values(payload) == {
++        "auth.server": SERVER["address"],
++        "auth.server-name": SERVER["Name"],
++        "auth.user_id": SERVER["UserId"],
++        "auth.token": SERVER["AccessToken"],
++    }
++
++
++def test_playback_entry_point_warns_and_continues_when_unconfigured(tmp_path):
++    payload = run_scenario(tmp_path, "events_configured", data_file="missing")
++
++    assert payload["error"] is None
++    assert_warned(payload)
++
++
++def test_context_entry_point_injects_first_server_auth(tmp_path):
++    payload = run_scenario(
++        tmp_path, "context_configured", servers=[SERVER, SECOND_SERVER]
++    )
++
++    assert payload["error"] is None
++    assert auth_values(payload) == {
++        "auth.server": SERVER["address"],
++        "auth.server-name": SERVER["Name"],
++        "auth.user_id": SERVER["UserId"],
++        "auth.token": SERVER["AccessToken"],
++    }
++
++
++def test_context_entry_point_propagates_unopenable_stored_data(tmp_path):
++    payload = run_scenario(tmp_path, "context_configured", data_file="missing")
++
++    assert payload["error"] is not None, "the context entry point swallowed the failure"
++    assert payload["error_is_oserror"] is True, payload["error"]
++    assert payload["warnings"] == [], "the failure was downgraded to a warning"
++
++    for name, contents, expected_error in (
++        ("invalid_encoding", b"\xff", "UnicodeDecodeError"),
++        ("invalid_json", b"{", "JSONDecodeError"),
++        (
++            "integer_limit",
++            b'{"Servers": [], "large_integer": ' + b"9" * 5000 + b"}",
++            "ValueError",
++        ),
++    ):
++        directory = tmp_path / name
++        directory.mkdir()
++        source = DRIVER_SOURCE.replace(
++            "    try:\n        Context()",
++            "    sys.set_int_max_str_digits(4300)\n"
++            "    with open(os.path.join(DATA_DIR, 'data.json'), 'wb') as stored:\n"
++            "        stored.write({!r})\n".format(contents)
++            + "    try:\n        Context()",
++        )
++        payload = run_scenario(
++            directory, "context_configured", driver_source=source
++        )
++
++        assert payload["error"] == expected_error, payload
++        assert payload["warnings"] == [], (
++            "the stored-data decoding/parsing failure was downgraded to a warning"
++        )
++
++
++def test_context_entry_point_warns_and_continues_without_stored_servers(tmp_path):
++    payload = run_scenario(tmp_path, "context_configured", servers=[])
++
++    assert payload["error"] is None
++    assert_warned(payload)
++
++
++def test_item_helper_paths_come_from_first_stored_server(tmp_path):
++    payload = run_scenario(
++        tmp_path, "api_configured", servers=[SERVER, SECOND_SERVER]
++    )
++
++    assert payload["path_data"] == SERVER["paths"]
++    assert payload["file_path"] == "/media/local/movie.mkv"
++    assert payload["unmatched"] == "/other/place/movie.mkv"
++
++
++def test_item_helper_keeps_path_without_configured_prefix(tmp_path):
++    payload = run_scenario(
++        tmp_path, "api_configured", servers=[SERVER_WITHOUT_PATHS]
++    )
++
++    assert payload["path_data"] == {}
++    assert payload["file_path"] == "/media/remote/movie.mkv"
++    assert payload["unmatched"] == "/other/place/movie.mkv"
++
++
++def test_item_helper_ignores_second_stored_server_paths(tmp_path):
++    payload = run_scenario(
++        tmp_path, "api_configured", servers=[SERVER_WITHOUT_PATHS, SECOND_SERVER]
++    )
++
++    assert payload["path_data"] == {}
++    assert payload["file_path"] == "/media/remote/movie.mkv"
++
++
++def test_item_helper_accepts_optional_server_argument(tmp_path):
++    payload = run_scenario(tmp_path, "api_server_argument")
++
++    assert payload["server"] == "http://artwork.example"
++    assert payload["file_path"] == "/media/local/movie.mkv"
++    assert payload["artwork"] == (
++        "http://artwork.example/Items/item-1/Images/Primary/0?Format=original"
++    )
++
++
++def test_item_helper_warns_and_does_not_raise_without_stored_data(tmp_path):
++    payload = run_scenario(tmp_path, "api_unconfigured", data_file="missing")
++
++    assert payload["error"] is None
++    assert_warned(payload)
++
++
++def test_item_helper_warns_and_does_not_raise_without_stored_servers(tmp_path):
++    payload = run_scenario(tmp_path, "api_unconfigured", servers=[])
++
++    assert payload["error"] is None
++    assert_warned(payload)
++
++
++def test_item_helper_warns_and_does_not_raise_with_unreadable_stored_data(tmp_path):
++    payload = run_scenario(tmp_path, "api_unconfigured", data_file="directory")
++
++    assert payload["error"] is None
++    assert_warned(payload)
++
++
++def test_stored_credential_accessor_defaults_servers_to_empty_list(tmp_path):
++    payload = run_scenario(tmp_path, "stored_accessor", data_file="missing")
++
++    assert payload["error"] is None
++    assert payload["credentials"] == {"Servers": []}
++
++
++def test_stored_credential_accessor_returns_stored_connection_data(tmp_path):
++    payload = run_scenario(tmp_path, "stored_accessor", servers=[SERVER])
++
++    assert payload["error"] is None
++
++    server = payload["credentials"]["Servers"][0]
++
++    assert server["address"] == SERVER["address"]
++    assert server["Name"] == SERVER["Name"]
++    assert server["UserId"] == SERVER["UserId"]
++    assert server["AccessToken"] == SERVER["AccessToken"]
++    assert server["paths"] == SERVER["paths"]
++
++
++def test_stored_credential_accessor_serves_save_then_read_flow(tmp_path):
++    payload = run_scenario(tmp_path, "stored_accessor_round_trip")
++
++    server = payload["credentials"]["Servers"][0]
++
++    assert server["address"] == "http://saved.example:8096"
++    assert server["Name"] == "Saved"
++    assert server["UserId"] == "user-2"
++    assert server["AccessToken"] == "token-2"
++    assert server["paths"] == {"/saved/remote": "/saved/local"}
++
++
++def test_actions_with_server_id_targets_that_client(tmp_path):
++    payload = run_scenario(tmp_path, "actions_server_id", servers=[SERVER])
++
++    assert payload["server"] == SERVER["address"]
++
++    server_data = payload["server_data"]
++
++    assert server_data["auth.server"] == SERVER["address"]
++    assert server_data["auth.server-name"] == SERVER["Name"]
++    assert server_data["auth.user_id"] == SERVER["UserId"]
++    assert server_data["auth.token"] == SERVER["AccessToken"]
++    assert payload["default_data"].get("auth.server") is None
++
++
++def test_stored_credential_accessor_migrates_legacy_server_entries(tmp_path):
++    payload = run_scenario(
++        tmp_path, "stored_accessor_legacy_migration", servers=[LEGACY_SERVER]
++    )
++
++    server = payload["credentials"]["Servers"][0]
++
++    assert server["address"] == LEGACY_SERVER["ManualAddress"]
++    assert "RemoteAddress" not in server
++    assert "ManualAddress" not in server
++    assert "LocalAddress" not in server
++    assert "LastConnectionMode" not in server
++    assert server["Name"] == LEGACY_SERVER["Name"]
++    assert server["UserId"] == LEGACY_SERVER["UserId"]
++    assert server["AccessToken"] == LEGACY_SERVER["AccessToken"]
++
++
++def test_stored_credential_accessor_serves_logging_consumer(tmp_path):
++    payload = run_scenario(tmp_path, "stored_accessor_logging_consumer")
++
++    assert "jellyfin.example:8096" in payload["servers"]
++    assert SERVER["AccessToken"] in payload["tokens"]
++
++
++def test_stored_credential_accessor_serves_path_replacement_settings_flow(tmp_path):
++    payload = run_scenario(
++        tmp_path, "stored_accessor_path_replacements_consumer", servers=[SERVER]
++    )
++
++    server = payload["credentials"]["Servers"][0]
++
++    assert server["address"] == SERVER["address"]
++    assert server["Name"] == SERVER["Name"]
++    assert server["UserId"] == SERVER["UserId"]
++    assert server["AccessToken"] == SERVER["AccessToken"]
++    assert server["paths"] == SERVER["paths"]
++
++
++def test_stored_credential_accessor_defaults_missing_servers_key(tmp_path):
++    payload = run_scenario(
++        tmp_path, "stored_accessor", payload={"OtherKey": "value"}
++    )
++
++    assert payload["error"] is None
++    assert payload["credentials"]["Servers"] == []
++    assert payload["credentials"]["OtherKey"] == "value"
++
++
++def test_playback_entry_point_warns_and_continues_without_stored_servers(tmp_path):
++    payload = run_scenario(tmp_path, "events_configured", servers=[])
++
++    assert payload["error"] is None
++    assert_warned(payload)
++
++
++def test_actions_without_client_warns_and_continues_without_stored_servers(tmp_path):
++    payload = run_scenario(tmp_path, "actions_unconfigured", servers=[])
++
++    assert payload["error"] is None
++    assert payload["server"] == "http://preexisting.example"
++    assert_warned(payload)
+diff --git a/tests/test_core_connection_contract.py b/tests/test_core_connection_contract.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4f4759a2c15744e4670b3e1f7710adaa449b33b
+--- /dev/null
++++ b/tests/test_core_connection_contract.py
+@@ -0,0 +1,517 @@
++import ast
++from pathlib import Path
++
++from tests import test_p2p_connection_data_regression as regression
++
++
++AUTH_KEYS = ("auth.server", "auth.server-name", "auth.user_id", "auth.token")
++SOURCE_KEYS = ("address", "Name", "UserId", "AccessToken")
++EXPECTED_AUTH = dict(zip(AUTH_KEYS, (regression.SERVER[key] for key in SOURCE_KEYS)))
++DEFAULT_AUTH = dict.fromkeys(AUTH_KEYS, "default-stale")
++
++CONTRACT_DRIVER = r"""
++AUTH_KEYS = ("auth.server", "auth.server-name", "auth.user_id", "auth.token")
++
++
++def _contract_clients():
++    from jellyfin_kodi.jellyfin import Jellyfin
++
++    Jellyfin().construct()
++    Jellyfin("requested").construct()
++    default = Jellyfin(None).get_client()
++    requested = Jellyfin("requested").get_client()
++    default.jellyfin.config.data.update(dict.fromkeys(AUTH_KEYS, "default-stale"))
++    requested.jellyfin.config.data.update(dict.fromkeys(AUTH_KEYS, "requested-stale"))
++    return default, requested
++
++
++def _auth_snapshot(client):
++    return {key: client.config.data.get(key) for key in AUTH_KEYS}
++
++
++def _request_contract(entry):
++    default, requested = _contract_clients()
++    requests = []
++    errors = []
++
++    def observe(client, item_id):
++        requests.append({"auth": _auth_snapshot(client),
++                         "requested_client": client is requested.jellyfin,
++                         "item_id": item_id})
++        return dict(MOVIE) if entry == "events" else None
++
++    requested.jellyfin.get_item = lambda item_id: observe(requested.jellyfin, item_id)
++    default.jellyfin.get_item = lambda item_id: observe(default.jellyfin, item_id)
++
++    if entry == "events":
++        sys.argv = ["plugin://plugin.video.jellyfin/", "1",
++                    "?mode=play&id=item-1&server=requested"]
++        import jellyfin_kodi.entrypoint.default as entrypoint
++
++        class PlaybackSink:
++            def __init__(self, server_id=None, api_client=None):
++                self.api_client = api_client
++
++            def play(self, *args, **kwargs):
++                return None
++
++        entrypoint.Actions = PlaybackSink
++        construct = entrypoint.Events
++    else:
++        sys.listitem = _list_item()
++        sys.listitem.getProperty = lambda name: {
++            "jellyfinid": "item-1", "jellyfinserver": "requested"
++        }.get(name)
++        from jellyfin_kodi.entrypoint.context import Context
++        construct = Context
++
++    count = 2 if SCENARIO.endswith("cached") else 1
++    for attempt in range(count):
++        default.jellyfin.config.data.update(dict.fromkeys(AUTH_KEYS, "default-stale"))
++        requested.jellyfin.config.data.update(dict.fromkeys(AUTH_KEYS, "requested-stale"))
++        try:
++            construct()
++            errors.append(None)
++        except BaseException as error:
++            errors.append(_error_name(error))
++
++    _emit({"requests": requests, "errors": errors,
++           "default_data": _auth_snapshot(default.jellyfin),
++           "requested_data": _auth_snapshot(requested.jellyfin),
++           "separate_clients": default.jellyfin is not requested.jellyfin})
++
++
++def _actions_contract():
++    default, requested = _contract_clients()
++    default.jellyfin.config.data["auth.server"] = None
++    requested.jellyfin.config.data["auth.server"] = None
++    from jellyfin_kodi.objects.actions import Actions
++
++    server_id = None if SCENARIO == "actions_safe_default" else "requested"
++    target = default if server_id is None else requested
++    error = None
++    server = None
++    identity = False
++    try:
++        actions = Actions() if server_id is None else Actions(server_id)
++        server = actions.server
++        identity = actions.api_client is target.jellyfin
++    except BaseException as failure:
++        error = _error_name(failure)
++    _emit({"error": error, "server": server, "target_identity": identity,
++           "data": _auth_snapshot(target.jellyfin)})
++
++
++def _api_default_contract():
++    from jellyfin_kodi.helper.api import API
++
++    item_paths = []
++    item_path_errors = []
++    paths = []
++    construction_errors = []
++    path_errors = []
++    for attempt in range(3):
++        try:
++            api = API(dict(MOVIE))
++            construction_errors.append(None)
++        except BaseException as error:
++            construction_errors.append(_error_name(error))
++            continue
++        try:
++            item_paths.append(api.get_file_path())
++            item_path_errors.append(None)
++        except BaseException as error:
++            item_paths.append(None)
++            item_path_errors.append(_error_name(error))
++        try:
++            paths.append(api.get_file_path("/other/movie.mkv"))
++            path_errors.append(None)
++        except BaseException as error:
++            paths.append(None)
++            path_errors.append(_error_name(error))
++    _emit({"item_paths": item_paths, "item_path_errors": item_path_errors,
++           "paths": paths, "construction_errors": construction_errors,
++           "path_errors": path_errors})
++
++
++def _substring_contract():
++    from jellyfin_kodi.helper.api import API
++
++    api = API(dict(MOVIE))
++    _emit({"mapped": api.get_file_path("/archive/media/remote/movie.mkv"),
++           "unmatched": api.get_file_path("/archive/other/movie.mkv")})
++
++
++def _api_unconfigured_contract():
++    from jellyfin_kodi.helper.api import API
++
++    disk_calls = []
++    data_file = os.path.abspath(os.path.join(DATA_DIR, "data.json"))
++
++    def is_stored_file(path):
++        return (isinstance(path, (str, bytes, os.PathLike))
++                and os.path.abspath(os.fsdecode(path)) == data_file)
++
++    def observe_open(event, args):
++        if event == "open" and is_stored_file(args[0]):
++            disk_calls.append(event)
++
++    def observe_metadata(original):
++        def observed(path, *args, **kwargs):
++            if is_stored_file(path):
++                disk_calls.append("metadata")
++            return original(path, *args, **kwargs)
++        return observed
++
++    sys.addaudithook(observe_open)
++    os.stat = observe_metadata(os.stat)
++    os.lstat = observe_metadata(os.lstat)
++    construction_errors = []
++    servers = []
++    after_first = 0
++    shapes = (None, None, "http://artwork.example", None)
++    for attempt, server in enumerate(shapes):
++        try:
++            api = API(dict(MOVIE)) if server is None else API(dict(MOVIE), server)
++            construction_errors.append(None)
++            servers.append(api.server)
++        except BaseException as error:
++            construction_errors.append(_error_name(error))
++            servers.append(None)
++        if attempt == 0:
++            after_first = len(disk_calls)
++    _emit({"construction_errors": construction_errors, "servers": servers,
++           "extra_disk_calls": len(disk_calls) - after_first})
++
++
++def _actions_explicit_contract():
++    from jellyfin_kodi.jellyfin import Jellyfin
++    from jellyfin_kodi.objects.actions import Actions
++
++    _contract_clients()
++    Jellyfin("explicit").construct()
++    api_client = Jellyfin("explicit").get_client().jellyfin
++    api_client.config.data["auth.server"] = "http://explicit.example:8096"
++    results = []
++    for server_id in (None, "requested"):
++        error = None
++        identity = False
++        server = None
++        try:
++            actions = (Actions(api_client=api_client) if server_id is None
++                       else Actions(server_id, api_client))
++            identity = actions.api_client is api_client
++            server = actions.server
++        except BaseException as failure:
++            error = _error_name(failure)
++        results.append({"error": error, "identity": identity, "server": server})
++    _emit({"actions": results})
++
++
++def _path_preprocessing_contract():
++    from jellyfin_kodi.helper.api import API
++
++    path_cases = {
++        "path_dvd": [({"Path": "/disc", "Container": "dvd"}, None)],
++        "path_protocol": [({"Path": "SMB://host/share/Movie.mkv"}, None),
++                          ({"Path": "SMB://other/share/Movie.mkv"}, None)],
++        "path_empty": [({}, None), ({"Path": ""}, None),
++                       ({"Path": "/disc", "Container": "dvd"}, "")],
++        "path_unc": [({"Path": r"\\host\share\movie.mkv"}, None)],
++        "path_separators": [({"Path": r"C:\\dir/sub\\movie.mkv"}, None),
++                            ({"Path": r"C:\dir\\sub/movie.mkv"}, None)],
++        "path_bluray": [({"Path": "/disc", "Container": "bluray"}, None)],
++    }
++    paths = []
++    errors = []
++    for server in (None, "http://artwork.example"):
++        for fields, path in path_cases[SCENARIO]:
++            item = {"Type": "Movie", "Name": "Movie"}
++            item.update(fields)
++            try:
++                helper = API(item) if server is None else API(item, server)
++                paths.append(helper.get_file_path(path))
++                errors.append(None)
++            except BaseException as failure:
++                paths.append(None)
++                errors.append(_error_name(failure))
++    _emit({"paths": paths, "errors": errors})
++
++
++SCENARIOS.update({
++    "events_contract": lambda: _request_contract("events"),
++    "events_contract_cached": lambda: _request_contract("events"),
++    "context_contract": lambda: _request_contract("context"),
++    "context_contract_cached": lambda: _request_contract("context"),
++    "actions_safe_default": _actions_contract,
++    "actions_requested": _actions_contract,
++    "api_default_contract": _api_default_contract,
++    "api_unconfigured_contract": _api_unconfigured_contract,
++    "substring_contract": _substring_contract,
++    "actions_explicit_contract": _actions_explicit_contract,
++    "path_dvd": _path_preprocessing_contract,
++    "path_protocol": _path_preprocessing_contract,
++    "path_empty": _path_preprocessing_contract,
++    "path_unc": _path_preprocessing_contract,
++    "path_separators": _path_preprocessing_contract,
++    "path_bluray": _path_preprocessing_contract,
++})
++"""
++
++
++def run_contract(tmp_path, scenario, **kwargs):
++    marker = "SCENARIOS[SCENARIO]()"
++    assert regression.DRIVER_SOURCE.count(marker) == 1
++    driver = regression.DRIVER_SOURCE.replace(marker, CONTRACT_DRIVER + "\n" + marker)
++    return regression.run_scenario(tmp_path, scenario, driver_source=driver, **kwargs)
++
++
++def own_nodes(function):
++    pending = list(function.body)
++    while pending:
++        node = pending.pop()
++        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
++            continue
++        yield node
++        pending.extend(ast.iter_child_nodes(node))
++
++
++def production_functions():
++    root = Path(__file__).resolve().parents[1]
++    for path in sorted((root / "jellyfin_kodi").rglob("*.py")):
++        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
++        for function in ast.walk(tree):
++            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
++                yield str(path.relative_to(root)), function, list(own_nodes(function))
++
++
++def test_stored_loading_and_normalization_have_one_owner():
++    readers = []
++    normalizers = []
++    for path, function, nodes in production_functions():
++        strings = {node.value for node in nodes
++                   if isinstance(node, ast.Constant) and isinstance(node.value, str)}
++        calls = [node for node in nodes if isinstance(node, ast.Call)]
++        if any(value == "data.json" or value.endswith("/data.json") for value in strings):
++            if any(isinstance(call.func, ast.Attribute)
++                   and call.func.attr in {"load", "loads"} for call in calls):
++                readers.append((path, function.name))
++        for node in nodes:
++            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
++                continue
++            value = node.value
++            if not (isinstance(value.func, ast.Attribute) and value.func.attr == "get"
++                    and value.args and isinstance(value.args[0], ast.Constant)
++                    and value.args[0].value == "Servers"):
++                continue
++            if any(isinstance(target, ast.Subscript)
++                   and isinstance(target.slice, ast.Constant)
++                   and target.slice.value == "Servers" for target in node.targets):
++                normalizers.append((path, function.name))
++    assert len(set(readers)) <= 1, "duplicate stored-file readers: {!r}".format(readers)
++    assert len(set(normalizers)) <= 1, "duplicate Servers normalization: {!r}".format(normalizers)
++
++
++def test_stored_auth_injection_has_one_owner():
++    owners = []
++    for path, function, nodes in production_functions():
++        strings = {node.value for node in nodes
++                   if isinstance(node, ast.Constant) and isinstance(node.value, str)}
++        supplied = {argument.arg for argument in function.args.args
++                    if argument.arg not in {"self", "cls"}}
++        for node in nodes:
++            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
++                if node.value.id in supplied:
++                    supplied.update(target.id for target in node.targets
++                                    if isinstance(target, ast.Name))
++        records = set()
++        for node in nodes:
++            if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
++                if node.slice.value in SOURCE_KEYS and isinstance(node.value, ast.Name):
++                    records.add(node.value.id)
++            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
++                if (node.args and isinstance(node.args[0], ast.Constant)
++                        and node.args[0].value in SOURCE_KEYS
++                        and isinstance(node.func.value, ast.Name)):
++                    records.add(node.func.value.id)
++        if (set(AUTH_KEYS).issubset(strings) and set(SOURCE_KEYS).issubset(strings)
++                and records - supplied):
++            owners.append((path, function.name))
++    assert len(set(owners)) <= 1, "duplicate stored-auth mapping responsibilities: {!r}".format(owners)
++
++
++def assert_request_timing(payload, count):
++    assert payload["errors"] == [None] * count
++    assert len(payload["requests"]) == count
++    assert [request["item_id"] for request in payload["requests"]] == ["item-1"] * count
++    assert [request["auth"] for request in payload["requests"]] == [EXPECTED_AUTH] * count
++
++
++def test_events_injects_before_first_authenticated_request(tmp_path):
++    assert_request_timing(run_contract(tmp_path, "events_contract"), 1)
++
++
++def test_events_reinjects_cached_values_before_authenticated_request(tmp_path):
++    assert_request_timing(run_contract(tmp_path, "events_contract_cached"), 2)
++
++
++def test_context_injects_before_first_authenticated_request(tmp_path):
++    assert_request_timing(run_contract(tmp_path, "context_contract"), 1)
++
++
++def test_context_reinjects_cached_values_before_authenticated_request(tmp_path):
++    assert_request_timing(run_contract(tmp_path, "context_contract_cached"), 2)
++
++
++def assert_requested_client(payload):
++    assert payload["errors"] == [None]
++    assert payload["separate_clients"] is True
++    assert len(payload["requests"]) == 1
++    assert payload["requests"][0]["requested_client"] is True
++    assert payload["requested_data"] == EXPECTED_AUTH
++    assert payload["default_data"] == DEFAULT_AUTH
++
++
++def test_events_preserves_requested_client_and_first_record(tmp_path):
++    assert_requested_client(run_contract(tmp_path, "events_contract",
++                                        servers=[regression.SERVER, regression.SECOND_SERVER]))
++
++
++def test_context_preserves_requested_client_and_first_record(tmp_path):
++    assert_requested_client(run_contract(tmp_path, "context_contract",
++                                        servers=[regression.SERVER, regression.SECOND_SERVER]))
++
++
++def server_without_address():
++    return {key: value for key, value in regression.SERVER.items() if key != "address"}
++
++
++def assert_missing_address(payload):
++    expected = dict(EXPECTED_AUTH, **{"auth.server": None})
++    if "requests" in payload:
++        assert payload["errors"] == [None]
++        assert len(payload["requests"]) == 1
++        assert payload["requests"][0]["auth"] == expected
++        assert payload["requests"][0]["requested_client"] is True
++        assert payload["default_data"] == DEFAULT_AUTH
++    else:
++        assert payload["error"] is None
++        assert payload["target_identity"] is True
++        assert payload["server"] is None
++        assert payload["data"] == expected
++
++
++def test_events_uses_none_for_absent_first_server_address(tmp_path):
++    assert_missing_address(run_contract(tmp_path, "events_contract", servers=[server_without_address()]))
++
++
++def test_context_uses_none_for_absent_first_server_address(tmp_path):
++    assert_missing_address(run_contract(tmp_path, "context_contract", servers=[server_without_address()]))
++
++
++def test_actions_uses_none_for_absent_first_server_address(tmp_path):
++    assert_missing_address(run_contract(tmp_path, "actions_requested", servers=[server_without_address()]))
++
++
++def unconfigured_cases(tmp_path):
++    cases = [("missing", {}), ("directory", {}),
++             ("missing_servers", {"payload": {}}), ("empty_servers", {"servers": []})]
++    for name, options in cases:
++        directory = tmp_path / name
++        directory.mkdir()
++        if name in {"missing", "directory"}:
++            options["data_file"] = name
++        yield directory, options
++
++
++def test_actions_preserves_existing_unconfigured_server_default(tmp_path):
++    for directory, options in unconfigured_cases(tmp_path):
++        for scenario in ("actions_safe_default", "actions_requested"):
++            child = directory / scenario
++            child.mkdir()
++            payload = run_contract(child, scenario, **options)
++            assert payload["error"] is None
++            assert payload["server"] is None
++            assert payload["target_identity"] is True
++            regression.assert_warned(payload)
++
++
++def test_unconfigured_item_construction_preserves_both_call_shapes(tmp_path):
++    for directory, options in unconfigured_cases(tmp_path):
++        payload = run_contract(directory, "api_unconfigured_contract", **options)
++        assert payload["construction_errors"] == [None] * 4
++        assert payload["servers"] == [None, None, "http://artwork.example", None]
++        regression.assert_warned(payload)
++
++
++def test_unconfigured_item_construction_adds_no_stored_file_io(tmp_path):
++    for directory, options in unconfigured_cases(tmp_path):
++        payload = run_contract(directory, "api_unconfigured_contract", **options)
++        assert payload["construction_errors"] == [None] * 4
++        assert payload["extra_disk_calls"] == 0
++        regression.assert_warned(payload)
++
++
++def test_item_mapping_defaults_to_empty_when_paths_field_is_absent(tmp_path):
++    payload = run_contract(tmp_path, "api_default_contract", servers=[regression.SERVER_WITHOUT_PATHS])
++    assert payload["construction_errors"] == [None] * 3
++    assert payload["item_path_errors"] == [None] * 3
++    assert payload["item_paths"] == [regression.MOVIE["Path"]] * 3
++    assert payload["path_errors"] == [None] * 3
++    assert payload["paths"] == ["/other/movie.mkv"] * 3
++
++
++def test_mapping_replaces_substrings_and_preserves_unmatched_paths(tmp_path):
++    payload = run_contract(tmp_path, "substring_contract")
++    assert payload["mapped"] == "/archive/media/local/movie.mkv"
++    assert payload["unmatched"] == "/archive/other/movie.mkv"
++
++
++def test_actions_preserves_explicit_client_and_server(tmp_path):
++    payload = run_contract(tmp_path, "actions_explicit_contract")
++    assert len(payload["actions"]) == 2
++    for actions in payload["actions"]:
++        assert actions["error"] is None
++        assert actions["identity"] is True
++        assert actions["server"] == "http://explicit.example:8096"
++
++
++def assert_preprocessed_paths(tmp_path, scenario, expected, servers=None):
++    payload = run_contract(tmp_path, scenario,
++                           servers=servers if servers is not None
++                           else [regression.SERVER_WITHOUT_PATHS])
++    assert payload["errors"] == [None] * len(expected)
++    assert payload["paths"] == expected
++
++
++def test_item_path_preserves_dvd_suffix(tmp_path):
++    assert_preprocessed_paths(tmp_path, "path_dvd",
++                              ["/disc/VIDEO_TS/VIDEO_TS.IFO"] * 2)
++
++
++def test_item_path_lowercases_protocol_before_mapping(tmp_path):
++    server = dict(regression.SERVER)
++    server["paths"] = {"smb://host/share": "/mapped/share"}
++    assert_preprocessed_paths(tmp_path, "path_protocol",
++                              ["/mapped/share/Movie.mkv",
++                               "smb://other/share/Movie.mkv"] * 2,
++                              servers=[server])
++
++
++def test_item_path_returns_empty_string_for_absent_or_empty_path(tmp_path):
++    assert_preprocessed_paths(tmp_path, "path_empty", [""] * 6)
++
++
++def test_item_path_converts_unc_to_smb(tmp_path):
++    assert_preprocessed_paths(tmp_path, "path_unc",
++                              ["smb://host/share/movie.mkv"] * 2)
++
++
++def test_item_path_preserves_local_separator_normalization(tmp_path):
++    assert_preprocessed_paths(tmp_path, "path_separators",
++                              [r"C:\dir\sub\movie.mkv"] * 4)
++
++
++def test_item_path_preserves_bluray_suffix(tmp_path):
++    assert_preprocessed_paths(tmp_path, "path_bluray",
++                              ["/disc/BDMV/index.bdmv"] * 2)

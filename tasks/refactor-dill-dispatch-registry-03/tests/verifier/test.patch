@@ -1,0 +1,1128 @@
+diff --git a/dill/tests/f2p_runner.py b/dill/tests/f2p_runner.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4c834c10ffb90e4b9e1debe532169430f5df3ef4
+--- /dev/null
++++ b/dill/tests/f2p_runner.py
+@@ -0,0 +1,85 @@
++#!/usr/bin/env python
++"""Run frozen P2P leaves and this round's F2P leaves into one JUnit report."""
++
++import argparse
++import importlib.util
++import os
++import subprocess
++import sys
++import tempfile
++import traceback
++import xml.etree.ElementTree as ET
++
++REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
++if REPO_ROOT not in sys.path:
++    sys.path.insert(0, REPO_ROOT)
++
++
++F2P_SELECTORS = ['dill/tests/test_registry_ownership.py::test_registry_lifecycle_has_one_owner', 'dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disable_without_module', 'dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disabled_stock_dispatch_keeps_handler', 'dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disabled_stock_roundtrip', 'dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_enabled_stock_roundtrip', 'dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disable_without_module', 'dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disabled_stock_dispatch_keeps_handler', 'dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disabled_stock_roundtrip']
++
++
++def load_module(path):
++    spec = importlib.util.spec_from_file_location("f2p_tests", os.path.abspath(path))
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--p2p-select", required=True)
++    parser.add_argument("--junit", required=True)
++    args = parser.parse_args()
++    suite = ET.Element("testsuite", name="dill-p2p-f2p")
++    failures = errors = total = 0
++
++    with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as work:
++        p2p_report = os.path.join(work, "p2p.xml")
++        p2p_runner = os.path.join(REPO_ROOT, "dill", "tests", "p2p_runner.py")
++        completed = subprocess.run(
++            [sys.executable, p2p_runner, "--p2p-select", args.p2p_select,
++             "--junit", p2p_report], cwd=REPO_ROOT, text=True)
++        if os.path.exists(p2p_report):
++            p2p_root = ET.parse(p2p_report).getroot()
++            for case in p2p_root.findall("testcase"):
++                suite.append(case)
++                total += 1
++                failures += len(case.findall("failure"))
++                errors += len(case.findall("error"))
++        elif completed.returncode:
++            case = ET.SubElement(suite, "testcase", classname="p2p_runner",
++                                 name="p2p-report")
++            ET.SubElement(case, "error", type="runner", message="missing JUnit report")
++            total += 1
++            errors += 1
++
++    modules = {}
++    for selector in F2P_SELECTORS:
++        path, leaf = selector.split("::", 1)
++        case = ET.SubElement(suite, "testcase", classname=path, name=leaf)
++        total += 1
++        try:
++            if path not in modules:
++                modules[path] = load_module(os.path.join(REPO_ROOT, path))
++            getattr(modules[path], leaf)()
++        except AssertionError as exc:
++            failures += 1
++            failure = ET.SubElement(case, "failure", type=type(exc).__name__, message=str(exc))
++            failure.text = traceback.format_exc()
++        except Exception as exc:
++            errors += 1
++            error = ET.SubElement(case, "error", type=type(exc).__name__, message=str(exc))
++            error.text = traceback.format_exc()
++
++    suite.set("tests", str(total))
++    suite.set("failures", str(failures))
++    suite.set("errors", str(errors))
++    suite.set("skipped", "0")
++    report = os.path.abspath(args.junit)
++    os.makedirs(os.path.dirname(report), exist_ok=True)
++    ET.ElementTree(suite).write(report, encoding="utf-8", xml_declaration=True)
++    return 1 if failures or errors else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/dill/tests/p2p_runner.py b/dill/tests/p2p_runner.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..af50165dd937a1e0e2256b15e35462684fb40d78
+--- /dev/null
++++ b/dill/tests/p2p_runner.py
+@@ -0,0 +1,68 @@
++#!/usr/bin/env python
++"""Run selected P2P and original leaves and emit a small JUnit document."""
++
++import argparse
++import importlib.util
++import os
++import sys
++import traceback
++import xml.etree.ElementTree as ET
++
++
++REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
++if REPO_ROOT not in sys.path:
++    sys.path.insert(0, REPO_ROOT)
++
++def load_module(path):
++    absolute = os.path.abspath(path)
++    name = "p2p_" + os.path.basename(path).replace(".", "_")
++    spec = importlib.util.spec_from_file_location(name, absolute)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--junit", required=True)
++    parser.add_argument("--p2p-select", default=None)
++    parser.add_argument("--config", default=None)
++    args = parser.parse_args()
++
++    if not args.p2p_select:
++        raise SystemExit("--p2p-select is required")
++    with open(args.p2p_select) as selected_file:
++        selected = [line.strip().split("::", 1)
++                    for line in selected_file if line.strip()]
++
++    suite = ET.Element("testsuite", name="dill-p2p", tests=str(len(selected)),
++                       failures="0", errors="0", skipped="0")
++    failures = errors = 0
++    modules = {}
++    for path, leaf in selected:
++        case = ET.SubElement(suite, "testcase", classname=path, name=leaf)
++        try:
++            if path not in modules:
++                modules[path] = load_module(path)
++            module = modules[path]
++            getattr(module, leaf)()
++        except AssertionError as exc:
++            failures += 1
++            failure = ET.SubElement(case, "failure", type=type(exc).__name__,
++                                    message=str(exc))
++            failure.text = traceback.format_exc()
++        except Exception as exc:
++            errors += 1
++            error = ET.SubElement(case, "error", type=type(exc).__name__,
++                                  message=str(exc))
++            error.text = traceback.format_exc()
++
++    suite.set("failures", str(failures))
++    suite.set("errors", str(errors))
++    os.makedirs(os.path.dirname(os.path.abspath(args.junit)), exist_ok=True)
++    ET.ElementTree(suite).write(args.junit, encoding="utf-8", xml_declaration=True)
++    return 1 if failures or errors else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/dill/tests/test_f2p_registry.py b/dill/tests/test_f2p_registry.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..964553dd177872159cb88cf6faff2dbe119aea05
+--- /dev/null
++++ b/dill/tests/test_f2p_registry.py
+@@ -0,0 +1,400 @@
++"""Independent exact leaves for the registry and pickle integration contract."""
++
++import pickle as stock_pickle
++import subprocess
++import sys
++from contextlib import contextmanager
++from io import BytesIO
++
++import dill
++
++
++@contextmanager
++def preserved_dispatch():
++    dill_dispatch = dill.Pickler.dispatch.copy()
++    stock_dispatch = stock_pickle._Pickler.dispatch.copy()
++    try:
++        yield
++    finally:
++        dill.Pickler.dispatch.clear()
++        dill.Pickler.dispatch.update(dill_dispatch)
++        stock_pickle._Pickler.dispatch.clear()
++        stock_pickle._Pickler.dispatch.update(stock_dispatch)
++
++
++def save_text(text):
++    def save(pickler, obj):
++        pickler.save_reduce(str, (text,), obj=obj)
++    return save
++
++
++def roundtrip(pickler_type, value):
++    stream = BytesIO()
++    pickler_type(stream).dump(value)
++    return stock_pickle.loads(stream.getvalue())
++
++
++class Registered:
++    def __reduce_ex__(self, protocol):
++            raise AssertionError("the registered serializer was not selected")
++
++
++def test_f2p_register_decorator_serializes_instances():
++    with preserved_dispatch():
++        serializer = save_text("decorator")
++        dill.register(Registered)(serializer)
++        result = roundtrip(dill.Pickler, Registered())
++    assert result == "decorator"
++
++
++def test_f2p_register_decorator_returns_original_serializer():
++    with preserved_dispatch():
++        serializer = save_text("decorator")
++        returned = dill.register(Registered)(serializer)
++    assert returned is serializer
++
++
++def test_f2p_pickle_keyword_updates_dispatch():
++    with preserved_dispatch():
++        serializer = save_text("keyword")
++        dill.pickle(t=Registered, func=serializer)
++        result = dill.Pickler.dispatch[Registered] is serializer
++    assert result is True
++
++
++def test_f2p_pickle_keyword_returns_none():
++    with preserved_dispatch():
++        returned = dill.pickle(t=Registered, func=save_text("keyword"))
++    assert returned is None
++
++
++def test_f2p_direct_dispatch_mutation_controls_dill_serializer():
++    with preserved_dispatch():
++        serializer = save_text("assigned")
++        dill.Pickler.dispatch[Registered] = serializer
++        result = roundtrip(dill.Pickler, Registered())
++    assert result == "assigned"
++
++
++def test_f2p_dispatch_delete_exposes_original_reduction():
++    with preserved_dispatch():
++        dill.Pickler.dispatch[Registered] = save_text("assigned")
++        del dill.Pickler.dispatch[Registered]
++        try:
++            roundtrip(dill.Pickler, Registered())
++        except AssertionError as exc:
++            result = str(exc)
++        else:
++            result = "serializer still selected"
++    assert result == "the registered serializer was not selected"
++
++
++def test_f2p_extend_uses_latest_registration_for_stock_pickler():
++    with preserved_dispatch():
++        first = save_text("first")
++        second = save_text("second")
++        dill.pickle(Registered, first)
++        dill.extend(False)
++        dill.pickle(Registered, second)
++        dill.extend(True)
++        result = roundtrip(stock_pickle._Pickler, Registered())
++    assert result == "second"
++
++
++def test_f2p_disable_keeps_dill_dispatch_and_serializer():
++    with preserved_dispatch():
++        serializer = save_text("retained")
++        dill.pickle(Registered, serializer)
++        dill.extend(True)
++        dill.extend(False)
++        result = roundtrip(dill.Pickler, Registered())
++    assert result == "retained"
++
++
++def test_f2p_external_stock_handler_survives_disable():
++    class External:
++        pass
++    external = save_text("external")
++    with preserved_dispatch():
++        dill.extend(True)
++        stock_pickle._Pickler.dispatch[External] = external
++        dill.extend(False)
++        result = roundtrip(stock_pickle._Pickler, External())
++    assert result == "external"
++
++
++def test_f2p_external_dill_registration_survives_disable():
++    class External:
++        pass
++    external = save_text("registered-external")
++    with preserved_dispatch():
++        dill.pickle(External, external)
++        dill.extend(True)
++        dill.extend(False)
++        result = roundtrip(stock_pickle._Pickler, External())
++    assert result == "registered-external"
++
++
++def test_f2p_external_replacement_is_not_restored():
++    external = save_text("replacement")
++    with preserved_dispatch():
++        dill.extend(True)
++        stock_pickle._Pickler.dispatch[dict] = external
++        dill.extend(False)
++        result = roundtrip(stock_pickle._Pickler, {})
++    assert result == "replacement"
++
++
++def test_f2p_metaclass_lookup_uses_type_serializer_without_inserting_key():
++    class Meta(type):
++        pass
++    with preserved_dispatch():
++        dispatch = dill.Pickler.dispatch
++        result = dispatch[Meta] is dispatch[type]
++    assert result is True
++
++
++def test_f2p_extend_false_restores_standard_entry():
++    with preserved_dispatch():
++        original = stock_pickle._Pickler.dispatch.get(int)
++        dill_owned = save_text("dill-dict")
++        dill_owned.__module__ = "dill._dill"
++        dill.Pickler.dispatch[int] = dill_owned
++        dill.extend(True)
++        dill.extend(False)
++        result = stock_pickle._Pickler.dispatch.get(int) is original
++    assert result is True
++
++    # Capture the real standard handler before import; exercise direct access
++    # and repeated disabling without depending on registry bookkeeping.
++    code = """
++import pickle
++from io import BytesIO
++
++standard = pickle._Pickler.dispatch[dict]
++import dill
++
++handler = dill.Pickler.dispatch[dict]
++value = {'answer': 42}
++
++def roundtrip():
++    stream = BytesIO()
++    pickle._Pickler(stream).dump(value)
++    return pickle.loads(stream.getvalue())
++
++for cycle in range(2):
++    dill.extend(True)
++    dill.extend(False)
++    pickle._Pickler.dispatch[dict] = handler
++    assert roundtrip() == value
++    assert dill.extend(False) is None
++    assert pickle._Pickler.dispatch.get(dict) is standard, (
++        'disable must restore the pre-extension standard handler after '
++        'direct assignment of a dill serializer (cycle %s)' % cycle
++    )
++    assert dill.Pickler.dispatch[dict] is handler
++    assert roundtrip() == value
++"""
++    completed = subprocess.run([sys.executable, "-c", code],
++                               capture_output=True, text=True, timeout=30)
++    assert completed.returncode == 0, completed.stdout + completed.stderr
++
++
++def test_f2p_import_auto_extension_in_fresh_interpreter():
++    code = """
++import pickle
++before = pickle._Pickler.dispatch.copy()
++import dill
++import types
++ok = (pickle._Pickler.dispatch is not dill.Pickler.dispatch
++      and pickle._Pickler.dispatch[type].__module__ == 'dill._dill'
++      and types.CodeType not in before
++      and types.CodeType in pickle._Pickler.dispatch)
++raise SystemExit(0 if ok else 1)
++"""
++    completed = subprocess.run([sys.executable, "-c", code],
++                               capture_output=True, text=True)
++    assert completed.returncode == 0
++
++
++def test_f2p_extend_return_and_default_flag():
++    with preserved_dispatch():
++        import inspect
++        signature = inspect.signature(dill.extend)
++        assert signature.parameters['use_dill'].default is True
++        for call in (lambda: dill.extend(), lambda: dill.extend(True),
++                     lambda: dill.extend(False), lambda: dill.extend(use_dill=True),
++                     lambda: dill.extend(use_dill=False)):
++            assert call() is None
++        dill.extend()
++        assert stock_pickle._Pickler.dispatch[type] is dill.Pickler.dispatch[type]
++
++
++def test_f2p_serializer_exception_propagates_from_dumps():
++    class Bad:
++        pass
++    def failing(pickler, obj):
++        raise ValueError("serializer failure")
++    with preserved_dispatch():
++        dill.pickle(Bad, failing)
++        try:
++            dill.dumps(Bad())
++        except ValueError as exc:
++            result = str(exc)
++        else:
++            result = "no exception"
++    assert result == "serializer failure"
++
++
++def test_f2p_safe_pickles_reports_failed_serializer():
++    class Bad:
++        pass
++    def failing(pickler, obj):
++        raise ValueError("serializer failure")
++    with preserved_dispatch():
++        dill.pickle(Bad, failing)
++        result = dill.pickles(Bad(), safe=True)
++    assert result is False
++
++
++# ---------------------------------------------------------------------------
++# Independently scored checkpoints
++#
++# A multi-assertion scenario is reported as one F2P selector per checkpoint.
++# The scenario runs once per process and records every checkpoint; each leaf
++# below judges a single checkpoint.  Checkpoints that already hold on the
++# unrefactored baseline are preconditions of every leaf of their scenario, and
++# a scenario that stops before completing fails every leaf, so the leaves pass
++# together exactly when the original combined test passed.
++# ---------------------------------------------------------------------------
++
++
++class _Checkpoints:
++    def __init__(self):
++        self.results = {}
++        self.messages = {}
++        self.preconditions = []
++
++    def check(self, name, condition, message="", precondition=False):
++        if precondition:
++            self.preconditions.append(name)
++        self.messages[name] = message
++        try:
++            self.results[name] = bool(condition())
++        except BaseException:
++            self.results[name] = False
++            raise
++
++    def record(self, name, value, message="", precondition=False):
++        self.check(name, lambda: value, message, precondition)
++
++
++_SCENARIO_OUTCOMES = {}
++
++
++def _scenario_outcome(scenario):
++    if scenario not in _SCENARIO_OUTCOMES:
++        checkpoints = _Checkpoints()
++        try:
++            scenario(checkpoints)
++        except Exception as exc:  # reported by every leaf of this scenario
++            _SCENARIO_OUTCOMES[scenario] = (checkpoints, exc)
++        else:
++            _SCENARIO_OUTCOMES[scenario] = (checkpoints, None)
++    return _SCENARIO_OUTCOMES[scenario]
++
++
++def _assert_checkpoint(scenario, name):
++    checkpoints, stopped = _scenario_outcome(scenario)
++    for required in checkpoints.preconditions:
++        assert checkpoints.results[required], (
++            "precondition %r failed: %s" % (required, checkpoints.messages[required]))
++    if name in checkpoints.results:
++        assert checkpoints.results[name], (
++            "checkpoint %r failed: %s" % (name, checkpoints.messages[name]))
++    if stopped is not None:
++        if isinstance(stopped, AssertionError):
++            raise AssertionError(
++                "scenario stopped before completing: %s" % (stopped,)) from stopped
++        raise stopped
++    assert name in checkpoints.results, "checkpoint %r was not reached" % (name,)
++
++
++_EXTERNAL_RESULT = "external-callable"
++_DISABLE_MESSAGE = (
++    "disabling integration must preserve external callable handlers "
++    "without requiring __module__"
++)
++
++
++def _scenario_external_callable_without_module_survives_cycles(checkpoints):
++    """External serializers need only be callable, including bound __call__."""
++    def serializer(pickler, obj):
++        pickler.save_reduce(str, (_EXTERNAL_RESULT,), obj=obj)
++
++    # A normal Python method-wrapper accepts the serializer's two arguments
++    # but has no __module__; no custom metadata or dispatch API is required.
++    handler = serializer.__call__
++    with preserved_dispatch():
++        dill.pickle(t=Registered, func=handler)
++        checkpoints.check(
++            "dill_pickler_roundtrip",
++            lambda: roundtrip(dill.Pickler, Registered()) == _EXTERNAL_RESULT,
++            "dill.Pickler must serialize through the registered external callable",
++            precondition=True)
++        for cycle in (1, 2):
++            dill.extend(True)
++            checkpoints.check(
++                "cycle%d_enabled_stock_roundtrip" % cycle,
++                lambda: roundtrip(stock_pickle._Pickler, Registered()) == _EXTERNAL_RESULT,
++                "enabled integration must serialize through the external callable",
++                precondition=(cycle == 1))
++            try:
++                dill.extend(False)
++            except AttributeError as exc:
++                checkpoints.record("cycle%d_disable_without_module" % cycle, False, _DISABLE_MESSAGE)
++                raise AssertionError(_DISABLE_MESSAGE) from exc
++            checkpoints.record("cycle%d_disable_without_module" % cycle, True, _DISABLE_MESSAGE)
++            checkpoints.check(
++                "cycle%d_disabled_stock_dispatch_keeps_handler" % cycle,
++                lambda: stock_pickle._Pickler.dispatch.get(Registered) is handler,
++                "disabling integration must keep the external handler in the stock table")
++            checkpoints.check(
++                "cycle%d_disabled_stock_roundtrip" % cycle,
++                lambda: roundtrip(stock_pickle._Pickler, Registered()) == _EXTERNAL_RESULT,
++                "the stock pickler must still use the external handler after disabling")
++
++
++def test_f2p_external_callable_without_module_survives_cycles__cycle1_disable_without_module():
++    _assert_checkpoint(_scenario_external_callable_without_module_survives_cycles,
++                       "cycle1_disable_without_module")
++
++
++def test_f2p_external_callable_without_module_survives_cycles__cycle1_disabled_stock_dispatch_keeps_handler():
++    _assert_checkpoint(_scenario_external_callable_without_module_survives_cycles,
++                       "cycle1_disabled_stock_dispatch_keeps_handler")
++
++
++def test_f2p_external_callable_without_module_survives_cycles__cycle1_disabled_stock_roundtrip():
++    _assert_checkpoint(_scenario_external_callable_without_module_survives_cycles,
++                       "cycle1_disabled_stock_roundtrip")
++
++
++def test_f2p_external_callable_without_module_survives_cycles__cycle2_enabled_stock_roundtrip():
++    _assert_checkpoint(_scenario_external_callable_without_module_survives_cycles,
++                       "cycle2_enabled_stock_roundtrip")
++
++
++def test_f2p_external_callable_without_module_survives_cycles__cycle2_disable_without_module():
++    _assert_checkpoint(_scenario_external_callable_without_module_survives_cycles,
++                       "cycle2_disable_without_module")
++
++
++def test_f2p_external_callable_without_module_survives_cycles__cycle2_disabled_stock_dispatch_keeps_handler():
++    _assert_checkpoint(_scenario_external_callable_without_module_survives_cycles,
++                       "cycle2_disabled_stock_dispatch_keeps_handler")
++
++
++def test_f2p_external_callable_without_module_survives_cycles__cycle2_disabled_stock_roundtrip():
++    _assert_checkpoint(_scenario_external_callable_without_module_survives_cycles,
++                       "cycle2_disabled_stock_roundtrip")
+diff --git a/dill/tests/test_p2p_registry.py b/dill/tests/test_p2p_registry.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4ba6176b9fdc29725581cc59978e8b2e92d0663
+--- /dev/null
++++ b/dill/tests/test_p2p_registry.py
+@@ -0,0 +1,340 @@
++"""Focused P2P coverage for dill's public registration lifecycle."""
++
++import pickle as stock_pickle
++from contextlib import contextmanager
++from io import BytesIO
++from types import CodeType
++
++import dill
++
++
++@contextmanager
++def preserved_dispatch():
++    dill_dispatch = dill.Pickler.dispatch.copy()
++    stock_dispatch = stock_pickle._Pickler.dispatch.copy()
++    try:
++        yield
++    finally:
++        dill.Pickler.dispatch.clear()
++        dill.Pickler.dispatch.update(dill_dispatch)
++        stock_pickle._Pickler.dispatch.clear()
++        stock_pickle._Pickler.dispatch.update(stock_dispatch)
++
++
++def _save_token(token):
++    def save(pickler, obj):
++        pickler.save_reduce(str, (token,), obj=obj)
++    return save
++
++
++def test_register_decorator_positional():
++    class Registered:
++        pass
++    save = _save_token("decorator-positional")
++    with preserved_dispatch():
++        assert dill.register(Registered)(save) is save
++        assert dill.Pickler.dispatch[Registered] is save
++
++
++def test_register_decorator_keyword():
++    class Registered:
++        pass
++    save = _save_token("decorator-keyword")
++    with preserved_dispatch():
++        assert dill.register(t=Registered)(save) is save
++        assert dill.Pickler.dispatch[Registered] is save
++
++
++def test_pickle_direct_positional():
++    class Registered:
++        pass
++    save = _save_token("pickle-positional")
++    with preserved_dispatch():
++        assert dill.pickle(Registered, save) is None
++        assert dill.Pickler.dispatch[Registered] is save
++
++
++def test_pickle_direct_keyword():
++    class Registered:
++        pass
++    save = _save_token("pickle-keyword")
++    with preserved_dispatch():
++        assert dill.pickle(t=Registered, func=save) is None
++        assert dill.Pickler.dispatch[Registered] is save
++
++
++def test_dispatch_mapping_mutability():
++    class Registered:
++        pass
++    save = _save_token("mapping")
++    with preserved_dispatch():
++        dispatch = dill.Pickler.dispatch
++        dispatch[Registered] = save
++        assert dispatch.get(Registered) is save
++        assert Registered in list(dispatch)
++        assert (Registered, save) in list(dispatch.items())
++        del dispatch[Registered]
++        assert Registered not in dispatch
++
++
++def test_extend_true_uses_current_registration():
++    class Registered:
++        pass
++
++    class ExternalSerializer:
++        @property
++        def __module__(self):
++            raise RuntimeError("external callable metadata unavailable")
++
++        def __call__(self, pickler, obj):
++            pickler.save_reduce(str, ("previous-external",), obj=obj)
++
++    save = _save_token("extend-true")
++    with preserved_dispatch():
++        dill.extend(False)
++        stock_pickle._Pickler.dispatch[Registered] = ExternalSerializer()
++        stream = BytesIO()
++        stock_pickle._Pickler(stream).dump(Registered())
++        assert stock_pickle.loads(stream.getvalue()) == "previous-external"
++        dill.pickle(Registered, save)
++        try:
++            result = dill.extend(True)
++        except RuntimeError as exc:
++            raise AssertionError(
++                "enabling current registrations must replace a usable external "
++                "callable without requiring its module metadata"
++            ) from exc
++        assert result is None
++        assert stock_pickle._Pickler.dispatch[Registered] is save
++        stream = BytesIO()
++        stock_pickle._Pickler(stream).dump(Registered())
++        assert stock_pickle.loads(stream.getvalue()) == "extend-true"
++    _assert_explicit_standard_handlers_are_current_registrations()
++
++
++def test_extend_false_removes_dill_handler():
++    class Registered:
++        pass
++    with preserved_dispatch():
++        dill.extend(True)
++        # A dill-owned handler is removed from the stdlib table on disable.
++        handler = dill.Pickler.dispatch[Registered] = dill._dill.save_type
++        dill.extend(True)
++        assert stock_pickle._Pickler.dispatch[Registered] is handler
++        dill.extend(False)
++        assert Registered not in stock_pickle._Pickler.dispatch
++        assert dill.Pickler.dispatch[Registered] is handler
++
++
++def test_import_default_extension_visible():
++    # Import-time extension is observable through the standard pure-Python
++    # dispatch table for a serializer owned by dill.
++    assert CodeType in dill.Pickler.dispatch
++    assert stock_pickle._Pickler.dispatch[CodeType] is dill.Pickler.dispatch[CodeType]
++
++
++def test_external_handler_survives_disable():
++    class Registered:
++        pass
++    def external(pickler, obj):
++        pickler.save_reduce(str, ("external",), obj=obj)
++    with preserved_dispatch():
++        dill.extend(True)
++        stock_pickle._Pickler.dispatch[Registered] = external
++        dill.extend(False)
++        assert stock_pickle._Pickler.dispatch[Registered] is external
++
++
++def test_external_replacement_survives_disable():
++    def external(pickler, obj):
++        pickler.save_reduce(str, ("replacement",), obj=obj)
++    with preserved_dispatch():
++        dill.extend(True)
++        stock_pickle._Pickler.dispatch[dict] = external
++        dill.extend(False)
++        assert stock_pickle._Pickler.dispatch[dict] is external
++
++
++def test_registered_serializer_immediately_serializes():
++    class Registered:
++        def __reduce_ex__(self, protocol):
++            raise AssertionError("registered serializer should be selected")
++    save = _save_token("immediate")
++    with preserved_dispatch():
++        dill.register(Registered)(save)
++        stream = BytesIO()
++        dill.Pickler(stream).dump(Registered())
++        assert dill.loads(stream.getvalue()) == "immediate"
++
++
++def test_registration_views_are_coherent():
++    class Registered:
++        pass
++    save = _save_token("coherent")
++    with preserved_dispatch():
++        dill.pickle(Registered, save)
++        assert dill.Pickler.dispatch[Registered] is save
++        dill.extend(True)
++        assert stock_pickle._Pickler.dispatch[Registered] is save
++
++
++def test_toggle_does_not_erase_dill_dispatch():
++    class Registered:
++        pass
++    save = _save_token("retained")
++    with preserved_dispatch():
++        dill.Pickler.dispatch[Registered] = save
++        dill.extend(False)
++        assert dill.Pickler.dispatch[Registered] is save
++        dill.extend(True)
++        assert dill.Pickler.dispatch[Registered] is save
++
++
++def test_direct_dispatch_external_handler_survives_cycles():
++    class External:
++        def __reduce_ex__(self, protocol):
++            raise AssertionError("external dispatch handler was not selected")
++
++    external = _save_token("direct-external")
++    replacement = _save_token("direct-replacement")
++    with preserved_dispatch():
++        dill.Pickler.dispatch[External] = external
++        dill.Pickler.dispatch[dict] = replacement
++        for _ in range(3):
++            dill.extend(True)
++            dill.extend(False)
++            assert stock_pickle._Pickler.dispatch.get(External) is external
++            assert stock_pickle._Pickler.dispatch.get(dict) is replacement
++            stream = BytesIO()
++            stock_pickle._Pickler(stream).dump(External())
++            assert stock_pickle.loads(stream.getvalue()) == "direct-external"
++            stream = BytesIO()
++            stock_pickle._Pickler(stream).dump({})
++            assert stock_pickle.loads(stream.getvalue()) == "direct-replacement"
++
++
++def test_integration_preserves_other_stock_entrypoints():
++    # Capture before import as well as before toggles; an import-time replacement
++    # of the C entrypoint must not become the test's supposed reference value.
++    import subprocess
++    import sys
++    code = """
++import pickle
++entrypoints = {name: getattr(pickle, name) for name in
++              ('Pickler', 'Unpickler', 'dump', 'dumps', 'load', 'loads')}
++dispatch = pickle._Pickler.dispatch
++import dill
++for flag in (False, True, False, True):
++    assert all(getattr(pickle, name) is value for name, value in entrypoints.items())
++    assert pickle._Pickler.dispatch is dispatch
++    dill.extend(flag)
++assert all(getattr(pickle, name) is value for name, value in entrypoints.items())
++"""
++    completed = subprocess.run([sys.executable, "-B", "-c", code],
++                               capture_output=True, text=True)
++    assert completed.returncode == 0, completed.stderr
++
++
++def test_serialized_format_remains_compatible():
++    import base64
++    # Frozen baseline bytes for this deterministic primitive payload, protocol 4.
++    # A same-implementation dumps/loads roundtrip alone would miss a new prefix.
++    old_payload = base64.b64decode(
++        "gASVHAAAAAAAAAB9lCiMAWGUXZQoSwFLAmWMAWKUjAR0ZXh0lHUu")
++    value = {"a": [1, 2], "b": "text"}
++    assert dill.loads(old_payload) == value
++    assert dill.load(BytesIO(old_payload)) == value
++    payload = dill.dumps(value, protocol=4)
++    assert payload == old_payload
++    assert stock_pickle.loads(payload) == value
++    stream = BytesIO()
++    assert dill.dump(value, stream, protocol=4) is None
++    assert stream.getvalue() == old_payload
++    assert stock_pickle.load(BytesIO(stream.getvalue())) == value
++
++
++def test_global_protocol_and_call_override_are_effective():
++    import pickletools
++    before = dill.settings.copy()
++    value = [1, 2]
++
++    def protocol_used(payload):
++        assert isinstance(payload, bytes), "dumps must return a pickle byte stream"
++        try:
++            operations = list(pickletools.genops(payload))
++        except (ValueError, TypeError) as exc:
++            raise AssertionError("invalid pickle protocol stream: " + str(exc)) from exc
++        if operations[0][0].name == "PROTO":
++            return operations[0][1]
++        return max(op.proto for op, argument, position in operations)
++
++    try:
++        dill.settings['protocol'] = 0
++        for writer in (lambda: dill.dumps(value),
++                       lambda: _dump_to_bytes(value)):
++            payload = writer()
++            assert protocol_used(payload) == 0
++            assert stock_pickle.loads(payload) == value
++        assert protocol_used(dill.dumps(value, protocol=4)) == 4
++        assert protocol_used(_dump_to_bytes(value, protocol=4)) == 4
++        dill.settings['protocol'] = 4
++        assert protocol_used(dill.dumps(value)) == 4
++        assert protocol_used(_dump_to_bytes(value)) == 4
++        assert protocol_used(dill.dumps(value, protocol=0)) == 0
++    finally:
++        dill.settings.clear()
++        dill.settings.update(before)
++
++
++def _dump_to_bytes(value, **options):
++    stream = BytesIO()
++    assert dill.dump(value, stream, **options) is None
++    return stream.getvalue()
++
++
++def _assert_explicit_standard_handlers_are_current_registrations():
++    # Each scenario starts before dill import: the oracle is the runtime's
++    # original standard serializer, never a candidate-owned registry snapshot.
++    import json
++    import subprocess
++    import sys
++    script = r"""
++import json, pickle, sys
++from io import BytesIO
++standard = pickle._Pickler.dispatch.copy()
++import dill
++api, key = sys.argv[1:]
++type_, value = (int, 37) if key == 'int' else (dict, {'x': 1})
++def roundtrip(cls):
++    stream = BytesIO(); cls(stream, protocol=4).dump(value)
++    return pickle.loads(stream.getvalue())
++def external(pickler, obj):
++    pickler.save_reduce(str, ('old-external',), obj=obj)
++try:
++    dill.extend(False)
++    pickle._Pickler.dispatch[type_] = external
++    assert roundtrip(pickle._Pickler) == 'old-external'
++    handler = standard[type_]
++    if api == 'register': assert dill.register(t=type_)(handler) is handler
++    elif api == 'pickle': assert dill.pickle(t=type_, func=handler) is None
++    else: dill.Pickler.dispatch[type_] = handler
++    assert roundtrip(dill.Pickler) == value
++    assert dill.extend(True) is None
++    assert pickle._Pickler.dispatch[type_] is handler, 'explicitly chosen standard handler was not published'
++    assert roundtrip(pickle._Pickler) == value, 'stock serialization did not use the current registration'
++    result = {'passed': True}
++except Exception as exc:
++    result = {'passed': False, 'error': type(exc).__name__, 'message': str(exc)}
++print('STANDARD_REGISTRATION_RESULT='+json.dumps(result))
++"""
++    for api in ('register', 'pickle', 'dispatch'):
++        for key in ('int', 'dict'):
++            result = subprocess.run([sys.executable, '-B', '-c', script, api, key],
++                                    capture_output=True, text=True, timeout=30)
++            if result.returncode:
++                raise RuntimeError('standard registration observation failed: '+result.stderr[-2000:])
++            receipts = [line for line in result.stdout.splitlines() if line.startswith('STANDARD_REGISTRATION_RESULT=')]
++            if len(receipts) != 1:
++                raise RuntimeError('missing unique standard registration receipt')
++            observation = json.loads(receipts[0].split('=', 1)[1])
++            assert observation['passed'], f'{api}/{key}: {observation}'
+diff --git a/dill/tests/test_registry_ownership.py b/dill/tests/test_registry_ownership.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..c4ae61c009d1a8e9c60650e3e9ad95646b4a93d0
+--- /dev/null
++++ b/dill/tests/test_registry_ownership.py
+@@ -0,0 +1,205 @@
++"""Check actual lifecycle delegation, without a registry name or storage API.
++
++This is the task's structural requirement, separate from preserved behavior.
++Observe the frames in which real table changes occur; merely exposing an alias
++or calling a no-op facade before doing the old module-level work is insufficient.
++"""
++
++from collections.abc import Mapping
++from contextlib import contextmanager
++import dis
++from functools import lru_cache
++from pathlib import Path
++import sys
++import types
++
++import dill
++import pickle
++
++
++def _storage_ids(root):
++    """Follow owned data, including dict/sequence containers and slot storage.
++
++    Do not follow module namespaces, function globals, descriptors or properties:
++    those would make every object appear to own all module-level state.
++    """
++    seen = set()
++    pending = [root]
++    while pending:
++        value = pending.pop()
++        if id(value) in seen:
++            continue
++        seen.add(id(value))
++        if isinstance(value, (types.ModuleType, types.MethodType)):
++            continue
++        if isinstance(value, Mapping):
++            pending.extend(value.values())
++        elif isinstance(value, (list, tuple, set, frozenset)):
++            pending.extend(value)
++        else:
++            try:
++                pending.extend(vars(value).values())
++            except TypeError:
++                pass
++            if not isinstance(value, (type, types.FunctionType)):
++                for cls in type(value).__mro__:
++                    for name, descriptor in vars(cls).items():
++                        if isinstance(descriptor, types.MemberDescriptorType):
++                            try:
++                                pending.append(object.__getattribute__(value, name))
++                            except AttributeError:
++                                pass
++                        elif (not name.startswith('__') and not callable(descriptor)
++                              and not isinstance(descriptor, (property, staticmethod, classmethod,
++                                                             types.GetSetDescriptorType))):
++                            pending.append(descriptor)
++        # Never reach unrelated storage through imported modules or globals.
++        pending = [v for v in pending if not isinstance(
++            v, (types.FunctionType, types.ModuleType, types.MethodType))]
++    return seen
++
++
++@lru_cache(maxsize=None)
++def _production_file(filename):
++    file = Path(filename).resolve()
++    package = Path(dill.__file__).resolve().parent
++    return package in file.parents and "tests" not in file.relative_to(package).parts
++
++
++def _production_frame(frame):
++    return _production_file(frame.f_code.co_filename)
++
++
++def _delegated_owners(frame):
++    """Receivers, explicit state arguments and closure state in active helpers."""
++    owners = {}
++    while frame is not None:
++        if _production_frame(frame):
++            code = frame.f_code
++            count = code.co_argcount + code.co_kwonlyargcount
++            for name in (*code.co_varnames[:count], *code.co_freevars):
++                value = frame.f_locals.get(name)
++                if value is None or isinstance(value, types.ModuleType):
++                    continue
++                if id(dill.Pickler.dispatch) in _storage_ids(value):
++                    owners[id(value)] = value
++        frame = frame.f_back
++    return owners
++
++
++def _global_dispatch_state(frame, reads):
++    """Also account for actually read module-level restoration snapshots.
++
++    Aliases to registry-owned data are allowed. A separately owned global copy
++    used by the lifecycle is not centralized merely by adding a facade method.
++    """
++    tables = set()
++    while frame is not None:
++        if _production_frame(frame):
++            tables.update(reads.get(id(frame), ()))
++        frame = frame.f_back
++    return tables
++
++
++def _mutation_owners(operation, table, key):
++    missing = object()
++    previous = table.get(key, missing)
++    events = []
++    retained = {}
++    frames = {}
++    reads = {}
++    instructions = {}
++    excluded = {id(dill.Pickler.dispatch), id(pickle._Pickler.dispatch)}
++    old_trace = sys.gettrace()
++
++    def trace(frame, event, arg):
++        nonlocal previous
++        if _production_frame(frame):
++            frames[id(frame)] = frame  # Frame ids must not be recycled mid-probe.
++            frame.f_trace_opcodes = True
++            if event == 'opcode':
++                code = frame.f_code
++                if code not in instructions:
++                    instructions[code] = {op.offset: op for op in dis.get_instructions(code)}
++                op = instructions[code].get(frame.f_lasti)
++                if op is not None and op.opname in ('LOAD_GLOBAL', 'LOAD_NAME'):
++                    value = frame.f_globals.get(op.argval)
++                    if isinstance(value, Mapping) and id(value) not in excluded and value:
++                        if all(isinstance(k, type) and callable(v) for k, v in value.items()):
++                            reads.setdefault(id(frame), set()).add(id(value))
++            current = table.get(key, missing)
++            if current is not previous:
++                owners = _delegated_owners(frame)
++                retained.update(owners)  # Keep identities alive across operations.
++                # Retain the frame: restoration may read its snapshot after
++                # deleting the target key, and that read still belongs here.
++                events.append((owners, frame))
++                previous = current
++            return trace
++        return None
++
++    try:
++        sys.settrace(trace)
++        operation()
++    finally:
++        sys.settrace(old_trace)
++    assert events, "the structural probe did not reach its target table change"
++    valid_events = []
++    for owners, frame in events:
++        global_state = _global_dispatch_state(frame, reads)
++        valid_events.append({identity for identity, owner in owners.items()
++                             if global_state <= _storage_ids(owner)})
++    return set.intersection(*valid_events), retained
++
++
++@contextmanager
++def _preserve_tables():
++    own = dill.Pickler.dispatch.copy()
++    stock = pickle._Pickler.dispatch.copy()
++    try:
++        yield
++    finally:
++        dill.Pickler.dispatch.clear()
++        dill.Pickler.dispatch.update(own)
++        pickle._Pickler.dispatch.clear()
++        pickle._Pickler.dispatch.update(stock)
++
++
++def test_registry_lifecycle_has_one_owner():
++    class Decorated:
++        pass
++
++    class Direct:
++        pass
++
++    def serializer(pickler, obj):
++        pickler.save_reduce(str, ("ownership-probe",), obj=obj)
++
++    # A dill-owned handler must be removed, rather than externally preserved.
++    serializer.__module__ = dill._dill.__name__
++    records = {}
++    retained = {}
++    with _preserve_tables():
++        dill.extend(False)
++        operations = (
++            ("decorator registration", lambda: dill.register(Decorated)(serializer),
++             dill.Pickler.dispatch, Decorated),
++            ("direct registration", lambda: dill.pickle(Direct, serializer),
++             dill.Pickler.dispatch, Direct),
++            ("enable integration", lambda: dill.extend(True),
++             pickle._Pickler.dispatch, Direct),
++            ("disable integration", lambda: dill.extend(False),
++             pickle._Pickler.dispatch, Direct),
++        )
++        for label, operation, table, key in operations:
++            owners, keepalive = _mutation_owners(operation, table, key)
++            records[label] = owners
++            retained.update(keepalive)
++        assert Direct not in pickle._Pickler.dispatch
++        assert dill.Pickler.dispatch[Direct] is serializer
++    common = set.intersection(*records.values())
++    assert common, (
++        "registration, integration and restoration must change state through "
++        "one actual owner; observed owner counts: "
++        + repr({label: len(owners) for label, owners in records.items()})
++    )

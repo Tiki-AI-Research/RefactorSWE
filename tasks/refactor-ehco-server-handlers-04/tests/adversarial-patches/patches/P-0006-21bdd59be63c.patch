@@ -1,0 +1,11 @@
+--- a/internal/web/handler_api.go
++++ b/internal/web/handler_api.go
+@@ -99,7 +99,7 @@
+ 		params.step = step
+ 	}
+ 
+-	if params.startTS >= params.endTS {
++	if params.startTS > params.endTS {
+ 		return nil, fmt.Errorf(errInvalidParam, "time range")
+ 	}
+ 

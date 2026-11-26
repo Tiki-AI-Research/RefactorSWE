@@ -1,0 +1,2154 @@
+diff --git a/ast/ast.go b/ast/ast.go
+index a8078a5..15661f6 100644
+--- a/ast/ast.go
++++ b/ast/ast.go
+@@ -213,6 +213,52 @@ type ScalarNode interface {
+ 	GetValue() interface{}
+ }
+ 
++// KindNode is the set of capabilities supplied by every node kind of this package.
++// It is separate from Node so that a type outside of this package that satisfies Node
++// keeps compiling; such a type is handled like a leaf without a first token.
++// That includes a type that embeds a node kind and so inherits these methods.
++type KindNode interface {
++	Node
++	// EachChild calls yield for each child, in Walk order, until yield returns false.
++	// A child that is not set is still passed to yield. Comments are not children.
++	EachChild(yield func(Node) bool)
++	// FirstToken returns the token where the text of the node starts.
++	// It returns nil if the node cannot be formatted on its own.
++	FirstToken() *token.Token
++	// Accept calls the method of v for the kind of this node.
++	Accept(v KindVisitor)
++	// walkedComment returns the comment that Walk visits ahead of the children.
++	walkedComment() *CommentGroupNode
++	// self returns the node of the kind that supplies these methods.
++	self() Node
++}
++
++// kindOf returns node as a KindNode, unless it only inherits the methods by embedding a node kind.
++func kindOf(node Node) (KindNode, bool) {
++	n, ok := node.(KindNode)
++	if !ok || n.self() != node {
++		return nil, false
++	}
++	return n, true
++}
++
++// FirstToken returns the first token of node.
++// It returns nil for a nil node and for a node that is not one of the kinds of this package.
++func FirstToken(node Node) *token.Token {
++	if n, ok := kindOf(node); ok {
++		return n.FirstToken()
++	}
++	return nil
++}
++
++// Accept calls the method of v for the kind of node.
++// It does nothing for a nil node and for a node that is not one of the kinds of this package.
++func Accept(node Node, v KindVisitor) {
++	if n, ok := kindOf(node); ok {
++		n.Accept(v)
++	}
++}
++
+ type BaseNode struct {
+ 	Path    string
+ 	Comment *CommentGroupNode
+@@ -569,6 +615,24 @@ func (d *DocumentNode) GetToken() *token.Token {
+ 	return d.Body.GetToken()
+ }
+ 
++// EachChild implements KindNode.
++func (d *DocumentNode) EachChild(yield func(Node) bool) {
++	yield(d.Body)
++}
++
++// FirstToken returns the document header, or else the first token of the body.
++func (d *DocumentNode) FirstToken() *token.Token {
++	if d.Start != nil {
++		return d.Start
++	}
++	return FirstToken(d.Body)
++}
++
++// Accept implements KindNode.
++func (d *DocumentNode) Accept(v KindVisitor) { v.VisitDocument(d) }
++
++func (d *DocumentNode) self() Node { return d }
++
+ // AddColumn add column number to child nodes recursively
+ func (d *DocumentNode) AddColumn(col int) {
+ 	if d.Body != nil {
+@@ -615,6 +679,17 @@ func (n *NullNode) GetToken() *token.Token {
+ 	return n.Token
+ }
+ 
++// EachChild implements KindNode. A null has no children.
++func (n *NullNode) EachChild(func(Node) bool) {}
++
++// FirstToken implements KindNode.
++func (n *NullNode) FirstToken() *token.Token { return n.Token }
++
++// Accept implements KindNode.
++func (n *NullNode) Accept(v KindVisitor) { v.VisitNull(n) }
++
++func (n *NullNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *NullNode) AddColumn(col int) {
+ 	n.Token.AddColumn(col)
+@@ -673,6 +748,17 @@ func (n *IntegerNode) GetToken() *token.Token {
+ 	return n.Token
+ }
+ 
++// EachChild implements KindNode. An integer has no children.
++func (n *IntegerNode) EachChild(func(Node) bool) {}
++
++// FirstToken implements KindNode.
++func (n *IntegerNode) FirstToken() *token.Token { return n.Token }
++
++// Accept implements KindNode.
++func (n *IntegerNode) Accept(v KindVisitor) { v.VisitInteger(n) }
++
++func (n *IntegerNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *IntegerNode) AddColumn(col int) {
+ 	n.Token.AddColumn(col)
+@@ -726,6 +812,17 @@ func (n *FloatNode) GetToken() *token.Token {
+ 	return n.Token
+ }
+ 
++// EachChild implements KindNode. A float has no children.
++func (n *FloatNode) EachChild(func(Node) bool) {}
++
++// FirstToken implements KindNode.
++func (n *FloatNode) FirstToken() *token.Token { return n.Token }
++
++// Accept implements KindNode.
++func (n *FloatNode) Accept(v KindVisitor) { v.VisitFloat(n) }
++
++func (n *FloatNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *FloatNode) AddColumn(col int) {
+ 	n.Token.AddColumn(col)
+@@ -778,6 +875,17 @@ func (n *StringNode) GetToken() *token.Token {
+ 	return n.Token
+ }
+ 
++// EachChild implements KindNode. A string has no children.
++func (n *StringNode) EachChild(func(Node) bool) {}
++
++// FirstToken implements KindNode.
++func (n *StringNode) FirstToken() *token.Token { return n.Token }
++
++// Accept implements KindNode.
++func (n *StringNode) Accept(v KindVisitor) { v.VisitString(n) }
++
++func (n *StringNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *StringNode) AddColumn(col int) {
+ 	n.Token.AddColumn(col)
+@@ -900,6 +1008,19 @@ func (n *LiteralNode) GetToken() *token.Token {
+ 	return n.Start
+ }
+ 
++// EachChild implements KindNode.
++func (n *LiteralNode) EachChild(yield func(Node) bool) {
++	yield(n.Value)
++}
++
++// FirstToken implements KindNode.
++func (n *LiteralNode) FirstToken() *token.Token { return n.Start }
++
++// Accept implements KindNode.
++func (n *LiteralNode) Accept(v KindVisitor) { v.VisitLiteral(n) }
++
++func (n *LiteralNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *LiteralNode) AddColumn(col int) {
+ 	n.Start.AddColumn(col)
+@@ -956,6 +1077,17 @@ func (n *MergeKeyNode) GetToken() *token.Token {
+ 	return n.Token
+ }
+ 
++// EachChild implements KindNode. A merge key has no children.
++func (n *MergeKeyNode) EachChild(func(Node) bool) {}
++
++// FirstToken implements KindNode.
++func (n *MergeKeyNode) FirstToken() *token.Token { return n.Token }
++
++// Accept implements KindNode.
++func (n *MergeKeyNode) Accept(v KindVisitor) { v.VisitMergeKey(n) }
++
++func (n *MergeKeyNode) self() Node { return n }
++
+ // GetValue returns '<<' value
+ func (n *MergeKeyNode) GetValue() interface{} {
+ 	return n.Token.Value
+@@ -1005,6 +1137,17 @@ func (n *BoolNode) GetToken() *token.Token {
+ 	return n.Token
+ }
+ 
++// EachChild implements KindNode. A boolean has no children.
++func (n *BoolNode) EachChild(func(Node) bool) {}
++
++// FirstToken implements KindNode.
++func (n *BoolNode) FirstToken() *token.Token { return n.Token }
++
++// Accept implements KindNode.
++func (n *BoolNode) Accept(v KindVisitor) { v.VisitBool(n) }
++
++func (n *BoolNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *BoolNode) AddColumn(col int) {
+ 	n.Token.AddColumn(col)
+@@ -1057,6 +1200,17 @@ func (n *InfinityNode) GetToken() *token.Token {
+ 	return n.Token
+ }
+ 
++// EachChild implements KindNode. An infinity has no children.
++func (n *InfinityNode) EachChild(func(Node) bool) {}
++
++// FirstToken implements KindNode.
++func (n *InfinityNode) FirstToken() *token.Token { return n.Token }
++
++// Accept implements KindNode.
++func (n *InfinityNode) Accept(v KindVisitor) { v.VisitInfinity(n) }
++
++func (n *InfinityNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *InfinityNode) AddColumn(col int) {
+ 	n.Token.AddColumn(col)
+@@ -1108,6 +1262,17 @@ func (n *NanNode) GetToken() *token.Token {
+ 	return n.Token
+ }
+ 
++// EachChild implements KindNode. A nan has no children.
++func (n *NanNode) EachChild(func(Node) bool) {}
++
++// FirstToken implements KindNode.
++func (n *NanNode) FirstToken() *token.Token { return n.Token }
++
++// Accept implements KindNode.
++func (n *NanNode) Accept(v KindVisitor) { v.VisitNan(n) }
++
++func (n *NanNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *NanNode) AddColumn(col int) {
+ 	n.Token.AddColumn(col)
+@@ -1235,6 +1400,29 @@ func (n *MappingNode) GetToken() *token.Token {
+ 	return n.Start
+ }
+ 
++// EachChild implements KindNode.
++func (n *MappingNode) EachChild(yield func(Node) bool) {
++	for _, value := range n.Values {
++		if !yield(value) {
++			return
++		}
++	}
++}
++
++// FirstToken returns the opening token of a flow or empty mapping,
++// and the first token of the first key of a block mapping.
++func (n *MappingNode) FirstToken() *token.Token {
++	if n.IsFlowStyle || len(n.Values) == 0 {
++		return n.Start
++	}
++	return FirstToken(n.Values[0].Key)
++}
++
++// Accept implements KindNode.
++func (n *MappingNode) Accept(v KindVisitor) { v.VisitMapping(n) }
++
++func (n *MappingNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *MappingNode) AddColumn(col int) {
+ 	n.Start.AddColumn(col)
+@@ -1326,6 +1514,19 @@ func (n *MappingKeyNode) GetToken() *token.Token {
+ 	return n.Start
+ }
+ 
++// EachChild implements KindNode.
++func (n *MappingKeyNode) EachChild(yield func(Node) bool) {
++	yield(n.Value)
++}
++
++// FirstToken implements KindNode.
++func (n *MappingKeyNode) FirstToken() *token.Token { return n.Start }
++
++// Accept implements KindNode.
++func (n *MappingKeyNode) Accept(v KindVisitor) { v.VisitMappingKey(n) }
++
++func (n *MappingKeyNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *MappingKeyNode) AddColumn(col int) {
+ 	n.Start.AddColumn(col)
+@@ -1392,6 +1593,21 @@ func (n *MappingValueNode) GetToken() *token.Token {
+ 	return n.Start
+ }
+ 
++// EachChild implements KindNode.
++func (n *MappingValueNode) EachChild(yield func(Node) bool) {
++	if yield(n.Key) {
++		yield(n.Value)
++	}
++}
++
++// FirstToken returns nil. A mapping value is only formatted through its mapping.
++func (n *MappingValueNode) FirstToken() *token.Token { return nil }
++
++// Accept implements KindNode.
++func (n *MappingValueNode) Accept(v KindVisitor) { v.VisitMappingValue(n) }
++
++func (n *MappingValueNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *MappingValueNode) AddColumn(col int) {
+ 	n.Start.AddColumn(col)
+@@ -1609,6 +1825,23 @@ func (n *SequenceNode) GetToken() *token.Token {
+ 	return n.Start
+ }
+ 
++// EachChild implements KindNode. The children are Values, not Entries.
++func (n *SequenceNode) EachChild(yield func(Node) bool) {
++	for _, value := range n.Values {
++		if !yield(value) {
++			return
++		}
++	}
++}
++
++// FirstToken implements KindNode.
++func (n *SequenceNode) FirstToken() *token.Token { return n.Start }
++
++// Accept implements KindNode.
++func (n *SequenceNode) Accept(v KindVisitor) { v.VisitSequence(n) }
++
++func (n *SequenceNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *SequenceNode) AddColumn(col int) {
+ 	n.Start.AddColumn(col)
+@@ -1720,6 +1953,20 @@ func (n *SequenceEntryNode) GetToken() *token.Token {
+ 	return n.Start
+ }
+ 
++// EachChild implements KindNode. An entry is a side view of its sequence,
++// which owns the traversal of the value, so it reports no children.
++func (n *SequenceEntryNode) EachChild(func(Node) bool) {}
++
++// FirstToken returns nil. An entry is only formatted through its sequence.
++func (n *SequenceEntryNode) FirstToken() *token.Token { return nil }
++
++// Accept implements KindNode.
++func (n *SequenceEntryNode) Accept(v KindVisitor) { v.VisitSequenceEntry(n) }
++
++func (n *SequenceEntryNode) self() Node { return n }
++
++func (n *SequenceEntryNode) walkedComment() *CommentGroupNode { return nil }
++
+ // Type returns type of node
+ func (n *SequenceEntryNode) Type() NodeType {
+ 	return SequenceEntryType
+@@ -1819,6 +2066,21 @@ func (n *AnchorNode) GetToken() *token.Token {
+ 	return n.Start
+ }
+ 
++// EachChild implements KindNode.
++func (n *AnchorNode) EachChild(yield func(Node) bool) {
++	if yield(n.Name) {
++		yield(n.Value)
++	}
++}
++
++// FirstToken implements KindNode.
++func (n *AnchorNode) FirstToken() *token.Token { return n.Start }
++
++// Accept implements KindNode.
++func (n *AnchorNode) Accept(v KindVisitor) { v.VisitAnchor(n) }
++
++func (n *AnchorNode) self() Node { return n }
++
+ func (n *AnchorNode) GetValue() any {
+ 	return n.Value.GetToken().Value
+ }
+@@ -1903,6 +2165,19 @@ func (n *AliasNode) GetToken() *token.Token {
+ 	return n.Start
+ }
+ 
++// EachChild implements KindNode.
++func (n *AliasNode) EachChild(yield func(Node) bool) {
++	yield(n.Value)
++}
++
++// FirstToken implements KindNode.
++func (n *AliasNode) FirstToken() *token.Token { return n.Start }
++
++// Accept implements KindNode.
++func (n *AliasNode) Accept(v KindVisitor) { v.VisitAlias(n) }
++
++func (n *AliasNode) self() Node { return n }
++
+ func (n *AliasNode) GetValue() any {
+ 	return n.Value.GetToken().Value
+ }
+@@ -1954,6 +2229,26 @@ func (n *DirectiveNode) GetToken() *token.Token {
+ 	return n.Start
+ }
+ 
++// EachChild implements KindNode.
++func (n *DirectiveNode) EachChild(yield func(Node) bool) {
++	if !yield(n.Name) {
++		return
++	}
++	for _, value := range n.Values {
++		if !yield(value) {
++			return
++		}
++	}
++}
++
++// FirstToken implements KindNode.
++func (n *DirectiveNode) FirstToken() *token.Token { return n.Start }
++
++// Accept implements KindNode.
++func (n *DirectiveNode) Accept(v KindVisitor) { v.VisitDirective(n) }
++
++func (n *DirectiveNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *DirectiveNode) AddColumn(col int) {
+ 	if n.Name != nil {
+@@ -2011,6 +2306,19 @@ func (n *TagNode) GetToken() *token.Token {
+ 	return n.Start
+ }
+ 
++// EachChild implements KindNode.
++func (n *TagNode) EachChild(yield func(Node) bool) {
++	yield(n.Value)
++}
++
++// FirstToken implements KindNode.
++func (n *TagNode) FirstToken() *token.Token { return n.Start }
++
++// Accept implements KindNode.
++func (n *TagNode) Accept(v KindVisitor) { v.VisitTag(n) }
++
++func (n *TagNode) self() Node { return n }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *TagNode) AddColumn(col int) {
+ 	n.Start.AddColumn(col)
+@@ -2073,6 +2381,19 @@ func (n *CommentNode) Type() NodeType { return CommentType }
+ // GetToken returns token instance
+ func (n *CommentNode) GetToken() *token.Token { return n.Token }
+ 
++// EachChild implements KindNode. A comment has no children.
++func (n *CommentNode) EachChild(func(Node) bool) {}
++
++// FirstToken returns nil. A comment is only formatted through its owner.
++func (n *CommentNode) FirstToken() *token.Token { return nil }
++
++// Accept implements KindNode.
++func (n *CommentNode) Accept(v KindVisitor) { v.VisitComment(n) }
++
++func (n *CommentNode) self() Node { return n }
++
++func (n *CommentNode) walkedComment() *CommentGroupNode { return nil }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *CommentNode) AddColumn(col int) {
+ 	if n.Token == nil {
+@@ -2113,6 +2434,20 @@ func (n *CommentGroupNode) GetToken() *token.Token {
+ 	return nil
+ }
+ 
++// EachChild implements KindNode. A group is walked as a single node,
++// so its comments are not reported as children.
++func (n *CommentGroupNode) EachChild(func(Node) bool) {}
++
++// FirstToken returns nil. A comment is only formatted through its owner.
++func (n *CommentGroupNode) FirstToken() *token.Token { return nil }
++
++// Accept implements KindNode.
++func (n *CommentGroupNode) Accept(v KindVisitor) { v.VisitCommentGroup(n) }
++
++func (n *CommentGroupNode) self() Node { return n }
++
++func (n *CommentGroupNode) walkedComment() *CommentGroupNode { return nil }
++
+ // AddColumn add column number to child nodes recursively
+ func (n *CommentGroupNode) AddColumn(col int) {
+ 	for _, comment := range n.Comments {
+@@ -2154,83 +2489,101 @@ type Visitor interface {
+ 	Visit(Node) Visitor
+ }
+ 
++// KindVisitor has a method for each node kind. KindNode.Accept calls the one that matches.
++type KindVisitor interface {
++	VisitDocument(*DocumentNode)
++	VisitNull(*NullNode)
++	VisitBool(*BoolNode)
++	VisitInteger(*IntegerNode)
++	VisitFloat(*FloatNode)
++	VisitInfinity(*InfinityNode)
++	VisitNan(*NanNode)
++	VisitString(*StringNode)
++	VisitMergeKey(*MergeKeyNode)
++	VisitLiteral(*LiteralNode)
++	VisitMapping(*MappingNode)
++	VisitMappingKey(*MappingKeyNode)
++	VisitMappingValue(*MappingValueNode)
++	VisitSequence(*SequenceNode)
++	VisitSequenceEntry(*SequenceEntryNode)
++	VisitAnchor(*AnchorNode)
++	VisitAlias(*AliasNode)
++	VisitDirective(*DirectiveNode)
++	VisitTag(*TagNode)
++	VisitComment(*CommentNode)
++	VisitCommentGroup(*CommentGroupNode)
++}
++
++// NopKindVisitor is a KindVisitor that ignores every kind.
++// Embed it in a visitor that only handles some of the kinds.
++type NopKindVisitor struct{}
++
++func (NopKindVisitor) VisitDocument(*DocumentNode)           {}
++func (NopKindVisitor) VisitNull(*NullNode)                   {}
++func (NopKindVisitor) VisitBool(*BoolNode)                   {}
++func (NopKindVisitor) VisitInteger(*IntegerNode)             {}
++func (NopKindVisitor) VisitFloat(*FloatNode)                 {}
++func (NopKindVisitor) VisitInfinity(*InfinityNode)           {}
++func (NopKindVisitor) VisitNan(*NanNode)                     {}
++func (NopKindVisitor) VisitString(*StringNode)               {}
++func (NopKindVisitor) VisitMergeKey(*MergeKeyNode)           {}
++func (NopKindVisitor) VisitLiteral(*LiteralNode)             {}
++func (NopKindVisitor) VisitMapping(*MappingNode)             {}
++func (NopKindVisitor) VisitMappingKey(*MappingKeyNode)       {}
++func (NopKindVisitor) VisitMappingValue(*MappingValueNode)   {}
++func (NopKindVisitor) VisitSequence(*SequenceNode)           {}
++func (NopKindVisitor) VisitSequenceEntry(*SequenceEntryNode) {}
++func (NopKindVisitor) VisitAnchor(*AnchorNode)               {}
++func (NopKindVisitor) VisitAlias(*AliasNode)                 {}
++func (NopKindVisitor) VisitDirective(*DirectiveNode)         {}
++func (NopKindVisitor) VisitTag(*TagNode)                     {}
++func (NopKindVisitor) VisitComment(*CommentNode)             {}
++func (NopKindVisitor) VisitCommentGroup(*CommentGroupNode)   {}
++
+ // Walk traverses an AST in depth-first order: It starts by calling v.Visit(node); node must not be nil.
+ // If the visitor w returned by v.Visit(node) is not nil,
+ // Walk is invoked recursively with visitor w for each of the non-nil children of node,
+ // followed by a call of w.Visit(nil).
+ func Walk(v Visitor, node Node) {
++	w := &walker{}
++	w.yield = w.walkChild
++	w.walk(v, node)
++}
++
++// walker holds the state of a Walk, so that going through the children of a node does not allocate.
++type walker struct {
++	v     Visitor
++	yield func(Node) bool
++}
++
++func (w *walker) walk(v Visitor, node Node) {
+ 	if v = v.Visit(node); v == nil {
+ 		return
+ 	}
+ 
+-	switch n := node.(type) {
+-	case *CommentNode:
+-	case *NullNode:
+-		walkComment(v, n.BaseNode)
+-	case *IntegerNode:
+-		walkComment(v, n.BaseNode)
+-	case *FloatNode:
+-		walkComment(v, n.BaseNode)
+-	case *StringNode:
+-		walkComment(v, n.BaseNode)
+-	case *MergeKeyNode:
+-		walkComment(v, n.BaseNode)
+-	case *BoolNode:
+-		walkComment(v, n.BaseNode)
+-	case *InfinityNode:
+-		walkComment(v, n.BaseNode)
+-	case *NanNode:
+-		walkComment(v, n.BaseNode)
+-	case *LiteralNode:
+-		walkComment(v, n.BaseNode)
+-		Walk(v, n.Value)
+-	case *DirectiveNode:
+-		walkComment(v, n.BaseNode)
+-		Walk(v, n.Name)
+-		for _, value := range n.Values {
+-			Walk(v, value)
+-		}
+-	case *TagNode:
+-		walkComment(v, n.BaseNode)
+-		Walk(v, n.Value)
+-	case *DocumentNode:
+-		walkComment(v, n.BaseNode)
+-		Walk(v, n.Body)
+-	case *MappingNode:
+-		walkComment(v, n.BaseNode)
+-		for _, value := range n.Values {
+-			Walk(v, value)
+-		}
+-	case *MappingKeyNode:
+-		walkComment(v, n.BaseNode)
+-		Walk(v, n.Value)
+-	case *MappingValueNode:
+-		walkComment(v, n.BaseNode)
+-		Walk(v, n.Key)
+-		Walk(v, n.Value)
+-	case *SequenceNode:
+-		walkComment(v, n.BaseNode)
+-		for _, value := range n.Values {
+-			Walk(v, value)
+-		}
+-	case *AnchorNode:
+-		walkComment(v, n.BaseNode)
+-		Walk(v, n.Name)
+-		Walk(v, n.Value)
+-	case *AliasNode:
+-		walkComment(v, n.BaseNode)
+-		Walk(v, n.Value)
++	n, ok := kindOf(node)
++	if !ok {
++		return
++	}
++	if comment := n.walkedComment(); comment != nil {
++		w.walk(v, comment)
+ 	}
++	outer := w.v
++	w.v = v
++	n.EachChild(w.yield)
++	w.v = outer
+ }
+ 
+-func walkComment(v Visitor, base *BaseNode) {
+-	if base == nil {
+-		return
+-	}
+-	if base.Comment == nil {
+-		return
++func (w *walker) walkChild(child Node) bool {
++	w.walk(w.v, child)
++	return true
++}
++
++func (n *BaseNode) walkedComment() *CommentGroupNode {
++	if n == nil {
++		return nil
+ 	}
+-	Walk(v, base.Comment)
++	return n.Comment
+ }
+ 
+ type filterWalker struct {
+@@ -2247,79 +2600,36 @@ func (v *filterWalker) Visit(n Node) Visitor {
+ 
+ type parentFinder struct {
+ 	target Node
++	parent Node
++	found  Node
++	yield  func(Node) bool
+ }
+ 
+ func (f *parentFinder) walk(parent, node Node) Node {
+ 	if f.target == node {
+ 		return parent
+ 	}
+-	switch n := node.(type) {
+-	case *CommentNode:
+-		return nil
+-	case *NullNode:
+-		return nil
+-	case *IntegerNode:
+-		return nil
+-	case *FloatNode:
+-		return nil
+-	case *StringNode:
+-		return nil
+-	case *MergeKeyNode:
+-		return nil
+-	case *BoolNode:
+-		return nil
+-	case *InfinityNode:
+-		return nil
+-	case *NanNode:
++	n, ok := kindOf(node)
++	if !ok {
+ 		return nil
+-	case *LiteralNode:
+-		return f.walk(node, n.Value)
+-	case *DirectiveNode:
+-		if found := f.walk(node, n.Name); found != nil {
+-			return found
+-		}
+-		for _, value := range n.Values {
+-			if found := f.walk(node, value); found != nil {
+-				return found
+-			}
+-		}
+-	case *TagNode:
+-		return f.walk(node, n.Value)
+-	case *DocumentNode:
+-		return f.walk(node, n.Body)
+-	case *MappingNode:
+-		for _, value := range n.Values {
+-			if found := f.walk(node, value); found != nil {
+-				return found
+-			}
+-		}
+-	case *MappingKeyNode:
+-		return f.walk(node, n.Value)
+-	case *MappingValueNode:
+-		if found := f.walk(node, n.Key); found != nil {
+-			return found
+-		}
+-		return f.walk(node, n.Value)
+-	case *SequenceNode:
+-		for _, value := range n.Values {
+-			if found := f.walk(node, value); found != nil {
+-				return found
+-			}
+-		}
+-	case *AnchorNode:
+-		if found := f.walk(node, n.Name); found != nil {
+-			return found
+-		}
+-		return f.walk(node, n.Value)
+-	case *AliasNode:
+-		return f.walk(node, n.Value)
+ 	}
+-	return nil
++	f.parent = node
++	f.found = nil
++	n.EachChild(f.yield)
++	return f.found
++}
++
++func (f *parentFinder) walkChild(child Node) bool {
++	parent := f.parent
++	f.found = f.walk(parent, child)
++	f.parent = parent
++	return f.found == nil
+ }
+ 
+ // Parent get parent node from child node.
+ func Parent(root, child Node) Node {
+ 	finder := &parentFinder{target: child}
++	finder.yield = finder.walkChild
+ 	return finder.walk(root, root)
+ }
+ 
+diff --git a/decode.go b/decode.go
+index 1ac4272..85754fe 100644
+--- a/decode.go
++++ b/decode.go
+@@ -47,6 +47,7 @@ type Decoder struct {
+ 	parsedFile           *ast.File
+ 	streamIndex          int
+ 	decodeDepth          int
++	nodeValue            nodeValueVisitor
+ }
+ 
+ // NewDecoder returns a new decoder that reads from r.
+@@ -130,90 +131,69 @@ func (d *Decoder) mapKeyNodeToString(ctx context.Context, node ast.MapKeyNode) (
+ 	return fmt.Sprint(key), nil
+ }
+ 
+-func (d *Decoder) setToMapValue(ctx context.Context, node ast.Node, m map[string]interface{}) error {
++func (d *Decoder) setToMapValue(ctx context.Context, n *ast.MappingValueNode, m map[string]interface{}) error {
+ 	d.stepIn()
+ 	defer d.stepOut()
+ 	if d.isExceededMaxDepth() {
+ 		return ErrExceededMaxDepth
+ 	}
+ 
+-	d.setPathToCommentMap(node)
+-	switch n := node.(type) {
+-	case *ast.MappingValueNode:
+-		if n.Key.IsMergeKey() {
+-			value, err := d.getMapNode(n.Value, true)
+-			if err != nil {
+-				return err
+-			}
+-			iter := value.MapRange()
+-			for iter.Next() {
+-				if err := d.setToMapValue(ctx, iter.KeyValue(), m); err != nil {
+-					return err
+-				}
+-			}
+-		} else {
+-			key, err := d.mapKeyNodeToString(ctx, n.Key)
+-			if err != nil {
+-				return err
+-			}
+-			v, err := d.nodeToValue(ctx, n.Value)
+-			if err != nil {
+-				return err
+-			}
+-			m[key] = v
++	d.setPathToCommentMap(n)
++	if n.Key.IsMergeKey() {
++		value, err := d.getMapNode(n.Value, true)
++		if err != nil {
++			return err
+ 		}
+-	case *ast.MappingNode:
+-		for _, value := range n.Values {
+-			if err := d.setToMapValue(ctx, value, m); err != nil {
++		iter := value.MapRange()
++		for iter.Next() {
++			if err := d.setToMapValue(ctx, iter.KeyValue(), m); err != nil {
+ 				return err
+ 			}
+ 		}
+-	case *ast.AnchorNode:
+-		anchorName := n.Name.GetToken().Value
+-		d.anchorNodeMap[anchorName] = n.Value
++		return nil
++	}
++	key, err := d.mapKeyNodeToString(ctx, n.Key)
++	if err != nil {
++		return err
+ 	}
++	v, err := d.nodeToValue(ctx, n.Value)
++	if err != nil {
++		return err
++	}
++	m[key] = v
+ 	return nil
+ }
+ 
+-func (d *Decoder) setToOrderedMapValue(ctx context.Context, node ast.Node, m *MapSlice) error {
++func (d *Decoder) setToOrderedMapValue(ctx context.Context, n *ast.MappingValueNode, m *MapSlice) error {
+ 	d.stepIn()
+ 	defer d.stepOut()
+ 	if d.isExceededMaxDepth() {
+ 		return ErrExceededMaxDepth
+ 	}
+ 
+-	d.setPathToCommentMap(node)
+-	switch n := node.(type) {
+-	case *ast.MappingValueNode:
+-		if n.Key.IsMergeKey() {
+-			value, err := d.getMapNode(n.Value, true)
+-			if err != nil {
+-				return err
+-			}
+-			iter := value.MapRange()
+-			for iter.Next() {
+-				if err := d.setToOrderedMapValue(ctx, iter.KeyValue(), m); err != nil {
+-					return err
+-				}
+-			}
+-		} else {
+-			key, err := d.mapKeyNodeToString(ctx, n.Key)
+-			if err != nil {
+-				return err
+-			}
+-			value, err := d.nodeToValue(ctx, n.Value)
+-			if err != nil {
+-				return err
+-			}
+-			*m = append(*m, MapItem{Key: key, Value: value})
++	d.setPathToCommentMap(n)
++	if n.Key.IsMergeKey() {
++		value, err := d.getMapNode(n.Value, true)
++		if err != nil {
++			return err
+ 		}
+-	case *ast.MappingNode:
+-		for _, value := range n.Values {
+-			if err := d.setToOrderedMapValue(ctx, value, m); err != nil {
++		iter := value.MapRange()
++		for iter.Next() {
++			if err := d.setToOrderedMapValue(ctx, iter.KeyValue(), m); err != nil {
+ 				return err
+ 			}
+ 		}
++		return nil
++	}
++	key, err := d.mapKeyNodeToString(ctx, n.Key)
++	if err != nil {
++		return err
++	}
++	value, err := d.nodeToValue(ctx, n.Value)
++	if err != nil {
++		return err
+ 	}
++	*m = append(*m, MapItem{Key: key, Value: value})
+ 	return nil
+ }
+ 
+@@ -252,20 +232,30 @@ func (d *Decoder) addHeadOrLineCommentToMap(node ast.Node) {
+ 	}
+ 	commentPath := node.GetPath()
+ 	if minCommentLine < targetLine {
+-		switch n := node.(type) {
+-		case *ast.MappingNode:
+-			if len(n.Values) != 0 {
+-				commentPath = n.Values[0].Key.GetPath()
+-			}
+-		case *ast.MappingValueNode:
+-			commentPath = n.Key.GetPath()
+-		}
+-		d.addCommentToMap(commentPath, HeadComment(texts...))
++		v := &headCommentPathVisitor{path: commentPath}
++		ast.Accept(node, v)
++		d.addCommentToMap(v.path, HeadComment(texts...))
+ 	} else {
+ 		d.addCommentToMap(commentPath, LineComment(texts[0]))
+ 	}
+ }
+ 
++// headCommentPathVisitor moves the path of a head comment to the first key of a map.
++type headCommentPathVisitor struct {
++	ast.NopKindVisitor
++	path string
++}
++
++func (v *headCommentPathVisitor) VisitMapping(n *ast.MappingNode) {
++	if len(n.Values) != 0 {
++		v.path = n.Values[0].Key.GetPath()
++	}
++}
++
++func (v *headCommentPathVisitor) VisitMappingValue(n *ast.MappingValueNode) {
++	v.path = n.Key.GetPath()
++}
++
+ func (d *Decoder) addSequenceNodeCommentToMap(node *ast.SequenceNode) {
+ 	if len(node.ValueHeadComments) != 0 {
+ 		for idx, headComment := range node.ValueHeadComments {
+@@ -296,39 +286,32 @@ func (d *Decoder) addSequenceNodeCommentToMap(node *ast.SequenceNode) {
+ }
+ 
+ func (d *Decoder) addFootCommentToMap(node ast.Node) {
+-	var (
+-		footComment     *ast.CommentGroupNode
+-		footCommentPath = node.GetPath()
+-	)
+-	switch n := node.(type) {
+-	case *ast.SequenceNode:
+-		footComment = n.FootComment
+-		if n.FootComment != nil {
+-			footCommentPath = n.FootComment.GetPath()
+-		}
+-	case *ast.MappingNode:
+-		footComment = n.FootComment
+-		if n.FootComment != nil {
+-			footCommentPath = n.FootComment.GetPath()
+-		}
+-	case *ast.MappingValueNode:
+-		footComment = n.FootComment
+-		if n.FootComment != nil {
+-			footCommentPath = n.FootComment.GetPath()
+-		}
+-	}
+-	if footComment == nil {
++	v := &footCommentVisitor{}
++	ast.Accept(node, v)
++	if v.comment == nil {
+ 		return
+ 	}
+ 	var texts []string
+-	for _, comment := range footComment.Comments {
++	for _, comment := range v.comment.Comments {
+ 		texts = append(texts, comment.Token.Value)
+ 	}
+ 	if len(texts) != 0 {
+-		d.addCommentToMap(footCommentPath, FootComment(texts...))
++		d.addCommentToMap(v.comment.GetPath(), FootComment(texts...))
+ 	}
+ }
+ 
++// footCommentVisitor picks the foot comment of the kinds that have one.
++type footCommentVisitor struct {
++	ast.NopKindVisitor
++	comment *ast.CommentGroupNode
++}
++
++func (v *footCommentVisitor) VisitSequence(n *ast.SequenceNode) { v.comment = n.FootComment }
++func (v *footCommentVisitor) VisitMapping(n *ast.MappingNode)   { v.comment = n.FootComment }
++func (v *footCommentVisitor) VisitMappingValue(n *ast.MappingValueNode) {
++	v.comment = n.FootComment
++}
++
+ func (d *Decoder) addCommentToMap(path string, comment *Comment) {
+ 	for _, c := range d.toCommentMap[path] {
+ 		if c.Position == comment.Position {
+@@ -350,198 +333,240 @@ func (d *Decoder) nodeToValue(ctx context.Context, node ast.Node) (any, error) {
+ 	}
+ 
+ 	d.setPathToCommentMap(node)
+-	switch n := node.(type) {
+-	case *ast.NullNode:
+-		return nil, nil
+-	case *ast.StringNode:
+-		return n.GetValue(), nil
+-	case *ast.IntegerNode:
+-		return n.GetValue(), nil
+-	case *ast.FloatNode:
+-		return n.GetValue(), nil
+-	case *ast.BoolNode:
+-		return n.GetValue(), nil
+-	case *ast.InfinityNode:
+-		return n.GetValue(), nil
+-	case *ast.NanNode:
+-		return n.GetValue(), nil
+-	case *ast.TagNode:
+-		if n.Directive != nil {
+-			v, err := d.nodeToValue(ctx, n.Value)
+-			if err != nil {
+-				return nil, err
+-			}
+-			if v == nil {
+-				return "", nil
+-			}
+-			return fmt.Sprint(v), nil
+-		}
+-		switch token.ReservedTagKeyword(n.Start.Value) {
+-		case token.TimestampTag:
+-			t, _ := d.castToTime(ctx, n.Value)
+-			return t, nil
+-		case token.IntegerTag:
+-			v, err := d.nodeToValue(ctx, n.Value)
+-			if err != nil {
+-				return nil, err
+-			}
+-			i, _ := strconv.Atoi(fmt.Sprint(v))
+-			return i, nil
+-		case token.FloatTag:
+-			v, err := d.nodeToValue(ctx, n.Value)
+-			if err != nil {
+-				return nil, err
+-			}
+-			return d.castToFloat(v), nil
+-		case token.NullTag:
+-			return nil, nil
+-		case token.BinaryTag:
+-			v, err := d.nodeToValue(ctx, n.Value)
+-			if err != nil {
+-				return nil, err
+-			}
+-			str, ok := v.(string)
+-			if !ok {
+-				return nil, errors.ErrSyntax(
+-					fmt.Sprintf("cannot convert %q to string", fmt.Sprint(v)),
+-					n.Value.GetToken(),
+-				)
+-			}
+-			b, _ := base64.StdEncoding.DecodeString(str)
+-			return b, nil
+-		case token.BooleanTag:
+-			v, err := d.nodeToValue(ctx, n.Value)
+-			if err != nil {
+-				return nil, err
+-			}
+-			str := strings.ToLower(fmt.Sprint(v))
+-			b, err := strconv.ParseBool(str)
+-			if err == nil {
+-				return b, nil
+-			}
+-			switch str {
+-			case "yes":
+-				return true, nil
+-			case "no":
+-				return false, nil
+-			}
+-			return nil, errors.ErrSyntax(fmt.Sprintf("cannot convert %q to boolean", fmt.Sprint(v)), n.Value.GetToken())
+-		case token.StringTag:
+-			v, err := d.nodeToValue(ctx, n.Value)
+-			if err != nil {
+-				return nil, err
+-			}
+-			if v == nil {
+-				return "", nil
+-			}
+-			return fmt.Sprint(v), nil
+-		case token.MappingTag:
+-			return d.nodeToValue(ctx, n.Value)
+-		default:
+-			return d.nodeToValue(ctx, n.Value)
+-		}
+-	case *ast.AnchorNode:
+-		anchorName := n.Name.GetToken().Value
++	v := &d.nodeValue
++	v.d, v.ctx, v.value, v.err = d, ctx, nil, nil
++	ast.Accept(node, v)
++	return v.value, v.err
++}
++
++// nodeValueVisitor decodes the node it is dispatched on. A kind without a method decodes to nil.
++// The decoder reuses a single instance for all nodes, so a method has to read
++// the fields before it recurses, and to set the result after it has recursed.
++type nodeValueVisitor struct {
++	ast.NopKindVisitor
++	d     *Decoder
++	ctx   context.Context
++	value any
++	err   error
++}
++
++func (v *nodeValueVisitor) VisitString(n *ast.StringNode)     { v.value = n.GetValue() }
++func (v *nodeValueVisitor) VisitInteger(n *ast.IntegerNode)   { v.value = n.GetValue() }
++func (v *nodeValueVisitor) VisitFloat(n *ast.FloatNode)       { v.value = n.GetValue() }
++func (v *nodeValueVisitor) VisitBool(n *ast.BoolNode)         { v.value = n.GetValue() }
++func (v *nodeValueVisitor) VisitInfinity(n *ast.InfinityNode) { v.value = n.GetValue() }
++func (v *nodeValueVisitor) VisitNan(n *ast.NanNode)           { v.value = n.GetValue() }
++func (v *nodeValueVisitor) VisitLiteral(n *ast.LiteralNode)   { v.value = n.Value.GetValue() }
++
++func (v *nodeValueVisitor) VisitTag(n *ast.TagNode) {
++	v.value, v.err = v.d.tagNodeToValue(v.ctx, n)
++}
++
++func (v *nodeValueVisitor) VisitAnchor(n *ast.AnchorNode) {
++	v.value, v.err = v.d.anchorNodeToValue(v.ctx, n)
++}
++
++func (v *nodeValueVisitor) VisitAlias(n *ast.AliasNode) {
++	v.value, v.err = v.d.aliasNodeToValue(v.ctx, n)
++}
++
++func (v *nodeValueVisitor) VisitMappingKey(n *ast.MappingKeyNode) {
++	v.value, v.err = v.d.nodeToValue(v.ctx, n.Value)
++}
++
++func (v *nodeValueVisitor) VisitMappingValue(n *ast.MappingValueNode) {
++	v.value, v.err = v.d.mappingValueNodeToValue(v.ctx, n)
++}
+ 
+-		// To handle the case where alias is processed recursively, the result of alias can be set to nil in advance.
+-		d.anchorNodeMap[anchorName] = nil
+-		anchorValue, err := d.nodeToValue(withAnchor(ctx, anchorName), n.Value)
++func (v *nodeValueVisitor) VisitMapping(n *ast.MappingNode) {
++	v.value, v.err = v.d.mappingNodeToValue(v.ctx, n)
++}
++
++func (v *nodeValueVisitor) VisitSequence(n *ast.SequenceNode) {
++	v.value, v.err = v.d.sequenceNodeToValue(v.ctx, n)
++}
++
++func (d *Decoder) tagNodeToValue(ctx context.Context, n *ast.TagNode) (any, error) {
++	if n.Directive != nil {
++		v, err := d.nodeToValue(ctx, n.Value)
+ 		if err != nil {
+-			delete(d.anchorNodeMap, anchorName)
+ 			return nil, err
+ 		}
+-		d.anchorNodeMap[anchorName] = n.Value
+-		d.anchorValueMap[anchorName] = reflect.ValueOf(anchorValue)
+-		return anchorValue, nil
+-	case *ast.AliasNode:
+-		text := n.Value.String()
+-		if _, exists := getAnchorMap(ctx)[text]; exists {
+-			// self recursion.
+-			return nil, nil
++		if v == nil {
++			return "", nil
+ 		}
+-		if v, exists := d.anchorValueMap[text]; exists {
+-			if !v.IsValid() {
+-				return nil, nil
+-			}
+-			return v.Interface(), nil
++		return fmt.Sprint(v), nil
++	}
++	switch token.ReservedTagKeyword(n.Start.Value) {
++	case token.TimestampTag:
++		t, _ := d.castToTime(ctx, n.Value)
++		return t, nil
++	case token.IntegerTag:
++		v, err := d.nodeToValue(ctx, n.Value)
++		if err != nil {
++			return nil, err
++		}
++		i, _ := strconv.Atoi(fmt.Sprint(v))
++		return i, nil
++	case token.FloatTag:
++		v, err := d.nodeToValue(ctx, n.Value)
++		if err != nil {
++			return nil, err
+ 		}
+-		if node, exists := d.anchorNodeMap[text]; exists {
+-			return d.nodeToValue(ctx, node)
++		return d.castToFloat(v), nil
++	case token.NullTag:
++		return nil, nil
++	case token.BinaryTag:
++		v, err := d.nodeToValue(ctx, n.Value)
++		if err != nil {
++			return nil, err
+ 		}
+-		return nil, errors.ErrSyntax(fmt.Sprintf("could not find alias %q", text), n.Value.GetToken())
+-	case *ast.LiteralNode:
+-		return n.Value.GetValue(), nil
+-	case *ast.MappingKeyNode:
+-		return d.nodeToValue(ctx, n.Value)
+-	case *ast.MappingValueNode:
+-		if n.Key.IsMergeKey() {
+-			value, err := d.getMapNode(n.Value, true)
+-			if err != nil {
+-				return nil, err
+-			}
+-			iter := value.MapRange()
+-			if d.useOrderedMap {
+-				m := MapSlice{}
+-				for iter.Next() {
+-					if err := d.setToOrderedMapValue(ctx, iter.KeyValue(), &m); err != nil {
+-						return nil, err
+-					}
+-				}
+-				return m, nil
+-			}
+-			m := make(map[string]any)
+-			for iter.Next() {
+-				if err := d.setToMapValue(ctx, iter.KeyValue(), m); err != nil {
+-					return nil, err
+-				}
+-			}
+-			return m, nil
++		str, ok := v.(string)
++		if !ok {
++			return nil, errors.ErrSyntax(
++				fmt.Sprintf("cannot convert %q to string", fmt.Sprint(v)),
++				n.Value.GetToken(),
++			)
+ 		}
+-		key, err := d.mapKeyNodeToString(ctx, n.Key)
++		b, _ := base64.StdEncoding.DecodeString(str)
++		return b, nil
++	case token.BooleanTag:
++		v, err := d.nodeToValue(ctx, n.Value)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		if d.useOrderedMap {
+-			v, err := d.nodeToValue(ctx, n.Value)
+-			if err != nil {
+-				return nil, err
+-			}
+-			return MapSlice{{Key: key, Value: v}}, nil
++		str := strings.ToLower(fmt.Sprint(v))
++		b, err := strconv.ParseBool(str)
++		if err == nil {
++			return b, nil
+ 		}
++		switch str {
++		case "yes":
++			return true, nil
++		case "no":
++			return false, nil
++		}
++		return nil, errors.ErrSyntax(fmt.Sprintf("cannot convert %q to boolean", fmt.Sprint(v)), n.Value.GetToken())
++	case token.StringTag:
+ 		v, err := d.nodeToValue(ctx, n.Value)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		return map[string]interface{}{key: v}, nil
+-	case *ast.MappingNode:
++		if v == nil {
++			return "", nil
++		}
++		return fmt.Sprint(v), nil
++	case token.MappingTag:
++		return d.nodeToValue(ctx, n.Value)
++	default:
++		return d.nodeToValue(ctx, n.Value)
++	}
++}
++
++func (d *Decoder) anchorNodeToValue(ctx context.Context, n *ast.AnchorNode) (any, error) {
++	anchorName := n.Name.GetToken().Value
++
++	// To handle the case where alias is processed recursively, the result of alias can be set to nil in advance.
++	d.anchorNodeMap[anchorName] = nil
++	anchorValue, err := d.nodeToValue(withAnchor(ctx, anchorName), n.Value)
++	if err != nil {
++		delete(d.anchorNodeMap, anchorName)
++		return nil, err
++	}
++	d.anchorNodeMap[anchorName] = n.Value
++	d.anchorValueMap[anchorName] = reflect.ValueOf(anchorValue)
++	return anchorValue, nil
++}
++
++func (d *Decoder) aliasNodeToValue(ctx context.Context, n *ast.AliasNode) (any, error) {
++	text := n.Value.String()
++	if _, exists := getAnchorMap(ctx)[text]; exists {
++		// self recursion.
++		return nil, nil
++	}
++	if v, exists := d.anchorValueMap[text]; exists {
++		if !v.IsValid() {
++			return nil, nil
++		}
++		return v.Interface(), nil
++	}
++	if node, exists := d.anchorNodeMap[text]; exists {
++		return d.nodeToValue(ctx, node)
++	}
++	return nil, errors.ErrSyntax(fmt.Sprintf("could not find alias %q", text), n.Value.GetToken())
++}
++
++func (d *Decoder) mappingValueNodeToValue(ctx context.Context, n *ast.MappingValueNode) (any, error) {
++	if n.Key.IsMergeKey() {
++		value, err := d.getMapNode(n.Value, true)
++		if err != nil {
++			return nil, err
++		}
++		iter := value.MapRange()
+ 		if d.useOrderedMap {
+-			m := make(MapSlice, 0, len(n.Values))
+-			for _, value := range n.Values {
+-				if err := d.setToOrderedMapValue(ctx, value, &m); err != nil {
++			m := MapSlice{}
++			for iter.Next() {
++				if err := d.setToOrderedMapValue(ctx, iter.KeyValue(), &m); err != nil {
+ 					return nil, err
+ 				}
+ 			}
+ 			return m, nil
+ 		}
+-		m := make(map[string]interface{}, len(n.Values))
+-		for _, value := range n.Values {
+-			if err := d.setToMapValue(ctx, value, m); err != nil {
++		m := make(map[string]any)
++		for iter.Next() {
++			if err := d.setToMapValue(ctx, iter.KeyValue(), m); err != nil {
+ 				return nil, err
+ 			}
+ 		}
+ 		return m, nil
+-	case *ast.SequenceNode:
+-		v := make([]interface{}, 0, len(n.Values))
++	}
++	key, err := d.mapKeyNodeToString(ctx, n.Key)
++	if err != nil {
++		return nil, err
++	}
++	if d.useOrderedMap {
++		v, err := d.nodeToValue(ctx, n.Value)
++		if err != nil {
++			return nil, err
++		}
++		return MapSlice{{Key: key, Value: v}}, nil
++	}
++	v, err := d.nodeToValue(ctx, n.Value)
++	if err != nil {
++		return nil, err
++	}
++	return map[string]interface{}{key: v}, nil
++}
++
++func (d *Decoder) mappingNodeToValue(ctx context.Context, n *ast.MappingNode) (any, error) {
++	if d.useOrderedMap {
++		m := make(MapSlice, 0, len(n.Values))
+ 		for _, value := range n.Values {
+-			vv, err := d.nodeToValue(ctx, value)
+-			if err != nil {
++			if err := d.setToOrderedMapValue(ctx, value, &m); err != nil {
+ 				return nil, err
+ 			}
+-			v = append(v, vv)
+ 		}
+-		return v, nil
++		return m, nil
++	}
++	m := make(map[string]interface{}, len(n.Values))
++	for _, value := range n.Values {
++		if err := d.setToMapValue(ctx, value, m); err != nil {
++			return nil, err
++		}
++	}
++	return m, nil
++}
++
++func (d *Decoder) sequenceNodeToValue(ctx context.Context, n *ast.SequenceNode) (any, error) {
++	v := make([]interface{}, 0, len(n.Values))
++	for _, value := range n.Values {
++		vv, err := d.nodeToValue(ctx, value)
++		if err != nil {
++			return nil, err
++		}
++		v = append(v, vv)
+ 	}
+-	return nil, nil
++	return v, nil
+ }
+ 
+ func (d *Decoder) getMapNode(node ast.Node, isMerge bool) (ast.MapNode, error) {
+@@ -551,37 +576,70 @@ func (d *Decoder) getMapNode(node ast.Node, isMerge bool) (ast.MapNode, error) {
+ 		return nil, ErrExceededMaxDepth
+ 	}
+ 
+-	switch n := node.(type) {
+-	case ast.MapNode:
+-		return n, nil
+-	case *ast.AnchorNode:
+-		anchorName := n.Name.GetToken().Value
+-		d.anchorNodeMap[anchorName] = n.Value
+-		return d.getMapNode(n.Value, isMerge)
+-	case *ast.AliasNode:
+-		aliasName := n.Value.GetToken().Value
+-		node := d.anchorNodeMap[aliasName]
+-		if node == nil {
+-			return nil, fmt.Errorf("cannot find anchor by alias name %s", aliasName)
+-		}
+-		return d.getMapNode(node, isMerge)
+-	case *ast.TagNode:
+-		return d.getMapNode(n.Value, isMerge)
+-	case *ast.SequenceNode:
+-		if !isMerge {
+-			return nil, errors.ErrUnexpectedNodeType(node.Type(), ast.MappingType, node.GetToken())
+-		}
+-		var mapNodes []ast.MapNode
+-		for _, value := range n.Values {
+-			mapNode, err := d.getMapNode(value, false)
+-			if err != nil {
+-				return nil, err
+-			}
+-			mapNodes = append(mapNodes, mapNode)
++	if mapNode, ok := node.(ast.MapNode); ok {
++		return mapNode, nil
++	}
++	v := &mapNodeVisitor{d: d, isMerge: isMerge}
++	ast.Accept(node, v)
++	if !v.handled {
++		return nil, errors.ErrUnexpectedNodeType(node.Type(), ast.MappingType, node.GetToken())
++	}
++	return v.mapNode, v.err
++}
++
++// mapNodeVisitor resolves the kinds that stand in for a map.
++// Unlike arrayNodeVisitor it registers the anchors it passes through.
++type mapNodeVisitor struct {
++	ast.NopKindVisitor
++	d       *Decoder
++	isMerge bool
++	mapNode ast.MapNode
++	err     error
++	handled bool
++}
++
++func (v *mapNodeVisitor) resolve(node ast.Node) {
++	v.mapNode, v.err = v.d.getMapNode(node, v.isMerge)
++	v.handled = true
++}
++
++func (v *mapNodeVisitor) VisitAnchor(n *ast.AnchorNode) {
++	anchorName := n.Name.GetToken().Value
++	v.d.anchorNodeMap[anchorName] = n.Value
++	v.resolve(n.Value)
++}
++
++func (v *mapNodeVisitor) VisitAlias(n *ast.AliasNode) {
++	aliasName := n.Value.GetToken().Value
++	node := v.d.anchorNodeMap[aliasName]
++	if node == nil {
++		v.err = fmt.Errorf("cannot find anchor by alias name %s", aliasName)
++		v.handled = true
++		return
++	}
++	v.resolve(node)
++}
++
++func (v *mapNodeVisitor) VisitTag(n *ast.TagNode) {
++	v.resolve(n.Value)
++}
++
++func (v *mapNodeVisitor) VisitSequence(n *ast.SequenceNode) {
++	v.handled = true
++	if !v.isMerge {
++		v.err = errors.ErrUnexpectedNodeType(n.Type(), ast.MappingType, n.GetToken())
++		return
++	}
++	var mapNodes []ast.MapNode
++	for _, value := range n.Values {
++		mapNode, err := v.d.getMapNode(value, false)
++		if err != nil {
++			v.err = err
++			return
+ 		}
+-		return ast.SequenceMergeValue(mapNodes...), nil
++		mapNodes = append(mapNodes, mapNode)
+ 	}
+-	return nil, errors.ErrUnexpectedNodeType(node.Type(), ast.MappingType, node.GetToken())
++	v.mapNode = ast.SequenceMergeValue(mapNodes...)
+ }
+ 
+ func (d *Decoder) getArrayNode(node ast.Node) (ast.ArrayNode, error) {
+@@ -591,22 +649,10 @@ func (d *Decoder) getArrayNode(node ast.Node) (ast.ArrayNode, error) {
+ 		return nil, ErrExceededMaxDepth
+ 	}
+ 
+-	if _, ok := node.(*ast.NullNode); ok {
+-		return nil, nil
+-	}
+-	if anchor, ok := node.(*ast.AnchorNode); ok {
+-		return d.getArrayNode(anchor.Value)
+-	}
+-	if alias, ok := node.(*ast.AliasNode); ok {
+-		aliasName := alias.Value.GetToken().Value
+-		node := d.anchorNodeMap[aliasName]
+-		if node == nil {
+-			return nil, fmt.Errorf("cannot find anchor by alias name %s", aliasName)
+-		}
+-		return d.getArrayNode(node)
+-	}
+-	if tag, ok := node.(*ast.TagNode); ok {
+-		return d.getArrayNode(tag.Value)
++	v := &arrayNodeVisitor{d: d}
++	ast.Accept(node, v)
++	if v.handled {
++		return v.arrayNode, v.err
+ 	}
+ 	arrayNode, ok := node.(ast.ArrayNode)
+ 	if !ok {
+@@ -615,6 +661,44 @@ func (d *Decoder) getArrayNode(node ast.Node) (ast.ArrayNode, error) {
+ 	return arrayNode, nil
+ }
+ 
++// arrayNodeVisitor resolves the kinds that stand in for an array. They take precedence
++// over ast.ArrayNode because a tag implements it without being an array itself.
++type arrayNodeVisitor struct {
++	ast.NopKindVisitor
++	d         *Decoder
++	arrayNode ast.ArrayNode
++	err       error
++	handled   bool
++}
++
++func (v *arrayNodeVisitor) resolve(node ast.Node) {
++	v.arrayNode, v.err = v.d.getArrayNode(node)
++	v.handled = true
++}
++
++func (v *arrayNodeVisitor) VisitNull(*ast.NullNode) {
++	v.handled = true
++}
++
++func (v *arrayNodeVisitor) VisitAnchor(n *ast.AnchorNode) {
++	v.resolve(n.Value)
++}
++
++func (v *arrayNodeVisitor) VisitAlias(n *ast.AliasNode) {
++	aliasName := n.Value.GetToken().Value
++	node := v.d.anchorNodeMap[aliasName]
++	if node == nil {
++		v.err = fmt.Errorf("cannot find anchor by alias name %s", aliasName)
++		v.handled = true
++		return
++	}
++	v.resolve(node)
++}
++
++func (v *arrayNodeVisitor) VisitTag(n *ast.TagNode) {
++	v.resolve(n.Value)
++}
++
+ func (d *Decoder) convertValue(v reflect.Value, typ reflect.Type, src ast.Node) (reflect.Value, error) {
+ 	if typ.Kind() != reflect.String {
+ 		if !v.Type().ConvertibleTo(typ) {
+diff --git a/encode.go b/encode.go
+index 030ce5a..007bfae 100644
+--- a/encode.go
++++ b/encode.go
+@@ -172,35 +172,7 @@ func (e *Encoder) setCommentByCommentMap(node ast.Node) error {
+ }
+ 
+ func (e *Encoder) setHeadComment(node ast.Node, filtered ast.Node, comment *ast.CommentGroupNode) error {
+-	parent := ast.Parent(node, filtered)
+-	if parent == nil {
+-		return ErrUnsupportedHeadPositionType(node)
+-	}
+-	switch p := parent.(type) {
+-	case *ast.MappingValueNode:
+-		if err := p.SetComment(comment); err != nil {
+-			return err
+-		}
+-	case *ast.MappingNode:
+-		if err := p.SetComment(comment); err != nil {
+-			return err
+-		}
+-	case *ast.SequenceNode:
+-		if len(p.ValueHeadComments) == 0 {
+-			p.ValueHeadComments = make([]*ast.CommentGroupNode, len(p.Values))
+-		}
+-		var foundIdx int
+-		for idx, v := range p.Values {
+-			if v == filtered {
+-				foundIdx = idx
+-				break
+-			}
+-		}
+-		p.ValueHeadComments[foundIdx] = comment
+-	default:
+-		return ErrUnsupportedHeadPositionType(node)
+-	}
+-	return nil
++return nil
+ }
+ 
+ func (e *Encoder) setLineComment(node ast.Node, filtered ast.Node, comment *ast.CommentGroupNode) error {
+diff --git a/internal/format/format.go b/internal/format/format.go
+index 461dc36..595aafb 100644
+--- a/internal/format/format.go
++++ b/internal/format/format.go
+@@ -8,7 +8,7 @@ import (
+ )
+ 
+ func FormatNodeWithResolvedAlias(n ast.Node, anchorNodeMap map[string]ast.Node) string {
+-	tk := getFirstToken(n)
++	tk := ast.FirstToken(n)
+ 	if tk == nil {
+ 		return ""
+ 	}
+@@ -18,7 +18,7 @@ func FormatNodeWithResolvedAlias(n ast.Node, anchorNodeMap map[string]ast.Node)
+ }
+ 
+ func FormatNode(n ast.Node) string {
+-	tk := getFirstToken(n)
++	tk := ast.FirstToken(n)
+ 	if tk == nil {
+ 		return ""
+ 	}
+@@ -29,7 +29,7 @@ func FormatFile(file *ast.File) string {
+ 	if len(file.Docs) == 0 {
+ 		return ""
+ 	}
+-	tk := getFirstToken(file.Docs[0])
++	tk := ast.FirstToken(file.Docs[0])
+ 	if tk == nil {
+ 		return ""
+ 	}
+@@ -46,147 +46,111 @@ func hasCommentFile(f *ast.File) bool {
+ }
+ 
+ func hasComment(n ast.Node) bool {
+-	if n == nil {
+-		return false
+-	}
+-	switch nn := n.(type) {
+-	case *ast.DocumentNode:
+-		return hasComment(nn.Body)
+-	case *ast.NullNode:
+-		return nn.Comment != nil
+-	case *ast.BoolNode:
+-		return nn.Comment != nil
+-	case *ast.IntegerNode:
+-		return nn.Comment != nil
+-	case *ast.FloatNode:
+-		return nn.Comment != nil
+-	case *ast.StringNode:
+-		return nn.Comment != nil
+-	case *ast.InfinityNode:
+-		return nn.Comment != nil
+-	case *ast.NanNode:
+-		return nn.Comment != nil
+-	case *ast.LiteralNode:
+-		return nn.Comment != nil
+-	case *ast.DirectiveNode:
+-		if nn.Comment != nil {
+-			return true
+-		}
+-		for _, value := range nn.Values {
+-			if hasComment(value) {
+-				return true
+-			}
+-		}
+-	case *ast.TagNode:
+-		if nn.Comment != nil {
+-			return true
+-		}
+-		return hasComment(nn.Value)
+-	case *ast.MappingNode:
+-		if nn.Comment != nil || nn.FootComment != nil {
+-			return true
+-		}
+-		for _, value := range nn.Values {
+-			if value.Comment != nil || value.FootComment != nil {
+-				return true
+-			}
+-			if hasComment(value.Key) {
+-				return true
+-			}
+-			if hasComment(value.Value) {
+-				return true
+-			}
+-		}
+-	case *ast.MappingKeyNode:
+-		return nn.Comment != nil
+-	case *ast.MergeKeyNode:
+-		return nn.Comment != nil
+-	case *ast.SequenceNode:
+-		if nn.Comment != nil || nn.FootComment != nil {
+-			return true
+-		}
+-		for _, entry := range nn.Entries {
+-			if entry.Comment != nil || entry.HeadComment != nil || entry.LineComment != nil {
+-				return true
+-			}
+-			if hasComment(entry.Value) {
+-				return true
+-			}
+-		}
+-	case *ast.AnchorNode:
+-		if nn.Comment != nil {
+-			return true
++	v := &commentDetector{}
++	ast.Accept(n, v)
++	return v.found
++}
++
++// commentDetector reports whether the node it is dispatched on holds a comment.
++// A mapping value is only inspected through its mapping, and a sequence through its entries.
++type commentDetector struct {
++	ast.NopKindVisitor
++	found bool
++}
++
++func (v *commentDetector) VisitDocument(n *ast.DocumentNode) { ast.Accept(n.Body, v) }
++func (v *commentDetector) VisitNull(n *ast.NullNode)         { v.found = n.Comment != nil }
++func (v *commentDetector) VisitBool(n *ast.BoolNode)         { v.found = n.Comment != nil }
++func (v *commentDetector) VisitInteger(n *ast.IntegerNode)   { v.found = n.Comment != nil }
++func (v *commentDetector) VisitFloat(n *ast.FloatNode)       { v.found = n.Comment != nil }
++func (v *commentDetector) VisitString(n *ast.StringNode)     { v.found = n.Comment != nil }
++func (v *commentDetector) VisitInfinity(n *ast.InfinityNode) { v.found = n.Comment != nil }
++func (v *commentDetector) VisitNan(n *ast.NanNode)           { v.found = n.Comment != nil }
++func (v *commentDetector) VisitLiteral(n *ast.LiteralNode)   { v.found = n.Comment != nil }
++func (v *commentDetector) VisitMergeKey(n *ast.MergeKeyNode) { v.found = n.Comment != nil }
++
++func (v *commentDetector) VisitMappingKey(n *ast.MappingKeyNode) { v.found = n.Comment != nil }
++
++func (v *commentDetector) VisitDirective(n *ast.DirectiveNode) {
++	if n.Comment != nil {
++		v.found = true
++		return
++	}
++	for _, value := range n.Values {
++		if ast.Accept(value, v); v.found {
++			return
+ 		}
+-		if hasComment(nn.Name) || hasComment(nn.Value) {
+-			return true
++	}
++}
++
++func (v *commentDetector) VisitTag(n *ast.TagNode) {
++	if n.Comment != nil {
++		v.found = true
++		return
++	}
++	ast.Accept(n.Value, v)
++}
++
++func (v *commentDetector) VisitMapping(n *ast.MappingNode) {
++	if n.Comment != nil || n.FootComment != nil {
++		v.found = true
++		return
++	}
++	for _, value := range n.Values {
++		if value.Comment != nil || value.FootComment != nil {
++			v.found = true
++			return
+ 		}
+-	case *ast.AliasNode:
+-		if nn.Comment != nil {
+-			return true
++		if ast.Accept(value.Key, v); v.found {
++			return
+ 		}
+-		if hasComment(nn.Value) {
+-			return true
++		if ast.Accept(value.Value, v); v.found {
++			return
+ 		}
+ 	}
+-	return false
+ }
+ 
+-func getFirstToken(n ast.Node) *token.Token {
+-	if n == nil {
+-		return nil
++func (v *commentDetector) VisitSequence(n *ast.SequenceNode) {
++	if n.Comment != nil || n.FootComment != nil {
++		v.found = true
++		return
+ 	}
+-	switch nn := n.(type) {
+-	case *ast.DocumentNode:
+-		if nn.Start != nil {
+-			return nn.Start
+-		}
+-		return getFirstToken(nn.Body)
+-	case *ast.NullNode:
+-		return nn.Token
+-	case *ast.BoolNode:
+-		return nn.Token
+-	case *ast.IntegerNode:
+-		return nn.Token
+-	case *ast.FloatNode:
+-		return nn.Token
+-	case *ast.StringNode:
+-		return nn.Token
+-	case *ast.InfinityNode:
+-		return nn.Token
+-	case *ast.NanNode:
+-		return nn.Token
+-	case *ast.LiteralNode:
+-		return nn.Start
+-	case *ast.DirectiveNode:
+-		return nn.Start
+-	case *ast.TagNode:
+-		return nn.Start
+-	case *ast.MappingNode:
+-		if nn.IsFlowStyle {
+-			return nn.Start
++	for _, entry := range n.Entries {
++		if entry.Comment != nil || entry.HeadComment != nil || entry.LineComment != nil {
++			v.found = true
++			return
+ 		}
+-		if len(nn.Values) == 0 {
+-			return nn.Start
++		if ast.Accept(entry.Value, v); v.found {
++			return
+ 		}
+-		return getFirstToken(nn.Values[0].Key)
+-	case *ast.MappingKeyNode:
+-		return nn.Start
+-	case *ast.MergeKeyNode:
+-		return nn.Token
+-	case *ast.SequenceNode:
+-		return nn.Start
+-	case *ast.AnchorNode:
+-		return nn.Start
+-	case *ast.AliasNode:
+-		return nn.Start
+ 	}
+-	return nil
++}
++
++func (v *commentDetector) VisitAnchor(n *ast.AnchorNode) {
++	if n.Comment != nil {
++		v.found = true
++		return
++	}
++	if ast.Accept(n.Name, v); v.found {
++		return
++	}
++	ast.Accept(n.Value, v)
++}
++
++func (v *commentDetector) VisitAlias(n *ast.AliasNode) {
++	if n.Comment != nil {
++		v.found = true
++		return
++	}
++	ast.Accept(n.Value, v)
+ }
+ 
+ type Formatter struct {
++	ast.NopKindVisitor
+ 	existsComment    bool
+ 	tokenToOriginMap map[*token.Token]string
+ 	anchorNodeMap    map[string]ast.Node
++	formatted        string
+ }
+ 
+ func newFormatter(tk *token.Token, existsComment bool) *Formatter {
+@@ -266,7 +230,7 @@ func getIndentNumByFirstLineToken(tk *token.Token) int {
+ func (f *Formatter) format(n ast.Node) string {
+ 	return f.trimSpacePrefix(
+ 		f.trimIndentSpace(
+-			getIndentNumByFirstLineToken(getFirstToken(n)),
++			getIndentNumByFirstLineToken(ast.FirstToken(n)),
+ 			f.trimNewLineCharPrefix(f.formatNode(n)),
+ 		),
+ 	)
+@@ -420,49 +384,34 @@ func (f *Formatter) formatAlias(n *ast.AliasNode) string {
+ 	return f.origin(n.Start) + f.formatNode(n.Value)
+ }
+ 
++// formatNode dispatches on the kind of n. Comments are formatted by their owner.
+ func (f *Formatter) formatNode(n ast.Node) string {
+-	switch nn := n.(type) {
+-	case *ast.DocumentNode:
+-		return f.formatDocument(nn)
+-	case *ast.NullNode:
+-		return f.formatNull(nn)
+-	case *ast.BoolNode:
+-		return f.formatBool(nn)
+-	case *ast.IntegerNode:
+-		return f.formatInteger(nn)
+-	case *ast.FloatNode:
+-		return f.formatFloat(nn)
+-	case *ast.StringNode:
+-		return f.formatString(nn)
+-	case *ast.InfinityNode:
+-		return f.formatInfinity(nn)
+-	case *ast.NanNode:
+-		return f.formatNan(nn)
+-	case *ast.LiteralNode:
+-		return f.formatLiteral(nn)
+-	case *ast.DirectiveNode:
+-		return f.formatDirective(nn)
+-	case *ast.TagNode:
+-		return f.formatTag(nn)
+-	case *ast.MappingNode:
+-		return f.formatMapping(nn)
+-	case *ast.MappingKeyNode:
+-		return f.formatMappingKey(nn)
+-	case *ast.MappingValueNode:
+-		return f.formatMappingValue(nn)
+-	case *ast.MergeKeyNode:
+-		return f.formatMergeKey(nn)
+-	case *ast.SequenceNode:
+-		return f.formatSequence(nn)
+-	case *ast.SequenceEntryNode:
+-		return f.formatSequenceEntry(nn)
+-	case *ast.AnchorNode:
+-		return f.formatAnchor(nn)
+-	case *ast.AliasNode:
+-		return f.formatAlias(nn)
+-	}
+-	return ""
+-}
++	f.formatted = ""
++	ast.Accept(n, f)
++	return f.formatted
++}
++
++func (f *Formatter) VisitDocument(n *ast.DocumentNode)         { f.formatted = f.formatDocument(n) }
++func (f *Formatter) VisitNull(n *ast.NullNode)                 { f.formatted = f.formatNull(n) }
++func (f *Formatter) VisitBool(n *ast.BoolNode)                 { f.formatted = f.formatBool(n) }
++func (f *Formatter) VisitInteger(n *ast.IntegerNode)           { f.formatted = f.formatInteger(n) }
++func (f *Formatter) VisitFloat(n *ast.FloatNode)               { f.formatted = f.formatFloat(n) }
++func (f *Formatter) VisitString(n *ast.StringNode)             { f.formatted = f.formatString(n) }
++func (f *Formatter) VisitInfinity(n *ast.InfinityNode)         { f.formatted = f.formatInfinity(n) }
++func (f *Formatter) VisitNan(n *ast.NanNode)                   { f.formatted = f.formatNan(n) }
++func (f *Formatter) VisitLiteral(n *ast.LiteralNode)           { f.formatted = f.formatLiteral(n) }
++func (f *Formatter) VisitDirective(n *ast.DirectiveNode)       { f.formatted = f.formatDirective(n) }
++func (f *Formatter) VisitTag(n *ast.TagNode)                   { f.formatted = f.formatTag(n) }
++func (f *Formatter) VisitMapping(n *ast.MappingNode)           { f.formatted = f.formatMapping(n) }
++func (f *Formatter) VisitMappingKey(n *ast.MappingKeyNode)     { f.formatted = f.formatMappingKey(n) }
++func (f *Formatter) VisitMappingValue(n *ast.MappingValueNode) { f.formatted = f.formatMappingValue(n) }
++func (f *Formatter) VisitMergeKey(n *ast.MergeKeyNode)         { f.formatted = f.formatMergeKey(n) }
++func (f *Formatter) VisitSequence(n *ast.SequenceNode)         { f.formatted = f.formatSequence(n) }
++func (f *Formatter) VisitSequenceEntry(n *ast.SequenceEntryNode) {
++	f.formatted = f.formatSequenceEntry(n)
++}
++func (f *Formatter) VisitAnchor(n *ast.AnchorNode) { f.formatted = f.formatAnchor(n) }
++func (f *Formatter) VisitAlias(n *ast.AliasNode)   { f.formatted = f.formatAlias(n) }
+ 
+ func (f *Formatter) formatCommentGroup(g *ast.CommentGroupNode) string {
+ 	if g == nil {
+diff --git a/parser/parser.go b/parser/parser.go
+index 5d79907..68c4cda 100644
+--- a/parser/parser.go
++++ b/parser/parser.go
+@@ -705,19 +705,32 @@ func (p *parser) mapKeyText(n ast.Node) string {
+ 	if n == nil {
+ 		return ""
+ 	}
+-	switch nn := n.(type) {
+-	case *ast.MappingKeyNode:
+-		return p.mapKeyText(nn.Value)
+-	case *ast.TagNode:
+-		return p.mapKeyText(nn.Value)
+-	case *ast.AnchorNode:
+-		return p.mapKeyText(nn.Value)
+-	case *ast.AliasNode:
+-		return ""
++	v := &mapKeyTextVisitor{p: p}
++	ast.Accept(n, v)
++	if v.resolved {
++		return v.text
+ 	}
+ 	return n.GetToken().Value
+ }
+ 
++// mapKeyTextVisitor resolves the key text of the kinds that do not take it from their own token.
++type mapKeyTextVisitor struct {
++	ast.NopKindVisitor
++	p        *parser
++	text     string
++	resolved bool
++}
++
++func (v *mapKeyTextVisitor) unwrap(value ast.Node) {
++	v.text = v.p.mapKeyText(value)
++	v.resolved = true
++}
++
++func (v *mapKeyTextVisitor) VisitMappingKey(n *ast.MappingKeyNode) { v.unwrap(n.Value) }
++func (v *mapKeyTextVisitor) VisitTag(n *ast.TagNode)               { v.unwrap(n.Value) }
++func (v *mapKeyTextVisitor) VisitAnchor(n *ast.AnchorNode)         { v.unwrap(n.Value) }
++func (v *mapKeyTextVisitor) VisitAlias(*ast.AliasNode)             { v.resolved = true }
++
+ func (p *parser) parseMapValue(ctx *context, key ast.MapKeyNode, colonTk *Token) (ast.Node, error) {
+ 	tk := ctx.currentToken()
+ 	if tk == nil {
+diff --git a/path.go b/path.go
+index 568c4b4..ef5eac7 100644
+--- a/path.go
++++ b/path.go
+@@ -757,79 +757,79 @@ func (n *recursiveNode) String() string {
+ 	return s
+ }
+ 
+-func (n *recursiveNode) filterNode(node ast.Node) (*ast.SequenceNode, error) {
+-	sequence := &ast.SequenceNode{BaseNode: &ast.BaseNode{}}
+-	switch typedNode := node.(type) {
+-	case *ast.MappingNode:
+-		for _, value := range typedNode.Values {
+-			seq, err := n.filterNode(value)
+-			if err != nil {
+-				return nil, err
+-			}
+-			sequence.Values = append(sequence.Values, seq.Values...)
+-		}
+-	case *ast.MappingValueNode:
+-		key := typedNode.Key.GetToken().Value
+-		if n.selector == key {
+-			sequence.Values = append(sequence.Values, typedNode.Value)
+-		}
+-		seq, err := n.filterNode(typedNode.Value)
+-		if err != nil {
+-			return nil, err
+-		}
+-		sequence.Values = append(sequence.Values, seq.Values...)
+-	case *ast.SequenceNode:
+-		for _, value := range typedNode.Values {
+-			seq, err := n.filterNode(value)
+-			if err != nil {
+-				return nil, err
+-			}
+-			sequence.Values = append(sequence.Values, seq.Values...)
+-		}
++// recursiveFilter collects the values of the selector below the node it is dispatched on.
++// It only descends through mappings and sequences: a value wrapped in an anchor or a tag is not searched.
++type recursiveFilter struct {
++	ast.NopKindVisitor
++	selector string
++	values   []ast.Node
++}
++
++func (v *recursiveFilter) VisitMapping(n *ast.MappingNode) {
++	for _, value := range n.Values {
++		v.VisitMappingValue(value)
+ 	}
+-	return sequence, nil
+ }
+ 
+-func (n *recursiveNode) filter(node ast.Node) (ast.Node, error) {
+-	sequence, err := n.filterNode(node)
+-	if err != nil {
+-		return nil, err
++func (v *recursiveFilter) VisitMappingValue(n *ast.MappingValueNode) {
++	key := n.Key.GetToken().Value
++	if v.selector == key {
++		v.values = append(v.values, n.Value)
+ 	}
+-	sequence.Start = node.GetToken()
+-	return sequence, nil
++	ast.Accept(n.Value, v)
+ }
+ 
+-func (n *recursiveNode) replaceNode(node ast.Node, target ast.Node) error {
+-	switch typedNode := node.(type) {
+-	case *ast.MappingNode:
+-		for _, value := range typedNode.Values {
+-			if err := n.replaceNode(value, target); err != nil {
+-				return err
+-			}
+-		}
+-	case *ast.MappingValueNode:
+-		key := typedNode.Key.GetToken().Value
+-		if n.selector == key {
+-			if err := typedNode.Replace(target); err != nil {
+-				return err
+-			}
++func (v *recursiveFilter) VisitSequence(n *ast.SequenceNode) {
++	for _, value := range n.Values {
++		ast.Accept(value, v)
++	}
++}
++
++func (n *recursiveNode) filter(node ast.Node) (ast.Node, error) {
++	v := &recursiveFilter{selector: n.selector}
++	ast.Accept(node, v)
++	return &ast.SequenceNode{BaseNode: &ast.BaseNode{}, Start: node.GetToken(), Values: v.values}, nil
++}
++
++// recursiveReplacer replaces the values of the selector below the node it is dispatched on.
++// It descends like recursiveFilter, and also through the value it has just replaced.
++type recursiveReplacer struct {
++	ast.NopKindVisitor
++	selector string
++	target   ast.Node
++	err      error
++}
++
++func (v *recursiveReplacer) VisitMapping(n *ast.MappingNode) {
++	for _, value := range n.Values {
++		v.VisitMappingValue(value)
++		if v.err != nil {
++			return
+ 		}
+-		if err := n.replaceNode(typedNode.Value, target); err != nil {
+-			return err
++	}
++}
++
++func (v *recursiveReplacer) VisitMappingValue(n *ast.MappingValueNode) {
++	key := n.Key.GetToken().Value
++	if v.selector == key {
++		if v.err = n.Replace(v.target); v.err != nil {
++			return
+ 		}
+-	case *ast.SequenceNode:
+-		for _, value := range typedNode.Values {
+-			if err := n.replaceNode(value, target); err != nil {
+-				return err
+-			}
++	}
++	ast.Accept(n.Value, v)
++}
++
++func (v *recursiveReplacer) VisitSequence(n *ast.SequenceNode) {
++	for _, value := range n.Values {
++		ast.Accept(value, v)
++		if v.err != nil {
++			return
+ 		}
+ 	}
+-	return nil
+ }
+ 
+ func (n *recursiveNode) replace(node ast.Node, target ast.Node) error {
+-	if err := n.replaceNode(node, target); err != nil {
+-		return err
+-	}
+-	return nil
++	v := &recursiveReplacer{selector: n.selector, target: target}
++	ast.Accept(node, v)
++	return v.err
+ }

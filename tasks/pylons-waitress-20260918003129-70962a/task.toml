@@ -1,0 +1,61 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+[task]
+name = "tikiai/pylons-waitress-20260918003129-70962a"
+description = "Separate Waitress response preparation from task execution and socket I/O."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "pylons-waitress-20260918003129-70962a"
+display_title = "WSGI response preparation and lifecycle"
+category = "resource_lifecycle"
+language = "Python"
+repository_url = "https://github.com/Pylons/waitress"
+base_commit_hash = "016eea527dd4a3eb4a18d6dca4d0bfe32039e470"
+
+[tests]
+fail_to_pass_count = 35
+pass_to_pass_count = 748
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+network_mode = "public"
+environment_mode = "separate"
+user = "root"
+timeout_sec = 3600.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:pylons-waitress-20260918003129-70962a-verifier-image-20261125"
+image_digest = "sha256:ae8072f2c84b05637c4e34af226216fa3bc5abdaf754fcaa5080ffe5de952d89"
+network_mode = "public"
+build_timeout_sec = 1800.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "set -eu\nmkdir -p /logs/artifacts\nrm -f /logs/artifacts/model.patch\ncollect_tmp=$(mktemp -d /logs/artifacts/.collect.XXXXXX)\ntrap 'rm -rf \"$collect_tmp\"' EXIT\nexport GIT_INDEX_FILE=\"$collect_tmp/index\"\ngit -C /workspace/repo rev-parse --verify '016eea527dd4a3eb4a18d6dca4d0bfe32039e470^{commit}' >/dev/null\ngit -C /workspace/repo read-tree 016eea527dd4a3eb4a18d6dca4d0bfe32039e470\ngit -C /workspace/repo add -A -- . ':(exclude,glob)**/__pycache__/**' ':(exclude,glob)**/*.py[cod]' ':(exclude,glob)**/.pytest_cache/**' ':(exclude,glob)**/*.egg-info/**' ':(exclude,glob)**/node_modules/**'\ngit -C /workspace/repo diff --cached --binary --full-index --no-ext-diff --no-textconv 016eea527dd4a3eb4a18d6dca4d0bfe32039e470 -- > \"$collect_tmp/model.patch\"\nmv \"$collect_tmp/model.patch\" /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+network_mode = "public"
+timeout_sec = 5400.0
+user = "agent"
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:pylons-waitress-20260918003129-70962a-task-image-20261125"
+image_digest = "sha256:0fb6bf87567c20b5154201361f51ee9f94e31b04caeeb321545fe416a7562ecf"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+
+[verifier.env]
+[solution.env]

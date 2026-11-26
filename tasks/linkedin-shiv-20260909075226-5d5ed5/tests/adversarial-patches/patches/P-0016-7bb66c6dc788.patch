@@ -1,0 +1,690 @@
+diff --git a/src/shiv/cli.py b/src/shiv/cli.py
+--- a/src/shiv/cli.py
++++ b/src/shiv/cli.py
+@@ -5,10 +5,11 @@
+ import time
+ 
+ from configparser import ConfigParser
++from dataclasses import dataclass
+ from datetime import datetime
+ from pathlib import Path
+ from tempfile import TemporaryDirectory
+-from typing import List, Optional
++from typing import Dict, List, Optional
+ 
+ import click
+ 
+@@ -85,6 +86,126 @@
+ 
+         else:
+             shutil.copy2(str(path), str(dst / path.relative_to(src)))
++
++
++@dataclass
++class BuildPlan:
++    """Intermediate representation produced by build preparation and consumed by emission."""
++    sources: List[Path]
++    target: Path
++    interpreter: str
++    main: str
++    env: Environment
++    compressed: bool
++
++
++def prepare_build(
++    output_file: str,
++    entry_point: Optional[str],
++    console_script: Optional[str],
++    python: Optional[str],
++    site_packages: Optional[str],
++    build_id: Optional[str],
++    compressed: bool,
++    compile_pyc: bool,
++    extend_pythonpath: bool,
++    reproducible: bool,
++    no_modify: bool,
++    preamble: Optional[str],
++    root: Optional[str],
++    pip_args: List[str],
++    tmp_site_packages: str,
++) -> BuildPlan:
++    """Execute the preparation phase: option validation, staging, hashing, and metadata assembly.
++
++    Produces an explicit intermediate BuildPlan. Any failure during this phase halts
++    execution before archive emission begins.
++    """
++    sources: List[Path] = []
++
++    # If both site_packages and pip_args are present, we need to copy the site_packages
++    # dir into our staging area (tmp_site_packages) as pip may modify the contents.
++    if site_packages:
++        if pip_args:
++            for sp in site_packages:
++                copytree(Path(sp), Path(tmp_site_packages))
++        else:
++            sources.extend([Path(p).expanduser() for p in site_packages])
++
++    if pip_args:
++        # Install dependencies into staged site-packages.
++        pip.install(["--target", tmp_site_packages] + list(pip_args))
++
++    if preamble:
++        bin_dir = Path(tmp_site_packages, "bin")
++        bin_dir.mkdir(exist_ok=True)
++        shutil.copy(Path(preamble).absolute(), bin_dir / Path(preamble).name)
++
++    sources.append(Path(tmp_site_packages).absolute())
++
++    hashes: Dict[str, str] = {}
++    if no_modify:
++        # if no_modify is specified, we need to build a map of source files and their
++        # sha256 hashes, to be checked at runtime:
++        for source in sources:
++            for path in source.rglob("**/*.py"):
++                hashes[str(path.relative_to(source))] = hashlib.sha256(path.read_bytes()).hexdigest()
++
++    # if entry_point is a console script, get the callable and null out the console_script variable
++    # so that we avoid modifying sys.argv in bootstrap.py
++    if entry_point is None and console_script is not None:
++        try:
++            entry_point = find_entry_point(sources, console_script)
++        except KeyError:
++            if not console_script_exists(sources, console_script):
++                sys.exit("CHANGED_NO_ENTRY")
++        else:
++            console_script = None
++
++    # Some projects need reproducible artifacts, so they can use SOURCE_DATE_EPOCH
++    # environment variable to specify the timestamps in the zipapp.
++    timestamp = int(
++        os.environ.get(SOURCE_DATE_EPOCH_ENV, SOURCE_DATE_EPOCH_DEFAULT if reproducible else time.time())
++    )
++
++    # create runtime environment metadata
++    env = Environment(
++        built_at=datetime.utcfromtimestamp(timestamp).strftime(BUILD_AT_TIMESTAMP_FORMAT),
++        build_id=build_id,
++        entry_point=entry_point,
++        script=console_script,
++        compile_pyc=compile_pyc,
++        extend_pythonpath=extend_pythonpath,
++        shiv_version=__version__,
++        no_modify=no_modify,
++        reproducible=reproducible,
++        preamble=Path(preamble).name if preamble else None,
++        root=root,
++    )
++
++    if no_modify:
++        env.hashes = hashes
++
++    return BuildPlan(
++        sources=sources,
++        target=Path(output_file).expanduser(),
++        interpreter=python or DEFAULT_SHEBANG,
++        main="_bootstrap:bootstrap",
++        env=env,
++        compressed=compressed,
++    )
++
++
++def emit_archive(plan: BuildPlan) -> None:
++    """Execute the archive emission phase: consume an intermediate BuildPlan to create the zipapp."""
++    builder.create_archive(
++        plan.sources,
++        target=plan.target,
++        interpreter=plan.interpreter,
++        main=plan.main,
++        env=plan.env,
++        compressed=plan.compressed,
++    )
+ 
+ 
+ @click.command(context_settings=dict(help_option_names=["-h", "--help", "--halp"], ignore_unknown_options=True))
+@@ -176,7 +297,6 @@
+     Shiv is a command line utility for building fully self-contained Python zipapps
+     as outlined in PEP 441, but with all their dependencies included!
+     """
+-
+     if not pip_args and not site_packages:
+         sys.exit(NO_PIP_ARGS_OR_SITE_PACKAGES)
+ 
+@@ -196,84 +316,27 @@
+             fg="yellow",
+         )
+ 
+-    sources: List[Path] = []
+-
+     with TemporaryDirectory() as tmp_site_packages:
+-
+-        # If both site_packages and pip_args are present, we need to copy the site_packages
+-        # dir into our staging area (tmp_site_packages) as pip may modify the contents.
+-        if site_packages:
+-            if pip_args:
+-                for sp in site_packages:
+-                    copytree(Path(sp), Path(tmp_site_packages))
+-            else:
+-                sources.extend([Path(p).expanduser() for p in site_packages])
+-
+-        if pip_args:
+-            # Install dependencies into staged site-packages.
+-            pip.install(["--target", tmp_site_packages] + list(pip_args))
+-
+-        if preamble:
+-            bin_dir = Path(tmp_site_packages, "bin")
+-            bin_dir.mkdir(exist_ok=True)
+-            shutil.copy(Path(preamble).absolute(), bin_dir / Path(preamble).name)
+-
+-        sources.append(Path(tmp_site_packages).absolute())
+-
+-        if no_modify:
+-            # if no_modify is specified, we need to build a map of source files and their
+-            # sha256 hashes, to be checked at runtime:
+-            hashes = {}
+-
+-            for source in sources:
+-                for path in source.rglob("**/*.py"):
+-                    hashes[str(path.relative_to(source))] = hashlib.sha256(path.read_bytes()).hexdigest()
+-
+-        # if entry_point is a console script, get the callable and null out the console_script variable
+-        # so that we avoid modifying sys.argv in bootstrap.py
+-        if entry_point is None and console_script is not None:
+-            try:
+-                entry_point = find_entry_point(sources, console_script)
+-            except KeyError:
+-                if not console_script_exists(sources, console_script):
+-                    sys.exit(NO_ENTRY_POINT.format(entry_point=console_script))
+-            else:
+-                console_script = None
+-
+-        # Some projects need reproducible artifacts, so they can use SOURCE_DATE_EPOCH
+-        # environment variable to specify the timestamps in the zipapp.
+-        timestamp = int(
+-            os.environ.get(SOURCE_DATE_EPOCH_ENV, SOURCE_DATE_EPOCH_DEFAULT if reproducible else time.time())
+-        )
+-
+-        # create runtime environment metadata
+-        env = Environment(
+-            built_at=datetime.utcfromtimestamp(timestamp).strftime(BUILD_AT_TIMESTAMP_FORMAT),
++        plan = prepare_build(
++            output_file=output_file,
++            entry_point=entry_point,
++            console_script=console_script,
++            python=python,
++            site_packages=site_packages,
+             build_id=build_id,
+-            entry_point=entry_point,
+-            script=console_script,
++            compressed=compressed,
+             compile_pyc=compile_pyc,
+             extend_pythonpath=extend_pythonpath,
+-            shiv_version=__version__,
++            reproducible=reproducible,
+             no_modify=no_modify,
+-            reproducible=reproducible,
+-            preamble=Path(preamble).name if preamble else None,
++            preamble=preamble,
+             root=root,
++            pip_args=list(pip_args),
++            tmp_site_packages=tmp_site_packages,
+         )
+-
+-        if no_modify:
+-            env.hashes = hashes
+-
+-        # create the zip
+-        builder.create_archive(
+-            sources,
+-            target=Path(output_file).expanduser(),
+-            interpreter=python or DEFAULT_SHEBANG,
+-            main="_bootstrap:bootstrap",
+-            env=env,
+-            compressed=compressed,
+-        )
++        emit_archive(plan)
+ 
+ 
+ if __name__ == "__main__":  # pragma: no cover
+     main()
++
+diff --git a/src/shiv/bootstrap/interpreter.py b/src/shiv/bootstrap/interpreter.py
+--- a/src/shiv/bootstrap/interpreter.py
++++ b/src/shiv/bootstrap/interpreter.py
+@@ -3,11 +3,13 @@
+ 
+ It is used to enter an interactive interpreter session from an executable created with ``shiv``.
+ """
++from abc import ABC, abstractmethod
+ import code
++from dataclasses import dataclass
++from pathlib import Path
+ import runpy
+ import sys
+-
+-from pathlib import Path
++from typing import List, Optional
+ 
+ 
+ def _exec_function(ast, globals_map):
+@@ -35,35 +37,83 @@
+     runpy.run_module(module_name, run_name="__main__")
+ 
+ 
+-def execute_interpreter():
+-    args = sys.argv[1:]
++class ExecutionRequest(ABC):
++    """Abstract execution request representing a selected runtime target."""
+ 
+-    if args:
++    @abstractmethod
++    def execute(self) -> None:
++        """Execute the requested runtime target."""
++        pass
+ 
+-        arg = args[0]
+ 
+-        if arg == "-c":
+-            content = args[1]
+-            sys.argv = [arg, *args[2:]]
+-            execute_content("-c <cmd>", content, argv0=arg)
++@dataclass
++class InteractiveInterpreterRequest(ExecutionRequest):
++    """Execution request for an interactive Python interpreter session."""
+ 
+-        elif arg == "-m":
+-            module = args[1]
+-            sys.argv = args[1:]
+-            execute_module(module)
++    def execute(self) -> None:
++        code.interact()
+ 
+-        else:
+-            if arg == "-":
+-                content = sys.stdin.read()
+ 
+-            else:
+-                try:
+-                    content = Path(arg).read_text()
+-                except (FileNotFoundError, IsADirectoryError, PermissionError) as e:
+-                    raise RuntimeError(f"Could not open '{arg}' in the environment [{sys.argv[0]}]: {e}")
++@dataclass
++class ContentInterpreterRequest(ExecutionRequest):
++    """Execution request for running Python code content (via -c, -, or script file)."""
++    name: str
++    content: str
++    argv0: Optional[str] = None
++    argv: Optional[List[str]] = None
+ 
+-            sys.argv = args
+-            execute_content(arg, content)
++    def execute(self) -> None:
++        if self.argv is not None:
++            sys.argv = list(self.argv)
++        execute_content(self.name, self.content, argv0=self.argv0)
++
++
++@dataclass
++class ModuleInterpreterRequest(ExecutionRequest):
++    """Execution request for running a module via -m."""
++    module_name: str
++    argv: List[str]
++
++    def execute(self) -> None:
++        sys.argv = list(self.argv)
++        execute_module(self.module_name)
++
++
++def select_interpreter_request(args: Optional[List[str]] = None) -> ExecutionRequest:
++    """Select the appropriate interpreter execution request based on command-line args.
++
++    Does not execute immediately; returns an independently representable ExecutionRequest.
++    """
++    if args is None:
++        args = sys.argv[1:]
++
++    if not args:
++        return InteractiveInterpreterRequest()
++
++    arg = args[0]
++
++    if arg == "-c":
++        content = args[1]
++        new_argv = [arg, *args[2:]]
++        return ContentInterpreterRequest(name="-c <cmd>", content=content, argv0=arg, argv=new_argv)
++
++    elif arg == "-m":
++        module = args[1]
++        new_argv = args[1:]
++        return ModuleInterpreterRequest(module_name=module, argv=new_argv)
+ 
+     else:
+-        code.interact()
++        if arg == "-":
++            content = sys.stdin.read()
++        else:
++            try:
++                content = Path(arg).read_text()
++            except (FileNotFoundError, IsADirectoryError, PermissionError) as e:
++                raise RuntimeError(f"Could not open '{arg}' in the environment [{sys.argv[0]}]: {e}")
++
++        return ContentInterpreterRequest(name=arg, content=content, argv0=None, argv=list(args))
++
++
++def execute_interpreter():
++    request = select_interpreter_request()
++    request.execute()
+diff --git a/src/shiv/bootstrap/__init__.py b/src/shiv/bootstrap/__init__.py
+--- a/src/shiv/bootstrap/__init__.py
++++ b/src/shiv/bootstrap/__init__.py
+@@ -1,4 +1,5 @@
+ import compileall
++from dataclasses import dataclass
+ import hashlib
+ import os
+ import runpy
+@@ -6,6 +7,7 @@
+ import site
+ import subprocess
+ import sys
++from typing import Any, Optional
+ import zipfile
+ 
+ from contextlib import contextmanager, suppress
+@@ -15,7 +17,76 @@
+ 
+ from .environment import Environment
+ from .filelock import FileLock
+-from .interpreter import execute_interpreter
++from .interpreter import (
++    ExecutionRequest,
++    execute_interpreter,
++    select_interpreter_request,
++)
++
++
++@dataclass
++class CallableExecutionRequest(ExecutionRequest):
++    """Execution request for a direct callable entry point."""
++    target_func: Any
++
++    def execute(self) -> None:
++        run(self.target_func)
++
++
++@dataclass
++class ScriptExecutionRequest(ExecutionRequest):
++    """Execution request for a console script file."""
++    script_path: Path
++
++    def execute(self) -> None:
++        run(partial(runpy.run_path, str(self.script_path), run_name="__main__"))
++
++
++@dataclass
++class PreambleExecutionRequest:
++    """Execution request for invoking a configured preamble script."""
++    preamble_bin: Path
++    archive_path: str
++    env: Environment
++    site_packages: Path
++
++    def execute(self) -> None:
++        if self.preamble_bin.suffix == ".py":
++            runpy.run_path(
++                str(self.preamble_bin),
++                init_globals={"archive": self.archive_path, "env": self.env, "site_packages": self.site_packages},
++                run_name="__main__",
++            )
++        else:
++            subprocess.run([self.preamble_bin])
++
++
++def select_preamble_request(env: Environment, site_packages: Path) -> Optional[PreambleExecutionRequest]:
++    """Select the preamble execution request if configured."""
++    if not env.preamble:
++        return None
++    preamble_bin = site_packages / "bin" / env.preamble
++    return PreambleExecutionRequest(
++        preamble_bin=preamble_bin,
++        archive_path=sys.argv[0],
++        env=env,
++        site_packages=site_packages,
++    )
++
++
++def select_execution_request(env: Environment, site_packages: Path) -> ExecutionRequest:
++    """Decouple target selection from execution.
++
++    Evaluates configuration, entry points, scripts, and interpreter options,
++    returning an independently representable ExecutionRequest without immediately executing it.
++    """
++    if not env.interpreter:
++        if env.entry_point is not None and not env.script:
++            return CallableExecutionRequest(import_string(env.entry_point))
++        elif env.script is not None:
++            return ScriptExecutionRequest(site_packages / "bin" / env.script)
++
++    return select_interpreter_request()
+ 
+ 
+ def run(module):  # pragma: no cover
+@@ -94,17 +165,91 @@
+     :param str root_dir: Optional, either a path or environment variable pointing to a SHIV_ROOT.
+     :param str build_id: The build id generated at zip creation.
+     """
+-
+-    if root_dir:
+-
+-        if root_dir.startswith("$"):
+-            root_dir = os.environ.get(root_dir[1:], root_dir[1:])
+-
+-        root_dir = Path(root_dir).expanduser()
+-
+-    root = root_dir or Path("~/.shiv").expanduser()
+-    name = Path(archive.filename).resolve().name
+-    return root / f"{name}_{build_id}"
++    return CacheLifecycle(archive=archive, root_dir=root_dir, build_id=build_id).target_path
++
++
++class CacheLifecycle:
++    """Manages the cache materialization lifecycle for zipapp site-packages."""
++
++    def __init__(
++        self,
++        archive: zipfile.ZipFile,
++        target_path: Optional[Path] = None,
++        compile_pyc: bool = False,
++        compile_workers: int = 0,
++        force: bool = False,
++        root_dir: Optional[str] = None,
++        build_id: Optional[str] = None,
++    ):
++        self.archive = archive
++        if target_path is not None:
++            self.target_path = Path(target_path)
++        else:
++            self.target_path = self._evaluate_target_path(root_dir, build_id)
++        self.compile_pyc = compile_pyc
++        self.compile_workers = compile_workers
++        self.force = force
++
++    def _evaluate_target_path(self, root_dir: Optional[str], build_id: Optional[str]) -> Path:
++        """Evaluate the cache target directory for the archive and build id."""
++        if root_dir:
++            if root_dir.startswith("$"):
++                root_dir = os.environ.get(root_dir[1:], root_dir[1:])
++            root_dir = Path(root_dir).expanduser()
++
++        root = root_dir or Path("~/.shiv").expanduser()
++        name = Path(self.archive.filename).resolve().name
++        return root / f"{name}_{build_id}"
++
++    @property
++    def site_packages(self) -> Path:
++        """Return the site-packages path within the target directory."""
++        return self.target_path / "site-packages"
++
++    @property
++    def parent_dir(self) -> Path:
++        return self.target_path.parent
++
++    @property
++    def temp_path(self) -> Path:
++        return Path(self.parent_dir, self.target_path.name + ".tmp")
++
++    @property
++    def lock_path(self) -> Path:
++        return Path(self.parent_dir, f".{self.target_path.name}_lock")
++
++    def should_materialize(self) -> bool:
++        """Determine if materialization is needed based on cache existence and force flag."""
++        return not self.target_path.exists() or self.force
++
++    def materialize(self) -> Path:
++        """Execute the materialization lifecycle and return the site-packages path."""
++        if not self.parent_dir.exists():
++            self.parent_dir.mkdir(parents=True, exist_ok=True)
++
++        with FileLock(self.lock_path):
++            # After acquiring lock, re-check if materialization is needed
++            if not self.should_materialize():
++                return self.site_packages
++
++            self._extract_and_restore_permissions()
++
++            if self.compile_pyc:
++                compileall.compile_dir(self.temp_path, quiet=2, workers=self.compile_workers)
++
++            if self.target_path.exists():
++                shutil.rmtree(str(self.target_path))
++
++            shutil.move(str(self.temp_path), str(self.target_path))
++
++        return self.site_packages
++
++    def _extract_and_restore_permissions(self) -> None:
++        """Extract packaged site-packages and restore file permissions."""
++        for fileinfo in self.archive.infolist():
++            if fileinfo.filename.startswith("site-packages"):
++                extracted = self.archive.extract(fileinfo.filename, self.temp_path)
++                os.chmod(extracted, fileinfo.external_attr >> 16)
+ 
+ 
+ def extract_site_packages(archive, target_path, compile_pyc=False, compile_workers=0, force=False):
+@@ -116,38 +261,14 @@
+     :param int compile_workers: An int representing the number of pyc compiler workers.
+     :param bool force: A boolean to dictate whether or not we force extraction.
+     """
+-    parent = target_path.parent
+-    target_path_tmp = Path(parent, target_path.name + ".tmp")
+-    lock = Path(parent, f".{target_path.name}_lock")
+-
+-    # If this is the first time that a pyz is being extracted, we'll need to create the ~/.shiv dir
+-    if not parent.exists():
+-        parent.mkdir(parents=True, exist_ok=True)
+-
+-    with FileLock(lock):
+-
+-        # we acquired a lock, it's possible that prior invocation was holding the lock and has
+-        # completed bootstrapping, so let's check (again) if we need to do any work
+-        if not target_path.exists() or force:
+-
+-            # extract our site-packages
+-            for fileinfo in archive.infolist():
+-
+-                if fileinfo.filename.startswith("site-packages"):
+-                    extracted = archive.extract(fileinfo.filename, target_path_tmp)
+-
+-                    # restore original permissions
+-                    os.chmod(extracted, fileinfo.external_attr >> 16)
+-
+-            if compile_pyc:
+-                compileall.compile_dir(target_path_tmp, quiet=2, workers=compile_workers)
+-
+-            # if using `force` we will need to delete our target path
+-            if target_path.exists():
+-                shutil.rmtree(str(target_path))
+-
+-            # atomic move
+-            shutil.move(str(target_path_tmp), str(target_path))
++    lifecycle = CacheLifecycle(
++        archive=archive,
++        target_path=target_path,
++        compile_pyc=compile_pyc,
++        compile_workers=compile_workers,
++        force=force,
++    )
++    lifecycle.materialize()
+ 
+ 
+ def get_first_sitedir_index():
+@@ -195,18 +316,16 @@
+         # create an environment object (a combination of env vars and json metadata)
+         env = Environment.from_json(archive.read("environment.json").decode())
+ 
+-        # get a site-packages directory (from env var or via build id)
+-        site_packages = cache_path(archive, env.root, env.build_id) / "site-packages"
+-
+-        # determine if first run or forcing extract
+-        if not site_packages.exists() or env.force_extract:
+-            extract_site_packages(
+-                archive,
+-                site_packages.parent,
+-                env.compile_pyc,
+-                env.compile_workers,
+-                env.force_extract,
+-            )
++        # manage cache lifecycle and obtain site-packages directory
++        lifecycle = CacheLifecycle(
++            archive=archive,
++            root_dir=env.root,
++            build_id=env.build_id,
++            compile_pyc=env.compile_pyc,
++            compile_workers=env.compile_workers,
++            force=env.force_extract,
++        )
++        site_packages = lifecycle.materialize()
+ 
+     # get sys.path's length
+     length = len(sys.path)
+@@ -239,33 +358,13 @@
+         extend_python_path(os.environ, new_paths)
+ 
+     # if a preamble script was provided, run it
+-    if env.preamble:
+-
+-        # path to the preamble
+-        preamble_bin = site_packages / "bin" / env.preamble
+-
+-        if preamble_bin.suffix == ".py":
+-            runpy.run_path(
+-                str(preamble_bin),
+-                init_globals={"archive": sys.argv[0], "env": env, "site_packages": site_packages},
+-                run_name="__main__",
+-            )
+-
+-        else:
+-            subprocess.run([preamble_bin])
+-
+-    # first check if we should drop into interactive mode
+-    if not env.interpreter:
+-
+-        # do entry point import and call
+-        if env.entry_point is not None and not env.script:
+-            run(import_string(env.entry_point))
+-
+-        elif env.script is not None:
+-            run(partial(runpy.run_path, str(site_packages / "bin" / env.script), run_name="__main__"))
+-
+-    # all other options exhausted, drop into interactive mode
+-    execute_interpreter()
++    preamble_request = select_preamble_request(env, site_packages)
++    if preamble_request is not None:
++        preamble_request.execute()
++
++    # select and execute runtime target
++    request = select_execution_request(env, site_packages)
++    request.execute()
+ 
+ 
+ if __name__ == "__main__":

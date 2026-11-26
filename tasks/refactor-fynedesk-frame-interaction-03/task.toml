@@ -1,0 +1,62 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+[task]
+name = "tikiai/refactor-fynedesk-frame-interaction-03"
+description = "Separate X11 frame geometry, decoration rendering, and pointer interaction."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "refactor-fynedesk-frame-ad6522ad"
+repository_url = "https://github.com/FyshOS/fynedesk"
+base_commit_hash = "7bc2c75eda3aeff73b18450fe32a656bc4af27c4"
+display_title = "X11 frame rendering and input handling"
+category = "module_boundary"
+language = "Go"
+
+[tests]
+fail_to_pass_count = 20
+pass_to_pass_count = 26
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+user = "root"
+network_mode = "public"
+environment_mode = "separate"
+timeout_sec = 1800.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:refactor-fynedesk-frame-interaction-03-verifier-image-20261125"
+image_digest = "sha256:648fd8e95a47552167951902a9bc856fa47598dadbeffde5a587d91ac7aae3d9"
+network_mode = "public"
+build_timeout_sec = 3600.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "set -eu\nmkdir -p /logs/artifacts\nrm -f /logs/artifacts/model.patch\ncollect_tmp=$(mktemp -d /logs/artifacts/.collect.XXXXXX)\ntrap 'rm -rf \"$collect_tmp\"' EXIT\nexport GIT_INDEX_FILE=\"$collect_tmp/index\"\nattributes_file=\"$collect_tmp/attributes\"\nprintf '* -diff\\n' > \"$attributes_file\"\ngit -C /workspace/repo rev-parse --verify '7bc2c75eda3aeff73b18450fe32a656bc4af27c4^{commit}' >/dev/null\ngit -C /workspace/repo read-tree 7bc2c75eda3aeff73b18450fe32a656bc4af27c4\ngit -C /workspace/repo add -A -- .\ngit -c core.attributesFile=\"$attributes_file\" -C /workspace/repo diff --cached --binary --full-index --no-ext-diff --no-textconv 7bc2c75eda3aeff73b18450fe32a656bc4af27c4 -- > \"$collect_tmp/model.patch\"\nmv \"$collect_tmp/model.patch\" /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+user = "agent"
+network_mode = "public"
+timeout_sec = 7200.0
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:refactor-fynedesk-frame-interaction-03-task-image-20261125"
+image_digest = "sha256:7425c9faa16e4dda4dd7ee0ca1dc828376c945687bd205cb9da552b0c1171de3"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[verifier.env]
+
+[solution.env]

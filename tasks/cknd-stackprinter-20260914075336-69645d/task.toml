@@ -1,0 +1,62 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+
+[task]
+name = "tikiai/cknd-stackprinter-20260914075336-69645d"
+description = "Keep caller-owned formatting options separate from rendering internals and give each tracer activation its own state."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "cknd-stackprinter-20260-c2da0be3"
+repository_url = "https://github.com/cknd/stackprinter"
+base_commit_hash = "7a07a51a806e70c273a96071c87d19289bc0c69e"
+display_title = "Formatting options and tracer state ownership"
+category = "state_data"
+language = "Python"
+
+[tests]
+fail_to_pass_count = 33
+pass_to_pass_count = 98
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+network_mode = "public"
+environment_mode = "separate"
+user = "root"
+timeout_sec = 3600.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:cknd-stackprinter-20260914075336-69645d-verifier-image-20261126"
+image_digest = "sha256:fee6421e7321183cb84aad0926bb4623eee64cc9eb2b62f3eb7b40945196c603"
+network_mode = "public"
+build_timeout_sec = 1800.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "cd /workspace/repo && mkdir -p /logs/artifacts && find . -type d \\( -name __pycache__ -o -name .pytest_cache -o -name '*.egg-info' -o -name build -o -name dist \\) -exec rm -rf {} + 2>/dev/null || true && find . -type f \\( -name '*.pyc' -o -name '*.pyo' -o -name '*.pyd' \\) -delete 2>/dev/null || true && git add -A -f && git reset -q -- '*.pyc' '*.pyo' '*.pyd' '*__pycache__*' '*.egg-info*' '.pytest_cache*' 2>/dev/null || true && git diff --binary --cached 7a07a51a806e70c273a96071c87d19289bc0c69e > /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+network_mode = "public"
+timeout_sec = 7200.0
+user = "agent"
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:cknd-stackprinter-20260914075336-69645d-task-image-20261125"
+image_digest = "sha256:57eb4409841bcbbf098e493ee191bf306d481952d9e0756cdedcc76c1a888cc5"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+
+[verifier.env]
+[solution.env]

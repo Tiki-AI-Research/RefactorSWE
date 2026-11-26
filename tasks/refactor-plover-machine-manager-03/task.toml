@@ -1,0 +1,62 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+[task]
+name = "tikiai/refactor-plover-machine-manager-03"
+description = "Delegate machine connections, instance lifetime, and keymap updates from StenoEngine to a dedicated machine manager."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "refactor-plover-machine-f1ff383b"
+repository_url = "https://github.com/opensteno/plover"
+base_commit_hash = "e87c4ef2982fcdeea587d2e612dff829fd331386"
+display_title = "Steno machine lifecycle management"
+category = "resource_lifecycle"
+language = "Python"
+
+[tests]
+fail_to_pass_count = 19
+pass_to_pass_count = 23
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+user = "root"
+network_mode = "public"
+environment_mode = "separate"
+timeout_sec = 1800.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:refactor-plover-machine-manager-03-verifier-image-20261125"
+image_digest = "sha256:4dc270fe17abeb772f85641f6bf1c44ae43c72a335116d4f2688db6857771c6e"
+network_mode = "public"
+build_timeout_sec = 3600.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "set -eu\nmkdir -p /logs/artifacts\nrm -f /logs/artifacts/model.patch\ncollect_tmp=$(mktemp -d /logs/artifacts/.collect.XXXXXX)\ntrap 'rm -rf \"$collect_tmp\"' EXIT\nexport GIT_INDEX_FILE=\"$collect_tmp/index\"\nattributes_file=\"$collect_tmp/attributes\"\nprintf '* -diff\\n' > \"$attributes_file\"\ngit -C /workspace/repo rev-parse --verify 'e87c4ef2982fcdeea587d2e612dff829fd331386^{commit}' >/dev/null\ngit -C /workspace/repo read-tree e87c4ef2982fcdeea587d2e612dff829fd331386\ngit -C /workspace/repo add -A -- .\ngit -c core.attributesFile=\"$attributes_file\" -C /workspace/repo diff --cached --binary --full-index --no-ext-diff --no-textconv e87c4ef2982fcdeea587d2e612dff829fd331386 -- > \"$collect_tmp/model.patch\"\nmv \"$collect_tmp/model.patch\" /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+user = "agent"
+network_mode = "public"
+timeout_sec = 7200.0
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:refactor-plover-machine-manager-03-task-image-20261125"
+image_digest = "sha256:af58555ad0dfe097cedefbca75d0c65ea32e653df7ec4c6472448f93a1e44d26"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[verifier.env]
+
+[solution.env]

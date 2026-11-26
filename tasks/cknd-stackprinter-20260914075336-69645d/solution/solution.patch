@@ -1,0 +1,1200 @@
+diff --git a/stackprinter/__init__.py b/stackprinter/__init__.py
+index 94ae70c..e2ef726 100644
+--- a/stackprinter/__init__.py
++++ b/stackprinter/__init__.py
+@@ -307,7 +307,13 @@ def _patch_ipython_excepthook(**kwargs):
+     """ Replace ipython's built-in traceback printer, excellent though it is"""
+     global ipy_tb
+ 
+-    blacklist = kwargs.get('suppressed_paths', [])
++    existing = kwargs.get('suppressed_paths')
++    if existing is None:
++        blacklist = []
++    elif isinstance(existing, (list, tuple)):
++        blacklist = list(existing)
++    else:
++        blacklist = [existing]
+     blacklist.append('site-packages/IPython/')
+     kwargs['suppressed_paths'] = blacklist
+ 
+@@ -347,9 +353,16 @@ def format_thread(thread, add_summary=False, **kwargs):
+     except KeyError:
+         return "%r: no frames found" % thread
+     else:
+-        if 'suppressed_paths' not in kwargs:
+-            kwargs['suppressed_paths'] = []
+-        kwargs['suppressed_paths'] += [r"lib/python.*/threading\.py"]
++        kwargs = dict(kwargs)
++        existing = kwargs.get('suppressed_paths')
++        if existing is None:
++            paths = []
++        elif isinstance(existing, (list, tuple)):
++            paths = list(existing)
++        else:
++            paths = [existing]
++        paths.append(r"lib/python.*/threading\.py")
++        kwargs['suppressed_paths'] = paths
+ 
+         msg = fmt.format_stack_from_frame(fr, **kwargs)
+         msg_indented = '    ' + '\n    '.join(msg.split('\n')).strip()
+diff --git a/stackprinter/formatting.py b/stackprinter/formatting.py
+index 25f5fd8..affcfb8 100644
+--- a/stackprinter/formatting.py
++++ b/stackprinter/formatting.py
+@@ -7,16 +7,29 @@ import traceback
+ import stackprinter.extraction as ex
+ import stackprinter.colorschemes as colorschemes
+ from stackprinter.utils import match, get_ansi_tpl
+-from stackprinter.frame_formatting import FrameFormatter, ColorfulFrameFormatter
++from stackprinter.frame_formatting import (FrameFormatter, ColorfulFrameFormatter,
++                                           FramePresenter, ColorfulFramePresenter)
++from stackprinter.frame_preparation import FramePreparer
++
++
++def _is_plain_style(style):
++    return style in ['plaintext', 'plain']
+ 
+ 
+ def get_formatter(style, **kwargs):
+-    if style in ['plaintext', 'plain']:
++    if _is_plain_style(style):
+         return FrameFormatter(**kwargs)
+     else:
+         return ColorfulFrameFormatter(style, **kwargs)
+ 
+ 
++def get_presenter(style, **kwargs):
++    if _is_plain_style(style):
++        return FramePresenter(**kwargs)
++    else:
++        return ColorfulFramePresenter(style=style, **kwargs)
++
++
+ def format_summary(frames, style='plaintext', source_lines=1, reverse=False,
+                    **kwargs):
+     """
+@@ -50,28 +63,35 @@ def format_stack(frames, style='plaintext', source_lines=5,
+ 
+     min_src_lines = 0 if source_lines == 0 else 1
+ 
+-    minimal_formatter = get_formatter(style=style,
+-                                      source_lines=min_src_lines,
+-                                      show_signature=False,
+-                                      show_vals=False)
++    minimal_preparer = FramePreparer(source_lines=min_src_lines,
++                                     show_signature=False,
++                                     show_vals=False)
+ 
+-    reduced_formatter = get_formatter(style=style,
+-                                      source_lines=min_src_lines,
++    reduced_preparer = FramePreparer(source_lines=min_src_lines,
++                                     show_signature=show_signature,
++                                     show_vals=show_vals,
++                                     suppressed_paths=suppressed_paths)
++
++    verbose_preparer = FramePreparer(source_lines=source_lines,
++                                     show_signature=show_signature,
++                                     show_vals=show_vals,
++                                     suppressed_paths=suppressed_paths)
++
++    minimal_presenter = get_presenter(style,
++                                      lines=min_src_lines,
++                                      show_signature=False)
++
++    reduced_presenter = get_presenter(style,
++                                      lines=min_src_lines,
+                                       show_signature=show_signature,
+-                                      show_vals=show_vals,
+                                       truncate_vals=truncate_vals,
+-                                      line_wrap=line_wrap,
+-                                      suppressed_paths=suppressed_paths,
+-                                      suppressed_vars=suppressed_vars)
++                                      line_wrap=line_wrap)
+ 
+-    verbose_formatter = get_formatter(style=style,
+-                                      source_lines=source_lines,
++    verbose_presenter = get_presenter(style,
++                                      lines=source_lines,
+                                       show_signature=show_signature,
+-                                      show_vals=show_vals,
+                                       truncate_vals=truncate_vals,
+-                                      line_wrap=line_wrap,
+-                                      suppressed_paths=suppressed_paths,
+-                                      suppressed_vars=suppressed_vars)
++                                      line_wrap=line_wrap)
+ 
+     frame_msgs = []
+     parent_is_boring = True
+@@ -80,14 +100,15 @@ def format_stack(frames, style='plaintext', source_lines=5,
+         is_boring = match(fi.filename, suppressed_paths)
+         if is_boring:
+             if parent_is_boring:
+-                formatter = minimal_formatter
++                preparer, presenter = minimal_preparer, minimal_presenter
+             else:
+-                formatter = reduced_formatter
++                preparer, presenter = reduced_preparer, reduced_presenter
+         else:
+-            formatter = verbose_formatter
++            preparer, presenter = verbose_preparer, verbose_presenter
+ 
+         parent_is_boring = is_boring
+-        frame_msgs.append(formatter(fi))
++        prepared = preparer.prepare(fi)
++        frame_msgs.append(presenter.format_frame(fi, prepared))
+ 
+     if reverse:
+         frame_msgs = reversed(frame_msgs)
+@@ -160,7 +181,7 @@ def format_exc_info(etype, evalue, tb, style='plaintext', add_summary='auto',
+                                    suppressed_vars=suppressed_vars,
+                                    **kwargs)
+ 
+-            if style == 'plaintext':
++            if _is_plain_style(style):
+                 msg +=  chain_hint
+             else:
+                 sc = getattr(colorschemes, style)
+@@ -231,7 +252,7 @@ def format_exception_message(etype, evalue, tb=None, style='plaintext'):
+     if val_str:
+         type_str += ": "
+ 
+-    if style == 'plaintext':
++    if _is_plain_style(style):
+         return type_str + val_str
+     else:
+         sc = getattr(colorschemes, style)
+diff --git a/stackprinter/frame_formatting.py b/stackprinter/frame_formatting.py
+index 136920e..c54b9a5 100644
+--- a/stackprinter/frame_formatting.py
++++ b/stackprinter/frame_formatting.py
+@@ -1,5 +1,6 @@
+ import types
+ import os
++import threading
+ 
+ from collections import OrderedDict
+ import stackprinter.extraction as ex
+@@ -7,9 +8,14 @@ import stackprinter.source_inspection as sc
+ import stackprinter.colorschemes as colorschemes
+ 
+ from stackprinter.prettyprinting import format_value
+-from stackprinter.utils import inspect_callable, match, trim_source, get_ansi_tpl
++from stackprinter.utils import get_ansi_tpl
++from stackprinter.frame_preparation import FramePreparer
+ 
+-class FrameFormatter():
++
++class FramePresenter():
++    """
++    Plain text presentation of prepared frames.
++    """
+     headline_tpl = 'File "%s", line %s, in %s\n'
+     sourceline_tpl = "    %-3s  %s"
+     single_sourceline_tpl = "    %s"
+@@ -18,125 +24,20 @@ class FrameFormatter():
+     var_indent = 5
+     sep_vars = "%s%s" % ((' ') * 4, ('.' * 50))
+     sep_source_below = ""
+-
+     val_tpl = ' ' * var_indent + "%s = %s\n"
+ 
+-    def __init__(self, source_lines=5, source_lines_after=1,
+-                 show_signature=True, show_vals='like_source',
+-                 truncate_vals=500, line_wrap: int = 60,
+-                 suppressed_paths=None, suppressed_vars=None):
+-        """
+-        Formatter for single frames.
+-
+-        This is essentially a partially applied function -- supply config args
+-        to this constructor, then _call_ the resulting object with a frame.
+-
+-
+-        Params
+-        ---
+-        source_lines: int or 'all'. (default: 5 lines)
+-            Select how much source code context will be shown.
+-            int 0: Don't include a source listing.
+-            int n > 0: Show n lines of code.
+-            string 'all': Show the whole scope of the frame.
+-
+-        source_lines_after: int
+-            nr of lines to show after the highlighted one
+-
+-        show_signature: bool (default True)
+-            Always include the function header in the source code listing.
+-
+-        show_vals: str or None (default 'like_source')
+-            Select which variable values will be shown.
+-            'line': Show only the variables on the highlighted line.
+-            'like_source': Show those visible in the source listing (default).
+-            'all': Show every variable in the scope of the frame.
+-            None: Don't show any variable values.
+-
+-        truncate_vals: int (default 500)
+-            Maximum number of characters to be used for each variable value
+-
+-        line_wrap: int (default 60)
+-            insert linebreaks after this nr of characters, use 0 to never insert
+-            a linebreak
+-
+-        suppressed_paths: list of regex patterns
+-            Set less verbose formatting for frames whose code lives in certain paths
+-            (e.g. library code). Files whose path matches any of the given regex
+-            patterns will be considered boring. The first call to boring code is
+-            rendered with fewer code lines (but with argument values still visible),
+-            while deeper calls within boring code get a single line and no variable
+-            values.
+-
+-            Example: To hide numpy internals from the traceback, set
+-            `suppressed_paths=[r"lib/python.*/site-packages/numpy"]`
+-        """
+-
+-
+-        if not (isinstance(source_lines, int) or source_lines == 'all'):
+-            raise ValueError("source_lines must be an integer or 'all', "
+-                             "was %r" % source_lines)
+-
+-        valid_gv = ['all', 'like_source', 'line', None, False]
+-        if show_vals not in valid_gv:
+-            raise ValueError("show_vals must be one of "
+-                             "%s, was %r" % (str(valid_gv), show_vals))
+-
+-        self.lines = source_lines
+-        self.lines_after = source_lines_after
+-        self.show_signature = show_signature
+-        self.show_vals = show_vals
++    def __init__(self, truncate_vals=500, line_wrap: int = 60,
++                 lines=5, show_signature=True):
+         self.truncate_vals = truncate_vals
+         self.line_wrap = line_wrap
+-        self.suppressed_paths = suppressed_paths
+-        self.suppressed_vars = suppressed_vars
+-
+-    def __call__(self, frame, lineno=None):
+-        """
+-        Render a single stack frame or traceback entry
+-
+-
+-        Params
+-        ----
+-
+-        frame: Frame object, Traceback object (or FrameInfo tuple)
+-            The frame or traceback entry to be formatted.
+-
+-            The only difference between passing a frame or a traceback object is
+-            which line gets highlighted in the source listing: For a frame, it's
+-            the currently executed line; for a traceback, it's the line where an
+-            error occurred. (technically: `frame.f_lineno` vs. `tb.tb_lineno`)
+-
+-            The third option is interesting only if you're planning to format
+-            one frame multiple different ways: It is a little faster to format a
+-            pre-chewed verion of the frame, since non-formatting-specific steps
+-            like "finding the source code", "finding all the variables" etc only
+-            need to be done once per frame. So, this method also accepts the raw
+-            results of `extraction.get_info()` of type FrameInfo. In that case,
+-            this method will really just do formatting, no more chewing.
+-
+-        lineno: int
+-            override which line gets highlighted
+-        """
+-        accepted_types = (types.FrameType, types.TracebackType, ex.FrameInfo)
+-        if not isinstance(frame, accepted_types):
+-            raise ValueError("Expected one of these types: "
+-                             "%s. Got %r" % (accepted_types, frame))
+-
+-        try:
+-            finfo = ex.get_info(frame, lineno, self.suppressed_vars)
+-
+-            return self._format_frame(finfo)
+-        except Exception as exc:
+-            # If we crash, annotate the exception with the thing
+-            # we were trying to format, for debug/logging purposes.
+-            exc.where = frame
+-            raise
++        self.lines = lines
++        self.show_signature = show_signature
+ 
+-    def _format_frame(self, fi):
++    def format_frame(self, fi, prepared):
+         msg = self.headline_tpl % (fi.filename, fi.lineno, fi.function)
+ 
+-        source_map, assignments = self.select_scope(fi)
++        source_map = prepared.trimmed_source_map
++        assignments = prepared.visible_assignments
+ 
+         if source_map:
+             source_lines = self._format_source(source_map)
+@@ -190,83 +91,21 @@ class FrameFormatter():
+         else:
+             return ''
+ 
+-    def select_scope(self, fi):
+-        """
+-        decide which lines of code and which variables will be visible
+-        """
+-        source_lines = []
+-        minl, maxl = 0, 0
+-        if len(fi.source_map) > 0:
+-            minl, maxl = min(fi.source_map), max(fi.source_map)
+-            lineno = fi.lineno
+-
+-            if self.lines == 0:
+-                source_lines = []
+-            elif self.lines == 1:
+-                source_lines = [lineno]
+-            elif self.lines == 'all':
+-                source_lines = range(minl, maxl + 1)
+-            elif self.lines > 1 or self.lines_after > 0:
+-                start = max(lineno - (self.lines - 1), 0)
+-                stop = lineno + self.lines_after
+-                start = max(start, minl)
+-                stop = min(stop, maxl)
+-                source_lines = list(range(start, stop + 1))
+-
+-            if source_lines and self.show_signature:
+-                source_lines = sorted(set(source_lines) | set(fi.head_lns))
+-
+-        if source_lines:
+-            # Report a bit more info about a weird class of bug
+-            # that I can't reproduce locally.
+-            if not set(source_lines).issubset(fi.source_map.keys()):
+-                debug_vals = [source_lines, fi.head_lns, fi.source_map.keys()]
+-                info = ', '.join(str(p) for p in debug_vals)
+-                raise Exception("Picked an invalid source context: %s" % info)
+-            trimmed_source_map = trim_source(fi.source_map, source_lines)
+-        else:
+-            trimmed_source_map = {}
+-
+-        if self.show_vals:
+-            if self.show_vals == 'all':
+-                val_lines = range(minl, maxl)
+-            elif self.show_vals == 'like_source':
+-                val_lines = source_lines
+-            elif self.show_vals == 'line':
+-                val_lines = [lineno] if source_lines else []
+-
+-            # TODO refactor the whole blacklistling mechanism below:
+-
+-            def hide(name):
+-                value = fi.assignments[name]
+-                if callable(value):
+-                    qualified_name, path, *_ = inspect_callable(value)
+-                    is_builtin = value.__class__.__name__ == 'builtin_function_or_method'
+-                    is_boring = is_builtin or (qualified_name == name) or (path is None)
+-                    is_suppressed = match(path, self.suppressed_paths)
+-                    return is_boring or is_suppressed
+-                return False
+-
+-            visible_vars = (name for ln in val_lines
+-                            for name in fi.line2names[ln]
+-                            if name in fi.assignments)
+-
+-            visible_assignments = OrderedDict([(n, fi.assignments[n])
+-                                               for n in visible_vars
+-                                               if not hide(n)])
+-        else:
+-            visible_assignments = {}
+-
+-        return trimmed_source_map, visible_assignments
+-
+ 
+-class ColorfulFrameFormatter(FrameFormatter):
++class ColorfulFramePresenter():
++    """
++    Colored ANSI presentation of prepared frames, decoupled from inheritance.
++    """
++    var_indent = 5
+ 
+-    def __init__(self, style='darkbg', **kwargs):
+-        """
+-        See FrameFormatter - this just adds some ANSI color codes here and there
+-        """
++    def __init__(self, style='darkbg', truncate_vals=500, line_wrap: int = 60,
++                 lines=5, show_signature=True):
+         self.colors = getattr(colorschemes, style)()
++        self._color_lock = threading.RLock()
++        self.truncate_vals = truncate_vals
++        self.line_wrap = line_wrap
++        self.lines = lines
++        self.show_signature = show_signature
+ 
+         highlight = self.tpl('highlight')
+         header = self.tpl('header')
+@@ -275,21 +114,24 @@ class ColorfulFrameFormatter(FrameFormatter):
+         lineno = self.tpl('lineno')
+ 
+         self.headline_tpl = header % 'File "%s%s' + highlight % '%s' + header % '", line %s, in %s\n'
+-        self.sourceline_tpl = lineno % super().sourceline_tpl
+-        self.marked_sourceline_tpl = arrow_lineno % super().marked_sourceline_tpl
+-        self.elipsis_tpl = dots % super().elipsis_tpl
+-        self.sep_vars = dots % super().sep_vars
+-
+-        super().__init__(**kwargs)
++        self.sourceline_tpl = lineno % "    %-3s  %s"
++        self.single_sourceline_tpl = "    %s"
++        self.marked_sourceline_tpl = arrow_lineno % "--> %-3s  %s"
++        self.elipsis_tpl = dots % " (...)\n"
++        self.sep_vars = dots % ("%s%s" % ((' ') * 4, ('.' * 50)))
++        self.sep_source_below = ""
++        self.val_tpl = ' ' * self.var_indent + "%s = %s\n"
+ 
+     def tpl(self, name):
+         return get_ansi_tpl(*self.colors[name])
+ 
+-    def _format_frame(self, fi):
++    def format_frame(self, fi, prepared):
+         basepath, filename = os.path.split(fi.filename)
+         sep = os.sep if basepath else ''
+         msg = self.headline_tpl % (basepath, sep, filename, fi.lineno, fi.function)
+-        source_map, assignments = self.select_scope(fi)
++
++        source_map = prepared.trimmed_source_map
++        assignments = prepared.visible_assignments
+ 
+         colormap = self._pick_colors(source_map, fi.name2lines, assignments, fi.lineno)
+ 
+@@ -304,6 +146,28 @@ class ColorfulFrameFormatter(FrameFormatter):
+ 
+         return msg
+ 
++    def _format_listing(self, lines, lineno):
++        ln_prev = None
++        msg = ""
++        n_lines = len(lines)
++        for ln in sorted(lines):
++            line = lines[ln]
++            if ln_prev and ln_prev != ln - 1:
++                msg += self.elipsis_tpl
++            ln_prev = ln
++
++            if n_lines > 1:
++                if ln == lineno:
++                    tpl = self.marked_sourceline_tpl
++                else:
++                    tpl = self.sourceline_tpl
++                msg += tpl % (ln, line)
++            else:
++                msg += self.single_sourceline_tpl % line
++
++        msg += self.sep_source_below
++        return msg
++
+     def _format_source(self, source_map, colormap, lineno):
+         bold_tp = self.tpl('source_bold')
+         default_tpl = self.tpl('source_default')
+@@ -349,10 +213,6 @@ class ColorfulFrameFormatter(FrameFormatter):
+             return ''
+ 
+     def _pick_colors(self, source_map, name2lines, assignments, lineno):
+-        # TODO refactor: pick a hash for each name across frames, _then_ color.
+-        # Currently, colors are consistent across frames purely because there's
+-        # a fixed map from hashes to colors. It's not bijective though. If colors
+-        # were picked after hashing across all frames, that could be fixed.
+         colormap = {}
+         for line in source_map.values():
+             for name, ttype in line:
+@@ -374,8 +234,212 @@ class ColorfulFrameFormatter(FrameFormatter):
+         else:
+             raise ValueError('%r' % method)
+ 
+-        return self.colors.get_random(seed, highlight)
++        with self._color_lock:
++            rng_state = self.colors.rng.getstate()
++            try:
++                return self.colors.get_random(seed, highlight)
++            finally:
++                self.colors.rng.setstate(rng_state)
+ 
+ 
++class FrameFormatter():
++    headline_tpl = FramePresenter.headline_tpl
++    sourceline_tpl = FramePresenter.sourceline_tpl
++    single_sourceline_tpl = FramePresenter.single_sourceline_tpl
++    marked_sourceline_tpl = FramePresenter.marked_sourceline_tpl
++    elipsis_tpl = FramePresenter.elipsis_tpl
++    var_indent = FramePresenter.var_indent
++    sep_vars = FramePresenter.sep_vars
++    sep_source_below = FramePresenter.sep_source_below
++    val_tpl = FramePresenter.val_tpl
+ 
++    def __init__(self, source_lines=5, source_lines_after=1,
++                 show_signature=True, show_vals='like_source',
++                 truncate_vals=500, line_wrap: int = 60,
++                 suppressed_paths=None, suppressed_vars=None):
++        """
++        Formatter for single frames.
++
++        This is essentially a partially applied function -- supply config args
++        to this constructor, then _call_ the resulting object with a frame.
++
++
++        Params
++        ---
++        source_lines: int or 'all'. (default: 5 lines)
++            Select how much source code context will be shown.
++            int 0: Don't include a source listing.
++            int n > 0: Show n lines of code.
++            string 'all': Show the whole scope of the frame.
++
++        source_lines_after: int
++            nr of lines to show after the highlighted one
++
++        show_signature: bool (default True)
++            Always include the function header in the source code listing.
++
++        show_vals: str or None (default 'like_source')
++            Select which variable values will be shown.
++            'line': Show only the variables on the highlighted line.
++            'like_source': Show those visible in the source listing (default).
++            'all': Show every variable in the scope of the frame.
++            None: Don't show any variable values.
++
++        truncate_vals: int (default 500)
++            Maximum number of characters to be used for each variable value
++
++        line_wrap: int (default 60)
++            insert linebreaks after this nr of characters, use 0 to never insert
++            a linebreak
++
++        suppressed_paths: list of regex patterns
++            Set less verbose formatting for frames whose code lives in certain paths
++            (e.g. library code). Files whose path matches any of the given regex
++            patterns will be considered boring. The first call to boring code is
++            rendered with fewer code lines (but with argument values still visible),
++            while deeper calls within boring code get a single line and no variable
++            values.
++
++            Example: To hide numpy internals from the traceback, set
++            `suppressed_paths=[r"lib/python.*/site-packages/numpy"]`
++        """
++        self.lines = source_lines
++        self.lines_after = source_lines_after
++        self.show_signature = show_signature
++        self.show_vals = show_vals
++        self.truncate_vals = truncate_vals
++        self.line_wrap = line_wrap
++        self.suppressed_paths = suppressed_paths
++        self.suppressed_vars = suppressed_vars
++
++        self._preparer = FramePreparer(source_lines=source_lines,
++                                       source_lines_after=source_lines_after,
++                                       show_signature=show_signature,
++                                       show_vals=show_vals,
++                                       suppressed_paths=suppressed_paths)
++        self._presenter = FramePresenter(truncate_vals=truncate_vals,
++                                         line_wrap=line_wrap,
++                                         lines=source_lines,
++                                         show_signature=show_signature)
++
++    def select_scope(self, fi):
++        prepared = self._preparer.prepare(fi)
++        return prepared.trimmed_source_map, prepared.visible_assignments
++
++    def __call__(self, frame, lineno=None):
++        """
++        Render a single stack frame or traceback entry
++
++
++        Params
++        ----
+ 
++        frame: Frame object, Traceback object (or FrameInfo tuple)
++            The frame or traceback entry to be formatted.
++
++            The only difference between passing a frame or a traceback object is
++            which line gets highlighted in the source listing: For a frame, it's
++            the currently executed line; for a traceback, it's the line where an
++            error occurred. (technically: `frame.f_lineno` vs. `tb.tb_lineno`)
++
++            The third option is interesting only if you're planning to format
++            one frame multiple different ways: It is a little faster to format a
++            pre-chewed verion of the frame, since non-formatting-specific steps
++            like "finding the source code", "finding all the variables" etc only
++            need to be done once per frame. So, this method also accepts the raw
++            results of `extraction.get_info()` of type FrameInfo. In that case,
++            this method will really just do formatting, no more chewing.
++
++        lineno: int
++            override which line gets highlighted
++        """
++        accepted_types = (types.FrameType, types.TracebackType, ex.FrameInfo)
++        if not isinstance(frame, accepted_types):
++            raise ValueError("Expected one of these types: "
++                             "%s. Got %r" % (accepted_types, frame))
++
++        try:
++            finfo = ex.get_info(frame, lineno, self.suppressed_vars)
++            return self._format_frame(finfo)
++        except Exception as exc:
++            # If we crash, annotate the exception with the thing
++            # we were trying to format, for debug/logging purposes.
++            exc.where = frame
++            raise
++
++    def _format_frame(self, fi):
++        prepared = self._preparer.prepare(fi)
++        return self._presenter.format_frame(fi, prepared)
++
++
++class ColorfulFrameFormatter(FrameFormatter):
++    """
++    Colored frame formatter, delegating presentation to ColorfulFramePresenter
++    and preparation to FramePreparer, decoupled from inheritance.
++    """
++    var_indent = 5
++
++    def __init__(self, style='darkbg', **kwargs):
++        self._initialize(style=style, **kwargs)
++
++    def _initialize(self, style='darkbg', source_lines=5, source_lines_after=1,
++                    show_signature=True, show_vals='like_source',
++                    truncate_vals=500, line_wrap: int = 60,
++                    suppressed_paths=None, suppressed_vars=None):
++        """
++        See FrameFormatter - this just adds some ANSI color codes here and there
++        """
++        self.style = style
++        self.lines = source_lines
++        self.lines_after = source_lines_after
++        self.show_signature = show_signature
++        self.show_vals = show_vals
++        self.truncate_vals = truncate_vals
++        self.line_wrap = line_wrap
++        self.suppressed_paths = suppressed_paths
++        self.suppressed_vars = suppressed_vars
++
++        self._presenter = ColorfulFramePresenter(style=style,
++                                                 truncate_vals=truncate_vals,
++                                                 line_wrap=line_wrap,
++                                                 lines=source_lines,
++                                                 show_signature=show_signature)
++        self._preparer = FramePreparer(source_lines=source_lines,
++                                       source_lines_after=source_lines_after,
++                                       show_signature=show_signature,
++                                       show_vals=show_vals,
++                                       suppressed_paths=suppressed_paths)
++
++        self.colors = self._presenter.colors
++        self.headline_tpl = self._presenter.headline_tpl
++        self.sourceline_tpl = self._presenter.sourceline_tpl
++        self.single_sourceline_tpl = self._presenter.single_sourceline_tpl
++        self.marked_sourceline_tpl = self._presenter.marked_sourceline_tpl
++        self.elipsis_tpl = self._presenter.elipsis_tpl
++        self.sep_vars = self._presenter.sep_vars
++        self.sep_source_below = self._presenter.sep_source_below
++        self.val_tpl = self._presenter.val_tpl
++
++    def tpl(self, name):
++        return self._presenter.tpl(name)
++
++    def select_scope(self, fi):
++        prepared = self._preparer.prepare(fi)
++        return prepared.trimmed_source_map, prepared.visible_assignments
++
++    def __call__(self, frame, lineno=None):
++        accepted_types = (types.FrameType, types.TracebackType, ex.FrameInfo)
++        if not isinstance(frame, accepted_types):
++            raise ValueError("Expected one of these types: "
++                             "%s. Got %r" % (accepted_types, frame))
++
++        try:
++            finfo = ex.get_info(frame, lineno, self.suppressed_vars)
++            return self._format_frame(finfo)
++        except Exception as exc:
++            exc.where = frame
++            raise
++
++    def _format_frame(self, fi):
++        prepared = self._preparer.prepare(fi)
++        return self._presenter.format_frame(fi, prepared)
+diff --git a/stackprinter/frame_preparation.py b/stackprinter/frame_preparation.py
+new file mode 100644
+index 0000000..ae9f9e9
+--- /dev/null
++++ b/stackprinter/frame_preparation.py
+@@ -0,0 +1,134 @@
++"""
++Shared frame-preparation responsibility.
++
++This module decides *what* a diagnostic render will show -- which lines of
++source context and which variable values -- independently of *how* that
++content is presented. It is the single owner of that decision for both the
++report pipeline (`stackprinter.formatting`) and live tracing
++(`stackprinter.tracing`), so neither entry point has to duplicate the
++selection rules or reach into a presentation formatter to get them.
++
++`PreparedFrame` is the ownership boundary: prepared collections are copied and
++handed out as copies, so a render can neither mutate the caller-owned
++`FrameInfo` it was built from nor leak changes into another render.
++"""
++
++from collections import OrderedDict
++
++from stackprinter.utils import inspect_callable, match, trim_source
++
++
++class PreparedFrame():
++    """
++    Encapsulated representation of prepared source context and visible variables.
++    Preserves ordering and prevents mutation of internal data.
++    """
++
++    __slots__ = ('_trimmed_source_map', '_visible_assignments')
++
++    def __init__(self, trimmed_source_map, visible_assignments):
++        self._trimmed_source_map = self._copy_source_map(trimmed_source_map)
++        self._visible_assignments = OrderedDict(visible_assignments)
++
++    @staticmethod
++    def _copy_source_map(source_map):
++        if not source_map:
++            return OrderedDict()
++        return OrderedDict([(ln, [list(tok) for tok in tokens])
++                            for ln, tokens in source_map.items()])
++
++    @property
++    def trimmed_source_map(self):
++        return self._copy_source_map(self._trimmed_source_map)
++
++    @property
++    def visible_assignments(self):
++        return OrderedDict(self._visible_assignments)
++
++
++class FramePreparer():
++    """
++    Shared preparation responsibility for selecting visible source lines and variables.
++    Decoupled from presentation formatting.
++    """
++
++    def __init__(self, source_lines=5, source_lines_after=1,
++                 show_signature=True, show_vals='like_source',
++                 suppressed_paths=None):
++        if not (isinstance(source_lines, int) or source_lines == 'all'):
++            raise ValueError("source_lines must be an integer or 'all', "
++                             "was %r" % source_lines)
++
++        valid_gv = ['all', 'like_source', 'line', None, False]
++        if show_vals not in valid_gv:
++            raise ValueError("show_vals must be one of "
++                             "%s, was %r" % (str(valid_gv), show_vals))
++
++        self.lines = source_lines
++        self.lines_after = source_lines_after
++        self.show_signature = show_signature
++        self.show_vals = show_vals
++        self.suppressed_paths = suppressed_paths
++
++    def prepare(self, fi):
++        source_lines = []
++        minl, maxl = 0, 0
++        if len(fi.source_map) > 0:
++            minl, maxl = min(fi.source_map), max(fi.source_map)
++            lineno = fi.lineno
++
++            if self.lines == 0:
++                source_lines = []
++            elif self.lines == 1:
++                source_lines = [lineno]
++            elif self.lines == 'all':
++                source_lines = range(minl, maxl + 1)
++            elif self.lines > 1 or self.lines_after > 0:
++                start = max(lineno - (self.lines - 1), 0)
++                stop = lineno + self.lines_after
++                start = max(start, minl)
++                stop = min(stop, maxl)
++                source_lines = list(range(start, stop + 1))
++
++            if source_lines and self.show_signature:
++                source_lines = sorted(set(source_lines) | set(fi.head_lns))
++
++        if source_lines:
++            if not set(source_lines).issubset(fi.source_map.keys()):
++                debug_vals = [source_lines, fi.head_lns, fi.source_map.keys()]
++                info = ', '.join(str(p) for p in debug_vals)
++                raise Exception("Picked an invalid source context: %s" % info)
++            source_map_copy = PreparedFrame._copy_source_map(fi.source_map)
++            trimmed_source_map = trim_source(source_map_copy, source_lines)
++        else:
++            trimmed_source_map = {}
++
++        if self.show_vals:
++            if self.show_vals == 'all':
++                val_lines = range(minl, maxl)
++            elif self.show_vals == 'like_source':
++                val_lines = source_lines
++            elif self.show_vals == 'line':
++                val_lines = [lineno] if source_lines else []
++
++            def hide(name):
++                value = fi.assignments[name]
++                if callable(value):
++                    qualified_name, path, *_ = inspect_callable(value)
++                    is_builtin = value.__class__.__name__ == 'builtin_function_or_method'
++                    is_boring = is_builtin or (qualified_name == name) or (path is None)
++                    is_suppressed = match(path, self.suppressed_paths)
++                    return is_boring or is_suppressed
++                return False
++
++            visible_vars = (name for ln in val_lines
++                            for name in fi.line2names[ln]
++                            if name in fi.assignments)
++
++            visible_assignments = OrderedDict([(n, fi.assignments[n])
++                                               for n in visible_vars
++                                               if not hide(n)])
++        else:
++            visible_assignments = OrderedDict()
++
++        return PreparedFrame(trimmed_source_map, visible_assignments)
+diff --git a/stackprinter/tracing.py b/stackprinter/tracing.py
+index f6a274c..6376aa3 100644
+--- a/stackprinter/tracing.py
++++ b/stackprinter/tracing.py
+@@ -1,5 +1,8 @@
+ import sys
+ import inspect
++import functools
++import threading
++import dis
+ 
+ from stackprinter.frame_formatting import FrameFormatter, ColorfulFrameFormatter
+ from stackprinter.formatting import format_exception_message, get_formatter
+@@ -7,6 +10,119 @@ from stackprinter import prettyprinting as ppr
+ from stackprinter.utils import match
+ 
+ 
++class TraceActivation:
++    """
++    Manages the lifecycle and execution state of a single trace activation.
++    """
++    def __init__(self, tracer, starting_depth, caller_frame=None):
++        self.tracer = tracer
++        self.starting_depth = starting_depth
++        self.caller_frame = caller_frame
++        self.previous_frame = None
++        self.trace_before = None
++        self.saved_frames = {}
++        self.active = False
++        self.stopped = False
++        self.nested_exceptions = []
++
++    def activate(self, force=False):
++        self.tracer._check_conflict(force=force)
++        self.trace_before = sys.gettrace()
++        # Save and update f_trace for existing call frames on the stack
++        fr = self.caller_frame
++        while fr is not None:
++            self.saved_frames[fr] = fr.f_trace
++            fr.f_trace = self.trace
++            fr = fr.f_back
++        self.active = True
++        sys.settrace(self.trace)
++
++    def deactivate(self):
++        if not self.active:
++            return
++        self.active = False
++        sys.settrace(self.trace_before)
++        for fr, old_ftrace in self.saved_frames.items():
++            fr.f_trace = old_ftrace
++        self.saved_frames.clear()
++        self.previous_frame = None
++        self.caller_frame = None
++        self.trace_before = None
++        self.nested_exceptions.clear()
++        self.tracer = None
++
++    def trace(self, frame, event, arg):
++        if not self.active or self.stopped:
++            return None
++
++        depth = count_stack(frame) - self.starting_depth
++        if depth >= self.tracer.depth_limit:
++            return None
++
++        if 'call' in event:
++            callsite = frame.f_back
++            self.show(callsite)
++            self.show(frame)
++        elif 'return' in event:
++            val_str = ppr.format_value(arg, indent=11, truncation=1000)
++            ret_str = '    Return %s\n' % val_str
++            self.show(frame, note=ret_str)
++        elif event == 'exception':
++            exc_str = format_exception_message(*arg, style=self.tracer.fmt_style)
++            self.show(frame, note=exc_str)
++            if self.tracer.stop_on_exception:
++                # Propagation of an inner activation's exception must not stop
++                # the outer activation that the caller is still using.
++                # A fresh explicit raise is a new event even when its exception
++                # object was previously seen in a nested activation. Propagation
++                # reaches an exception event at a call/with instruction instead.
++                instruction = next((op for op in dis.get_instructions(frame.f_code)
++                                    if op.offset == frame.f_lasti), None)
++                fresh_raise = (instruction is not None
++                               and instruction.opname == 'RAISE_VARARGS'
++                               and instruction.arg != 0)
++                if (not fresh_raise
++                        and any(error is arg[1] for error in self.nested_exceptions)):
++                    return self.trace
++                self.stopped = True
++                predecessor = getattr(self.trace_before, '__self__', None)
++                if isinstance(predecessor, TraceActivation):
++                    predecessor.nested_exceptions.append(arg[1])
++                self.deactivate()
++                return None
++
++        if self.stopped or not self.active:
++            return None
++        return self.trace
++
++    def show(self, frame, note=''):
++        if frame is None:
++            return
++
++        filepath = inspect.getsourcefile(frame) or inspect.getfile(frame)
++        if filepath in __file__:
++            return
++        elif match(filepath, self.tracer.suppressed_paths):
++            line_info = (filepath, frame.f_lineno, frame.f_code.co_name)
++            frame_str = 'File %s, line %s, in %s\n' % line_info
++        else:
++            frame_str = self.tracer.fmt(frame)
++
++        depth = count_stack(frame) - self.starting_depth
++        our_callsite = frame.f_back
++        callsite_of_previous_frame = getattr(self.previous_frame, 'f_back', -1)
++        if self.previous_frame is our_callsite and our_callsite is not None:
++            # we're a child frame
++            self.tracer.emit(add_indent(' └──┐\n', depth - 1))
++        if frame is callsite_of_previous_frame:
++            # we're a parent frame
++            self.tracer.emit(add_indent('┌──────┘\n', depth))
++
++        frame_str += note
++        self.tracer.emit(add_indent(frame_str, depth))
++        self.previous_frame = frame
++
++
+ def trace(*args, suppressed_paths=[], **formatter_kwargs):
+     """
+     Get a decorator to print all calls & returns in a function
+@@ -20,7 +134,7 @@ def trace(*args, suppressed_paths=[], **formatter_kwargs):
+ 
+     Params
+     ---
+-    Accepts all keyword wargs accepted by stackprinter.format, and:
++    Accepts all keyword args accepted by stackprinter.format, and:
+ 
+     depth_limit: int (default: 20)
+         How many nested calls will be followed
+@@ -30,18 +144,28 @@ def trace(*args, suppressed_paths=[], **formatter_kwargs):
+ 
+     stop_on_exception: bool (default: True)
+         If False, plow through exceptions
+-
+-
+     """
+-    traceprinter = TracePrinter(suppressed_paths=suppressed_paths,
++    suppressed_paths_list = list(suppressed_paths) if suppressed_paths is not None else []
++    traceprinter = TracePrinter(suppressed_paths=suppressed_paths_list,
+                                 **formatter_kwargs)
+ 
+     def deco(f):
+-        def wrapper(*args, **formatter_kwargs):
+-            traceprinter.enable(current_depth=count_stack(sys._getframe()) + 1)
+-            result = f(*args, **formatter_kwargs)
+-            traceprinter.disable()
+-            return result
++        @functools.wraps(f)
++        def wrapper(*func_args, **func_kwargs):
++            wrapper_frame = sys._getframe()
++            activation = TraceActivation(traceprinter,
++                                         starting_depth=count_stack(wrapper_frame) + 1,
++                                         caller_frame=wrapper_frame)
++            activation.activate(force=False)
++            try:
++                return f(*func_args, **func_kwargs)
++            except BaseException as error:
++                predecessor = getattr(activation.trace_before, '__self__', None)
++                if isinstance(predecessor, TraceActivation):
++                    predecessor.nested_exceptions.append(error)
++                raise
++            finally:
++                activation.deactivate()
+         return wrapper
+ 
+     if args:
+@@ -56,14 +180,14 @@ class TracePrinter():
+ 
+     Example:
+     ```
+-    with Traceprinter(style='color', depth_limit=5):
++    with TracePrinter(style='color', depth_limit=5):
+         dosomething()
+         dosomethingelse()
+     ```
+ 
+     Params
+     ---
+-    Accepts all keyword wargs accepted by stackprinter.format, and:
++    Accepts all keyword args accepted by stackprinter.format, and:
+ 
+     depth_limit: int (default: 20)
+         How many nested calls will be followed
+@@ -73,7 +197,6 @@ class TracePrinter():
+ 
+     stop_on_exception: bool (default: True)
+         If False, plow through exceptions
+-
+     """
+ 
+     def __init__(self,
+@@ -90,86 +213,81 @@ class TracePrinter():
+         self.emit = print_function
+         self.depth_limit = depth_limit
+         self.stop_on_exception = stop_on_exception
++        self._local = threading.local()
++
++    def _get_activation_stack(self):
++        stack = getattr(self._local, 'activation_stack', None)
++        if stack is None:
++            stack = []
++            self._local.activation_stack = stack
++        return stack
++
++    def _check_conflict(self, force=False):
++        active_trace = sys.gettrace()
++        if active_trace is not None and not force:
++            # An active trace is unrelated if it is not owned by our tracing framework
++            target = getattr(active_trace, '__self__', None)
++            if not isinstance(target, TraceActivation):
++                raise Exception("There is already a trace function registered: %r" % active_trace)
+ 
+     def __enter__(self):
+-        depth = count_stack(sys._getframe(1))
+-        self.enable(current_depth=depth)
++        caller_frame = sys._getframe(1)
++        depth = count_stack(caller_frame)
++        activation = TraceActivation(self, starting_depth=depth, caller_frame=caller_frame)
++        activation.activate(force=False)
++        self._get_activation_stack().append(activation)
+         return self
+ 
+     def __exit__(self, etype, evalue, tb):
+         self.disable()
+-        if etype is None:
+-            return True
+-
++        return False
+ 
+     def enable(self, force=False, current_depth=None):
++        caller_frame = sys._getframe(1)
+         if current_depth is None:
+-            current_depth = count_stack(sys._getframe(1))
+-        self.starting_depth = current_depth
+-        self.previous_frame = None
+-        self.trace_before = sys.gettrace()
+-        if (self.trace_before is not None) and not force:
+-            raise Exception("There is already a trace function registered: %r" % self.trace_before)
+-        sys.settrace(self.trace)
++            current_depth = count_stack(caller_frame)
++        activation = TraceActivation(self, starting_depth=current_depth, caller_frame=caller_frame)
++        activation.activate(force=force)
++        self._get_activation_stack().append(activation)
+ 
+     def disable(self):
+-        sys.settrace(self.trace_before)
+-        try:
+-            del self.previous_frame
+-        except AttributeError:
+-            pass
++        stack = self._get_activation_stack()
++        if not stack:
++            return
++        activation = stack.pop()
++        activation.deactivate()
++
++    @property
++    def starting_depth(self):
++        stack = self._get_activation_stack()
++        if stack:
++            return stack[-1].starting_depth
++        return None
++
++    @property
++    def previous_frame(self):
++        stack = self._get_activation_stack()
++        if stack:
++            return stack[-1].previous_frame
++        return None
++
++    @property
++    def trace_before(self):
++        stack = self._get_activation_stack()
++        if stack:
++            return stack[-1].trace_before
++        return None
+ 
+     def trace(self, frame, event, arg):
+-        depth = count_stack(frame) - self.starting_depth
+-        if depth >= self.depth_limit:
+-            return None
+-
+-        if 'call' in event:
+-            callsite = frame.f_back
+-            self.show(callsite)
+-            self.show(frame)
+-        elif 'return' in event:
+-            val_str = ppr.format_value(arg, indent=11, truncation=1000)
+-            ret_str = '    Return %s\n' % val_str
+-            self.show(frame, note=ret_str)
+-        elif event == 'exception':
+-            exc_str = format_exception_message(*arg, style=self.fmt_style)
+-            self.show(frame, note=exc_str)
+-            if self.stop_on_exception:
+-                self.disable()
+-            return None
+-
+-        return self.trace
++        stack = self._get_activation_stack()
++        if stack:
++            return stack[-1].trace(frame, event, arg)
++        return None
+ 
+     def show(self, frame, note=''):
+-        if frame is None:
+-            return
+-
+-        filepath = inspect.getsourcefile(frame) or inspect.getfile(frame)
+-        if filepath in __file__:
+-            return
+-        elif match(filepath, self.suppressed_paths):
+-            line_info = (filepath, frame.f_lineno, frame.f_code.co_name)
+-            frame_str = 'File %s, line %s, in %s\n' % line_info
+-            if len(note) > 123:
+-                note == note[:120] + '...'
+-        else:
+-            frame_str = self.fmt(frame)
+-
+-        depth = count_stack(frame) - self.starting_depth
+-        our_callsite = frame.f_back
+-        callsite_of_previous_frame = getattr(self.previous_frame, 'f_back', -1)
+-        if self.previous_frame is our_callsite and our_callsite is not None:
+-            # we're a child frame
+-            self.emit(add_indent(' └──┐\n', depth - 1))
+-        if frame is callsite_of_previous_frame:
+-            # we're a parent frame
+-            self.emit(add_indent('┌──────┘\n', depth))
+-
+-
+-        frame_str += note
+-        self.emit(add_indent(frame_str, depth))
+-        self.previous_frame = frame
++        stack = self._get_activation_stack()
++        if stack:
++            stack[-1].show(frame, note=note)
+ 
+ 
+ def add_indent(string, depth=1, max_depth=10):

@@ -1,0 +1,527 @@
+--- a/pkg/diagram/config.go
++++ b/pkg/diagram/config.go
+@@ -142,7 +142,8 @@
+ // The styleType parameter determines output format ("cli" or "html").
+ func NewTestConfig(useAscii bool, styleType string) *Config {
+ 	config := DefaultConfig()
+-	config.UseAscii = useAscii
++	config.GraphDirection = "TD"
++ config.UseAscii = useAscii
+ 	config.StyleType = styleType
+ 	return config
+ }
+--- a/pkg/graph/direction.go
++++ b/pkg/graph/direction.go
+@@ -45,114 +45,136 @@
+ 	return drawingCoord{x: c.x + dir.x, y: c.y + dir.y}
+ }
+ 
+-func (g graph) selfReferenceDirection() (direction, direction, direction, direction) {
+-	if g.graphDirection == "LR" {
++type layoutDirection int
++
++const (
++	layoutVertical layoutDirection = iota
++	layoutHorizontal
++)
++
++func (d layoutDirection) isHorizontal() bool {
++	return d == layoutHorizontal
++}
++
++func (d layoutDirection) isVertical() bool {
++	return d == layoutVertical
++}
++
++func (d layoutDirection) String() string {
++	if d == layoutHorizontal {
++		return "horizontal"
++	}
++	return "vertical"
++}
++
++func (d layoutDirection) level(c gridCoord) int {
++	if d.isHorizontal() {
++		return c.x
++	}
++	return c.y
++}
++
++func (d layoutDirection) position(c gridCoord) int {
++	if d.isHorizontal() {
++		return c.y
++	}
++	return c.x
++}
++
++func (d layoutDirection) coord(level, position int) gridCoord {
++	if d.isHorizontal() {
++		return gridCoord{x: level, y: position}
++	}
++	return gridCoord{x: position, y: level}
++}
++
++func (d layoutDirection) nextSpot(c gridCoord) gridCoord {
++	if d.isHorizontal() {
++		return gridCoord{x: c.x, y: c.y + 4}
++	}
++	return gridCoord{x: c.x + 4, y: c.y}
++}
++
++func (d layoutDirection) shouldSeparate(hasExternalRoots, hasSubgraphRootsWithEdges bool) bool {
++	return d.isHorizontal() && hasExternalRoots && hasSubgraphRootsWithEdges
++}
++
++func (d layoutDirection) allowsFanout(hasNoSubgraphs bool) bool {
++	return d.isVertical() && hasNoSubgraphs
++}
++
++func (d layoutDirection) selfReferenceDirection() (direction, direction, direction, direction) {
++	if d.isHorizontal() {
+ 		return Right, Down, Down, Right
+ 	}
+ 	return Down, Right, Right, Down
+ }
+ 
++func (d layoutDirection) startAndEndDir(flow direction) (direction, direction, direction, direction) {
++	switch flow {
++	case LowerRight:
++		if d.isHorizontal() {
++			return Down, Left, Right, Up
++		}
++		return Right, Up, Down, Left
++	case UpperRight:
++		if d.isHorizontal() {
++			return Up, Left, Right, Down
++		}
++		return Right, Down, Up, Left
++	case LowerLeft:
++		if d.isHorizontal() {
++			return Down, Down, Left, Up
++		}
++		return Left, Up, Down, Right
++	case UpperLeft:
++		if d.isHorizontal() {
++			return Down, Down, Left, Down
++		}
++		return Right, Right, Up, Right
++	case Left:
++		if d.isHorizontal() {
++			return Down, Down, Left, Right
++		}
++		return flow, flow.getOpposite(), flow, flow.getOpposite()
++	case Up:
++		if d.isVertical() {
++			return Right, Right, Up, Down
++		}
++		return flow, flow.getOpposite(), flow, flow.getOpposite()
++	default:
++		return flow, flow.getOpposite(), flow, flow.getOpposite()
++	}
++}
++
++func (d layoutDirection) parallelDirections(flow direction, duplicateIndex int) (direction, direction, bool) {
++	if duplicateIndex == 0 {
++		return Middle, Middle, false
++	}
++
++	if d.isHorizontal() && (flow == Right || flow == Left) {
++		options := [][2]direction{{Down, Down}, {Up, Up}}
++		if duplicateIndex-1 < len(options) {
++			return options[duplicateIndex-1][0], options[duplicateIndex-1][1], true
++		}
++	} else if d.isVertical() && (flow == Down || flow == Up) {
++		options := [][2]direction{{Right, Right}, {Left, Left}}
++		if duplicateIndex-1 < len(options) {
++			return options[duplicateIndex-1][0], options[duplicateIndex-1][1], true
++		}
++	}
++
++	return Middle, Middle, false
++}
++
++func (g graph) selfReferenceDirection() (direction, direction, direction, direction) {
++	return g.layoutDirection.selfReferenceDirection()
++}
++
+ func (g graph) determineStartAndEndDir(e *edge) (direction, direction, direction, direction) {
+ 	if e.from == e.to {
+-		return g.selfReferenceDirection()
++		return g.layoutDirection.selfReferenceDirection()
+ 	}
+ 	d := determineDirection(genericCoord(*e.from.gridCoord), genericCoord(*e.to.gridCoord))
+-	var preferredDir, preferredOppositeDir, alternativeDir, alternativeOppositeDir direction
+-
+-	// Check if this is a backwards flowing edge
+-	isBackwards := false
+-	if g.graphDirection == "LR" {
+-		// In LR mode, backwards flow is when edge goes from right to left (Left direction)
+-		isBackwards = (d == Left || d == UpperLeft || d == LowerLeft)
+-	} else { // TD mode
+-		// In TD mode, backwards flow is when edge goes from bottom to top (Up direction)
+-		isBackwards = (d == Up || d == UpperLeft || d == UpperRight)
+-	}
+-
+-	// LR: prefer vertical over horizontal
+-	// TD: prefer horizontal over vertical
+-	// TODO: This causes some squirmy lines if the corner spot is already occupied.
+-	// For backwards edges, use special start positions: Down in LR mode, Right in TD mode
+-	switch d {
+-	case LowerRight:
+-		if g.graphDirection == "LR" {
+-			preferredDir = Down
+-			preferredOppositeDir = Left
+-			alternativeDir = Right
+-			alternativeOppositeDir = Up
+-		} else {
+-			preferredDir = Right
+-			preferredOppositeDir = Up
+-			alternativeDir = Down
+-			alternativeOppositeDir = Left
+-		}
+-	case UpperRight:
+-		if g.graphDirection == "LR" {
+-			preferredDir = Up
+-			preferredOppositeDir = Left
+-			alternativeDir = Right
+-			alternativeOppositeDir = Down
+-		} else {
+-			preferredDir = Right
+-			preferredOppositeDir = Down
+-			alternativeDir = Up
+-			alternativeOppositeDir = Left
+-		}
+-	case LowerLeft:
+-		if g.graphDirection == "LR" {
+-			// Backwards flow in LR mode - start from Down, arrive at Down
+-			preferredDir = Down
+-			preferredOppositeDir = Down // Edge goes to bottom of destination
+-			alternativeDir = Left
+-			alternativeOppositeDir = Up
+-		} else {
+-			preferredDir = Left
+-			preferredOppositeDir = Up
+-			alternativeDir = Down
+-			alternativeOppositeDir = Right
+-		}
+-	case UpperLeft:
+-		if g.graphDirection == "LR" {
+-			// Backwards flow in LR mode - start from Down, arrive at Down
+-			preferredDir = Down
+-			preferredOppositeDir = Down // Edge goes to bottom of destination
+-			alternativeDir = Left
+-			alternativeOppositeDir = Down
+-		} else {
+-			// Backwards flow in TD mode - start from Right, arrive at Right
+-			preferredDir = Right
+-			preferredOppositeDir = Right // Edge goes to right of destination
+-			alternativeDir = Up
+-			alternativeOppositeDir = Right
+-		}
+-	default:
+-		// Handle direct backwards flow cases
+-		if isBackwards {
+-			if g.graphDirection == "LR" && d == Left {
+-				// Direct left flow in LR mode - start from Down, arrive at Down
+-				preferredDir = Down
+-				preferredOppositeDir = Down // Edge goes to bottom of destination
+-				alternativeDir = Left
+-				alternativeOppositeDir = Right
+-			} else if g.graphDirection == "TD" && d == Up {
+-				// Direct up flow in TD mode - start from Right, arrive at Right
+-				preferredDir = Right
+-				preferredOppositeDir = Right // Edge goes to right of destination
+-				alternativeDir = Up
+-				alternativeOppositeDir = Down
+-			} else {
+-				preferredDir = d
+-				preferredOppositeDir = preferredDir.getOpposite()
+-				alternativeDir = d
+-				alternativeOppositeDir = preferredOppositeDir
+-			}
+-		} else {
+-			preferredDir = d
+-			preferredOppositeDir = preferredDir.getOpposite()
+-			// TODO: just return null and don't calculate alternative path
+-			alternativeDir = d
+-			alternativeOppositeDir = preferredOppositeDir
+-		}
+-	}
+-	return preferredDir, preferredOppositeDir, alternativeDir, alternativeOppositeDir
++	return g.layoutDirection.startAndEndDir(d)
+ }
+--- a/pkg/graph/mapping_edge.go
++++ b/pkg/graph/mapping_edge.go
+@@ -112,25 +112,8 @@
+ }
+ 
+ func (g *graph) parallelDirections(e *edge, duplicateIndex int) (direction, direction, bool) {
+-	if duplicateIndex == 0 {
+-		return Middle, Middle, false
+-	}
+-
+ 	dir := determineDirection(genericCoord(*e.from.gridCoord), genericCoord(*e.to.gridCoord))
+-	switch {
+-	case g.graphDirection == "LR" && (dir == Right || dir == Left):
+-		options := [][2]direction{{Down, Down}, {Up, Up}}
+-		if duplicateIndex-1 < len(options) {
+-			return options[duplicateIndex-1][0], options[duplicateIndex-1][1], true
+-		}
+-	case g.graphDirection == "TD" && (dir == Down || dir == Up):
+-		options := [][2]direction{{Right, Right}, {Left, Left}}
+-		if duplicateIndex-1 < len(options) {
+-			return options[duplicateIndex-1][0], options[duplicateIndex-1][1], true
+-		}
+-	}
+-
+-	return Middle, Middle, false
++	return g.layoutDirection.parallelDirections(dir, duplicateIndex)
+ }
+ 
+ func (g *graph) determineLabelLine(e *edge) {
+--- a/pkg/graph/parse_test.go
++++ b/pkg/graph/parse_test.go
+@@ -361,30 +361,30 @@
+ 	tests := []struct {
+ 		name    string
+ 		input   string
+-		wantDir string
++		wantDir layoutDirection
+ 		wantErr bool
+ 	}{
+-		{"plain graph TD", "graph TD\nA --> B", "TD", false},
+-		{"flowchart LR", "flowchart LR\nA --> B", "LR", false},
+-		{"leading whitespace", "    flowchart LR\n    A --> B", "LR", false},
+-		{"trailing whitespace", "graph LR    \nA --> B", "LR", false},
+-		{"indented graph TD", "        graph TD\n        A --> B", "TD", false},
+-		{"bare graph defaults to TD", "graph\nA --> B", "TD", false},
+-		{"bare flowchart defaults to TD", "flowchart\nA --> B", "TD", false},
+-		{"TB maps to TD", "flowchart TB\nA --> B", "TD", false},
+-		{"RL maps to LR axis", "graph RL\nA --> B", "LR", false},
+-		{"BT maps to TD axis", "flowchart BT\nA --> B", "TD", false},
+-		{"trailing semicolon bare", "graph;\nA --> B", "TD", false},
+-		{"trailing semicolon with direction", "graph TD;\nA --> B", "TD", false},
+-		{"flowchart LR semicolon", "flowchart LR;\nA --> B", "LR", false},
+-		{"CRLF line ending", "graph TD\r\nA --> B", "TD", false},
+-		{"tab separator", "graph\tLR\nA --> B", "LR", false},
+-		{"lowercase direction errors", "graph td\nA --> B", "", true},
+-		{"uppercase graph keyword errors", "GRAPH TD\nA --> B", "", true}, // flowchart stays case-sensitive (mermaid parity)
+-		{"extra tokens error", "graph TD foo\nA --> B", "", true},
+-		{"unknown type errors", "sequenceDiagram\nA->>B: x", "", true},
+-		{"unknown direction errors", "graph SIDEWAYS\nA --> B", "", true},
+-		{"empty input errors", "", "", true},
++		{"plain graph TD", "graph TD\nA --> B", layoutVertical, false},
++		{"flowchart LR", "flowchart LR\nA --> B", layoutHorizontal, false},
++		{"leading whitespace", "    flowchart LR\n    A --> B", layoutHorizontal, false},
++		{"trailing whitespace", "graph LR    \nA --> B", layoutHorizontal, false},
++		{"indented graph TD", "        graph TD\n        A --> B", layoutVertical, false},
++		{"bare graph defaults to TD", "graph\nA --> B", layoutVertical, false},
++		{"bare flowchart defaults to TD", "flowchart\nA --> B", layoutVertical, false},
++		{"TB maps to TD", "flowchart TB\nA --> B", layoutVertical, false},
++		{"RL maps to LR axis", "graph RL\nA --> B", layoutHorizontal, false},
++		{"BT maps to TD axis", "flowchart BT\nA --> B", layoutVertical, false},
++		{"trailing semicolon bare", "graph;\nA --> B", layoutVertical, false},
++		{"trailing semicolon with direction", "graph TD;\nA --> B", layoutVertical, false},
++		{"flowchart LR semicolon", "flowchart LR;\nA --> B", layoutHorizontal, false},
++		{"CRLF line ending", "graph TD\r\nA --> B", layoutVertical, false},
++		{"tab separator", "graph\tLR\nA --> B", layoutHorizontal, false},
++		{"lowercase direction errors", "graph td\nA --> B", layoutVertical, true},
++		{"uppercase graph keyword errors", "GRAPH TD\nA --> B", layoutVertical, true}, // flowchart stays case-sensitive (mermaid parity)
++		{"extra tokens error", "graph TD foo\nA --> B", layoutVertical, true},
++		{"unknown type errors", "sequenceDiagram\nA->>B: x", layoutVertical, true},
++		{"unknown direction errors", "graph SIDEWAYS\nA --> B", layoutVertical, true},
++		{"empty input errors", "", layoutVertical, true},
+ 	}
+ 
+ 	for _, tt := range tests {
+@@ -392,15 +392,15 @@
+ 			props, err := Parse(tt.input, "cli")
+ 			if tt.wantErr {
+ 				if err == nil {
+-					t.Fatalf("expected error, got direction %q", props.graphDirection)
++					t.Fatalf("expected error, got direction %v", props.layoutDirection)
+ 				}
+ 				return
+ 			}
+ 			if err != nil {
+ 				t.Fatalf("unexpected error: %v", err)
+ 			}
+-			if props.graphDirection != tt.wantDir {
+-				t.Errorf("direction = %q, want %q", props.graphDirection, tt.wantDir)
++			if props.layoutDirection != tt.wantDir {
++				t.Errorf("direction = %v, want %v", props.layoutDirection, tt.wantDir)
+ 			}
+ 		})
+ 	}
+--- a/pkg/graph/graph.go
++++ b/pkg/graph/graph.go
+@@ -40,7 +40,7 @@
+ 	styleClasses     map[string]styleClass
+ 	styleType        string
+ 	boxBorderPadding int
+-	graphDirection   string
++	layoutDirection  layoutDirection
+ 	paddingX         int
+ 	paddingY         int
+ 	subgraphs        []*subgraph
+@@ -120,7 +120,7 @@
+ 	g.styleClasses = *properties.styleClasses
+ 	g.styleType = properties.styleType
+ 	g.boxBorderPadding = properties.boxBorderPadding
+-	g.graphDirection = properties.graphDirection
++	g.layoutDirection = properties.layoutDirection
+ 	g.paddingX = properties.paddingX
+ 	g.paddingY = properties.paddingY
+ 	for _, n := range g.nodes {
+@@ -219,7 +219,7 @@
+ 
+ 	// Separate root nodes by whether they're in subgraphs, but only if we have both types
+ 	// AND there are edges in subgraphs (indicating intentional layout structure)
+-	shouldSeparate := g.graphDirection == "LR" && hasExternalRoots && hasSubgraphRootsWithEdges
++	shouldSeparate := g.layoutDirection.shouldSeparate(hasExternalRoots, hasSubgraphRootsWithEdges)
+ 
+ 	externalRootNodes := []*node{}
+ 	subgraphRootNodes := []*node{}
+@@ -238,12 +238,8 @@
+ 
+ 	// Place external root nodes first at level 0
+ 	for _, n := range externalRootNodes {
+-		var mappingCoord *gridCoord
+-		if g.graphDirection == "LR" {
+-			mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: 0, y: highestPositionPerLevel[0]})
+-		} else {
+-			mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: highestPositionPerLevel[0], y: 0})
+-		}
++		coord := g.layoutDirection.coord(0, highestPositionPerLevel[0])
++		mappingCoord := g.reserveSpotInGrid(g.nodes[n.index], &coord)
+ 		log.Debugf("Setting mapping coord for external rootnode %s to %v", n.name, mappingCoord)
+ 		g.nodes[n.index].gridCoord = mappingCoord
+ 		highestPositionPerLevel[0] = highestPositionPerLevel[0] + 4
+@@ -254,12 +250,8 @@
+ 	if shouldSeparate && len(subgraphRootNodes) > 0 {
+ 		subgraphLevel := 4
+ 		for _, n := range subgraphRootNodes {
+-			var mappingCoord *gridCoord
+-			if g.graphDirection == "LR" {
+-				mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: subgraphLevel, y: highestPositionPerLevel[subgraphLevel]})
+-			} else {
+-				mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: highestPositionPerLevel[subgraphLevel], y: subgraphLevel})
+-			}
++			coord := g.layoutDirection.coord(subgraphLevel, highestPositionPerLevel[subgraphLevel])
++			mappingCoord := g.reserveSpotInGrid(g.nodes[n.index], &coord)
+ 			log.Debugf("Setting mapping coord for subgraph rootnode %s to %v", n.name, mappingCoord)
+ 			g.nodes[n.index].gridCoord = mappingCoord
+ 			highestPositionPerLevel[subgraphLevel] = highestPositionPerLevel[subgraphLevel] + 4
+@@ -268,13 +260,8 @@
+ 
+ 	for _, n := range g.nodes {
+ 		log.Debugf("Creating mapping for node %s at %v", n.name, n.gridCoord)
+-		var childLevel int
+ 		// Next column is 4 coords further. This is because every node is 3 coords wide + 1 coord inbetween.
+-		if g.graphDirection == "LR" {
+-			childLevel = n.gridCoord.x + 4
+-		} else {
+-			childLevel = n.gridCoord.y + 4
+-		}
++		childLevel := g.layoutDirection.level(*n.gridCoord) + 4
+ 		highestPosition := highestPositionPerLevel[childLevel]
+ 		for _, child := range g.getChildren(n) {
+ 			// Skip if the child already has a mapping coord
+@@ -282,26 +269,18 @@
+ 				continue
+ 			}
+ 
+-			var mappingCoord *gridCoord
++			var targetPos int
+ 			if anchor := g.mappedSubgraphSibling(child); anchor != nil {
+-				if g.graphDirection == "LR" {
+-					mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: childLevel, y: anchor.y})
+-				} else {
+-					mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: anchor.x, y: childLevel})
+-				}
+-			} else if g.graphDirection == "LR" {
+-				mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: childLevel, y: highestPosition})
++				targetPos = g.layoutDirection.position(*anchor)
+ 			} else {
+-				mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: highestPosition, y: childLevel})
+-			}
++				targetPos = highestPosition
++			}
++			coord := g.layoutDirection.coord(childLevel, targetPos)
++			mappingCoord := g.reserveSpotInGrid(g.nodes[child.index], &coord)
+ 			log.Debugf("Setting mapping coord for child %s of parent %s to %v", child.name, n.name, mappingCoord)
+ 			g.nodes[child.index].gridCoord = mappingCoord
+ 			position := highestPosition + 4
+-			if g.graphDirection == "LR" {
+-				position = Max(position, mappingCoord.y+4)
+-			} else {
+-				position = Max(position, mappingCoord.x+4)
+-			}
++			position = Max(position, g.layoutDirection.position(*mappingCoord)+4)
+ 			highestPositionPerLevel[childLevel] = position
+ 		}
+ 	}
+--- a/pkg/graph/mapping_node.go
++++ b/pkg/graph/mapping_node.go
+@@ -91,11 +91,8 @@
+ 	if g.grid[*requestedCoord] != nil {
+ 		log.Debugf("Coord %d,%d is already taken", requestedCoord.x, requestedCoord.y)
+ 		// Next column is 4 coords further. This is because every node is 3 coords wide + 1 coord inbetween.
+-		if g.graphDirection == "LR" {
+-			return g.reserveSpotInGrid(n, &gridCoord{x: requestedCoord.x, y: requestedCoord.y + 4})
+-		} else {
+-			return g.reserveSpotInGrid(n, &gridCoord{x: requestedCoord.x + 4, y: requestedCoord.y})
+-		}
++		nextCoord := g.layoutDirection.nextSpot(*requestedCoord)
++		return g.reserveSpotInGrid(n, &nextCoord)
+ 	}
+ 	// Reserve border + middle + border for node
+ 	log.Debugf("Reserving coord %v for node %v", requestedCoord, n)
+--- a/pkg/graph/fanout.go
++++ b/pkg/graph/fanout.go
+@@ -7,7 +7,7 @@
+ )
+ 
+ func (g *graph) layoutFanouts() {
+-	if g.graphDirection != "TD" || len(g.subgraphs) != 0 {
++	if !g.layoutDirection.allowsFanout(len(g.subgraphs) == 0) {
+ 		return
+ 	}
+ 	for _, n := range g.nodes {
+--- a/pkg/graph/parse.go
++++ b/pkg/graph/parse.go
+@@ -31,7 +31,7 @@
+ 	nodeSpecs        map[string]graphNodeSpec
+ 	styleClasses     *map[string]styleClass
+ 	boxBorderPadding int
+-	graphDirection   string
++	layoutDirection  layoutDirection
+ 	styleType        string
+ 	paddingX         int
+ 	paddingY         int
+@@ -484,7 +484,7 @@
+ 		nodeSpecs:        make(map[string]graphNodeSpec),
+ 		styleClasses:     &styleClasses,
+ 		boxBorderPadding: defaultBoxBorderPadding,
+-		graphDirection:   "",
++		layoutDirection:  layoutVertical,
+ 		styleType:        styleType,
+ 		paddingX:         defaultPaddingX,
+ 		paddingY:         defaultPaddingY,
+@@ -536,13 +536,13 @@
+ 	// lays out along the horizontal (LR) or vertical (TD) axis; the reverse
+ 	// directions RL and BT are accepted but drawn on their axis without the
+ 	// reversal (RL renders left-to-right, BT top-down).
+-	properties.graphDirection = "TD"
++	properties.layoutDirection = layoutVertical
+ 	if len(fields) == 2 {
+ 		switch fields[1] {
+ 		case "LR", "RL":
+-			properties.graphDirection = "LR"
++			properties.layoutDirection = layoutHorizontal
+ 		case "TD", "TB", "BT":
+-			properties.graphDirection = "TD"
++			properties.layoutDirection = layoutVertical
+ 		default:
+ 			return &properties, fmt.Errorf("unsupported graph direction '%s'. Supported directions: TD, TB, BT, LR, RL", fields[1])
+ 		}

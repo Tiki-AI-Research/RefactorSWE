@@ -1,0 +1,2432 @@
+diff --git a/torrent/evaluator_session_lifecycle_test.go b/torrent/evaluator_session_lifecycle_test.go
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/torrent/evaluator_session_lifecycle_test.go
+@@ -0,0 +1,2426 @@
++package torrent
++
++import (
++	"bufio"
++	"bytes"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strconv"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"syscall"
++	"testing"
++	"time"
++
++	"github.com/cenkalti/rain/v2/internal/storage"
++	cp "github.com/otiai10/copy"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++	"go.etcd.io/bbolt"
++)
++
++func freePort(t *testing.T) int {
++	t.Helper()
++	l, err := net.Listen("tcp", "127.0.0.1:0")
++	require.NoError(t, err)
++	defer l.Close()
++	return l.Addr().(*net.TCPAddr).Port
++}
++
++func evaluatorSafeClose(s *Session) (err error) {
++	if s == nil {
++		return nil
++	}
++	defer func() {
++		if r := recover(); r != nil {
++			err = fmt.Errorf("panic during Close: %v", r)
++		}
++	}()
++	return s.Close()
++}
++
++func evaluatorWorkerCompletion(t *testing.T, s *Session) <-chan struct{} {
++	t.Helper()
++	wc, ok := interface{}(s).(workerCompleter)
++	require.True(t, ok, "Session must implement workerCompletion() <-chan struct{}")
++	ch := wc.workerCompletion()
++	require.NotNil(t, ch, "workerCompletion channel must not be nil")
++	return ch
++}
++
++
++type shutdownBudgeter interface {
++	shutdownBudget() (time.Duration, time.Duration)
++}
++
++type shutdownDeadliner interface {
++	activeShutdownDeadline() (time.Time, time.Time)
++}
++
++type shutdownTimerSetter interface {
++	setShutdownTimer(fn func(phase string, d time.Duration) (<-chan time.Time, func() bool))
++}
++
++func evaluatorShutdownBudget(s *Session) (time.Duration, time.Duration) {
++	if b, ok := interface{}(s).(shutdownBudgeter); ok {
++		return b.shutdownBudget()
++	}
++	return 0, 0
++}
++
++func evaluatorActiveShutdownDeadline(s *Session) (time.Time, time.Time) {
++	if d, ok := interface{}(s).(shutdownDeadliner); ok {
++		return d.activeShutdownDeadline()
++	}
++	return time.Time{}, time.Time{}
++}
++
++// ============================================================================
++
++// FAIL-TO-PASS (F2P) REGRESSION TESTS: B1 - B8
++
++// ============================================================================
++
++// TestSession_CloseIdempotentSequential verifies that calling Session.Close()
++// multiple times sequentially does not panic, deadlocks, or return unexpected errors.
++func TestEvaluator_B1_Session_CloseIdempotentSequential(t *testing.T) {
++	tmp := t.TempDir()
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = false
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++	require.NotNil(t, s)
++
++	// First Close must succeed
++	err1 := evaluatorSafeClose(s)
++	assert.NoError(t, err1)
++
++	// Subsequent sequential Close calls must be idempotent and return nil without panic
++	for i := 0; i < 5; i++ {
++		func() {
++			defer func() {
++				if r := recover(); r != nil {
++					assert.Fail(t, fmt.Sprintf("sequential Close() panicked on iteration %d: %v", i, r))
++				}
++			}()
++			err2 := evaluatorSafeClose(s)
++			assert.NoError(t, err2)
++			err3 := evaluatorSafeClose(s)
++			assert.NoError(t, err3)
++		}()
++	}
++}
++
++// TestSession_CloseConcurrent verifies that calling Session.Close()
++// concurrently from multiple goroutines is thread-safe and does not panic or deadlock.
++func TestEvaluator_B2_Session_CloseConcurrent(t *testing.T) {
++	tmp := t.TempDir()
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = false
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++	require.NotNil(t, s)
++
++	const goroutines = 10
++	var wg sync.WaitGroup
++	errs := make([]error, goroutines)
++
++	wg.Add(goroutines)
++	for i := 0; i < goroutines; i++ {
++		go func(idx int) {
++			defer wg.Done()
++			defer func() {
++				if r := recover(); r != nil {
++					errs[idx] = fmt.Errorf("panic: %v", r)
++				}
++			}()
++			errs[idx] = evaluatorSafeClose(s)
++		}(i)
++	}
++
++	done := make(chan struct{})
++	go func() {
++		wg.Wait()
++		close(done)
++	}()
++
++	select {
++	case <-done:
++		for _, err := range errs {
++			assert.NoError(t, err)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("concurrent Close deadlocked or timed out")
++	}
++
++	// Part 2: Concurrent Close with a blocked worker resulting in deadline error.
++	// Verifies that all concurrent callers (leader and followers) wait for completion
++	// and receive identical non-nil error, killing if !isOwner { return nil } mutants.
++	tmp2 := t.TempDir()
++	cfg2 := DefaultConfig
++	cfg2.Database = filepath.Join(tmp2, "session.db")
++	cfg2.DataDir = tmp2
++	cfg2.DHTEnabled = false
++	cfg2.RPCEnabled = false
++
++	s2, err := NewSession(cfg2)
++	require.NoError(t, err)
++
++	setter2, ok := interface{}(s2).(shutdownTimerSetter)
++	require.True(t, ok)
++	setter2.setShutdownTimer(func(phase string, d time.Duration) (<-chan time.Time, func() bool) {
++		t := time.NewTimer(50 * time.Millisecond)
++		return t.C, t.Stop
++	})
++
++	tx2, err := s2.db.Begin(true)
++	require.NoError(t, err)
++	defer func() { _ = tx2.Rollback() }()
++
++	const goroutines2 = 10
++	var wg2 sync.WaitGroup
++	errs2 := make([]error, goroutines2)
++	startBarrier2 := make(chan struct{})
++
++	wg2.Add(goroutines2)
++	for i := 0; i < goroutines2; i++ {
++		go func(idx int) {
++			defer wg2.Done()
++			<-startBarrier2
++			errs2[idx] = evaluatorSafeClose(s2)
++		}(i)
++	}
++
++	close(startBarrier2)
++	done2 := make(chan struct{})
++	go func() {
++		wg2.Wait()
++		close(done2)
++	}()
++
++	select {
++	case <-done2:
++	case <-time.After(10 * time.Second):
++		t.Fatal("B2 concurrent Close with simulated error timed out (deadlock in Close)")
++	}
++
++	require.Error(t, errs2[0], "leader must receive non-nil shutdown error")
++	firstErrMsg := errs2[0].Error()
++	for i := 1; i < goroutines2; i++ {
++		require.Error(t, errs2[i], "follower must receive non-nil shutdown error")
++		assert.Equal(t, firstErrMsg, errs2[i].Error(), "all concurrent Close callers must receive identical error")
++	}
++}
++
++// evaluatorTrackedAllocFile wraps storage.File to observe whether Close() is called.
++type evaluatorTrackedAllocFile struct {
++	storage.File
++	closed atomic.Bool
++}
++
++func (f *evaluatorTrackedAllocFile) Close() error {
++	f.closed.Store(true)
++	return f.File.Close()
++}
++
++// evaluatorTrackedAllocStorage tracks file allocations and provides synchronization hooks.
++type evaluatorTrackedAllocStorage struct {
++	storage.Storage
++	mu     sync.Mutex
++	files  []*evaluatorTrackedAllocFile
++	opened atomic.Int32
++	onOpen chan struct{}
++	slow   bool
++}
++
++func (s *evaluatorTrackedAllocStorage) Open(name string, size int64) (storage.File, bool, error) {
++	if s.slow {
++		time.Sleep(30 * time.Millisecond)
++	}
++	f, exists, err := s.Storage.Open(name, size)
++	if err != nil {
++		return nil, false, err
++	}
++	tf := &evaluatorTrackedAllocFile{File: f}
++	s.mu.Lock()
++	s.files = append(s.files, tf)
++	s.mu.Unlock()
++	s.opened.Add(1)
++	select {
++	case s.onOpen <- struct{}{}:
++	default:
++	}
++	return tf, exists, nil
++}
++
++type evaluatorTrackedAllocStorageProvider struct {
++	base    storage.Provider
++	storage *evaluatorTrackedAllocStorage
++}
++
++func (p *evaluatorTrackedAllocStorageProvider) GetStorage(torrentID string) (storage.Storage, error) {
++	s, err := p.base.GetStorage(torrentID)
++	if err != nil {
++		return nil, err
++	}
++	p.storage.Storage = s
++	return p.storage, nil
++}
++
++// TestEvaluator_Session_CloseDuringActiveAllocation verifies that calling Session.Close()
++// while a torrent is actively allocating storage promptly halts allocation and closes
++// all open file handles without leaking resources or hanging.
++func TestEvaluator_B3_Session_CloseHaltsActiveTorrentWorkAndReleasesFileHandles(t *testing.T) {
++	tmp := t.TempDir()
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = false
++	cfg.Host = "127.0.0.1"
++
++	trackStorage := &evaluatorTrackedAllocStorage{
++		onOpen: make(chan struct{}, 100),
++		slow:   true,
++	}
++	cfg.CustomStorage = &evaluatorTrackedAllocStorageProvider{
++		base:    newFileStorageProvider(&cfg),
++		storage: trackStorage,
++	}
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	initTotalDl, initRPCDl := evaluatorActiveShutdownDeadline(s)
++	assert.True(t, initTotalDl.IsZero(), "active total shutdown deadline must be zero before Close()")
++	assert.True(t, initRPCDl.IsZero(), "active rpc shutdown deadline must be zero before Close()")
++
++	totalBudget, rpcBudget := evaluatorShutdownBudget(s)
++	assert.Equal(t, 4900*time.Millisecond, totalBudget, "shutdown budget without RPC must be 4900ms")
++	assert.Equal(t, time.Duration(0), rpcBudget, "rpc shutdown budget without RPC must be 0")
++
++	f, err := os.Open(torrentFile)
++	require.NoError(t, err)
++	defer f.Close()
++
++	// Add torrent without Stopped: true so allocation begins immediately
++	tor, err := s.AddTorrent(f, nil)
++	require.NoError(t, err)
++	require.NotNil(t, tor)
++
++	// Wait deterministically until allocation has actively opened at least one file
++	select {
++	case <-trackStorage.onOpen:
++	case <-time.After(5 * time.Second):
++		t.Fatal("timed out waiting for storage allocation to start")
++	}
++
++	// Close session while allocation is active
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	select {
++	case err := <-closeDone:
++		assert.NoError(t, err)
++	case <-time.After(5 * time.Second):
++		t.Fatal("Session.Close timed out during active allocation")
++	}
++
++	// Active allocation must halt: no new files should be opened after Session.Close returns
++	openedAtClose := trackStorage.opened.Load()
++	time.Sleep(50 * time.Millisecond)
++	assert.Equal(t, openedAtClose, trackStorage.opened.Load(), "allocation must not continue opening files after Session.Close returns")
++
++	// All files opened by the allocator must be closed to release file handles
++	trackStorage.mu.Lock()
++	openedFiles := append([]*evaluatorTrackedAllocFile(nil), trackStorage.files...)
++	trackStorage.mu.Unlock()
++	require.NotEmpty(t, openedFiles, "at least one file must have been opened during allocation")
++
++	for i, of := range openedFiles {
++		assert.True(t, of.closed.Load(), fmt.Sprintf("file %d opened during allocation must be closed upon Session.Close", i))
++	}
++
++	// Database lock must be released
++	db, dbErr := bbolt.Open(cfg.Database, 0600, &bbolt.Options{Timeout: 1 * time.Second})
++	assert.NoError(t, dbErr, "database lock must be released after Session.Close")
++	if db != nil {
++		_ = db.Close()
++	}
++
++	// Reopening session on the same database succeeds
++	s2, err := NewSession(cfg)
++	require.NoError(t, err, "reopening session with same configuration must succeed after Close")
++	if s2 != nil {
++		_ = evaluatorSafeClose(s2)
++	}
++}
++
++type evaluatorShutdownHookFile struct {
++	storage.File
++	onClose func()
++}
++
++func (f *evaluatorShutdownHookFile) Close() error {
++	if f.onClose != nil {
++		f.onClose()
++	}
++	return f.File.Close()
++}
++
++type evaluatorShutdownHookStorage struct {
++	storage.Storage
++	onClose func()
++}
++
++func (s *evaluatorShutdownHookStorage) Open(name string, size int64) (storage.File, bool, error) {
++	f, exists, err := s.Storage.Open(name, size)
++	if err != nil {
++		return nil, false, err
++	}
++	return &evaluatorShutdownHookFile{File: f, onClose: s.onClose}, exists, nil
++}
++
++type evaluatorShutdownHookStorageProvider struct {
++	base    storage.Provider
++	onClose func()
++}
++
++func (p *evaluatorShutdownHookStorageProvider) GetStorage(torrentID string) (storage.Storage, error) {
++	s, err := p.base.GetStorage(torrentID)
++	if err != nil {
++		return nil, err
++	}
++	return &evaluatorShutdownHookStorage{Storage: s, onClose: p.onClose}, nil
++}
++
++// TestSession_PersistFinalState_FailureLoggedAndCloseSucceeds verifies that if final persistence
++// fails (e.g. database error), the error is logged and Session.Close completes cleanly without panicking.
++// ============================================================================
++// B6, B7, B8: ATOMIC RPC SHUTDOWN TESTS
++// ============================================================================
++
++// B6: Rejects new work after shutdown begins
++type evaluatorSlowCloseStorageProvider struct {
++	base         storage.Provider
++	openEntered  chan struct{}
++	closeEntered chan struct{}
++	openOnce     sync.Once
++	closeOnce    sync.Once
++}
++
++func (p *evaluatorSlowCloseStorageProvider) GetStorage(torrentID string) (storage.Storage, error) {
++	s, err := p.base.GetStorage(torrentID)
++	if err != nil {
++		return nil, err
++	}
++	return &evaluatorSlowCloseStorage{Storage: s, provider: p}, nil
++}
++
++type evaluatorSlowCloseStorage struct {
++	storage.Storage
++	provider *evaluatorSlowCloseStorageProvider
++}
++
++func (s *evaluatorSlowCloseStorage) Open(name string, size int64) (storage.File, bool, error) {
++	f, exists, err := s.Storage.Open(name, size)
++	if err != nil {
++		return nil, false, err
++	}
++	s.provider.openOnce.Do(func() {
++		if s.provider.openEntered != nil {
++			close(s.provider.openEntered)
++		}
++	})
++	return &evaluatorSlowCloseFile{File: f, provider: s.provider}, exists, nil
++}
++
++type evaluatorSlowCloseFile struct {
++	storage.File
++	provider *evaluatorSlowCloseStorageProvider
++}
++
++func (f *evaluatorSlowCloseFile) Close() error {
++	f.provider.closeOnce.Do(func() {
++		if f.provider.closeEntered != nil {
++			close(f.provider.closeEntered)
++		}
++		time.Sleep(250 * time.Millisecond)
++	})
++	return f.File.Close()
++}
++
++func addTestTorrent(t *testing.T, s *Session) *Torrent {
++	t.Helper()
++	f, err := os.Open(torrentFile)
++	require.NoError(t, err)
++	defer f.Close()
++
++	opt := &AddTorrentOptions{Stopped: true}
++	tor, err := s.AddTorrent(f, opt)
++	require.NoError(t, err)
++
++	src := filepath.Join(torrentDataDir, torrentName)
++	dst := filepath.Join(s.config.DataDir, tor.ID(), torrentName)
++	require.NoError(t, os.MkdirAll(filepath.Join(s.config.DataDir, tor.ID()), 0755))
++	require.NoError(t, cp.Copy(src, dst))
++	return tor
++}
++
++func TestEvaluator_B6_Session_RPCShutdown_RejectsNewWorkAfterShutdownBegins(t *testing.T) {
++	tmp := t.TempDir()
++	boundPort := freePort(t)
++
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = true
++	cfg.RPCHost = "127.0.0.1"
++	cfg.RPCPort = boundPort
++	cfg.RPCShutdownTimeout = 500 * time.Millisecond
++
++	storageProv := &evaluatorSlowCloseStorageProvider{
++		base:         newFileStorageProvider(&cfg),
++		closeEntered: make(chan struct{}),
++	}
++	cfg.CustomStorage = storageProv
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	// Conn 1: Send request headers with Expect: 100-continue to hold active handler
++	conn1, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", boundPort))
++	require.NoError(t, err)
++	defer conn1.Close()
++
++	reqHeader1 := fmt.Sprintf("POST / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nExpect: 100-continue\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: 1000\r\n\r\n", boundPort)
++	_, err = conn1.Write([]byte(reqHeader1))
++	require.NoError(t, err)
++
++	r1 := bufio.NewReader(conn1)
++	line, err := r1.ReadString('\n')
++	require.NoError(t, err)
++	require.Contains(t, line, "100 Continue")
++
++	// Conn 2: Pre-established keepalive connection
++	conn2, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", boundPort))
++	require.NoError(t, err)
++	defer conn2.Close()
++
++	body1 := `{"jsonrpc":"2.0","method":"Session.Version","params":[],"id":1}`
++	req2First := fmt.Sprintf("POST / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: %d\r\nConnection: keep-alive\r\n\r\n%s", boundPort, len(body1), body1)
++	_, err = conn2.Write([]byte(req2First))
++	require.NoError(t, err)
++
++	r2 := bufio.NewReader(conn2)
++	resp1, err := http.ReadResponse(r2, nil)
++	require.NoError(t, err)
++	_ = resp1.Body.Close()
++	require.Equal(t, http.StatusOK, resp1.StatusCode)
++
++	tor := addTestTorrent(t, s)
++	require.NoError(t, tor.Start())
++
++	select {
++	case <-tor.NotifyComplete():
++	case err := <-tor.torrent.NotifyError():
++		t.Fatal(err)
++	case <-time.After(5 * time.Second):
++		t.Fatal("timed out waiting for torrent completion")
++	}
++
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	// Verify admission control on already-connected Conn 2 during RPC shutdown grace period
++	body2 := `{"jsonrpc":"2.0","method":"Session.Version","params":[],"id":2}`
++	var rejected bool
++	rejectionDeadline := time.Now().Add(2 * time.Second)
++	for time.Now().Before(rejectionDeadline) {
++		req2Second := fmt.Sprintf("POST / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: %d\r\nConnection: keep-alive\r\n\r\n%s", boundPort, len(body2), body2)
++		_ = conn2.SetDeadline(time.Now().Add(500 * time.Millisecond))
++		_, err = conn2.Write([]byte(req2Second))
++		if err != nil {
++			rejected = errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
++			t.Logf("terminal transport result: %T %v", err, err)
++			break
++		}
++		resp2, err := http.ReadResponse(r2, nil)
++		if err != nil {
++			rejected = errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
++			t.Logf("terminal transport result: %T %v", err, err)
++			break
++		}
++		_, _ = io.Copy(io.Discard, resp2.Body)
++		_ = resp2.Body.Close()
++		if resp2.StatusCode >= 400 && resp2.StatusCode < 600 {
++			rejected = true
++			break
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++	assert.True(t, rejected, "new request on established keepalive connection after shutdown started must receive a terminal transport failure or HTTP error")
++
++	// Release Conn 1 so RPC shutdown proceeds
++	_ = conn1.Close()
++
++	// Synchronize on an observable shutdown-in-progress condition (file close has started)
++	select {
++	case <-storageProv.closeEntered:
++	case <-time.After(3 * time.Second):
++		t.Fatal("shutdown did not enter file close within deadline")
++	}
++
++	// Start the new request only after shutdown has definitely begun
++	url := fmt.Sprintf("http://127.0.0.1:%d/", boundPort)
++	reqBody := `{"jsonrpc":"2.0","method":"Session.GetSessionStats","params":[],"id":1}`
++	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(reqBody)))
++	require.NoError(t, err)
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("Accept", "application/json")
++
++	// Verify that the request receives a terminal non-success result before Session.Close() returns
++	reqDone := make(chan struct {
++		statusCode int
++		err        error
++	}, 1)
++	go func() {
++		client := &http.Client{Timeout: 1 * time.Second}
++		defer client.CloseIdleConnections()
++		resp, doErr := client.Do(req)
++		statusCode := 0
++		if resp != nil {
++			statusCode = resp.StatusCode
++			_ = resp.Body.Close()
++		}
++		reqDone <- struct {
++			statusCode int
++			err        error
++		}{statusCode, doErr}
++	}()
++
++	select {
++	case res := <-reqDone:
++		// Verify that Session.Close() has not returned yet at the time the request completed
++		select {
++		case <-closeDone:
++			t.Fatal("Session.Close returned before new request completed")
++		default:
++		}
++		if res.err == nil {
++			assert.NotEqual(t, http.StatusOK, res.statusCode, "new request sent after shutdown began must not succeed with 200 OK")
++			assert.True(t, res.statusCode >= 400 && res.statusCode < 600, "new request must receive terminal non-success HTTP status, got %d", res.statusCode)
++		}
++	case <-time.After(2 * time.Second):
++		t.Fatal("new request did not complete before Session.Close returned")
++	}
++
++	select {
++	case err := <-closeDone:
++		assert.NoError(t, err)
++	case <-time.After(3 * time.Second):
++		t.Fatal("Session.Close timed out")
++	}
++}
++
++// B7: Terminates active handler after timeout
++func TestEvaluator_B7_Session_RPCShutdown_TerminatesActiveHandlerAfterTimeout(t *testing.T) {
++	tmp := t.TempDir()
++	boundPort := freePort(t)
++
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = true
++	cfg.RPCHost = "127.0.0.1"
++	cfg.RPCPort = boundPort
++	cfg.RPCShutdownTimeout = 100 * time.Millisecond
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	enteredCh := make(chan struct{})
++	doneCh := make(chan struct{})
++
++	origHandler := s.rpc.httpServer.Handler
++	s.rpc.httpServer.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		close(enteredCh)
++		defer close(doneCh)
++		origHandler.ServeHTTP(w, r)
++	})
++
++	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", boundPort))
++	require.NoError(t, err)
++	defer conn.Close()
++
++	// Send request headers with Expect: 100-continue and uncompleted body
++	reqHeader := fmt.Sprintf("POST / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nExpect: 100-continue\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: 1000\r\n\r\n", boundPort)
++	_, err = conn.Write([]byte(reqHeader))
++	require.NoError(t, err)
++
++	// Ensure the RPC handler is definitely active before starting shutdown
++	reader := bufio.NewReader(conn)
++	line, err := reader.ReadString('\n')
++	require.NoError(t, err, "server must respond with 100 Continue upon entering handler body read")
++	require.Contains(t, line, "100 Continue", "server must send 100 Continue indicating handler is actively reading request")
++
++	select {
++	case <-enteredCh:
++	case <-time.After(2 * time.Second):
++		t.Fatal("server-side handler did not enter execution")
++	}
++
++	// Server-side handler is actively reading request body. Now initiate Session.Close()
++	start := time.Now()
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	// Verify that Session.Close() returns within bound
++	select {
++	case err := <-closeDone:
++		elapsed := time.Since(start)
++		assert.LessOrEqual(t, elapsed, cfg.RPCShutdownTimeout+250*time.Millisecond,
++			"Session.Close must complete within RPCShutdownTimeout + 250ms")
++		assert.NoError(t, err)
++	case <-time.After(3 * time.Second):
++		t.Fatal("Session.Close timed out during RPC shutdown")
++	}
++
++	// Verify that the server-side handler has terminated by the time Session.Close() returns
++	select {
++	case <-doneCh:
++		// Succeeded: server-side handler function has returned
++	default:
++		t.Fatal("server-side handler function was still executing when Session.Close returned")
++	}
++
++	// Verify that the client receives a terminal non-success outcome
++	_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
++	// Drain buffered error response bytes; closure need not make the first Read fail.
++	var received []byte
++	var readErr error
++	for len(received) < 65536 {
++		buf := make([]byte, 4096)
++		n, e := reader.Read(buf)
++		received = append(received, buf[:n]...)
++		if e != nil { readErr = e; break }
++	}
++	t.Logf("buffered bytes=%q terminal=%v", string(received), readErr)
++	assert.True(t, errors.Is(readErr, io.EOF) || errors.Is(readErr, syscall.ECONNRESET), "connection must terminate after draining buffered data: %v", readErr)
++	assert.NotContains(t, string(received), "200 OK", "active incomplete request must not succeed")
++
++	if readErr != nil {
++		netErr, ok := readErr.(net.Error)
++		assert.False(t, ok && netErr.Timeout(), "server-side handler was not terminated when Session.Close returned (read timed out)")
++	}
++}
++
++// B8: Enforces deadline and releases port
++func TestEvaluator_B8_Session_RPCShutdown_EnforcesDeadlineAndReleasesPort(t *testing.T) {
++	tmp := t.TempDir()
++	boundPort := freePort(t)
++
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = true
++	cfg.RPCHost = "127.0.0.1"
++	cfg.RPCPort = boundPort
++	cfg.RPCShutdownTimeout = 100 * time.Millisecond
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	totalBudget, rpcBudget := evaluatorShutdownBudget(s)
++	assert.Equal(t, cfg.RPCShutdownTimeout+150*time.Millisecond, totalBudget, "shutdown budget without active torrents must be timeout + 150ms")
++	assert.Equal(t, cfg.RPCShutdownTimeout+150*time.Millisecond, rpcBudget, "rpc shutdown budget must be timeout + 150ms")
++
++	setter, ok := interface{}(s).(shutdownTimerSetter)
++	require.True(t, ok, "Session must implement setShutdownTimer(fn func(phase string, d time.Duration) (<-chan time.Time, func() bool))")
++	var observedTimers sync.Map
++	setter.setShutdownTimer(func(phase string, d time.Duration) (<-chan time.Time, func() bool) {
++		observedTimers.Store(phase, d)
++		t := time.NewTimer(d)
++		return t.C, t.Stop
++	})
++
++	rawConn, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(boundPort))
++	require.NoError(t, err)
++	defer rawConn.Close()
++
++	header := fmt.Sprintf("POST / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nExpect: 100-continue\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: 1000\r\n\r\n", boundPort)
++	_, err = rawConn.Write([]byte(header))
++	require.NoError(t, err)
++
++	// Ensure connection is actively being processed by server before closing
++	reader := bufio.NewReader(rawConn)
++	line, err := reader.ReadString('\n')
++	require.NoError(t, err, "server must respond with 100 Continue upon entering handler")
++	require.Contains(t, line, "100 Continue")
++
++	start := time.Now()
++	closeErr := evaluatorSafeClose(s)
++	duration := time.Since(start)
++
++	assert.NoError(t, closeErr)
++	assert.LessOrEqual(t, duration, cfg.RPCShutdownTimeout+250*time.Millisecond,
++		"Session.Close monotonic duration must not exceed RPCShutdownTimeout + 250ms")
++
++	totalDl, rpcDl := evaluatorActiveShutdownDeadline(s)
++	assert.False(t, totalDl.IsZero(), "active shutdown deadline must be recorded")
++	assert.False(t, rpcDl.IsZero(), "active rpc shutdown deadline must be recorded")
++	assert.WithinDuration(t, start.Add(totalBudget), totalDl, 50*time.Millisecond, "active total deadline must match start + totalBudget")
++	assert.WithinDuration(t, start.Add(rpcBudget), rpcDl, 50*time.Millisecond, "active rpc deadline must match start + rpcBudget")
++
++	valTotal, okTotal := observedTimers.Load("total")
++	assert.True(t, okTotal, "shutdown must create execution timer for 'total' phase")
++	if okTotal {
++		d := valTotal.(time.Duration)
++		assert.InDelta(t, totalBudget.Milliseconds(), d.Milliseconds(), 20, "actual execution timer for 'total' phase must match totalBudget")
++	}
++	valRPC, okRPC := observedTimers.Load("rpc")
++	assert.True(t, okRPC, "shutdown must create execution timer for 'rpc' phase")
++	if okRPC {
++		d := valRPC.(time.Duration)
++		assert.InDelta(t, rpcBudget.Milliseconds(), d.Milliseconds(), 20, "actual execution timer for 'rpc' phase must match rpcBudget")
++	}
++
++	// Server must have terminated all active client connections before Close() returns
++	_ = rawConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
++	// Drain buffered error response bytes; closure need not make the first Read fail.
++	var received []byte
++	var readErr error
++	for len(received) < 65536 {
++		buf := make([]byte, 4096)
++		n, e := reader.Read(buf)
++		received = append(received, buf[:n]...)
++		if e != nil { readErr = e; break }
++	}
++	t.Logf("buffered bytes=%q terminal=%v", string(received), readErr)
++	assert.True(t, errors.Is(readErr, io.EOF) || errors.Is(readErr, syscall.ECONNRESET), "connection must terminate after draining buffered data: %v", readErr)
++	assert.NotContains(t, string(received), "200 OK", "active incomplete request must not succeed")
++
++	if readErr != nil {
++		netErr, ok := readErr.(net.Error)
++		assert.False(t, ok && netErr.Timeout(), "active connection was not closed by server (read timed out)")
++	}
++
++	conn, dialErr := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(boundPort), 50*time.Millisecond)
++	if conn != nil {
++		_ = conn.Close()
++		t.Fatal("RPC listener must be closed after Session.Close returns")
++	}
++	assert.Error(t, dialErr, "connecting to closed RPC listener must fail")
++
++	s2, err := NewSession(cfg)
++	require.NoError(t, err, "reopening session on same port and database must succeed immediately")
++	assert.NoError(t, evaluatorSafeClose(s2))
++
++	testInjectedShutdownTimerControlsExecution(t, cfg)
++}
++
++func testInjectedShutdownTimerControlsExecution(t *testing.T, baseCfg Config) {
++	tmp := t.TempDir()
++	boundPort := freePort(t)
++
++	cfg := baseCfg
++	cfg.Database = filepath.Join(tmp, "session_timer_drive.db")
++	cfg.DataDir = tmp
++	cfg.RPCPort = boundPort
++	cfg.RPCShutdownTimeout = 2 * time.Second
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	initTotalDl, initRPCDl := evaluatorActiveShutdownDeadline(s)
++	assert.True(t, initTotalDl.IsZero(), "active total shutdown deadline must be zero before Close()")
++	assert.True(t, initRPCDl.IsZero(), "active rpc shutdown deadline must be zero before Close()")
++
++	setter, ok := interface{}(s).(shutdownTimerSetter)
++	require.True(t, ok, "Session must implement shutdownTimerSetter")
++
++	totalTrigger := make(chan time.Time, 1)
++	setter.setShutdownTimer(func(phase string, d time.Duration) (<-chan time.Time, func() bool) {
++		if phase == "total" {
++			return totalTrigger, func() bool { return true }
++		}
++		tm := time.NewTimer(d)
++		return tm.C, tm.Stop
++	})
++
++	rawConn, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(boundPort))
++	require.NoError(t, err)
++	defer rawConn.Close()
++
++	header := fmt.Sprintf("POST / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nExpect: 100-continue\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: 1000\r\n\r\n", boundPort)
++	_, err = rawConn.Write([]byte(header))
++	require.NoError(t, err)
++
++	reader := bufio.NewReader(rawConn)
++	line, err := reader.ReadString(byte(10))
++	require.NoError(t, err, "server must respond with 100 Continue upon entering handler")
++	require.Contains(t, line, "100 Continue")
++
++	start := time.Now()
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	time.Sleep(30 * time.Millisecond)
++	totalTrigger <- time.Now()
++
++	select {
++	case closeErr := <-closeDone:
++		elapsed := time.Since(start)
++		assert.Error(t, closeErr, "Close must return error when injected total timer channel fires")
++		assert.Less(t, elapsed, 400*time.Millisecond, "Close was not driven by injected timer channel")
++	case <-time.After(1 * time.Second):
++		t.Fatal("Close was not driven by injected timer channel (hung beyond deadline)")
++	}
++}
++
++// ============================================================================
++// B9 - B15: ATOMIC SHUTDOWN & PERSISTENCE COVERAGE TESTS
++// ============================================================================
++
++type evaluatorHangingCloseFile struct {
++	storage.File
++	blockC chan struct{}
++}
++
++func (f *evaluatorHangingCloseFile) Close() error {
++	<-f.blockC
++	return f.File.Close()
++}
++
++type evaluatorHangingCloseStorage struct {
++	storage.Storage
++	blockC chan struct{}
++}
++
++func (s *evaluatorHangingCloseStorage) Open(name string, size int64) (storage.File, bool, error) {
++	f, exists, err := s.Storage.Open(name, size)
++	if err != nil {
++		return nil, false, err
++	}
++	return &evaluatorHangingCloseFile{File: f, blockC: s.blockC}, exists, nil
++}
++
++type evaluatorHangingCloseStorageProvider struct {
++	base   storage.Provider
++	blockC chan struct{}
++}
++
++func (p *evaluatorHangingCloseStorageProvider) GetStorage(torrentID string) (storage.Storage, error) {
++	s, err := p.base.GetStorage(torrentID)
++	if err != nil {
++		return nil, err
++	}
++	return &evaluatorHangingCloseStorage{Storage: s, blockC: p.blockC}, nil
++}
++
++// TestEvaluator_B11_Session_ShutdownExceedsDeadline_ReturnsError verifies that when teardown
++// exceeds the declared shutdown bound, Session.Close returns a non-nil error and subsequent
++// invocations deterministically report the cached shutdown error.
++func TestEvaluator_B11_Session_ShutdownExceedsDeadline_ReturnsError(t *testing.T) {
++	tmp := t.TempDir()
++	dbPath := filepath.Join(tmp, "session.db")
++	cfg := DefaultConfig
++	cfg.Database = dbPath
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = false
++
++	blockC := make(chan struct{})
++	defer func() {
++		select {
++		case <-blockC:
++		default:
++			close(blockC)
++		}
++	}()
++
++	cfg.CustomStorage = &evaluatorHangingCloseStorageProvider{
++		base:   newFileStorageProvider(&cfg),
++		blockC: blockC,
++	}
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	initTotalDl, initRPCDl := evaluatorActiveShutdownDeadline(s)
++	assert.True(t, initTotalDl.IsZero(), "active total shutdown deadline must be zero before Close()")
++	assert.True(t, initRPCDl.IsZero(), "active rpc shutdown deadline must be zero before Close()")
++
++	f, err := os.Open(torrentFile)
++	require.NoError(t, err)
++	defer f.Close()
++
++	tor, err := s.AddTorrent(f, nil)
++	require.NoError(t, err)
++
++	require.Eventually(t, func() bool {
++		st := tor.Stats().Status
++		return st == Downloading || st == Seeding
++	}, 5*time.Second, 20*time.Millisecond)
++
++	totalBudget, rpcBudget := evaluatorShutdownBudget(s)
++	assert.Equal(t, 4900*time.Millisecond, totalBudget, "shutdown budget without RPC must be 4900ms")
++	assert.Equal(t, time.Duration(0), rpcBudget, "rpc shutdown budget without RPC must be 0")
++
++	setter, ok := interface{}(s).(shutdownTimerSetter)
++	require.True(t, ok, "Session must implement setShutdownTimer(fn func(phase string, d time.Duration) (<-chan time.Time, func() bool))")
++	var observedTimers sync.Map
++	setter.setShutdownTimer(func(phase string, d time.Duration) (<-chan time.Time, func() bool) {
++		observedTimers.Store(phase, d)
++		t := time.NewTimer(d)
++		return t.C, t.Stop
++	})
++
++	start := time.Now()
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	var closeErr error
++	select {
++	case closeErr = <-closeDone:
++		elapsed := time.Since(start)
++		assert.LessOrEqual(t, elapsed, 5*time.Second, "Session.Close must complete within 5s")
++		assert.GreaterOrEqual(t, elapsed, 4900*time.Millisecond-100*time.Millisecond, "Session.Close must respect internal 4900ms budget")
++		assert.Error(t, closeErr, "Session.Close must return non-nil error when teardown exceeds deadline")
++	case <-time.After(10 * time.Second):
++		t.Fatal("Session.Close watchdog expired (hung indefinitely)")
++	}
++
++	totalDl, rpcDl := evaluatorActiveShutdownDeadline(s)
++	assert.False(t, totalDl.IsZero(), "active shutdown deadline must be recorded")
++	assert.True(t, rpcDl.IsZero(), "rpc deadline without RPC must be zero")
++	assert.WithinDuration(t, start.Add(4900*time.Millisecond), totalDl, 100*time.Millisecond, "active deadline must match start + 4900ms")
++
++	valTotal, okTotal := observedTimers.Load("total")
++	assert.True(t, okTotal, "shutdown must create execution timer for 'total' phase")
++	if okTotal {
++		d := valTotal.(time.Duration)
++		assert.InDelta(t, 4900, d.Milliseconds(), 20, "actual execution timer for 'total' phase must be 4900ms")
++	}
++
++	err2 := evaluatorSafeClose(s)
++	assert.Equal(t, closeErr, err2, "subsequent Session.Close must return cached shutdown error")
++
++	close(blockC)
++}
++
++// TestEvaluator_B12_Session_ShutdownExceedsDeadline_RetainsDatabaseLock verifies that when
++// teardown exceeds the deadline, BoltDB lock is retained while unfinished routines may still
++// access it, and is safely released once outstanding work finishes.
++func TestEvaluator_B12_Session_ShutdownExceedsDeadline_RetainsDatabaseLock(t *testing.T) {
++	tmp := t.TempDir()
++	dbPath := filepath.Join(tmp, "session.db")
++	cfg := DefaultConfig
++	cfg.Database = dbPath
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = false
++
++	blockC := make(chan struct{})
++	defer func() {
++		select {
++		case <-blockC:
++		default:
++			close(blockC)
++		}
++	}()
++
++	cfg.CustomStorage = &evaluatorHangingCloseStorageProvider{
++		base:   newFileStorageProvider(&cfg),
++		blockC: blockC,
++	}
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	f, err := os.Open(torrentFile)
++	require.NoError(t, err)
++	defer f.Close()
++
++	tor, err := s.AddTorrent(f, nil)
++	require.NoError(t, err)
++
++	require.Eventually(t, func() bool {
++		st := tor.Stats().Status
++		return st == Downloading || st == Seeding
++	}, 5*time.Second, 20*time.Millisecond)
++
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	select {
++	case closeErr := <-closeDone:
++		assert.Error(t, closeErr, "Session.Close must report error when deadline exceeded")
++	case <-time.After(10 * time.Second):
++		t.Fatal("Session.Close hung indefinitely")
++	}
++
++	// While unfinished torrent work is still running, BoltDB lock must be retained
++	db, err := bbolt.Open(dbPath, 0600, &bbolt.Options{Timeout: 100 * time.Millisecond})
++	assert.Error(t, err, "database lock must be retained while unfinished work may still access it")
++	if db != nil {
++		_ = db.Close()
++	}
++
++	// Unblock outstanding work and verify deferred cleanup releases database lock
++	close(blockC)
++
++	require.Eventually(t, func() bool {
++		db, err := bbolt.Open(dbPath, 0600, &bbolt.Options{Timeout: 50 * time.Millisecond})
++		if err == nil {
++			_ = db.Close()
++			return true
++		}
++		return false
++	}, 5*time.Second, 50*time.Millisecond, "database lock must be released once outstanding work finishes")
++}
++
++type evaluatorBlockingResponseWriter struct {
++	http.ResponseWriter
++	entered  chan struct{}
++	block    chan struct{}
++	db       *bbolt.DB
++	viewDone chan struct{}
++	dbErr    error
++}
++
++func (b *evaluatorBlockingResponseWriter) checkDB() {
++	if b.db != nil {
++		b.dbErr = b.db.View(func(tx *bbolt.Tx) error {
++			return nil
++		})
++	}
++	if b.viewDone != nil {
++		select {
++		case b.viewDone <- struct{}{}:
++		default:
++		}
++	}
++}
++
++func (b *evaluatorBlockingResponseWriter) WriteHeader(status int) {
++	select {
++	case b.entered <- struct{}{}:
++	default:
++	}
++	<-b.block
++	b.checkDB()
++	b.ResponseWriter.WriteHeader(status)
++}
++
++func (b *evaluatorBlockingResponseWriter) Write(p []byte) (int, error) {
++	select {
++	case b.entered <- struct{}{}:
++	default:
++	}
++	<-b.block
++	b.checkDB()
++	return b.ResponseWriter.Write(p)
++}
++
++func (b *evaluatorBlockingResponseWriter) Header() http.Header {
++	return b.ResponseWriter.Header()
++}
++
++// TestEvaluator_B13_Session_RPCShutdown_UnresponsiveHandlerReturnsError verifies that if an
++// active RPC handler cannot terminate before the declared RPC deadline, Session.Close returns
++// a non-nil error while still severing listeners and client connections.
++func TestEvaluator_B13_Session_RPCShutdown_UnresponsiveHandlerReturnsError(t *testing.T) {
++	tmp := t.TempDir()
++	boundPort := freePort(t)
++
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = true
++	cfg.RPCHost = "127.0.0.1"
++	cfg.RPCPort = boundPort
++	cfg.RPCShutdownTimeout = 100 * time.Millisecond
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	totalBudget, rpcBudget := evaluatorShutdownBudget(s)
++	assert.Equal(t, cfg.RPCShutdownTimeout+150*time.Millisecond, totalBudget, "shutdown budget without active torrents must be timeout + 150ms")
++	assert.Equal(t, cfg.RPCShutdownTimeout+150*time.Millisecond, rpcBudget, "rpc shutdown budget must be timeout + 150ms")
++
++	setter, ok := interface{}(s).(shutdownTimerSetter)
++	require.True(t, ok, "Session must implement setShutdownTimer(fn func(phase string, d time.Duration) (<-chan time.Time, func() bool))")
++	var observedTimers sync.Map
++	setter.setShutdownTimer(func(phase string, d time.Duration) (<-chan time.Time, func() bool) {
++		observedTimers.Store(phase, d)
++		t := time.NewTimer(d)
++		return t.C, t.Stop
++	})
++
++	enteredCh := make(chan struct{}, 1)
++	unblockCh := make(chan struct{})
++	viewDone := make(chan struct{}, 1)
++	defer func() {
++		select {
++		case <-unblockCh:
++		default:
++			close(unblockCh)
++		}
++	}()
++
++	var rw *evaluatorBlockingResponseWriter
++	origHandler := s.rpc.httpServer.Handler
++	s.rpc.httpServer.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		rw = &evaluatorBlockingResponseWriter{
++			ResponseWriter: w,
++			entered:        enteredCh,
++			block:          unblockCh,
++			db:             s.db,
++			viewDone:       viewDone,
++		}
++		origHandler.ServeHTTP(rw, r)
++	})
++
++	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", boundPort))
++	require.NoError(t, err)
++	defer conn.Close()
++
++	req := fmt.Sprintf("POST / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n", boundPort)
++	_, err = conn.Write([]byte(req))
++	require.NoError(t, err)
++
++	select {
++	case <-enteredCh:
++	case <-time.After(2 * time.Second):
++		t.Fatal("handler did not enter execution")
++	}
++
++	start := time.Now()
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	var closeErr error
++	select {
++	case closeErr = <-closeDone:
++		elapsed := time.Since(start)
++		assert.LessOrEqual(t, elapsed, cfg.RPCShutdownTimeout+250*time.Millisecond, "Session.Close must complete within RPCShutdownTimeout + 250ms")
++		assert.Error(t, closeErr, "Session.Close must return non-nil error when handler cannot terminate before deadline")
++	case <-time.After(3 * time.Second):
++		t.Fatal("Session.Close timed out")
++	}
++
++	totalDl, rpcDl := evaluatorActiveShutdownDeadline(s)
++	assert.False(t, totalDl.IsZero(), "active shutdown deadline must be recorded")
++	assert.False(t, rpcDl.IsZero(), "active rpc shutdown deadline must be recorded")
++	assert.WithinDuration(t, start.Add(totalBudget), totalDl, 50*time.Millisecond, "active total deadline must match start + totalBudget")
++	assert.WithinDuration(t, start.Add(rpcBudget), rpcDl, 50*time.Millisecond, "active rpc deadline must match start + rpcBudget")
++
++	valTotal, okTotal := observedTimers.Load("total")
++	assert.True(t, okTotal, "shutdown must create execution timer for 'total' phase")
++	if okTotal {
++		d := valTotal.(time.Duration)
++		assert.InDelta(t, totalBudget.Milliseconds(), d.Milliseconds(), 20, "actual execution timer for 'total' phase must match totalBudget")
++	}
++	valRPC, okRPC := observedTimers.Load("rpc")
++	assert.True(t, okRPC, "shutdown must create execution timer for 'rpc' phase")
++	if okRPC {
++		d := valRPC.(time.Duration)
++		assert.InDelta(t, rpcBudget.Milliseconds(), d.Milliseconds(), 20, "actual execution timer for 'rpc' phase must match rpcBudget")
++	}
++
++	require.Eventually(t, func() bool {
++		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", boundPort))
++		if err == nil {
++			_ = l.Close()
++			return true
++		}
++		return false
++	}, 2*time.Second, 20*time.Millisecond, "RPC port must be released after Close()")
++
++	err2 := evaluatorSafeClose(s)
++	assert.Equal(t, closeErr, err2, "subsequent Session.Close must return cached shutdown error")
++
++	// Check 1: BoltDB must remain locked while RPC handler is active after Close timeout
++	dbLockCheck, err := bbolt.Open(cfg.Database, 0600, &bbolt.Options{Timeout: 50 * time.Millisecond})
++	assert.Error(t, err, "BoltDB must remain locked while RPC handler is active after Close timeout")
++	if err == nil {
++		_ = dbLockCheck.Close()
++	}
++
++	// Unblock handler
++	close(unblockCh)
++	select {
++	case <-viewDone:
++		if rw != nil {
++			assert.NoError(t, rw.dbErr, "RPC handler must be able to view database before exiting; cannot be 'database not open'")
++		}
++	case <-time.After(2 * time.Second):
++		t.Fatal("handler did not complete database view after unblock")
++	}
++
++	// Check 3: BoltDB open must succeed after handler exits and deferred cleanup releases lock
++	require.Eventually(t, func() bool {
++		dbUnlocked, err := bbolt.Open(cfg.Database, 0600, &bbolt.Options{Timeout: 50 * time.Millisecond})
++		if err == nil {
++			_ = dbUnlocked.Close()
++			return true
++		}
++		return false
++	}, 2*time.Second, 20*time.Millisecond, "BoltDB open must succeed after handler exits and deferred cleanup releases lock")
++}
++
++// TestEvaluator_B14_Session_ShutdownTiming_RPCWithActiveTorrents verifies that in sessions
++// with active torrent workloads and RPC enabled, the entire Session.Close invocation completes
++// within RPCShutdownTimeout + 5 seconds, RPC rejects new work during active torrent shutdown,
++// and subsequent sequential Close calls are idempotent.
++func TestEvaluator_B14_Session_ShutdownTiming_RPCWithActiveTorrents(t *testing.T) {
++	tmp := t.TempDir()
++	boundPort := freePort(t)
++
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = true
++	cfg.RPCHost = "127.0.0.1"
++	cfg.RPCPort = boundPort
++	cfg.RPCShutdownTimeout = 200 * time.Millisecond
++
++	storageProv := &evaluatorSlowCloseStorageProvider{
++		base:         newFileStorageProvider(&cfg),
++		closeEntered: make(chan struct{}),
++	}
++	cfg.CustomStorage = storageProv
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++	_ = evaluatorWorkerCompletion(t, s)
++
++	tor := addTestTorrent(t, s)
++	require.NoError(t, tor.Start())
++
++	require.Eventually(t, func() bool {
++		st := tor.Stats().Status
++		return st != Stopped
++	}, 5*time.Second, 20*time.Millisecond)
++
++	totalBudget, rpcBudget := evaluatorShutdownBudget(s)
++	assert.Equal(t, cfg.RPCShutdownTimeout+4900*time.Millisecond, totalBudget, "shutdown budget with active torrents must be timeout + 4900ms")
++	assert.Equal(t, cfg.RPCShutdownTimeout+150*time.Millisecond, rpcBudget, "rpc shutdown budget must be timeout + 150ms")
++
++	setter, ok := interface{}(s).(shutdownTimerSetter)
++	require.True(t, ok, "Session must implement setShutdownTimer(fn func(phase string, d time.Duration) (<-chan time.Time, func() bool))")
++	var observedTimers sync.Map
++	setter.setShutdownTimer(func(phase string, d time.Duration) (<-chan time.Time, func() bool) {
++		observedTimers.Store(phase, d)
++		t := time.NewTimer(d)
++		return t.C, t.Stop
++	})
++
++	start := time.Now()
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	select {
++	case <-storageProv.closeEntered:
++	case <-time.After(3 * time.Second):
++		t.Fatal("shutdown did not enter file close within deadline")
++	}
++
++	totalDl, rpcDl := evaluatorActiveShutdownDeadline(s)
++	assert.False(t, totalDl.IsZero(), "active shutdown deadline must be recorded")
++	assert.False(t, rpcDl.IsZero(), "active rpc shutdown deadline must be recorded")
++	assert.WithinDuration(t, start.Add(totalBudget), totalDl, 100*time.Millisecond, "active total deadline must match start + totalBudget")
++	assert.WithinDuration(t, start.Add(rpcBudget), rpcDl, 100*time.Millisecond, "active rpc deadline must match start + rpcBudget")
++
++	valTotal, okTotal := observedTimers.Load("total")
++	assert.True(t, okTotal, "shutdown must create execution timer for 'total' phase")
++	if okTotal {
++		d := valTotal.(time.Duration)
++		assert.InDelta(t, totalBudget.Milliseconds(), d.Milliseconds(), 20, "actual execution timer for 'total' phase must match totalBudget")
++	}
++	valRPC, okRPC := observedTimers.Load("rpc")
++	assert.True(t, okRPC, "shutdown must create execution timer for 'rpc' phase")
++	if okRPC {
++		d := valRPC.(time.Duration)
++		assert.InDelta(t, rpcBudget.Milliseconds(), d.Milliseconds(), 20, "actual execution timer for 'rpc' phase must match rpcBudget")
++	}
++
++	url := fmt.Sprintf("http://127.0.0.1:%d/", boundPort)
++	reqBody := `{"jsonrpc":"2.0","method":"Session.GetSessionStats","params":[],"id":1}`
++	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(reqBody)))
++	require.NoError(t, err)
++	req.Header.Set("Content-Type", "application/json")
++
++	client := &http.Client{Timeout: 500 * time.Millisecond}
++	resp, doErr := client.Do(req)
++	if doErr == nil && resp != nil {
++		assert.NotEqual(t, http.StatusOK, resp.StatusCode, "new RPC request during active torrent shutdown must be rejected")
++		_ = resp.Body.Close()
++	}
++	client.CloseIdleConnections()
++
++	select {
++	case err := <-closeDone:
++		elapsed := time.Since(start)
++		assert.NoError(t, err, "Session.Close must succeed")
++		assert.LessOrEqual(t, elapsed, cfg.RPCShutdownTimeout+5*time.Second, "Session.Close must complete within RPCShutdownTimeout + 5s")
++	case <-time.After(10 * time.Second):
++		t.Fatal("Session.Close watchdog expired")
++	}
++
++	assert.NoError(t, evaluatorSafeClose(s), "subsequent sequential Session.Close must return nil")
++}
++
++type workerCompleter interface {
++	workerCompletion() <-chan struct{}
++}
++
++// TestEvaluator_B15_Session_WorkerCompletionBoundary verifies the internal worker completion boundary:
++// 1. Session implements package-private method func (s *Session) workerCompletion() <-chan struct{}
++// 2. Returns the same stable, non-nil channel for the lifetime of Session
++// 3. Remains open while registered background workers are running
++// 4. Closes before/when Session.Close() returns nil on clean shutdown
++// 5. Remains open when Close() times out while worker is blocked on a barrier, retaining BoltDB lock
++// 6. Closes after outstanding worker exits, triggering deferred cleanup to release resources
++// 7. Handles concurrent and repeated Close() calls safely and idempotently
++func TestEvaluator_B15_Session_WorkerCompletionBoundary(t *testing.T) {
++	tmp := t.TempDir()
++	dbPath := filepath.Join(tmp, "session_clean.db")
++	cfg := DefaultConfig
++	cfg.Database = dbPath
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = false
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	// Step 1: Interface assertion (dynamic so unpatched baseline compiles cleanly)
++	wc, ok := interface{}(s).(workerCompleter)
++	require.True(t, ok, "Session must implement workerCompletion() <-chan struct{}")
++
++	// Step 2: Stable, non-nil channel identity
++	ch1 := wc.workerCompletion()
++	ch2 := wc.workerCompletion()
++	require.NotNil(t, ch1, "workerCompletion channel must not be nil")
++	assert.Equal(t, ch1, ch2, "workerCompletion must return the same channel across calls")
++
++	// Step 3: Channel remains open while session is running
++	select {
++	case <-ch1:
++		t.Fatal("workerCompletion channel must not be closed while session is running")
++	default:
++	}
++
++	// Step 4: Clean Close ordering: Close returning nil must not return before channel is closed
++	closeErr := evaluatorSafeClose(s)
++	assert.NoError(t, closeErr)
++
++	select {
++	case <-ch1:
++		// Passed: channel is closed
++	default:
++		t.Fatal("workerCompletion channel must be closed before or when Close returns nil")
++	}
++
++	// Channel identity remains stable after closure
++	assert.Equal(t, ch1, wc.workerCompletion())
++
++	// Subsequent Close is idempotent
++	assert.NoError(t, evaluatorSafeClose(s))
++
++	// Step 5: Concurrent Close calls return cached error/nil idempotently
++	var wg sync.WaitGroup
++	for i := 0; i < 10; i++ {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			err := evaluatorSafeClose(s)
++			assert.NoError(t, err)
++		}()
++	}
++	done := make(chan struct{})
++	go func() {
++		wg.Wait()
++		close(done)
++	}()
++	select {
++	case <-done:
++	case <-time.After(5 * time.Second):
++		t.Fatal("concurrent Close calls timed out")
++	}
++}
++
++// PASS-TO-PASS (P2P) PRESERVATION TESTS
++
++// ============================================================================
++
++func TestEvaluator_Session_CloseDuringActiveTransfer(t *testing.T) {
++	t.Cleanup(func() {
++		http.DefaultClient.CloseIdleConnections()
++	})
++	addr := seeder(t, true)
++	tmp := t.TempDir()
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.PEXEnabled = false
++	cfg.RPCEnabled = false
++	cfg.Host = "127.0.0.1"
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	tor, err := s.AddURI(torrentMagnetLink+"&x.pe="+addr, nil)
++	require.NoError(t, err)
++	require.NotNil(t, tor)
++
++	// Deterministically wait until transfer has established a peer connection and began transfer
++	require.Eventually(t, func() bool {
++		st := tor.Stats()
++		return st.Peers.Total > 0 && (st.Bytes.Downloaded > 0 || st.Downloads.Running > 0 || st.MetadataDownloads.Running > 0)
++	}, 10*time.Second, 20*time.Millisecond)
++
++	// Close session while transfer is active within bounded time
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++	select {
++	case err = <-closeDone:
++		assert.NoError(t, err)
++	case <-time.After(5 * time.Second):
++		t.Fatal("Session.Close timed out during active transfer")
++	}
++
++	// Verify session-owned active download work stops
++	st := tor.Stats()
++	assert.Equal(t, 0, st.Downloads.Running, "active piece downloads must halt on Close")
++
++	// Supplementary evidence: database file lock was released
++	db, dbErr := bbolt.Open(cfg.Database, 0600, &bbolt.Options{Timeout: 1 * time.Second})
++	assert.NoError(t, dbErr, "database lock must be released after Session.Close")
++	if db != nil {
++		_ = db.Close()
++	}
++
++	// Reopening session on the same configured database succeeds without lock contention
++	s2, err := NewSession(cfg)
++	require.NoError(t, err, "reopening session with same configuration must succeed after Close")
++	if s2 != nil {
++		_ = evaluatorSafeClose(s2)
++	}
++}
++
++// TestEvaluator_Session_ResumeCompatibility_StatePreserved verifies that persistent resume data
++// remains compatible and readable across Session restarts.
++func TestEvaluator_Session_ResumeCompatibility_StatePreserved(t *testing.T) {
++	tmp := t.TempDir()
++	dbPath := filepath.Join(tmp, "session.db")
++	cfg := DefaultConfig
++	cfg.Database = dbPath
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = false
++	cfg.Host = "127.0.0.1"
++
++	s1, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	f, err := os.Open(torrentFile)
++	require.NoError(t, err)
++	defer f.Close()
++
++	tor1, err := s1.AddTorrent(f, &AddTorrentOptions{Stopped: true})
++	require.NoError(t, err)
++	torID := tor1.ID()
++	nameExpected := tor1.Name()
++	ihExpected := tor1.InfoHash()
++
++	assert.Equal(t, Stopped, tor1.Stats().Status)
++
++	require.NoError(t, s1.Close())
++
++	// Reopen with new Session instance on same database
++	s2, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	tor2 := s2.GetTorrent(torID)
++	require.NotNil(t, tor2, "torrent must be restored from resume db on startup")
++	assert.Equal(t, Stopped, tor2.Stats().Status, "restored torrent must preserve stopped state")
++	assert.Equal(t, nameExpected, tor2.Name())
++	assert.Equal(t, ihExpected, tor2.InfoHash())
++
++	// Start torrent, verify transition, then close and verify resume on restart
++	err = tor2.Start()
++	require.NoError(t, err)
++	assert.NotEqual(t, Stopped, tor2.Stats().Status)
++
++	require.NoError(t, evaluatorSafeClose(s2))
++
++	s3, err := NewSession(cfg)
++	require.NoError(t, err)
++	defer s3.Close()
++
++	tor3 := s3.GetTorrent(torID)
++	require.NotNil(t, tor3)
++	assert.NotEqual(t, Stopped, tor3.Stats().Status, "torrent started before restart must resume active")
++}
++
++// TestEvaluator_Session_ResumeOnStartup_StartedResumesStoppedRemains verifies that during
++// startup resume, previously started torrents resume running while stopped torrents remain stopped.
++func TestEvaluator_Session_ResumeOnStartup_StartedResumesStoppedRemains(t *testing.T) {
++	tmp := t.TempDir()
++	dbPath := filepath.Join(tmp, "session.db")
++	cfg := DefaultConfig
++	cfg.Database = dbPath
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = false
++	cfg.Host = "127.0.0.1"
++
++	s1, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	f1, err := os.Open(torrentFile)
++	require.NoError(t, err)
++	defer f1.Close()
++
++	tor1, err := s1.AddTorrent(f1, &AddTorrentOptions{Stopped: true})
++	require.NoError(t, err)
++	id1 := tor1.ID()
++
++	// Explicitly start tor1 so it is marked started in resume db
++	err = tor1.Start()
++	require.NoError(t, err)
++	assert.NotEqual(t, Stopped, tor1.Stats().Status)
++
++	// Add tor2 which remains stopped
++	f2, err := os.Open(filepath.Join(torrentDataDir, "sample_torrent.torrent"))
++	require.NoError(t, err)
++	defer f2.Close()
++
++	tor2, err := s1.AddTorrent(f2, &AddTorrentOptions{Stopped: true})
++	require.NoError(t, err)
++	id2 := tor2.ID()
++	assert.Equal(t, Stopped, tor2.Stats().Status)
++
++	require.NoError(t, s1.Close())
++
++	// Reopen session with ResumeOnStartup enabled
++	s2, err := NewSession(cfg)
++	require.NoError(t, err)
++	defer evaluatorSafeClose(s2)
++
++	resumedTor1 := s2.GetTorrent(id1)
++	require.NotNil(t, resumedTor1)
++	assert.NotEqual(t, Stopped, resumedTor1.Stats().Status, "previously started torrent should resume active")
++
++	resumedTor2 := s2.GetTorrent(id2)
++	require.NotNil(t, resumedTor2)
++	assert.Equal(t, Stopped, resumedTor2.Stats().Status, "previously stopped torrent should remain stopped")
++	st2 := resumedTor2.Stats()
++	assert.Equal(t, 0, st2.Peers.Total, "previously stopped torrent should have no connected peers")
++	assert.Equal(t, 0, st2.Downloads.Running, "previously stopped torrent should have no running downloads")
++}
++
++// TestEvaluator_Session_ResumeOnStartup_DisabledLeavesStopped verifies that when ResumeOnStartup
++// is false, previously started torrents remain stopped upon session restart and no automatic
++// network or start activity begins.
++func TestEvaluator_Session_ResumeOnStartup_DisabledLeavesStopped(t *testing.T) {
++	tmp := t.TempDir()
++	dbPath := filepath.Join(tmp, "session.db")
++	cfg := DefaultConfig
++	cfg.Database = dbPath
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = false
++	cfg.Host = "127.0.0.1"
++
++	s1, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	f, err := os.Open(torrentFile)
++	require.NoError(t, err)
++	defer f.Close()
++
++	tor1, err := s1.AddTorrent(f, &AddTorrentOptions{Stopped: true})
++	require.NoError(t, err)
++	id := tor1.ID()
++
++	// Start torrent so its persisted resume record indicates started
++	err = tor1.Start()
++	require.NoError(t, err)
++	assert.NotEqual(t, Stopped, tor1.Stats().Status)
++
++	require.NoError(t, s1.Close())
++
++	// Reopen with ResumeOnStartup disabled
++	cfgDisabled := cfg
++	cfgDisabled.ResumeOnStartup = false
++
++	s2, err := NewSession(cfgDisabled)
++	require.NoError(t, err)
++	defer evaluatorSafeClose(s2)
++
++	resumedTor := s2.GetTorrent(id)
++	require.NotNil(t, resumedTor, "torrent must be loaded from session db")
++
++	st := resumedTor.Stats()
++	assert.Equal(t, Stopped, st.Status, "previously started torrent must remain stopped when ResumeOnStartup is disabled")
++	assert.Equal(t, 0, st.Peers.Total, "no peers should be connected")
++	assert.Equal(t, 0, st.Handshakes.Total, "no handshakes should be active")
++	assert.Equal(t, 0, st.Downloads.Running, "no downloads should be running")
++}
++
++// TestEvaluator_Session_CorruptedRecordSkipped verifies that corrupted resume records
++// are skipped without preventing the session from initializing or loading other valid torrents.
++func TestEvaluator_Session_CorruptedRecordSkipped(t *testing.T) {
++	tmp := t.TempDir()
++	dbPath := filepath.Join(tmp, "session.db")
++	cfg := DefaultConfig
++	cfg.Database = dbPath
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = false
++	cfg.Host = "127.0.0.1"
++
++	s1, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	f, err := os.Open(torrentFile)
++	require.NoError(t, err)
++	defer f.Close()
++
++	tor, err := s1.AddTorrent(f, &AddTorrentOptions{Stopped: true})
++	require.NoError(t, err)
++	validID := tor.ID()
++
++	require.NoError(t, s1.Close())
++
++	// Inject a corrupted torrent record directly into the closed bolt DB file under torrents bucket
++	db, err := bbolt.Open(dbPath, 0600, nil)
++	require.NoError(t, err)
++	err = db.Update(func(tx *bbolt.Tx) error {
++		b := tx.Bucket([]byte("torrents"))
++		if b == nil {
++			return errors.New("torrents bucket not found")
++		}
++		// Create an entry with invalid non-bencoded / non-spec garbage data
++		return b.Put([]byte("corrupted_info_hash_entry_12345"), []byte("invalid_non_torrent_garbage_data"))
++	})
++	require.NoError(t, err)
++	require.NoError(t, db.Close())
++
++	// Session initialization must succeed, skipping the corrupted record
++	s2, err := NewSession(cfg)
++	require.NoError(t, err, "NewSession must succeed despite corrupted record in db")
++	defer evaluatorSafeClose(s2)
++
++	// Valid torrent should be loaded
++	validTor := s2.GetTorrent(validID)
++	assert.NotNil(t, validTor, "valid torrent must still be loaded from session db")
++	assert.Nil(t, s2.GetTorrent("corrupted_info_hash_entry_12345"), "corrupted record must not be loaded as torrent")
++}
++
++// TestEvaluator_Session_ConstructorNonblockingResumedTorrents verifies that NewSession()
++// returns promptly and does not block synchronously on resumed torrent network activity.
++func TestEvaluator_Session_ConstructorNonblockingResumedTorrents(t *testing.T) {
++	t.Cleanup(func() {
++		http.DefaultClient.CloseIdleConnections()
++	})
++	tmp := t.TempDir()
++	dbPath := filepath.Join(tmp, "session.db")
++	cfg := DefaultConfig
++	cfg.Database = dbPath
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = false
++	cfg.Host = "127.0.0.1"
++
++	s1, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	f, err := os.Open(torrentFile)
++	require.NoError(t, err)
++	defer f.Close()
++
++	// Add torrent pointing to unreachable non-responsive tracker
++	tor, err := s1.AddTorrent(f, &AddTorrentOptions{Stopped: true})
++	require.NoError(t, err)
++	err = tor.AddTracker("http://10.255.255.1:65534/announce")
++	require.NoError(t, err)
++	err = tor.Start()
++	require.NoError(t, err)
++
++	require.NoError(t, s1.Close())
++
++	// Starting new session must not block on network activity or piece downloads
++	start := time.Now()
++	s2, err := NewSession(cfg)
++	elapsed := time.Since(start)
++	require.NoError(t, err)
++	defer evaluatorSafeClose(s2)
++
++	assert.Less(t, elapsed, 500*time.Millisecond, "NewSession must return promptly without waiting for network activity")
++	resumed := s2.GetTorrent(tor.ID())
++	require.NotNil(t, resumed)
++	assert.NotEqual(t, Stopped, resumed.Stats().Status)
++}
++
++// TestEvaluator_Session_RPCShutdownTimeoutNonPositiveRejected verifies that when RPC is enabled
++// and RPCShutdownTimeout is non-positive (<= 0), NewSession immediately rejects the configuration
++// with an explicit non-nil error without silently falling back to a default timeout.
++// When RPC is disabled, non-positive RPCShutdownTimeout is ignored and NewSession succeeds.
++func TestEvaluator_Session_RPCShutdownTimeoutNonPositiveRejected(t *testing.T) {
++	testCases := []struct {
++		name    string
++		timeout time.Duration
++	}{
++		{name: "zero", timeout: 0},
++		{name: "negative", timeout: -1 * time.Second},
++	}
++
++	for _, tc := range testCases {
++		tmp := t.TempDir()
++		boundPort := freePort(t)
++
++		cfg := DefaultConfig
++		cfg.Database = filepath.Join(tmp, "session.db")
++		cfg.DataDir = tmp
++		cfg.DHTEnabled = false
++		cfg.RPCEnabled = true
++		cfg.RPCHost = "127.0.0.1"
++		cfg.RPCPort = boundPort
++		cfg.RPCShutdownTimeout = tc.timeout
++
++		s, err := NewSession(cfg)
++		assert.Error(t, err, fmt.Sprintf("NewSession must return an error when RPCEnabled is true and RPCShutdownTimeout is %v (%s)", tc.timeout, tc.name))
++		if s != nil {
++			_ = s.Close()
++			t.Fatalf("NewSession returned a non-nil session when RPCShutdownTimeout is %v (%s)", tc.timeout, tc.name)
++		}
++
++		// Verify database file was not created
++		_, statErr := os.Stat(cfg.Database)
++		assert.True(t, os.IsNotExist(statErr), fmt.Sprintf("database file must not be created on rejected configuration (%s)", tc.name))
++	}
++
++	// Verify that when RPCEnabled is false, non-positive timeout does not fail NewSession
++	tmpDisabled := t.TempDir()
++	cfgDisabled := DefaultConfig
++	cfgDisabled.Database = filepath.Join(tmpDisabled, "session.db")
++	cfgDisabled.DataDir = tmpDisabled
++	cfgDisabled.DHTEnabled = false
++	cfgDisabled.RPCEnabled = false
++	cfgDisabled.RPCShutdownTimeout = -1 * time.Second
++
++	sDisabled, errDisabled := NewSession(cfgDisabled)
++	assert.NoError(t, errDisabled, "NewSession must succeed when RPCEnabled is false even if RPCShutdownTimeout is non-positive")
++	if sDisabled != nil {
++		_ = sDisabled.Close()
++	}
++}
++
++// TestEvaluator_Session_DefaultShutdownTimerFallback verifies that calling setShutdownTimer(nil)
++// safely restores the default timer implementation without panic, and that the default fallback timer
++// enforces RPC shutdown bounds without excessive timeout skew (killing defaultTimer + 1s mutants).
++func TestEvaluator_Session_DefaultShutdownTimerFallback(t *testing.T) {
++	tmp := t.TempDir()
++	boundPort := freePort(t)
++
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.DHTEnabled = false
++	cfg.RPCEnabled = true
++	cfg.RPCHost = "127.0.0.1"
++	cfg.RPCPort = boundPort
++	cfg.RPCShutdownTimeout = 100 * time.Millisecond
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	setter, ok := interface{}(s).(shutdownTimerSetter)
++	require.True(t, ok)
++
++	// Step 1: Install a custom timer, then explicitly reset to nil to verify safe restoration without panic
++	setter.setShutdownTimer(func(phase string, d time.Duration) (<-chan time.Time, func() bool) {
++		ch := make(chan time.Time)
++		return ch, func() bool { return true }
++	})
++	setter.setShutdownTimer(nil)
++
++	// Step 2: Block updateStatsLoop via BoltDB exclusive transaction so workers phase must wait for default timer
++	tx, err := s.db.Begin(true)
++	require.NoError(t, err)
++	defer func() { _ = tx.Rollback() }()
++
++	// Step 3: Close session and measure actual elapsed time using default fallback timer
++	start := time.Now()
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	select {
++	case err := <-closeDone:
++		elapsed := time.Since(start)
++		assert.Error(t, err, "Close must return error when worker teardown exceeds deadline")
++		assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond, "Close must wait for 250ms total budget")
++		assert.LessOrEqual(t, elapsed, 400*time.Millisecond, "Close using default timer must complete within 400ms, killing defaultTimer + 1s mutant")
++	case <-time.After(3 * time.Second):
++		t.Fatal("Session.Close timed out using default timer")
++	}
++}
++
++func TestEvaluator_Session_DHTStopReleasesPort(t *testing.T) {
++	port := freePort(t)
++	addr := fmt.Sprintf("127.0.0.1:%d", port)
++
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(t.TempDir(), "session.db")
++	cfg.DataDir = t.TempDir()
++	cfg.RPCEnabled = true
++	cfg.RPCPort = freePort(t)
++	cfg.RPCShutdownTimeout = 8 * time.Second
++	cfg.DHTEnabled = true
++	cfg.DHTHost = "127.0.0.1"
++	cfg.DHTPort = uint16(port)
++	cfg.DHTBootstrapNodes = []string{}
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++	_ = evaluatorWorkerCompletion(t, s)
++
++	err = evaluatorSafeClose(s)
++	require.NoError(t, err)
++
++	// Rebinding UDP socket must succeed, confirming s.dht.Stop() released the port
++	var pc net.PacketConn
++	require.Eventually(t, func() bool {
++		var lErr error
++		pc, lErr = net.ListenPacket("udp", addr)
++		return lErr == nil
++	}, 3*time.Second, 50*time.Millisecond, "UDP port must be released after DHT stop")
++	if pc != nil {
++		_ = pc.Close()
++	}
++}
++
++// TestEvaluator_Session_WorkerRegistration_DHT verifies that processDHTResults is tracked
++// by s.workers (sync.WaitGroup) and prevents workerCompletion() from closing when blocked.
++func TestEvaluator_Session_WorkerRegistration_DHT(t *testing.T) {
++	tmp := t.TempDir()
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.RPCEnabled = false
++	cfg.DHTEnabled = true
++	cfg.DHTPort = uint16(freePort(t))
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	// Holding mPeerRequests blocks handleDHTtick inside processDHTResults
++	s.mPeerRequests.Lock()
++	time.Sleep(1100 * time.Millisecond)
++
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	workerCh := evaluatorWorkerCompletion(t, s)
++
++	select {
++	case <-workerCh:
++		s.mPeerRequests.Unlock()
++		t.Fatal("workerCompletion closed while processDHTResults worker was blocked")
++	case <-time.After(200 * time.Millisecond):
++		// Expected: processDHTResults is tracked and keeps workerCompletion open
++	}
++
++	s.mPeerRequests.Unlock()
++
++	select {
++	case err := <-closeDone:
++		require.NoError(t, err)
++	case <-time.After(3 * time.Second):
++		t.Fatal("Close timed out after unblocking DHT worker")
++	}
++
++	select {
++	case <-workerCh:
++	default:
++		t.Fatal("workerCompletion must be closed after unblocked shutdown")
++	}
++}
++
++// TestEvaluator_Session_WorkerRegistration_Blocklist verifies that blocklistReloader is tracked
++// by s.workers (sync.WaitGroup) and prevents workerCompletion() from closing when blocked.
++func TestEvaluator_Session_WorkerRegistration_Blocklist(t *testing.T) {
++	var count atomic.Int32
++	req2Entered := make(chan struct{})
++
++	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		reqNum := count.Add(1)
++		w.Header().Set("content-type", "text/plain")
++		w.Header().Set("content-length", "11")
++		w.WriteHeader(http.StatusOK)
++		_, _ = w.Write([]byte("1.1.1.1/32\n"))
++		if reqNum == 2 {
++			select {
++			case req2Entered <- struct{}{}:
++			default:
++			}
++		}
++	}))
++	defer ts.Close()
++
++	tmp := t.TempDir()
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.RPCEnabled = false
++	cfg.DHTEnabled = false
++	cfg.BlocklistURL = ts.URL
++	cfg.BlocklistUpdateInterval = 50 * time.Millisecond
++	cfg.BlocklistUpdateTimeout = 5 * time.Second
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	// Holding mBlocklist blocks reloadBlocklist inside blocklistReloader
++	s.mBlocklist.Lock()
++
++	select {
++	case <-req2Entered:
++	case <-time.After(3 * time.Second):
++		s.mBlocklist.Unlock()
++		t.Fatal("blocklistReloader did not trigger background reload")
++	}
++
++	time.Sleep(50 * time.Millisecond)
++
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	workerCh := evaluatorWorkerCompletion(t, s)
++
++	select {
++	case <-workerCh:
++		s.mBlocklist.Unlock()
++		t.Fatal("workerCompletion closed while blocklistReloader was blocked")
++	case <-time.After(200 * time.Millisecond):
++		// Expected: blocklistReloader is tracked and keeps workerCompletion open
++	}
++
++	s.mBlocklist.Unlock()
++
++	select {
++	case err := <-closeDone:
++		require.NoError(t, err)
++	case <-time.After(3 * time.Second):
++		t.Fatal("Close timed out after unblocking blocklist worker")
++	}
++
++	select {
++	case <-workerCh:
++	default:
++		t.Fatal("workerCompletion must be closed after unblocked shutdown")
++	}
++}
++
++// TestEvaluator_Session_WorkerRegistration_HealthCheck observes the existing health module
++// across helper extraction, without depending on worker function names or WaitGroup layout.
++func TestEvaluator_Session_WorkerRegistration_HealthCheck(t *testing.T) {
++ tmp := t.TempDir()
++ cfg := DefaultConfig
++ cfg.Database = filepath.Join(tmp, "session.db")
++ cfg.DataDir = tmp
++ cfg.RPCEnabled = false
++ cfg.DHTEnabled = false
++ s, err := NewSession(cfg)
++ require.NoError(t, err)
++ defer evaluatorSafeClose(s)
++ addTestTorrent(t, s)
++ // Observe the real health-check loop and the declared completion boundary,
++ // without changing internal counters or requiring a particular worker-group layout.
++ healthRunning := func() bool {
++  buf := make([]byte, 1<<20)
++  n := runtime.Stack(buf, true)
++  return strings.Contains(string(buf[:n]), "/torrent/session_healthcheck.go:")
++ }
++ require.Eventually(t, healthRunning, time.Second, time.Millisecond, "health-check worker must start")
++ done := evaluatorWorkerCompletion(t, s)
++ require.Equal(t, done, evaluatorWorkerCompletion(t, s), "completion channel must be stable")
++ select {
++ case <-done: t.Fatal("workerCompletion closed while the health-check worker is running")
++ default:
++ }
++ require.NoError(t, evaluatorSafeClose(s))
++ select {
++ case <-done:
++ default: t.Fatal("workerCompletion must be closed before successful Close returns")
++ }
++ require.False(t, healthRunning(), "health-check worker must exit before successful Close returns")
++}
++
++type evaluatorVerifierBlockingFile struct {
++	storage.File
++	readEntered chan struct{}
++	unblockRead chan struct{}
++}
++
++func (f *evaluatorVerifierBlockingFile) ReadAt(p []byte, off int64) (n int, err error) {
++	select {
++	case f.readEntered <- struct{}{}:
++	default:
++	}
++	<-f.unblockRead
++	return f.File.ReadAt(p, off)
++}
++
++type evaluatorVerifierBlockingStorage struct {
++	storage.Storage
++	bf *evaluatorVerifierBlockingFile
++}
++
++func (s *evaluatorVerifierBlockingStorage) Open(name string, size int64) (storage.File, bool, error) {
++	f, exists, err := s.Storage.Open(name, size)
++	if err != nil {
++		return nil, false, err
++	}
++	s.bf.File = f
++	return s.bf, exists, nil
++}
++
++type evaluatorVerifierBlockingProvider struct {
++	base storage.Provider
++	st   *evaluatorVerifierBlockingStorage
++}
++
++func (p *evaluatorVerifierBlockingProvider) GetStorage(torrentID string) (storage.Storage, error) {
++	s, err := p.base.GetStorage(torrentID)
++	if err != nil {
++		return nil, err
++	}
++	p.st.Storage = s
++	return p.st, nil
++}
++
++// TestEvaluator_Session_VerificationTaskBlocksClose verifies that calling Session.Close()
++// while data verification (verifier.Run) is in progress does not return before verifier exits
++// and releases all underlying file handles.
++func TestEvaluator_Session_VerificationTaskBlocksClose(t *testing.T) {
++	readEntered := make(chan struct{}, 1)
++	unblockRead := make(chan struct{})
++
++	bf := &evaluatorVerifierBlockingFile{
++		readEntered: readEntered,
++		unblockRead: unblockRead,
++	}
++	st := &evaluatorVerifierBlockingStorage{bf: bf}
++	tmp := t.TempDir()
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.RPCEnabled = false
++	cfg.DHTEnabled = false
++	cfg.CustomStorage = &evaluatorVerifierBlockingProvider{
++		base: newFileStorageProvider(&cfg),
++		st:   st,
++	}
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++	_ = evaluatorWorkerCompletion(t, s)
++
++	tor := addTestTorrent(t, s)
++	require.NoError(t, tor.Verify())
++
++	select {
++	case <-readEntered:
++	case <-time.After(3 * time.Second):
++		t.Fatal("verifier did not enter ReadAt")
++	}
++
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	select {
++	case <-closeDone:
++		t.Fatal("Close() returned while verifier was still running in ReadAt")
++	case <-time.After(150 * time.Millisecond):
++		// Expected: Close() waits synchronously for verifier.Run to exit
++	}
++
++	close(unblockRead)
++
++	select {
++	case err := <-closeDone:
++		require.NoError(t, err)
++	case <-time.After(3 * time.Second):
++		t.Fatal("Close() timed out after unblocking verifier")
++	}
++}
++
++// TestEvaluator_Session_WebseedCloseIdleConnections verifies that Session.Close() explicitly
++// closes idle keepalive connections in s.webseedClient.
++func TestEvaluator_Session_WebseedCloseIdleConnections(t *testing.T) {
++	var idleConns atomic.Int32
++	var closedConns atomic.Int32
++
++	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Length", "5")
++		w.WriteHeader(http.StatusOK)
++		_, _ = w.Write([]byte("hello"))
++	}))
++	ts.Config.ConnState = func(c net.Conn, state http.ConnState) {
++		switch state {
++		case http.StateIdle:
++			idleConns.Add(1)
++		case http.StateClosed:
++			closedConns.Add(1)
++		}
++	}
++	ts.Start()
++	defer ts.Close()
++
++	tmp := t.TempDir()
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.RPCEnabled = false
++	cfg.DHTEnabled = false
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	resp, err := s.webseedClient.Get(ts.URL)
++	require.NoError(t, err)
++	_, _ = io.ReadAll(resp.Body)
++	_ = resp.Body.Close()
++
++	require.Eventually(t, func() bool {
++		return idleConns.Load() >= 1
++	}, 2*time.Second, 10*time.Millisecond, "connection must transition to idle")
++
++	initialClosed := closedConns.Load()
++
++	require.NoError(t, evaluatorSafeClose(s))
++
++	require.Eventually(t, func() bool {
++		return closedConns.Load() > initialClosed
++	}, 1*time.Second, 10*time.Millisecond, "idle connection must be closed by CloseIdleConnections()")
++}
++
++func TestEvaluator_Session_SubphaseRemainingBudgetEnforced(t *testing.T) {
++	tmp := t.TempDir()
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.RPCEnabled = false
++	cfg.DHTEnabled = false
++
++	openEntered := make(chan struct{})
++	storageProv := &evaluatorSlowCloseStorageProvider{
++		base:         newFileStorageProvider(&cfg),
++		openEntered:  openEntered,
++		closeEntered: make(chan struct{}),
++	}
++	cfg.CustomStorage = storageProv
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++
++	tor := addTestTorrent(t, s)
++	require.NoError(t, tor.Start())
++
++	select {
++	case <-openEntered:
++	case <-time.After(5 * time.Second):
++		t.Fatal("storage did not enter Open")
++	}
++
++	require.Eventually(t, func() bool {
++		st := tor.Stats().Status
++		return st != Stopped && st != Allocating
++	}, 5*time.Second, 20*time.Millisecond)
++
++	setter, ok := interface{}(s).(shutdownTimerSetter)
++	require.True(t, ok)
++
++	var timersMu sync.Mutex
++	observedTimers := make(map[string]time.Duration)
++
++	setter.setShutdownTimer(func(phase string, d time.Duration) (<-chan time.Time, func() bool) {
++		timersMu.Lock()
++		observedTimers[phase] = d
++		timersMu.Unlock()
++		t := time.NewTimer(d)
++		return t.C, t.Stop
++	})
++
++	closeDone := make(chan error, 1)
++	go func() {
++		closeDone <- evaluatorSafeClose(s)
++	}()
++
++	select {
++	case <-storageProv.closeEntered:
++		// File close entered; delay 400ms before unblocking so torrents phase consumes 400ms
++		time.Sleep(400 * time.Millisecond)
++	case <-time.After(3 * time.Second):
++		t.Fatal("shutdown did not enter file close")
++	}
++
++	select {
++	case err := <-closeDone:
++		require.NoError(t, err)
++	case <-time.After(5 * time.Second):
++		t.Fatal("Close timed out")
++	}
++
++	timersMu.Lock()
++	defer timersMu.Unlock()
++
++	dTotal, okTot := observedTimers["total"]
++	require.True(t, okTot, "must create timer for 'total' phase")
++
++	dTorrents, okTor := observedTimers["torrents"]
++	dWorkers, okWor := observedTimers["workers"]
++	dDatabase, okDB := observedTimers["database"]
++
++	require.True(t, okTor, "must create timer for 'torrents' phase")
++	require.True(t, okWor, "must create timer for 'workers' phase")
++	require.True(t, okDB, "must create timer for 'database' phase")
++
++	assert.LessOrEqual(t, dTorrents, dTotal, "torrents phase timer must receive remaining budget, not full hour")
++	assert.LessOrEqual(t, dWorkers, dTorrents-200*time.Millisecond,
++		"workers phase timer must receive remaining budget, not reset full 4900ms budget")
++	assert.LessOrEqual(t, dDatabase, dWorkers,
++		"database phase timer must receive remaining budget")
++	assert.Less(t, dWorkers, 4750*time.Millisecond,
++		"workers phase timer cannot be full initial 4900ms budget")
++}
++
++// TestEvaluator_Session_TorrentStopAsyncTracker verifies that Torrent.Stop() does not synchronously
++// wait for HTTP tracker response to event=stopped announce.
++func TestEvaluator_Session_TorrentStopAsyncTracker(t *testing.T) {
++	initialAnnounceReceived := make(chan struct{}, 1)
++	stopAnnounceReceived := make(chan struct{}, 1)
++
++	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		event := r.URL.Query().Get("event")
++		if event == "stopped" {
++			select {
++			case stopAnnounceReceived <- struct{}{}:
++			default:
++			}
++			time.Sleep(3 * time.Second)
++			w.WriteHeader(http.StatusOK)
++			return
++		}
++		select {
++		case initialAnnounceReceived <- struct{}{}:
++		default:
++		}
++		w.Header().Set("content-type", "text/plain")
++		w.WriteHeader(http.StatusOK)
++		_, _ = w.Write([]byte("d8:completei0e10:incompletei0e8:intervali1800e12:min intervali60e5:peers0:e"))
++	}))
++	defer ts.Close()
++
++	tmp := t.TempDir()
++	cfg := DefaultConfig
++	cfg.Database = filepath.Join(tmp, "session.db")
++	cfg.DataDir = tmp
++	cfg.RPCEnabled = false
++	cfg.DHTEnabled = false
++
++	s, err := NewSession(cfg)
++	require.NoError(t, err)
++	_ = evaluatorWorkerCompletion(t, s)
++
++	tor := addTestTorrent(t, s)
++	tor.AddTracker(ts.URL)
++
++	require.NoError(t, tor.Start())
++
++	// Wait deterministically for initial tracker announce to be received
++	select {
++	case <-initialAnnounceReceived:
++	case <-time.After(5 * time.Second):
++		t.Fatal("initial tracker announce did not arrive")
++	}
++
++	// Verify tracker status is Working (HasAnnounced is true)
++	require.Eventually(t, func() bool {
++		for _, trk := range tor.Trackers() {
++			if trk.Status == Working {
++				return true
++			}
++		}
++		return false
++	}, 5*time.Second, 20*time.Millisecond)
++
++	start := time.Now()
++	err = tor.Stop()
++	elapsed := time.Since(start)
++
++	assert.NoError(t, err)
++	assert.Less(t, elapsed, 400*time.Millisecond, "Torrent.Stop must return promptly without waiting for tracker response")
++
++	// Verify event=stopped announce arrived at tracker
++	select {
++	case <-stopAnnounceReceived:
++	case <-time.After(3 * time.Second):
++		t.Fatal("event=stopped announce did not arrive at tracker")
++	}
++
++	require.NoError(t, evaluatorSafeClose(s))
++}

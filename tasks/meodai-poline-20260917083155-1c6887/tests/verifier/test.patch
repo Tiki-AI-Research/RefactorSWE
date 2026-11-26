@@ -1,0 +1,4372 @@
+diff --git a/tests/deep_swe_verifier_poline_picker.test.ts b/tests/deep_swe_verifier_poline_picker.test.ts
+new file mode 100644
+index 0000000..738a52f
+--- /dev/null
++++ b/tests/deep_swe_verifier_poline_picker.test.ts
+@@ -0,0 +1,4366 @@
++import { describe, it as vitestIt, expect, beforeAll, beforeEach } from "vitest";
++
++const suiteFilter = process.env.PICKER_TEST_FILTER;
++const it = (name: string, fn: () => void | Promise<void>) => {
++  if (suiteFilter === "P2P" && !name.startsWith("P2P::")) return;
++  if (suiteFilter === "F2P" && !name.startsWith("F2P::")) return;
++  vitestIt(name, fn);
++};
++
++// ==========================================
++// Enhanced Mock DOM Infrastructure
++// ==========================================
++
++class MockClassList {
++  private set = new Set<string>();
++  add(...tokens: string[]): void {
++    tokens.forEach((t) => this.set.add(t));
++  }
++  remove(...tokens: string[]): void {
++    tokens.forEach((t) => this.set.delete(t));
++  }
++  toggle(token: string, force?: boolean): boolean {
++    if (force === true) {
++      this.set.add(token);
++      return true;
++    }
++    if (force === false) {
++      this.set.delete(token);
++      return false;
++    }
++    if (this.set.has(token)) {
++      this.set.delete(token);
++      return false;
++    }
++    this.set.add(token);
++    return true;
++  }
++  contains(token: string): boolean {
++    return this.set.has(token);
++  }
++  toString(): string {
++    return Array.from(this.set).join(" ");
++  }
++}
++
++class MockEvent {
++  public type: string;
++  public target: unknown = null;
++  public currentTarget: unknown = null;
++  public bubbles: boolean;
++  public cancelable: boolean;
++  public composed: boolean;
++  public propagationStopped = false;
++
++  constructor(type: string, options: { bubbles?: boolean; cancelable?: boolean; composed?: boolean } = {}) {
++    this.type = type;
++    this.bubbles = options.bubbles ?? false;
++    this.cancelable = options.cancelable ?? false;
++    this.composed = options.composed ?? false;
++  }
++
++  stopPropagation(): void {
++    this.propagationStopped = true;
++  }
++}
++
++class MockCustomEvent extends MockEvent {
++  public detail: unknown;
++  constructor(type: string, dict: { detail?: unknown; bubbles?: boolean; cancelable?: boolean; composed?: boolean } = {}) {
++    super(type, dict);
++    this.detail = dict.detail;
++  }
++}
++
++class MockPointerEvent extends MockEvent {
++  public pointerId: number;
++  public clientX: number;
++  public clientY: number;
++  public shiftKey: boolean;
++
++  constructor(
++    type: string,
++    dict: {
++      pointerId?: number;
++      clientX?: number;
++      clientY?: number;
++      shiftKey?: boolean;
++      bubbles?: boolean;
++      cancelable?: boolean;
++      composed?: boolean;
++    } = {}
++  ) {
++    super(type, {
++      bubbles: dict.bubbles ?? true,
++      cancelable: dict.cancelable ?? true,
++      composed: dict.composed ?? true,
++    });
++    this.pointerId = dict.pointerId ?? 1;
++    this.clientX = dict.clientX ?? 0;
++    this.clientY = dict.clientY ?? 0;
++    this.shiftKey = dict.shiftKey ?? false;
++  }
++}
++
++class MockNode {
++  get ownerDocument(): any { return (globalThis as any).document; }
++  get firstChild(): MockNode | null { return this.children[0] ?? null; }
++  get lastElementChild(): MockElement | null {
++    return this.children.filter((node): node is MockElement => node instanceof MockElement).at(-1) ?? null;
++  }
++  private connectedRoot: boolean | undefined;
++  get isConnected(): boolean { return this.connectedRoot ?? this.parentNode?.isConnected ?? false; }
++  set isConnected(value: boolean) { this.connectedRoot = value; }
++  public parentNode: MockNode | null = null;
++  public children: MockNode[] = [];
++  public classList = new MockClassList();
++  public attributes = new Map<string, string>();
++  public styles: Record<string, string> = {};
++  public textContent = "";
++  public style = {
++    setProperty: (k: string, v: string): void => {
++      this.styles[k] = v;
++    },
++    getPropertyValue: (k: string): string => this.styles[k] || "",
++  };
++  protected listeners: Record<string, ((event: unknown) => void)[]> = {};
++  protected captureListeners: Record<string, ((event: unknown) => void)[]> = {};
++
++  setAttribute(k: string, v: string): void {
++    this.attributes.set(k, String(v));
++    if (k === "class") {
++      v.split(/\s+/)
++        .filter(Boolean)
++        .forEach((c) => this.classList.add(c));
++    }
++  }
++  getAttribute(k: string): string | null {
++    return this.attributes.get(k) ?? null;
++  }
++  hasAttribute(k: string): boolean {
++    return this.attributes.has(k);
++  }
++  removeAttribute(k: string): void {
++    this.attributes.delete(k);
++  }
++  getAttributeNames(): string[] {
++    return Array.from(this.attributes.keys());
++  }
++
++  set className(v: string) {
++    this.setAttribute("class", v);
++  }
++  get className(): string {
++    return this.getAttribute("class") || "";
++  }
++
++  appendChild<T extends MockNode>(child: T): T {
++    child.parentNode = this;
++    this.children.push(child);
++    return child;
++  }
++
++  append(...nodes: (MockNode | string)[]): void {
++    for (const node of nodes) {
++      if (typeof node === "string") {
++        const textNode = new MockNode();
++        textNode.textContent = node;
++        textNode.parentNode = this;
++        this.children.push(textNode);
++      } else if (node instanceof MockNode) {
++        node.parentNode = this;
++        this.children.push(node);
++      }
++    }
++  }
++
++  replaceChildren(...nodes: (MockNode | string)[]): void {
++    for (const child of this.children.slice()) {
++      this.removeChild(child);
++    }
++    this.append(...nodes);
++  }
++
++  replaceChild<T extends MockNode>(replacement: MockNode, child: T): T {
++    if (!this.children.includes(child)) throw new Error("NotFoundError");
++    if (replacement === child) return child;
++    replacement.parentNode?.removeChild(replacement);
++    const index = this.children.indexOf(child);
++    this.children[index] = replacement;
++    child.parentNode = null;
++    replacement.parentNode = this;
++    return child;
++  }
++
++  removeChild<T extends MockNode>(child: T): T {
++    const i = this.children.indexOf(child);
++    if (i >= 0) {
++      this.children.splice(i, 1);
++      child.parentNode = null;
++    }
++    return child;
++  }
++
++  remove(): void {
++    if (this.parentNode) {
++      this.parentNode.removeChild(this);
++    }
++  }
++
++  contains(node: MockNode | null): boolean {
++    if (!node || typeof node !== "object") {
++      return false;
++    }
++    for (let current: MockNode | null = node; current; current = current.parentNode) {
++      if (current === this) {
++        return true;
++      }
++    }
++    return false;
++  }
++
++  addEventListener(type: string, fn: (event: unknown) => void, capture = false): void {
++    const listeners = capture ? this.captureListeners : this.listeners;
++    if (!listeners[type]) listeners[type] = [];
++    listeners[type]?.push(fn);
++  }
++
++  removeEventListener(type: string, fn: (event: unknown) => void, capture = false): void {
++    const listeners = capture ? this.captureListeners : this.listeners;
++    if (!listeners[type]) return;
++    listeners[type] = listeners[type]?.filter((l) => l !== fn);
++  }
++
++  getEventListeners(type: string): ((event: unknown) => void)[] {
++    return this.listeners[type] || [];
++  }
++
++  getSelf(): MockNode {
++    return this;
++  }
++
++  dispatchEvent(event: MockEvent | { type: string; target?: unknown; currentTarget?: unknown; bubbles?: boolean; propagationStopped?: boolean }): boolean {
++    if (!event.target) {
++      event.target = this;
++    }
++    for (let current: MockNode | null = this.getSelf(); current; current = current.parentNode) {
++      event.currentTarget = current;
++      // At-target capture listeners run first. Retain the dispatch snapshot across
++      // synchronous rebinding so retired callbacks already in flight are exercised.
++      const handlers = [
++        ...(current === this ? current.captureListeners[event.type] || [] : []),
++        ...(current.listeners[event.type] || []),
++      ];
++      for (const h of handlers) {
++        h(event);
++      }
++      if (event.propagationStopped || event.bubbles === false) {
++        break;
++      }
++    }
++    return true;
++  }
++
++  querySelector(sel: string): MockNode | null {
++    return this.querySelectorAll(sel)[0] ?? null;
++  }
++
++  querySelectorAll(sel: string): MockNode[] {
++    const result: MockNode[] = [];
++    const walk = (node: MockNode): void => {
++      let match = false;
++      if (sel.startsWith(".")) {
++        const cls = sel.slice(1);
++        if (node.classList.contains(cls)) match = true;
++      } else if (sel.startsWith("#")) {
++        const id = sel.slice(1);
++        if (node.getAttribute("id") === id) match = true;
++      } else {
++        if (
++          node instanceof MockElement &&
++          node.tagName.toLowerCase() === sel.toLowerCase()
++        )
++          match = true;
++      }
++      if (match) result.push(node);
++      for (const c of node.children) walk(c);
++    };
++    for (const c of this.children) walk(c);
++    return result;
++  }
++}
++
++const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
++const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
++
++const VOID_HTML_TAGS = new Set([
++  "area",
++  "base",
++  "br",
++  "col",
++  "embed",
++  "hr",
++  "img",
++  "input",
++  "link",
++  "meta",
++  "param",
++  "source",
++  "track",
++  "wbr",
++]);
++
++class MockElement extends MockNode {
++  get localName(): string { return this.tagName.toLowerCase(); }
++  public tagName: string;
++  public namespaceURI: string | null = null;
++  public capturedPointers = new Set<number>();
++  public computedStyle: Record<string, string> = {};
++  public clientWidth = 100;
++  public clientHeight = 100;
++
++  constructor(tagName: string, ns: string | null = null) {
++    super();
++    this.tagName = tagName;
++    this.namespaceURI = ns;
++  }
++
++  getBoundingClientRect(): {
++    left: number;
++    top: number;
++    width: number;
++    height: number;
++    right: number;
++    bottom: number;
++  } {
++    return {
++      left: 0,
++      top: 0,
++      width: 100,
++      height: 100,
++      right: 100,
++      bottom: 100,
++    };
++  }
++
++  setPointerCapture(id: number): void {
++    this.capturedPointers.add(id);
++  }
++  releasePointerCapture(id: number): void {
++    this.capturedPointers.delete(id);
++  }
++  hasPointerCapture(id: number): boolean {
++    return this.capturedPointers.has(id);
++  }
++
++  set innerHTML(html: string) {
++    parseMarkupIntoNode(this, html, this.namespaceURI || HTML_NAMESPACE);
++  }
++
++  get innerHTML(): string {
++    return "";
++  }
++}
++
++function parseMarkupIntoNode(root: MockNode, html: string, defaultNamespace: string): void {
++  for (const child of root.children) child.parentNode = null;
++  root.children = [];
++  const stack: MockElement[] = [];
++
++  const tagRegex = /<!--[\s\S]*?-->|<style([^>]*)>([\s\S]*?)<\/style>|<\/([a-zA-Z0-9_:-]+)>|<([a-zA-Z0-9_:-]+)([^>]*?)(\/?)>/gi;
++  let match: RegExpExecArray | null;
++  let lastIdx = 0;
++
++  while ((match = tagRegex.exec(html)) !== null) {
++    const textBetween = html.slice(lastIdx, match.index).trim();
++    if (textBetween && stack.length > 0) {
++      const top = stack[stack.length - 1];
++      if (top) top.textContent = textBetween;
++    }
++    lastIdx = tagRegex.lastIndex;
++
++    if (match[0].startsWith("<!--")) {
++      continue;
++    }
++
++    const currentParent: MockNode = stack.length > 0 ? stack[stack.length - 1] || root : root;
++
++    if (match[2] !== undefined) {
++      const styleAttrs = match[1] || "";
++      const styleText = match[2];
++      const styleEl = new MockElement("style", HTML_NAMESPACE);
++      styleEl.textContent = styleText;
++
++      const attrRegex = /([a-zA-Z0-9_:-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
++      let attrMatch: RegExpExecArray | null;
++      while ((attrMatch = attrRegex.exec(styleAttrs)) !== null) {
++        const attrName = attrMatch[1];
++        if (!attrName || attrName === "/") continue;
++        const attrVal = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? "";
++        styleEl.setAttribute(attrName, attrVal);
++      }
++
++      currentParent.appendChild(styleEl);
++      continue;
++    }
++
++    if (match[3]) {
++      const closeTag = match[3].toLowerCase();
++      if (stack.length > 0) {
++        let foundIdx = -1;
++        for (let i = stack.length - 1; i >= 0; i--) {
++          const item = stack[i];
++          if (item && item.tagName.toLowerCase() === closeTag) {
++            foundIdx = i;
++            break;
++          }
++        }
++        if (foundIdx >= 0) {
++          stack.length = foundIdx;
++        }
++      }
++      continue;
++    }
++
++    if (match[4]) {
++      const rawTag = match[4];
++      const normalizedTag = rawTag.toLowerCase();
++      let attrsStr = match[5] || "";
++      let selfClosing = match[6] === "/";
++
++      if (!selfClosing && /\/\s*$/.test(attrsStr)) {
++        selfClosing = true;
++        attrsStr = attrsStr.replace(/\/\s*$/, "");
++      }
++
++      const parentNs = currentParent instanceof MockElement ? (currentParent.namespaceURI || defaultNamespace) : defaultNamespace;
++      const childNamespace =
++        normalizedTag === "svg" || parentNs === SVG_NAMESPACE
++          ? SVG_NAMESPACE
++          : HTML_NAMESPACE;
++
++      const el = new MockElement(rawTag, childNamespace);
++
++      const attrRegex = /([a-zA-Z0-9_:-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
++      let attrMatch: RegExpExecArray | null;
++      while ((attrMatch = attrRegex.exec(attrsStr)) !== null) {
++        const attrName = attrMatch[1];
++        if (!attrName || attrName === "/") continue;
++        const attrVal = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? "";
++        el.setAttribute(attrName, attrVal);
++      }
++
++      currentParent.appendChild(el);
++
++      if (!selfClosing && !VOID_HTML_TAGS.has(normalizedTag)) {
++        stack.push(el);
++      }
++    }
++  }
++}
++
++class MockShadowRoot extends MockNode {
++  get host(): MockNode | null { return this.parentNode; }
++  set innerHTML(html: string) {
++    for (const child of this.children) child.parentNode = null;
++    this.children = [];
++    const fragment = new MockElement("mock-fragment", HTML_NAMESPACE);
++    fragment.innerHTML = html;
++    const parsedChildren = [...fragment.children];
++    fragment.children = [];
++    for (const child of parsedChildren) {
++      this.appendChild(child);
++    }
++  }
++  get innerHTML(): string {
++    return "";
++  }
++}
++
++class MockHTMLElement extends MockElement {
++  public shadowRoot: MockShadowRoot | null = null;
++  constructor(tagName = "div") {
++    super(tagName, HTML_NAMESPACE);
++  }
++  attachShadow(_init?: { mode: string }): MockShadowRoot {
++    void _init;
++    this.shadowRoot = new MockShadowRoot();
++    this.shadowRoot.parentNode = this;
++    this.shadowRoot.isConnected = this.isConnected;
++    return this.shadowRoot;
++  }
++}
++
++// Global environment state
++let isCoarsePointer = false;
++const customElementRegistry = new Map<string, unknown>();
++
++// SVG coordinate parser accepting spaces, commas, scientific notation, and rejecting invalid tokens
++function parseSvgPoints(pointsAttr: string): Array<[number, number]> {
++  if (!pointsAttr || typeof pointsAttr !== "string") return [];
++  const normalized = pointsAttr.trim();
++  if (!normalized) return [];
++  const matches = normalized.match(/-?(?:\d*\.\d+|\d+)(?:[eE][+-]?\d+)?/g);
++  if (!matches) return [];
++  const numbers = matches.map(Number);
++  if (numbers.some((n) => !Number.isFinite(n))) {
++    throw new Error("SVG points attribute contains non-finite or invalid number");
++  }
++  expect(numbers.length % 2).toBe(0);
++  const result: Array<[number, number]> = [];
++  for (let i = 0; i < numbers.length; i += 2) {
++    result.push([numbers[i]!, numbers[i + 1]!]);
++  }
++  return result;
++}
++
++// Effective visibility inspector for device styles
++function isElementEffectivelyHidden(el: MockElement, shadowRoot: MockShadowRoot | null, isCoarse: boolean): boolean {
++  for (let curr: MockNode | null = el; curr; curr = curr.parentNode) {
++    if (curr.hasAttribute("hidden")) return true;
++    const styles = (curr as unknown as { styles?: Record<string, string> }).styles || {};
++    const inlineDisplay = curr.style?.getPropertyValue("display") || styles.display;
++    if (inlineDisplay === "none") return true;
++    const inlineVisibility = curr.style?.getPropertyValue("visibility") || styles.visibility;
++    if (inlineVisibility === "hidden") return true;
++    const inlineOpacity = curr.style?.getPropertyValue("opacity") || styles.opacity;
++    if (inlineOpacity === "0") return true;
++  }
++
++  if (!shadowRoot) return false;
++
++  const styleElements = shadowRoot.querySelectorAll("style");
++  let cssText = "";
++  for (const s of styleElements) {
++    cssText += " " + (s.textContent || "");
++  }
++  cssText = cssText.replace(/\/\*[\s\S]*?\*\//g, "");
++
++  function selectorMatches(sel: string, target: MockElement): boolean {
++    const trimmed = sel.trim();
++    if (!trimmed) return false;
++    const parts = trimmed.split(",").map((p) => p.trim()).filter(Boolean);
++    for (const part of parts) {
++      const segments = part.split(/[\s>+~]+/).map((s) => s.trim()).filter(Boolean);
++      if (segments.length === 0) continue;
++      const rightmost = segments[segments.length - 1]!;
++      let targetMatches = true;
++      const classMatches = rightmost.match(/\.([a-zA-Z0-9_-]+)/g);
++      if (classMatches) {
++        for (const cm of classMatches) {
++          if (!target.classList.contains(cm.slice(1))) {
++            targetMatches = false;
++            break;
++          }
++        }
++      }
++      const tagMatch = rightmost.match(/^[a-zA-Z0-9_-]+/);
++      if (tagMatch && targetMatches) {
++        if (target.tagName.toLowerCase() !== tagMatch[0].toLowerCase()) {
++          targetMatches = false;
++        }
++      }
++      const idMatch = rightmost.match(/#([a-zA-Z0-9_-]+)/);
++      if (idMatch && targetMatches) {
++        if (target.getAttribute("id") !== idMatch[1]) {
++          targetMatches = false;
++        }
++      }
++      if (targetMatches) return true;
++
++      for (const seg of segments) {
++        if (seg === ":host" || seg.startsWith(":host(")) {
++          if (segments.length === 1) return true;
++        }
++        for (let anc: MockNode | null = target.parentNode; anc; anc = anc.parentNode) {
++          if (anc instanceof MockElement) {
++            let ancMatches = true;
++            const aClasses = seg.match(/\.([a-zA-Z0-9_-]+)/g);
++            if (aClasses) {
++              for (const cm of aClasses) {
++                if (!anc.classList.contains(cm.slice(1))) {
++                  ancMatches = false;
++                  break;
++                }
++              }
++            }
++            const aTag = seg.match(/^[a-zA-Z0-9_-]+/);
++            if (aTag && ancMatches) {
++              if (anc.tagName.toLowerCase() !== aTag[0].toLowerCase()) {
++                ancMatches = false;
++              }
++            }
++            if (ancMatches && (aClasses || aTag)) {
++              if (segments.length === 1) return true;
++            }
++          }
++        }
++      }
++    }
++    return false;
++  }
++
++  let fineHidden = false;
++  let coarseHidden = false;
++
++  interface Rule {
++    media: string | null;
++    selector: string;
++    body: string;
++  }
++  const rules: Rule[] = [];
++
++  const mediaBlocks: Array<{ mediaQuery: string; content: string; start: number; end: number }> = [];
++  let idx = 0;
++  while (idx < cssText.length) {
++    const mediaIdx = cssText.indexOf("@media", idx);
++    if (mediaIdx === -1) break;
++    const braceStart = cssText.indexOf("{", mediaIdx);
++    if (braceStart === -1) break;
++    const mediaQuery = cssText.slice(mediaIdx + 6, braceStart).trim();
++    let depth = 1;
++    let currIdx = braceStart + 1;
++    while (currIdx < cssText.length && depth > 0) {
++      if (cssText[currIdx] === "{") depth++;
++      else if (cssText[currIdx] === "}") depth--;
++      currIdx++;
++    }
++    const innerContent = cssText.slice(braceStart + 1, currIdx - 1);
++    mediaBlocks.push({ mediaQuery, content: innerContent, start: mediaIdx, end: currIdx });
++    idx = currIdx;
++  }
++
++  let lastEnd = 0;
++  const topLevelSnippets: string[] = [];
++  for (const mb of mediaBlocks) {
++    topLevelSnippets.push(cssText.slice(lastEnd, mb.start));
++    lastEnd = mb.end;
++  }
++  topLevelSnippets.push(cssText.slice(lastEnd));
++
++  function parseRulesInBlock(blockText: string, media: string | null): void {
++    const ruleRegex = /([^{}]+)\{([^{}]+)\}/g;
++    let rMatch: RegExpExecArray | null;
++    while ((rMatch = ruleRegex.exec(blockText)) !== null) {
++      const sel = rMatch[1]?.trim();
++      const body = rMatch[2]?.trim();
++      if (sel && body) {
++        rules.push({ media, selector: sel, body });
++      }
++    }
++  }
++
++  for (const snip of topLevelSnippets) {
++    parseRulesInBlock(snip, null);
++  }
++  for (const mb of mediaBlocks) {
++    parseRulesInBlock(mb.content, mb.mediaQuery);
++  }
++
++  for (const r of rules) {
++    if (selectorMatches(r.selector, el)) {
++      const isHide =
++        /\bdisplay\s*:\s*none\b/i.test(r.body) ||
++        /\bvisibility\s*:\s*hidden\b/i.test(r.body) ||
++        /\bopacity\s*:\s*0\b/i.test(r.body);
++      const isShow =
++        /\bdisplay\s*:\s*(?!none\b)[a-z-]+\b/i.test(r.body) ||
++        /\bvisibility\s*:\s*visible\b/i.test(r.body) ||
++        /\bopacity\s*:\s*1\b/i.test(r.body);
++
++      if (r.media === null) {
++        if (isHide) {
++          fineHidden = true;
++          coarseHidden = true;
++        } else if (isShow) {
++          fineHidden = false;
++          coarseHidden = false;
++        }
++      } else if (r.media.includes("coarse")) {
++        if (isHide) coarseHidden = true;
++        else if (isShow) coarseHidden = false;
++      } else if (r.media.includes("fine")) {
++        if (isHide) fineHidden = true;
++        else if (isShow) fineHidden = false;
++      }
++    }
++  }
++
++  return isCoarse ? coarseHidden : fineHidden;
++}
++
++// Concrete typings for the public component contract
++interface PolinePickerType {
++  isConnected?: boolean;
++  connectedCallback(): void;
++  disconnectedCallback(): void;
++  setPoline(p: unknown): void;
++  setAllowAddPoints(a: boolean): void;
++  addPointAtPosition(x: number, y: number): unknown;
++  updateSVG(): void;
++  addEventListener(type: string, fn: (e: unknown) => void): void;
++  dispatchEvent(e: unknown): boolean;
++  classList: MockClassList;
++  shadowRoot: MockShadowRoot | null;
++}
++
++interface PolineType {
++  invertedLightness: boolean;
++  anchorPoints: Array<{
++    x: number;
++    y: number;
++    z: number;
++    position: [number, number, number];
++    color: [number, number, number];
++  }>;
++  flattenedPoints: Array<{
++    x: number;
++    y: number;
++    z: number;
++    position?: [number, number, number];
++    color: [number, number, number];
++    hslCSS: string;
++  }>;
++  addAnchorPoint(opts: { xyz: [number, number, number] }): unknown;
++  removeAnchorPoint(opts: { point: unknown }): void;
++  updateAnchorPoint(opts: { point?: unknown; xyz?: [number, number, number]; color?: [number, number, number] }): void;
++}
++
++let PolinePickerConstructor: new () => PolinePickerType;
++let PolineConstructor: new (options?: unknown) => PolineType;
++let positionFunctionsExport: unknown;
++
++beforeAll(async () => {
++  (globalThis as unknown as Record<string, unknown>).HTMLElement = MockHTMLElement;
++  (globalThis as unknown as Record<string, unknown>).SVGElement = MockElement;
++  (globalThis as unknown as Record<string, unknown>).CustomEvent = MockCustomEvent;
++  (globalThis as unknown as Record<string, unknown>).PointerEvent = MockPointerEvent;
++  const computedStyle = (el: MockElement) => {
++    const values: Record<string, string> = {
++    width: `${el.clientWidth}px`, height: `${el.clientHeight}px`, boxSizing: "content-box",
++    paddingLeft: "0px", paddingRight: "0px", paddingTop: "0px", paddingBottom: "0px",
++    borderLeftWidth: "0px", borderRightWidth: "0px", borderTopWidth: "0px", borderBottomWidth: "0px",
++    ...el.computedStyle,
++    };
++    return { ...values, getPropertyValue: (name: string) =>
++      values[name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] ?? el.style.getPropertyValue(name) };
++  };
++  (globalThis as unknown as Record<string, unknown>).getComputedStyle = computedStyle;
++  (globalThis as unknown as Record<string, unknown>).window = {
++    getComputedStyle: computedStyle,
++    matchMedia: (query: string) => ({
++      matches: query.includes("coarse") ? isCoarsePointer : !isCoarsePointer,
++    }),
++  };
++  (globalThis as unknown as Record<string, unknown>).document = {
++    defaultView: (globalThis as any).window,
++    createElement: (tag: string) => new MockElement(tag),
++    createElementNS: (ns: string, tag: string) => new MockElement(tag, ns),
++  };
++  (globalThis as unknown as Record<string, unknown>).customElements = {
++    define: (name: string, ctor: unknown) => {
++      customElementRegistry.set(name, ctor);
++    },
++    get: (name: string) => customElementRegistry.get(name),
++  };
++
++  // Import through true public package export
++  const mod = await import("../src/webcomponent");
++  PolinePickerConstructor = mod.PolinePicker;
++  PolineConstructor = mod.Poline;
++  positionFunctionsExport = mod.positionFunctions;
++});
++
++beforeEach(() => {
++  isCoarsePointer = false;
++});
++
++function connectPicker(picker: PolinePickerType): void {
++  (picker as unknown as MockNode).isConnected = true;
++  if (picker.shadowRoot) {
++    (picker.shadowRoot as unknown as MockNode).isConnected = true;
++  }
++  picker.connectedCallback();
++  if (picker.shadowRoot) {
++    (picker.shadowRoot as unknown as MockNode).isConnected = true;
++  }
++}
++
++function disconnectPicker(picker: PolinePickerType): void {
++  (picker as unknown as MockNode).isConnected = false;
++  if (picker.shadowRoot) {
++    (picker.shadowRoot as unknown as MockNode).isConnected = false;
++  }
++  picker.disconnectedCallback();
++}
++
++function createTestPicker(): {
++  picker: PolinePickerType;
++  poline: PolineType;
++  svg: MockElement;
++} {
++  const picker = new PolinePickerConstructor();
++  (picker as unknown as MockElement).setAttribute("interactive", "");
++  (picker as unknown as MockElement).setAttribute("allow-add-points", "");
++  connectPicker(picker);
++
++  // Deterministic fixture with fixed anchor colors and positions
++  const poline = new PolineConstructor({
++    anchorColors: [
++      [120, 0.5, 0.5],
++      [240, 0.5, 0.5],
++    ],
++    numPoints: 4,
++  });
++  const p0 = poline.anchorPoints[0];
++  const p1 = poline.anchorPoints[1];
++  if (p0) p0.position = [0.3, 0.3, 0.5];
++  if (p1) p1.position = [0.7, 0.7, 0.5];
++
++  picker.setPoline(poline);
++  const host = picker as unknown as MockHTMLElement;
++  const svg = host.shadowRoot?.querySelector("svg") as MockElement;
++  return { picker, poline, svg };
++}
++
++function expectPolineChangeEvent(
++  event: MockCustomEvent | null,
++  poline: PolineType
++): void {
++  expect(event).not.toBeNull();
++
++  const actual = event as MockCustomEvent;
++  expect(actual.type).toBe("poline-change");
++  expect(actual.bubbles).toBe(false);
++  expect(actual.cancelable).toBe(false);
++  expect(actual.composed).toBe(false);
++
++  const detail = actual.detail as { poline: unknown };
++  expect(detail.poline).toBe(poline);
++}
++
++describe("PolinePicker", () => {
++  for (const boxSizing of ["content-box", "border-box"]) {
++    for (const [label, x, y] of [["inside", 50, 45], ["outside", -20, 195]] as const) {
++      it(`F2P::coordinates::svg_content_box_${boxSizing}_${label}`, () => {
++        const { picker, poline, svg } = createTestPicker();
++        // Browser geometry: content 200x150, padding 10 each side, border 3.
++        svg.clientWidth = 220;
++        svg.clientHeight = 170;
++        svg.computedStyle = {
++          boxSizing, width: boxSizing === "content-box" ? "200px" : "226px",
++          height: boxSizing === "content-box" ? "150px" : "176px",
++          paddingLeft: "10px", paddingRight: "10px", paddingTop: "10px", paddingBottom: "10px",
++          borderLeftWidth: "3px", borderRightWidth: "3px", borderTopWidth: "3px", borderBottomWidth: "3px",
++        };
++        svg.getBoundingClientRect = () => ({left: 37, top: 53, width: 226, height: 176, right: 263, bottom: 229});
++        const oracle = new PolineConstructor({anchorColors: [[120, 0.5, 0.5], [240, 0.5, 0.5]], numPoints: 4});
++        const expected = oracle.addAnchorPoint({xyz: [x / 200, y / 150, y / 150]}) as {position: number[]};
++        let count = 0;
++        picker.addEventListener("poline-change", (event) => {
++          count++;
++          expectPolineChangeEvent(event as MockCustomEvent, poline);
++        });
++        const before = poline.anchorPoints.length;
++        const added = picker.addPointAtPosition(x, y) as {position: number[]};
++        expect(added).not.toBeNull();
++        expect(poline.anchorPoints.length).toBe(before + 1);
++        expected.position.forEach((value, i) => expect(added.position[i]).toBeCloseTo(value, 8));
++        expect(count).toBe(1);
++      });
++    }
++  }
++
++  // =========================================================================
++  // 1. Public package and Custom Element contract
++  // =========================================================================
++  it("P2P::contract::package_exports_poline_picker_and_dependencies", () => {
++    expect(PolinePickerConstructor).toBeDefined();
++    expect(PolineConstructor).toBeDefined();
++    expect(positionFunctionsExport).toBeDefined();
++    const funcs = positionFunctionsExport as Record<string, unknown>;
++    expect(typeof funcs.sinusoidalPosition).toBe("function");
++  });
++
++  it("P2P::contract::custom_element_registered_and_extends_html_element", () => {
++    const registered = customElementRegistry.get("poline-picker");
++    expect(registered).toBe(PolinePickerConstructor);
++    const picker = new PolinePickerConstructor();
++    expect(picker instanceof MockHTMLElement).toBe(true);
++
++    // Equivalent implementation probe for standard append vs appendChild
++    const probeParent = new MockElement("div");
++    const probeChild1 = new MockElement("span");
++    const probeChild2 = new MockElement("span");
++    probeParent.append(probeChild1, probeChild2);
++    expect(probeParent.children.length).toBe(2);
++    expect(probeChild1.parentNode).toBe(probeParent);
++    expect(probeChild2.parentNode).toBe(probeParent);
++
++    // Equivalent implementation probe for standard MockNode.contains
++    const root = new MockNode();
++    const child = new MockNode();
++    const grandchild = new MockNode();
++    const unrelated = new MockNode();
++    root.appendChild(child);
++    child.appendChild(grandchild);
++
++    expect(root.contains(root)).toBe(true);
++    expect(root.contains(child)).toBe(true);
++    expect(root.contains(grandchild)).toBe(true);
++    expect(root.contains(unrelated)).toBe(false);
++    expect(root.contains(null)).toBe(false);
++
++    root.removeChild(child);
++    expect(root.contains(child)).toBe(false);
++    expect(root.contains(grandchild)).toBe(false);
++  });
++
++  it("P2P::contract::facade_exposes_public_methods", () => {
++    const picker = new PolinePickerConstructor();
++    expect(typeof picker.setPoline).toBe("function");
++    expect(typeof picker.setAllowAddPoints).toBe("function");
++    expect(typeof picker.addPointAtPosition).toBe("function");
++    expect(typeof picker.updateSVG).toBe("function");
++  });
++
++  // =========================================================================
++  // 2. Public method and no-op behavior
++  // =========================================================================
++  it("P2P::contract::addPointAtPosition_without_poline_returns_null", () => {
++    const picker = new PolinePickerConstructor();
++    connectPicker(picker);
++    expect(picker.addPointAtPosition(50, 50)).toBeNull();
++  });
++
++  it("P2P::contract::updateSVG_without_poline_or_before_connection_is_safe_noop", () => {
++    const picker1 = new PolinePickerConstructor();
++    expect(() => picker1.updateSVG()).not.toThrow();
++
++    connectPicker(picker1);
++    expect(() => picker1.updateSVG()).not.toThrow();
++
++    const picker2 = new PolinePickerConstructor();
++    const poline = new PolineConstructor({
++      anchorColors: [
++        [100, 0.4, 0.4],
++        [200, 0.6, 0.6],
++      ],
++    });
++    picker2.setPoline(poline);
++    expect(() => picker2.updateSVG()).not.toThrow();
++  });
++
++  it("P2P::presentation::setPoline_syncs_palette_and_lightness_background", () => {
++    const picker = new PolinePickerConstructor();
++    connectPicker(picker);
++    const poline = new PolineConstructor({
++      anchorColors: [
++        [90, 0.5, 0.5],
++        [270, 0.5, 0.5],
++      ],
++    });
++    poline.invertedLightness = true;
++    picker.setPoline(poline);
++
++    const host = picker as unknown as MockHTMLElement;
++    const pickerDiv = host.shadowRoot?.querySelector(".picker") as MockElement;
++    expect(pickerDiv).toBeDefined();
++    expect(pickerDiv.style.getPropertyValue("--maxL")).toBe("#000");
++    expect(pickerDiv.style.getPropertyValue("--minL")).toBe("#fff");
++
++    const line = host.shadowRoot?.querySelector(".wheel__line") as MockElement;
++    expect(line?.getAttribute("points")).toBeTruthy();
++  });
++
++  it("P2P::interaction::setAllowAddPoints_dynamically_toggles_canvas_point_addition", () => {
++    const { picker, poline, svg } = createTestPicker();
++    picker.setAttribute("allow-add-points", "");
++    connectPicker(picker);
++
++    // 1. Programmatic setAllowAddPoints(false) overrides declarative attribute for current connection
++    picker.setAllowAddPoints(false);
++    const countBefore = poline.anchorPoints.length;
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 10, clientY: 10 }));
++    expect(poline.anchorPoints.length).toBe(countBefore);
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 1, clientX: 10, clientY: 10 }));
++
++    // 2. Disconnect and reconnect while attribute remains: declarative attribute re-read enables addition
++    disconnectPicker(picker);
++    connectPicker(picker);
++    const svg2 = ((picker as any).shadowRoot as MockShadowRoot).querySelector("svg") as MockElement;
++    svg2.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 10, clientY: 10 }));
++    expect(poline.anchorPoints.length).toBe(countBefore + 1);
++    svg2.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 2, clientX: 10, clientY: 10 }));
++
++    // 3. Remove attribute, disconnect and reconnect: addition is disabled
++    picker.removeAttribute("allow-add-points");
++    disconnectPicker(picker);
++    connectPicker(picker);
++    const countAfter = poline.anchorPoints.length;
++    const svg3 = ((picker as any).shadowRoot as MockShadowRoot).querySelector("svg") as MockElement;
++    svg3.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 3, clientX: 10, clientY: 10 }));
++    expect(poline.anchorPoints.length).toBe(countAfter);
++    svg3.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 3, clientX: 10, clientY: 10 }));
++  });
++
++  // =========================================================================
++  // 3. Visual presentation and synchronization
++  // =========================================================================
++  it("P2P::presentation::polyline_renders_flattened_points_path", () => {
++    const { poline, svg } = createTestPicker();
++    const line = svg.querySelector(".wheel__line") as MockElement;
++    expect(line).toBeDefined();
++    const pointsAttr = line.getAttribute("points") || "";
++
++    // Equivalent SVG grammar coordinate parsing
++    const parsedCoords = parseSvgPoints(pointsAttr);
++    expect(parsedCoords.length).toBe(poline.flattenedPoints.length);
++    expect(parsedCoords.length).toBeGreaterThan(0);
++
++    // Exact numerical and order comparison against poline.flattenedPoints
++    for (let i = 0; i < poline.flattenedPoints.length; i++) {
++      const expectedPt = poline.flattenedPoints[i]!;
++      const expectedX = 50 + (expectedPt.x - 0.5) * 100;
++      const expectedY = 50 + (expectedPt.y - 0.5) * 100;
++      const [actualX, actualY] = parsedCoords[i]!;
++      expect(actualX).toBeCloseTo(expectedX, 1);
++      expect(actualY).toBeCloseTo(expectedY, 1);
++    }
++
++    // Negative mutant validations:
++    // Mutant 1: all coordinates are 0,0 must not match expected
++    const zeroPoints = parsedCoords.map(() => "0,0").join(" ");
++    const zeroParsed = parseSvgPoints(zeroPoints);
++    expect(zeroParsed[0]![0]).not.toBeCloseTo(parsedCoords[0]![0] + 50, 1);
++
++    // Mutant 2: fixed x offset must not match expected
++    const shiftedPoints = parsedCoords.map(([x, y]) => `${x + 25},${y}`).join(" ");
++    const shiftedParsed = parseSvgPoints(shiftedPoints);
++    expect(shiftedParsed[0]![0]).not.toBeCloseTo(parsedCoords[0]![0], 1);
++
++    // Mutant 3: reversed coordinate order must not match expected
++    if (parsedCoords.length >= 2) {
++      const reversedPoints = [...parsedCoords].reverse().map(([x, y]) => `${x},${y}`).join(" ");
++      const reversedParsed = parseSvgPoints(reversedPoints);
++      expect(reversedParsed).not.toEqual(parsedCoords);
++    }
++
++    // Format probes: whitespace-only, comma-only, and mixed separators
++    const wsPoints = "10 20 30 40 50 60";
++    expect(parseSvgPoints(wsPoints)).toEqual([[10, 20], [30, 40], [50, 60]]);
++    const commaPoints = "10,20,30,40,50,60";
++    expect(parseSvgPoints(commaPoints)).toEqual([[10, 20], [30, 40], [50, 60]]);
++    const mixedPoints = "10,20 30,40  50, 60";
++    expect(parseSvgPoints(mixedPoints)).toEqual([[10, 20], [30, 40], [50, 60]]);
++    const sciPoints = "1e1,2e1 -3.5e1,4.2e1";
++    expect(parseSvgPoints(sciPoints)).toEqual([[10, 20], [-35, 42]]);
++  });
++
++  it("P2P::presentation::anchor_and_sample_points_rendered_with_distinct_semantics", () => {
++    const { picker, poline, svg } = createTestPicker();
++    const anchors = svg.querySelectorAll(".wheel__anchor");
++    const samplePoints = svg.querySelectorAll(".wheel__point");
++    expect(anchors.length).toBe(poline.anchorPoints.length);
++    expect(samplePoints.length).toBe(poline.flattenedPoints.length);
++
++    const a0 = anchors[0] as MockElement;
++    expect(a0.getAttribute("r")).toBe("2");
++
++    const s0 = samplePoints[0] as MockElement;
++    const expectedR = 0.5 + poline.flattenedPoints[0]!.color[1];
++    expect(parseFloat(s0.getAttribute("r") || "0")).toBeCloseTo(expectedR, 2);
++    expect(s0.getAttribute("fill")).toBe(poline.flattenedPoints[0]!.hslCSS);
++
++    // Saturation ring geometry verification (background, arc, tick)
++    const ringBgs = svg.querySelectorAll(".wheel__ring-bg");
++    const satArcs = svg.querySelectorAll(".wheel__saturation-ring");
++    const ringTicks = svg.querySelectorAll(".wheel__ring-tick");
++
++    expect(ringBgs.length).toBe(poline.anchorPoints.length);
++    expect(satArcs.length).toBe(poline.anchorPoints.length);
++    expect(ringTicks.length).toBe(poline.anchorPoints.length);
++
++    const bg0 = ringBgs[0] as MockElement;
++    expect(parseFloat(bg0.getAttribute("cx") || "0")).toBeCloseTo(30, 1);
++    expect(parseFloat(bg0.getAttribute("cy") || "0")).toBeCloseTo(30, 1);
++    expect(parseFloat(bg0.getAttribute("r") || "0")).toBeCloseTo(3.5, 1);
++
++    const arc0 = satArcs[0] as MockElement;
++    const arcD = arc0.getAttribute("d") || "";
++    const arcNumbers = arcD.match(/-?(?:\d*\.\d+|\d+)/g)?.map(Number) || [];
++    expect(arcNumbers.length).toBeGreaterThanOrEqual(4);
++    // Arc starts at top (cx, cy - r) = (30, 26.5)
++    expect(arcNumbers[0]).toBeCloseTo(30, 1);
++    expect(arcNumbers[1]).toBeCloseTo(26.5, 1);
++    // For saturation = 0.5, arc ends at bottom (cx, cy + r) = (30, 33.5)
++    const arcEndX = arcNumbers[arcNumbers.length - 2]!;
++    const arcEndY = arcNumbers[arcNumbers.length - 1]!;
++    expect(arcEndX).toBeCloseTo(30, 1);
++    expect(arcEndY).toBeCloseTo(33.5, 1);
++
++    const tick0 = ringTicks[0] as MockElement;
++    expect(parseFloat(tick0.getAttribute("x1") || "0")).toBeCloseTo(30, 1);
++    expect(parseFloat(tick0.getAttribute("y1") || "0")).toBeCloseTo(34, 1);
++    expect(parseFloat(tick0.getAttribute("x2") || "0")).toBeCloseTo(30, 1);
++    expect(parseFloat(tick0.getAttribute("y2") || "0")).toBeCloseTo(35.5, 1);
++
++    // Change saturation alone: moving the center could hide a frozen arc angle.
++    const anchor = poline.anchorPoints[0]!;
++    const otherAnchorPosition = [...poline.anchorPoints[1]!.position];
++    for (const saturation of [0.75, 0.25]) {
++      anchor.position = [0.3, 0.3, saturation];
++      picker.updateSVG();
++      expect(anchor.x).toBe(0.3);
++      expect(anchor.y).toBe(0.3);
++      expect(poline.anchorPoints[1]!.position).toEqual(otherAnchorPosition);
++
++      const currentSvg = picker.shadowRoot!.querySelector("svg") as MockElement;
++      const currentArc = currentSvg.querySelector(".wheel__saturation-ring") as MockElement;
++      const numbers = (currentArc.getAttribute("d") || "").match(/-?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?/gi)?.map(Number) || [];
++      expect(numbers.length).toBeGreaterThanOrEqual(4);
++      expect(numbers[0]).toBeCloseTo(30, 1);
++      expect(numbers[1]).toBeCloseTo(26.5, 1);
++      const endAngle = -Math.PI / 2 + saturation * 2 * Math.PI;
++      expect(numbers.at(-2)).toBeCloseTo(30 + 3.5 * Math.cos(endAngle), 1);
++      expect(numbers.at(-1)).toBeCloseTo(30 + 3.5 * Math.sin(endAngle), 1);
++    }
++  });
++
++  it("P2P::presentation::reduced_palette_cleans_excess_dom_nodes", () => {
++    const { picker, poline, svg } = createTestPicker();
++    poline.addAnchorPoint({ xyz: [0.5, 0.5, 0.5] });
++    picker.updateSVG();
++    const initialAnchors = svg.querySelectorAll(".wheel__anchor").length;
++    const initialSamplePoints = svg.querySelectorAll(".wheel__point").length;
++    expect(initialAnchors).toBe(3);
++    expect(initialSamplePoints).toBe(poline.flattenedPoints.length);
++
++    poline.removeAnchorPoint({ point: poline.anchorPoints[2] });
++    picker.updateSVG();
++
++    const newAnchors = svg.querySelectorAll(".wheel__anchor").length;
++    const newRings = svg.querySelectorAll(".wheel__ring-group").length;
++    const newSamplePoints = svg.querySelectorAll(".wheel__point").length;
++    expect(newAnchors).toBe(poline.anchorPoints.length);
++    expect(newRings).toBe(poline.anchorPoints.length);
++    expect(newSamplePoints).toBe(poline.flattenedPoints.length);
++
++    // Verify container children match exact counts without orphaned nodes
++    const anchorsContainer = svg.querySelector(".wheel__anchors");
++    const pointsContainer = svg.querySelector(".wheel__points");
++    const ringsContainer = svg.querySelector(".wheel__saturation-rings");
++    if (anchorsContainer) expect(anchorsContainer.children.length).toBe(poline.anchorPoints.length);
++    if (pointsContainer) expect(pointsContainer.children.length).toBe(poline.flattenedPoints.length);
++    if (ringsContainer) expect(ringsContainer.children.length).toBe(poline.anchorPoints.length);
++  });
++
++  it("F2P::presentation::inverted_lightness_toggles_background_gradient_stops", () => {
++    const { picker, poline } = createTestPicker();
++    const host = picker as unknown as MockHTMLElement;
++    const pickerDiv = host.shadowRoot?.querySelector(".picker") as MockElement;
++
++    poline.invertedLightness = false;
++    picker.updateSVG();
++    expect(pickerDiv.style.getPropertyValue("--maxL")).toBe("#fff");
++    expect(pickerDiv.style.getPropertyValue("--minL")).toBe("#000");
++
++    poline.invertedLightness = true;
++    picker.updateSVG();
++    expect(pickerDiv.style.getPropertyValue("--maxL")).toBe("#000");
++    expect(pickerDiv.style.getPropertyValue("--minL")).toBe("#fff");
++  });
++
++  it("P2P::presentation::svg_styles_apply_css_custom_properties", () => {
++    const { picker, svg } = createTestPicker();
++    const host = picker as unknown as MockHTMLElement;
++    const styleEl = host.shadowRoot?.querySelector("style") as MockElement;
++    expect(styleEl).toBeDefined();
++    const css = styleEl.textContent;
++    expect(css).toContain("--poline-picker-line-color");
++    expect(css).toContain("--poline-picker-bg-color");
++    expect(css).toContain("--poline-picker-wheel-saturation");
++    expect(css).toContain("--poline-picker-wheel-lightness");
++    expect(css).toContain("--poline-picker-line-width");
++    expect(css).toContain("--poline-picker-ring-width");
++
++    // Device style visibility coverage
++    const ringGroup = svg.querySelector(".wheel__ring-group") as MockElement;
++    expect(ringGroup).toBeDefined();
++    expect(isElementEffectivelyHidden(ringGroup, host.shadowRoot, false)).toBe(false);
++    expect(isElementEffectivelyHidden(ringGroup, host.shadowRoot, true)).toBe(true);
++
++    // Negative / positive verification of effective visibility inspector
++    const dummyShadow = new MockShadowRoot();
++    const dummyGroup = new MockElement("g");
++    dummyGroup.classList.add("wheel__ring-group");
++    dummyShadow.appendChild(dummyGroup);
++
++    // Negative 1: Ordinary CSS hides ring group -> effectively hidden in fine mode as well
++    const ordinaryHideStyle = new MockElement("style");
++    ordinaryHideStyle.textContent = ".wheel__ring-group { display: none; }";
++    dummyShadow.appendChild(ordinaryHideStyle);
++    expect(isElementEffectivelyHidden(dummyGroup, dummyShadow, false)).toBe(true);
++    dummyShadow.removeChild(ordinaryHideStyle);
++
++    // Negative 2: Media query hides only unrelated element -> ring group NOT hidden in coarse mode
++    const unrelatedCoarseStyle = new MockElement("style");
++    unrelatedCoarseStyle.textContent = "@media (pointer: coarse) { .unrelated-element { display: none; } }";
++    dummyShadow.appendChild(unrelatedCoarseStyle);
++    expect(isElementEffectivelyHidden(dummyGroup, dummyShadow, true)).toBe(false);
++    dummyShadow.removeChild(unrelatedCoarseStyle);
++
++    // Negative 3: Ancestor has hidden attribute or inline display: none -> hidden in both modes
++    dummyGroup.setAttribute("hidden", "");
++    expect(isElementEffectivelyHidden(dummyGroup, dummyShadow, false)).toBe(true);
++    expect(isElementEffectivelyHidden(dummyGroup, dummyShadow, true)).toBe(true);
++    dummyGroup.removeAttribute("hidden");
++  });
++
++  // =========================================================================
++  // 4. Interaction enablement and addition behavior
++  // =========================================================================
++  it("P2P::interaction::missing_interactive_attribute_disables_all_interactions", () => {
++    const picker = new PolinePickerConstructor();
++    connectPicker(picker);
++    const poline = new PolineConstructor({
++      anchorColors: [
++        [120, 0.5, 0.5],
++        [240, 0.5, 0.5],
++      ],
++    });
++    picker.setPoline(poline);
++    const host = picker as unknown as MockHTMLElement;
++    const svg = host.shadowRoot?.querySelector("svg") as MockElement;
++
++    const initialX = poline.anchorPoints[0]?.x;
++    const countBefore = poline.anchorPoints.length;
++
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 30 }));
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 50, clientY: 50 }));
++    expect(poline.anchorPoints[0]?.x).toBe(initialX);
++
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 10, clientY: 10 }));
++    expect(poline.anchorPoints.length).toBe(countBefore);
++  });
++
++  it("F2P::interaction::canvas_click_with_allow_add_points_adds_anchor", () => {
++    const { picker, poline, svg } = createTestPicker();
++    const countBefore = poline.anchorPoints.length;
++    const existingPositions = poline.anchorPoints.map((point) => [...point.position]);
++    let changes = 0;
++    picker.addEventListener("poline-change", (event) => {
++      changes++;
++      expectPolineChangeEvent(event as MockCustomEvent, poline);
++    });
++
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 15, clientY: 15 }));
++    expect(poline.anchorPoints.length).toBe(countBefore + 1);
++    const added = poline.anchorPoints[countBefore]!;
++    expect(added.position).toEqual([0.15, 0.15, 0.15]);
++    expect(svg.hasPointerCapture(1)).toBe(true);
++    expect(changes).toBe(1);
++
++    // Continue the same gesture on the newly added point, preserving its z value.
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 25, clientY: 20 }));
++    expect(added.position).toEqual([0.25, 0.2, 0.15]);
++    expect(svg.hasPointerCapture(1)).toBe(true);
++    expect(changes).toBe(2);
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 1, clientX: 25, clientY: 20 }));
++    expect(svg.hasPointerCapture(1)).toBe(false);
++    expect(changes).toBe(2);
++    expect(poline.anchorPoints.length).toBe(countBefore + 1);
++    expect(poline.anchorPoints.slice(0, countBefore).map((point) => point.position)).toEqual(existingPositions);
++  });
++
++  it("P2P::interaction::canvas_click_without_allow_add_points_is_ignored", () => {
++    const picker = new PolinePickerConstructor();
++    (picker as unknown as MockElement).setAttribute("interactive", "");
++    connectPicker(picker);
++    const poline = new PolineConstructor({
++      anchorColors: [
++        [120, 0.5, 0.5],
++        [240, 0.5, 0.5],
++      ],
++    });
++    const p0 = poline.anchorPoints[0];
++    if (p0) p0.position = [0.3, 0.3, 0.5];
++    picker.setPoline(poline);
++    const host = picker as unknown as MockHTMLElement;
++    const svg = host.shadowRoot?.querySelector("svg") as MockElement;
++
++    const countBefore = poline.anchorPoints.length;
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 10, clientY: 10 }));
++    expect(poline.anchorPoints.length).toBe(countBefore);
++
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 30, clientY: 30 }));
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 2, clientX: 45, clientY: 45 }));
++    expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.45, 2);
++  });
++
++  it("P2P::interaction::coarse_pointer_drags_anchor_and_disables_rotary_adjust", () => {
++    isCoarsePointer = true;
++    const { picker, poline, svg } = createTestPicker();
++    const shadow = (picker as any).shadowRoot as MockShadowRoot;
++
++    // Saturation rings are hidden on coarse pointer
++    const rings = svg.querySelectorAll(".wheel__ring-group");
++    if (rings.length > 0) {
++      expect(isElementEffectivelyHidden(rings[0] as MockElement, shadow, true)).toBe(true);
++    }
++
++    // Hover does not trigger .ring-hover on coarse pointer
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    expect(picker.classList.contains("ring-hover")).toBe(false);
++
++    // Pointerdown in ring region does not trigger .ring-adjusting
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    expect(picker.classList.contains("ring-adjusting")).toBe(false);
++
++    // Touch interaction defaults to anchor dragging when anchor hit area applies
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 40, clientY: 40 }));
++    expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.4, 2);
++    expect(picker.classList.contains("ring-adjusting")).toBe(false);
++  });
++
++  it("P2P::interaction::fine_pointer_hover_and_leave_toggles_ring_hover", () => {
++    isCoarsePointer = false;
++    const { picker, svg } = createTestPicker();
++    const shadow = (picker as any).shadowRoot as MockShadowRoot;
++
++    const rings = svg.querySelectorAll(".wheel__ring-group");
++    expect(rings.length).toBeGreaterThan(0);
++    expect(isElementEffectivelyHidden(rings[0] as MockElement, shadow, false)).toBe(false);
++
++    // Hovering over ring adds .ring-hover
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    expect(picker.classList.contains("ring-hover")).toBe(true);
++
++    // Moving away removes .ring-hover
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 90, clientY: 90 }));
++    expect(picker.classList.contains("ring-hover")).toBe(false);
++
++    // Pointerdown in ring hit region starts rotary adjustment
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    expect(picker.classList.contains("ring-adjusting")).toBe(true);
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++
++    // Anchor dragging remains distinct from ring adjustment
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 30 }));
++    expect(picker.classList.contains("ring-adjusting")).toBe(false);
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 1, clientX: 30, clientY: 30 }));
++  });
++
++  it("P2P::interaction::active_rotary_toggles_ring_adjusting_and_releasing_cleans_it", () => {
++    const { picker, svg } = createTestPicker();
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    expect(picker.classList.contains("ring-adjusting")).toBe(true);
++
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    expect(picker.classList.contains("ring-adjusting")).toBe(false);
++  });
++
++  // =========================================================================
++  // 5. Rotary adjustment behavior
++  // =========================================================================
++  it("P2P::rotary::full_revolution_corresponds_to_full_saturation_range", () => {
++    const { picker, poline, svg } = createTestPicker();
++    const anchor0 = poline.anchorPoints[0];
++    if (anchor0) anchor0.position = [anchor0.x, anchor0.y, 0.0];
++
++    const centerX = 30;
++    const centerY = 30;
++    const radius = 3.5;
++    const startAngle = -Math.PI / 2;
++
++    const moveToAngle = (angle: number, shiftKey = false) => {
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", {
++          pointerId: 1,
++          clientX: centerX + radius * Math.cos(angle),
++          clientY: centerY + radius * Math.sin(angle),
++          shiftKey,
++        })
++      );
++    };
++
++    svg.dispatchEvent(
++      new MockPointerEvent("pointerdown", {
++        pointerId: 1,
++        clientX: centerX + radius * Math.cos(startAngle),
++        clientY: centerY + radius * Math.sin(startAngle),
++      })
++    );
++    expect(picker.classList.contains("ring-adjusting")).toBe(true);
++
++    let prevSaturation = poline.anchorPoints[0]?.color[1] ?? 0;
++    expect(prevSaturation).toBeCloseTo(0.0, 2);
++
++    for (let step = 1; step <= 8; step += 1) {
++      moveToAngle(startAngle + step * (Math.PI / 4));
++      const saturation = poline.anchorPoints[0]?.color[1] ?? 0;
++
++      expect(saturation).toBeGreaterThanOrEqual(prevSaturation - 1e-4);
++      expect(saturation - prevSaturation).toBeCloseTo(0.125, 2);
++
++      if (step === 4) {
++        expect(saturation).toBeCloseTo(0.5, 2);
++      }
++      if (step === 8) {
++        expect(saturation).toBeCloseTo(1.0, 2);
++      }
++      prevSaturation = saturation;
++    }
++
++    svg.dispatchEvent(
++      new MockPointerEvent("pointerup", {
++        pointerId: 1,
++        clientX: centerX + radius * Math.cos(startAngle + 8 * (Math.PI / 4)),
++        clientY: centerY + radius * Math.sin(startAngle + 8 * (Math.PI / 4)),
++      })
++    );
++    expect(picker.classList.contains("ring-adjusting")).toBe(false);
++    expect(poline.anchorPoints[0]?.color[1]).toBeCloseTo(1.0, 2);
++  });
++
++  it("P2P::rotary::shift_key_scales_sensitivity_to_two_point_five_turns", () => {
++    const { picker, poline, svg } = createTestPicker();
++    const anchor0 = poline.anchorPoints[0];
++    if (anchor0) anchor0.position = [anchor0.x, anchor0.y, 0.0];
++
++    const centerX = 30;
++    const centerY = 30;
++    const radius = 3.5;
++    const startAngle = -Math.PI / 2;
++
++    const moveToAngle = (angle: number, shiftKey = true) => {
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", {
++          pointerId: 1,
++          clientX: centerX + radius * Math.cos(angle),
++          clientY: centerY + radius * Math.sin(angle),
++          shiftKey,
++        })
++      );
++    };
++
++    svg.dispatchEvent(
++      new MockPointerEvent("pointerdown", {
++        pointerId: 1,
++        clientX: centerX + radius * Math.cos(startAngle),
++        clientY: centerY + radius * Math.sin(startAngle),
++        shiftKey: true,
++      })
++    );
++    expect(picker.classList.contains("ring-adjusting")).toBe(true);
++
++    let prevSaturation = poline.anchorPoints[0]?.color[1] ?? 0;
++    expect(prevSaturation).toBeCloseTo(0.0, 2);
++
++    for (let step = 1; step <= 20; step += 1) {
++      moveToAngle(startAngle + step * (Math.PI / 4), true);
++      const saturation = poline.anchorPoints[0]?.color[1] ?? 0;
++
++      expect(saturation).toBeGreaterThanOrEqual(prevSaturation - 1e-4);
++      expect(saturation - prevSaturation).toBeCloseTo(0.05, 2);
++
++      if (step < 20) {
++        expect(saturation).toBeLessThan(1.0);
++      }
++      if (step === 8) {
++        expect(saturation).toBeCloseTo(0.4, 2);
++      }
++      if (step === 16) {
++        expect(saturation).toBeCloseTo(0.8, 2);
++      }
++      if (step === 20) {
++        expect(saturation).toBeCloseTo(1.0, 2);
++      }
++      prevSaturation = saturation;
++    }
++
++    svg.dispatchEvent(
++      new MockPointerEvent("pointerup", {
++        pointerId: 1,
++        clientX: centerX + radius * Math.cos(startAngle + 20 * (Math.PI / 4)),
++        clientY: centerY + radius * Math.sin(startAngle + 20 * (Math.PI / 4)),
++        shiftKey: true,
++      })
++    );
++    expect(picker.classList.contains("ring-adjusting")).toBe(false);
++    expect(poline.anchorPoints[0]?.color[1]).toBeCloseTo(1.0, 2);
++  });
++
++  it("P2P::rotary::continuous_across_zero_and_three_sixty_degree_boundary", () => {
++    const { poline, svg } = createTestPicker();
++    const anchor0 = poline.anchorPoints[0];
++    if (anchor0) anchor0.color = [anchor0.color[0], 0.5, anchor0.color[2]];
++
++    const angle1 = Math.PI - 0.05;
++    svg.dispatchEvent(
++      new MockPointerEvent("pointerdown", {
++        pointerId: 1,
++        clientX: 30 + 3.5 * Math.cos(angle1),
++        clientY: 30 + 3.5 * Math.sin(angle1),
++      })
++    );
++
++    const angle2 = -Math.PI + 0.05;
++    svg.dispatchEvent(
++      new MockPointerEvent("pointermove", {
++        pointerId: 1,
++        clientX: 30 + 3.5 * Math.cos(angle2),
++        clientY: 30 + 3.5 * Math.sin(angle2),
++      })
++    );
++
++    const sat = poline.anchorPoints[0]?.color[1] ?? 0;
++    expect(sat).toBeGreaterThanOrEqual(0.5);
++    expect(sat - 0.5).toBeLessThan(0.05);
++  });
++
++  it("F2P::rotary::reversing_at_max_boundary_has_no_dead_zone", () => {
++    const { poline, svg } = createTestPicker();
++    const anchor0 = poline.anchorPoints[0];
++    if (anchor0) {
++      anchor0.position = [anchor0.x, anchor0.y, 0.95];
++    }
++
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 33.5, clientY: 30 }));
++    expect(poline.anchorPoints[0]?.color[1]).toBe(1);
++
++    const revAngle = -0.02;
++    const revX = 30 + 3.5 * Math.cos(revAngle);
++    const revY = 30 + 3.5 * Math.sin(revAngle);
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: revX, clientY: revY }));
++
++    expect(poline.anchorPoints[0]?.color[1]).toBeLessThan(1.0);
++  });
++
++  it("F2P::rotary::reversing_at_min_boundary_has_no_dead_zone", () => {
++    const { poline, svg } = createTestPicker();
++    const anchor0 = poline.anchorPoints[0];
++    if (anchor0) {
++      anchor0.position = [anchor0.x, anchor0.y, 0.05];
++    }
++
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 26.5, clientY: 30 }));
++    expect(poline.anchorPoints[0]?.color[1]).toBe(0);
++
++    const revAngle = Math.PI + 0.02;
++    const revX = 30 + 3.5 * Math.cos(revAngle);
++    const revY = 30 + 3.5 * Math.sin(revAngle);
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: revX, clientY: revY }));
++
++    expect(poline.anchorPoints[0]?.color[1]).toBeGreaterThan(0.0);
++  });
++
++  it("F2P::rotary::shift_key_toggle_mid_gesture_is_continuous_without_jump", () => {
++    const { poline, svg } = createTestPicker();
++    const anchor0 = poline.anchorPoints[0];
++    if (anchor0) {
++      anchor0.color = [anchor0.color[0], 0.5, anchor0.color[2]];
++    }
++
++    // 1. Toggle Shift ON mid-gesture
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 33.5, clientY: 30, shiftKey: false }));
++    const satBeforeShift = poline.anchorPoints[0]?.color[1] ?? 0.75;
++
++    const nextAngle1 = 0.02;
++    const nextX1 = 30 + 3.5 * Math.cos(nextAngle1);
++    const nextY1 = 30 + 3.5 * Math.sin(nextAngle1);
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: nextX1, clientY: nextY1, shiftKey: true }));
++
++    const satAfterShift = poline.anchorPoints[0]?.color[1] ?? 0;
++    expect(Math.abs(satAfterShift - satBeforeShift)).toBeLessThan(0.05);
++
++    // 2. Toggle Shift OFF mid-gesture (counter-clockwise)
++    const nextAngle2 = -0.02;
++    const nextX2 = 30 + 3.5 * Math.cos(nextAngle2);
++    const nextY2 = 30 + 3.5 * Math.sin(nextAngle2);
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: nextX2, clientY: nextY2, shiftKey: false }));
++    const satAfterShiftOff = poline.anchorPoints[0]?.color[1] ?? 0;
++    expect(Math.abs(satAfterShiftOff - satAfterShift)).toBeLessThan(0.08);
++  });
++
++  // =========================================================================
++  // 6. Event notification semantics
++  // =========================================================================
++  it("P2P::event::anchor_drag_dispatches_change_with_poline_detail", () => {
++    const { picker, poline, svg } = createTestPicker();
++    const anchor0 = poline.anchorPoints[0]!;
++
++    // Explicitly set dragged anchor saturation to known value 0.42
++    anchor0.position = [0.3, 0.3, 0.42];
++
++    // Record initial coordinates, z, saturation, and colors
++    const initialX = anchor0.x;
++    const initialY = anchor0.y;
++    const initialZ = anchor0.z;
++    const initialSat = anchor0.color[1];
++    const initialHue = anchor0.color[0];
++    const initialCss = anchor0.hslCSS;
++
++    let changeEventCount = 0;
++    let dispatched: MockCustomEvent | null = null;
++    picker.addEventListener("poline-change", (e) => {
++      changeEventCount++;
++      dispatched = e as MockCustomEvent;
++    });
++
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 30 }));
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 45, clientY: 45 }));
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 1, clientX: 45, clientY: 45 }));
++
++    expectPolineChangeEvent(dispatched, poline);
++    expect(changeEventCount).toBe(1);
++
++    // Negative mutation probe: verify helper rejects cancelable: true or composed: true
++    const mutatedCancelable = new MockCustomEvent("poline-change", {
++      detail: { poline },
++      cancelable: true,
++    });
++    expect(() => expectPolineChangeEvent(mutatedCancelable, poline)).toThrow();
++
++    const mutatedComposed = new MockCustomEvent("poline-change", {
++      detail: { poline },
++      composed: true,
++    });
++    expect(() => expectPolineChangeEvent(mutatedComposed, poline)).toThrow();
++
++    // Verify coordinates changed as expected
++    expect(anchor0.x).toBeCloseTo(0.45, 2);
++    expect(anchor0.y).toBeCloseTo(0.45, 2);
++    expect(anchor0.x).not.toBeCloseTo(initialX, 2);
++    expect(anchor0.y).not.toBeCloseTo(initialY, 2);
++
++    // Verify saturation and z preserved at exactly 0.42
++    expect(anchor0.z).toBeCloseTo(0.42, 4);
++    expect(anchor0.color[1]).toBeCloseTo(0.42, 4);
++    expect(anchor0.color[1]).toBeCloseTo(initialSat, 4);
++    expect(anchor0.z).toBeCloseTo(initialZ, 4);
++    expect(anchor0.color[0]).toBeCloseTo(initialHue, 2);
++
++    // Verify derived CSS color updated with new coordinates
++    expect(anchor0.hslCSS).not.toBe(initialCss);
++    const [h0, s0, l0] = anchor0.color;
++    expect(anchor0.hslCSS).toBe(
++      `hsl(${h0.toFixed(2)}, ${(s0 * 100).toFixed(2)}%, ${(l0 * 100).toFixed(2)}%)`
++    );
++  });
++
++  it("P2P::event::rotary_adjustment_dispatches_change_with_poline_detail", () => {
++    const { picker, poline, svg } = createTestPicker();
++    let dispatched: MockCustomEvent | null = null;
++    picker.addEventListener("poline-change", (e) => {
++      dispatched = e as MockCustomEvent;
++    });
++
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 33.5, clientY: 30 }));
++
++    expectPolineChangeEvent(dispatched, poline);
++  });
++
++  it("P2P::event::programmatic_addPointAtPosition_dispatches_change", () => {
++    const { picker, poline } = createTestPicker();
++    let dispatched: MockCustomEvent | null = null;
++    picker.addEventListener("poline-change", (e) => {
++      dispatched = e as MockCustomEvent;
++    });
++
++    const newPt = picker.addPointAtPosition(50, 50);
++    expect(newPt).not.toBeNull();
++    expectPolineChangeEvent(dispatched, poline);
++  });
++
++  it("P2P::event::no_change_dispatched_on_setPoline_setAllowAddPoints_or_updateSVG", () => {
++    const { picker, svg } = createTestPicker();
++    let count = 0;
++    picker.addEventListener("poline-change", () => {
++      count++;
++    });
++
++    picker.setPoline(new PolineConstructor({
++      anchorColors: [
++        [30, 0.4, 0.4],
++        [150, 0.6, 0.6],
++      ],
++    }));
++    picker.setAllowAddPoints(false);
++    picker.updateSVG();
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++
++    expect(count).toBe(0);
++
++    // Multi-instance state isolation check
++    const pickerA = new PolinePickerConstructor();
++    const pickerB = new PolinePickerConstructor();
++    (pickerA as unknown as MockElement).setAttribute("interactive", "");
++    (pickerB as unknown as MockElement).setAttribute("interactive", "");
++    connectPicker(pickerA);
++    connectPicker(pickerB);
++
++    const polineA = new PolineConstructor({
++      anchorColors: [
++        [0, 0.5, 0.5],
++        [180, 0.5, 0.5],
++      ],
++    });
++    const polineB = new PolineConstructor({
++      anchorColors: [
++        [90, 0.5, 0.5],
++        [270, 0.5, 0.5],
++      ],
++    });
++    const pA0 = polineA.anchorPoints[0];
++    if (pA0) pA0.position = [0.3, 0.3, 0.5];
++    const pB0 = polineB.anchorPoints[0];
++    if (pB0) pB0.position = [0.3, 0.3, 0.5];
++    pickerA.setPoline(polineA);
++    pickerB.setPoline(polineB);
++
++    let countA = 0;
++    let countB = 0;
++    pickerA.addEventListener("poline-change", () => countA++);
++    pickerB.addEventListener("poline-change", () => countB++);
++
++    const svgA = (pickerA as unknown as MockHTMLElement).shadowRoot?.querySelector("svg") as MockElement;
++    svgA.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    svgA.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 33.5, clientY: 30 }));
++
++    expect(countA).toBe(1);
++    expect(countB).toBe(0);
++    expect(pickerB.classList.contains("ring-adjusting")).toBe(false);
++    expect(pickerA.classList.contains("ring-adjusting")).toBe(true);
++  });
++
++  it("P2P::isolation::explicitly_shared_poline_preserves_reference_semantics", () => {
++    const pickerA = new PolinePickerConstructor();
++    const pickerB = new PolinePickerConstructor();
++    (pickerA as unknown as MockElement).setAttribute("interactive", "");
++    (pickerB as unknown as MockElement).setAttribute("interactive", "");
++    connectPicker(pickerA);
++    connectPicker(pickerB);
++
++    const sharedPoline = new PolineConstructor({
++      anchorColors: [
++        [120, 0.5, 0.5],
++        [240, 0.5, 0.5],
++      ],
++      numPoints: 4,
++    });
++    const p0 = sharedPoline.anchorPoints[0];
++    const p1 = sharedPoline.anchorPoints[1];
++    if (p0) p0.position = [0.3, 0.3, 0.5];
++    if (p1) p1.position = [0.7, 0.7, 0.5];
++
++    pickerA.setPoline(sharedPoline);
++    pickerB.setPoline(sharedPoline);
++
++    let countA = 0;
++    let countB = 0;
++    let dispatchedA: MockCustomEvent | null = null;
++    let dispatchedB: MockCustomEvent | null = null;
++    pickerA.addEventListener("poline-change", (e) => {
++      countA++;
++      dispatchedA = e as MockCustomEvent;
++    });
++    pickerB.addEventListener("poline-change", (e) => {
++      countB++;
++      dispatchedB = e as MockCustomEvent;
++    });
++
++    const svgA = (pickerA as unknown as MockHTMLElement).shadowRoot?.querySelector("svg") as MockElement;
++    const svgB = (pickerB as unknown as MockHTMLElement).shadowRoot?.querySelector("svg") as MockElement;
++
++    const initialAnchorB0 = svgB.querySelectorAll(".wheel__anchor")[0] as MockElement;
++    expect(parseFloat(initialAnchorB0.getAttribute("cx") || "0")).toBeCloseTo(30, 1);
++    expect(parseFloat(initialAnchorB0.getAttribute("cy") || "0")).toBeCloseTo(30, 1);
++
++    svgA.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 30 }));
++    svgA.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 45, clientY: 45 }));
++    svgA.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 1, clientX: 45, clientY: 45 }));
++
++    // Confirm sharedPoline data modified
++    const anchor0 = sharedPoline.anchorPoints[0]!;
++    expect(anchor0.x).toBeCloseTo(0.45, 2);
++    expect(anchor0.y).toBeCloseTo(0.45, 2);
++
++    // Confirm only pickerA dispatched poline-change
++    expect(countA).toBe(1);
++    expectPolineChangeEvent(dispatchedA, sharedPoline);
++    expect(countB).toBe(0);
++    expect(dispatchedB).toBeNull();
++
++    // Confirm pickerB did not acquire pointer capture
++    expect(svgB.hasPointerCapture(1)).toBe(false);
++
++    // Confirm pickerB has no .ring-hover or .ring-adjusting
++    expect(pickerB.classList.contains("ring-hover")).toBe(false);
++    expect(pickerB.classList.contains("ring-adjusting")).toBe(false);
++
++    // Confirm pickerB SVG did not automatically refresh
++    const anchorB0After = svgB.querySelectorAll(".wheel__anchor")[0] as MockElement;
++    expect(parseFloat(anchorB0After.getAttribute("cx") || "0")).toBeCloseTo(30, 1);
++    expect(parseFloat(anchorB0After.getAttribute("cy") || "0")).toBeCloseTo(30, 1);
++
++    // Refresh pickerB SVG and confirm it displays updated data from sharedPoline
++    pickerB.updateSVG();
++    const anchorB0Updated = svgB.querySelectorAll(".wheel__anchor")[0] as MockElement;
++    expect(parseFloat(anchorB0Updated.getAttribute("cx") || "0")).toBeCloseTo(45, 1);
++    expect(parseFloat(anchorB0Updated.getAttribute("cy") || "0")).toBeCloseTo(45, 1);
++    expect(countB).toBe(0);
++  });
++
++  it("F2P::event::zero_displacement_or_zero_angle_does_not_dispatch_change", () => {
++    const { picker, poline, svg } = createTestPicker();
++    let count = 0;
++    picker.addEventListener("poline-change", () => {
++      count++;
++    });
++
++    // 1. Zero displacement drag
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 30 }));
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 30, clientY: 30 }));
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 1, clientX: 30, clientY: 30 }));
++
++    // 2. Zero angular displacement
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 30, clientY: 26.5 }));
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 2, clientX: 30, clientY: 26.5 }));
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 2, clientX: 30, clientY: 26.5 }));
++
++    expect(count).toBe(0);
++
++    // 3. Pointer moves but saturation already at 1.0 boundary (no final data change)
++    const anchor0 = poline.anchorPoints[0];
++    if (anchor0) anchor0.position = [anchor0.x, anchor0.y, 1.0];
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 3, clientX: 30, clientY: 26.5 }));
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 3, clientX: 33.5, clientY: 30 }));
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 3, clientX: 33.5, clientY: 30 }));
++
++    expect(count).toBe(0);
++
++    // 4. Pointer moves but saturation already at 0.0 boundary (no final data change)
++    if (anchor0) anchor0.position = [anchor0.x, anchor0.y, 0.0];
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 4, clientX: 30, clientY: 26.5 }));
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 4, clientX: 26.5, clientY: 30 }));
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 4, clientX: 26.5, clientY: 30 }));
++
++    expect(count).toBe(0);
++
++    // 5. Clamped boundary drag with clampToCircle enabled (model equality check)
++    const clampedPoline = new PolineConstructor({
++      anchorColors: [
++        [0, 0.5, 0.5],
++        [180, 0.5, 0.5],
++      ],
++      clampToCircle: true,
++    });
++    const clampedPicker = new PolinePickerConstructor();
++    (clampedPicker as unknown as MockElement).setAttribute("interactive", "");
++    connectPicker(clampedPicker);
++    clampedPicker.setPoline(clampedPoline);
++    const clampedSvg = ((clampedPicker as unknown as MockHTMLElement).shadowRoot as MockShadowRoot).querySelector("svg") as MockElement;
++
++    // Place anchor on boundary at (1.0, 0.5)
++    const ca0 = clampedPoline.anchorPoints[0]!;
++    ca0.position = [1.0, 0.5, 0.5];
++    clampedPicker.updateSVG();
++
++    let clampedCount = 0;
++    clampedPicker.addEventListener("poline-change", () => clampedCount++);
++
++    // Drag anchor outside circle: (100, 50) -> (120, 50)
++    clampedSvg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 10, clientX: 100, clientY: 50 }));
++    clampedSvg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 10, clientX: 120, clientY: 50 }));
++    expect(ca0.x).toBeCloseTo(1.0, 2);
++    expect(ca0.y).toBeCloseTo(0.5, 2);
++
++    // Reset event counter after initial outward move
++    clampedCount = 0;
++
++    // Move pointer even farther outside in the same direction: (140, 50)
++    clampedSvg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 10, clientX: 140, clientY: 50 }));
++    expect(ca0.x).toBeCloseTo(1.0, 2);
++    expect(ca0.y).toBeCloseTo(0.5, 2);
++    expect(ca0.color[1]).toBeCloseTo(0.5, 2);
++    expect(clampedCount).toBe(0);
++    clampedSvg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 10, clientX: 140, clientY: 50 }));
++  });
++
++  // =========================================================================
++  // 7. Responsibility separation and stability
++  // =========================================================================
++  it("F2P::lifecycle::active_pointer_exclusivity_isolates_secondary_pointers", () => {
++    // 1. Anchor drag interaction exclusivity
++    const { picker, poline, svg } = createTestPicker();
++    const parent = new MockElement("div");
++    parent.appendChild(picker as unknown as MockElement);
++    let parentPointerDownCount = 0;
++    parent.addEventListener("pointerdown", () => { parentPointerDownCount++; });
++
++    // Primary pointer initiates anchor drag and stops propagation
++    const primaryDown = new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 30, bubbles: true });
++    svg.dispatchEvent(primaryDown);
++    expect(primaryDown.propagationStopped).toBe(true);
++    expect(parentPointerDownCount).toBe(0);
++
++    // Secondary pointer attempts interaction on anchor 1
++    const secondaryDown = new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 70, clientY: 70, bubbles: true });
++    svg.dispatchEvent(secondaryDown);
++    expect(secondaryDown.propagationStopped).toBe(true);
++    expect(parentPointerDownCount).toBe(0);
++
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 2, clientX: 85, clientY: 85 }));
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 2, clientX: 85, clientY: 85 }));
++    svg.dispatchEvent(new MockPointerEvent("pointercancel", { pointerId: 2 }));
++
++    // Secondary pointer did not mutate anchor 1 or hijack active drag
++    expect(poline.anchorPoints[1]?.x).toBeCloseTo(0.7, 2);
++
++    // Primary pointer continues and finishes anchor 0 drag
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 45, clientY: 45 }));
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 1, clientX: 45, clientY: 45 }));
++    expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.45, 2);
++
++    // 2. Rotary adjustment interaction exclusivity
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 3, clientX: 45, clientY: 41.5 }));
++    expect(picker.classList.contains("ring-adjusting")).toBe(true);
++    const satBefore = poline.anchorPoints[0]?.color[1];
++
++    // Secondary pointer attempts drag during active rotary adjustment
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 4, clientX: 70, clientY: 70 }));
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 4, clientX: 80, clientY: 80 }));
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 4, clientX: 80, clientY: 80 }));
++
++    // Interaction remained owned by pointer 3 without disruption
++    expect(picker.classList.contains("ring-adjusting")).toBe(true);
++    expect(poline.anchorPoints[1]?.x).toBeCloseTo(0.7, 2);
++
++    // Primary pointer finishes rotary adjustment
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 3, clientX: 48.5, clientY: 45 }));
++    svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 3, clientX: 48.5, clientY: 45 }));
++    expect(picker.classList.contains("ring-adjusting")).toBe(false);
++    expect(poline.anchorPoints[0]?.color[1]).not.toBe(satBefore);
++  });
++
++  it("F2P::lifecycle::pointercancel_terminates_interaction_and_cleans_state", () => {
++    const { picker, poline, svg } = createTestPicker();
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    expect(picker.classList.contains("ring-adjusting")).toBe(true);
++
++    let changeAfterCancel = false;
++    picker.addEventListener("poline-change", () => {
++      changeAfterCancel = true;
++    });
++
++    svg.dispatchEvent(new MockPointerEvent("pointercancel", { pointerId: 1 }));
++    expect(picker.classList.contains("ring-adjusting")).toBe(false);
++
++    const satBefore = poline.anchorPoints[0]?.color[1];
++    svg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 1, clientX: 33.5, clientY: 30 }));
++    expect(poline.anchorPoints[0]?.color[1]).toBe(satBefore);
++    expect(changeAfterCancel).toBe(false);
++  });
++
++  it("F2P::lifecycle::lostpointercapture_terminates_only_the_active_gesture", () => {
++    isCoarsePointer = false;
++    const picker = new PolinePickerConstructor();
++    (picker as unknown as MockElement).setAttribute("interactive", "");
++    connectPicker(picker);
++
++    const host = picker as unknown as MockHTMLElement;
++    let changeCount = 0;
++    let lastChangeEvent: MockCustomEvent | null = null;
++    const onPolineChange = (e: unknown) => {
++      changeCount++;
++      lastChangeEvent = e as MockCustomEvent;
++    };
++    picker.addEventListener("poline-change", onPolineChange);
++
++    try {
++      // =====================================================================
++      // Scenario A: non-active capture loss must not terminate an anchor drag
++      // =====================================================================
++      const polineA = new PolineConstructor({
++        anchorColors: [
++          [120, 0.5, 0.5],
++          [240, 0.5, 0.5],
++        ],
++        numPoints: 4,
++      });
++      const pA0 = polineA.anchorPoints[0];
++      const pA1 = polineA.anchorPoints[1];
++      if (pA0) pA0.position = [0.3, 0.3, 0.5];
++      if (pA1) pA1.position = [0.7, 0.7, 0.5];
++      picker.setPoline(polineA);
++
++      const svgA = host.shadowRoot?.querySelector("svg") as MockElement;
++      expect(svgA).toBeDefined();
++
++      // Start anchor drag with pointerId 1 at anchor 0 (30, 30)
++      svgA.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 30 })
++      );
++      expect(svgA.hasPointerCapture(1)).toBe(true);
++
++      // Simulate capture loss for a different pointer ID (99)
++      svgA.setPointerCapture(99);
++      expect(svgA.hasPointerCapture(99)).toBe(true);
++      expect(svgA.hasPointerCapture(1)).toBe(true);
++
++      svgA.releasePointerCapture(99);
++      expect(svgA.hasPointerCapture(99)).toBe(false);
++
++      svgA.dispatchEvent(
++        new MockPointerEvent("lostpointercapture", { pointerId: 99 })
++      );
++      expect(svgA.hasPointerCapture(1)).toBe(true);
++
++      // Move pointer 1 to (40, 40)
++      svgA.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 1, clientX: 40, clientY: 40 })
++      );
++
++      expect(polineA.anchorPoints[0]?.x).toBeCloseTo(0.4, 2);
++      expect(polineA.anchorPoints[0]?.y).toBeCloseTo(0.4, 2);
++      expect(changeCount).toBe(1);
++      expectPolineChangeEvent(lastChangeEvent, polineA);
++      expect(svgA.hasPointerCapture(1)).toBe(true);
++
++      // Complete pointer 1 normally
++      svgA.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 1, clientX: 40, clientY: 40 })
++      );
++      expect(svgA.hasPointerCapture(1)).toBe(false);
++
++      // Reset event counters before Scenario B
++      changeCount = 0;
++      lastChangeEvent = null;
++
++      // =====================================================================
++      // Scenario B: active capture loss must terminate an anchor drag
++      // =====================================================================
++      const polineB = new PolineConstructor({
++        anchorColors: [
++          [100, 0.5, 0.5],
++          [200, 0.5, 0.5],
++        ],
++        numPoints: 4,
++      });
++      const pB0 = polineB.anchorPoints[0];
++      const pB1 = polineB.anchorPoints[1];
++      if (pB0) pB0.position = [0.3, 0.3, 0.5];
++      if (pB1) pB1.position = [0.7, 0.7, 0.5];
++      picker.setPoline(polineB);
++
++      const gestureSvgB = host.shadowRoot?.querySelector("svg") as MockElement;
++      expect(gestureSvgB).toBeDefined();
++
++      // Start anchor drag with pointerId 2 at (30, 30)
++      gestureSvgB.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 30, clientY: 30 })
++      );
++      expect(gestureSvgB.hasPointerCapture(2)).toBe(true);
++
++      // Snapshot values
++      const snapBX = polineB.anchorPoints[0]?.x;
++      const snapBY = polineB.anchorPoints[0]?.y;
++      const snapBZ = polineB.anchorPoints[0]?.z;
++      const snapBSat = polineB.anchorPoints[0]?.color[1];
++      const snapBChangeCount = changeCount;
++
++      // Simulate capture loss
++      gestureSvgB.releasePointerCapture(2);
++      expect(gestureSvgB.hasPointerCapture(2)).toBe(false);
++      gestureSvgB.dispatchEvent(
++        new MockPointerEvent("lostpointercapture", { pointerId: 2 })
++      );
++
++      // Assert immediately: no value change, no events, visual state cleared
++      expect(polineB.anchorPoints[0]?.x).toBe(snapBX);
++      expect(polineB.anchorPoints[0]?.y).toBe(snapBY);
++      expect(polineB.anchorPoints[0]?.z).toBe(snapBZ);
++      expect(polineB.anchorPoints[0]?.color[1]).toBe(snapBSat);
++      expect(changeCount).toBe(snapBChangeCount);
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++      expect(picker.classList.contains("ring-hover")).toBe(false);
++
++      // Stale events for interrupted pointer 2
++      gestureSvgB.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 2, clientX: 45, clientY: 45 })
++      );
++      gestureSvgB.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 2, clientX: 45, clientY: 45 })
++      );
++      gestureSvgB.dispatchEvent(
++        new MockPointerEvent("pointercancel", { pointerId: 2 })
++      );
++
++      expect(polineB.anchorPoints[0]?.x).toBe(snapBX);
++      expect(polineB.anchorPoints[0]?.y).toBe(snapBY);
++      expect(polineB.anchorPoints[0]?.z).toBe(snapBZ);
++      expect(polineB.anchorPoints[0]?.color[1]).toBe(snapBSat);
++      expect(changeCount).toBe(snapBChangeCount);
++
++      // Start fresh anchor drag with pointerId 3 at (30, 30)
++      const currentSvgB = host.shadowRoot?.querySelector("svg") as MockElement;
++      currentSvgB.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 3, clientX: 30, clientY: 30 })
++      );
++      expect(currentSvgB.hasPointerCapture(3)).toBe(true);
++
++      // Move pointer 3 to (35, 35)
++      currentSvgB.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 3, clientX: 35, clientY: 35 })
++      );
++      currentSvgB.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 3, clientX: 35, clientY: 35 })
++      );
++
++      expect(polineB.anchorPoints[0]?.x).toBeCloseTo(0.35, 2);
++      expect(polineB.anchorPoints[0]?.y).toBeCloseTo(0.35, 2);
++      expect(changeCount).toBe(1);
++      expectPolineChangeEvent(lastChangeEvent, polineB);
++      expect(currentSvgB.hasPointerCapture(3)).toBe(false);
++
++      // Reset event counters before Scenario C
++      changeCount = 0;
++      lastChangeEvent = null;
++
++      // =====================================================================
++      // Scenario C: active capture loss must terminate rotary adjustment
++      // =====================================================================
++      const polineC = new PolineConstructor({
++        anchorColors: [
++          [120, 0.5, 0.5],
++          [240, 0.5, 0.5],
++        ],
++        numPoints: 4,
++      });
++      const pC0 = polineC.anchorPoints[0];
++      if (pC0) pC0.position = [0.3, 0.3, 0.5];
++      picker.setPoline(polineC);
++
++      const gestureSvgC = host.shadowRoot?.querySelector("svg") as MockElement;
++      expect(gestureSvgC).toBeDefined();
++
++      // Begin rotary adjustment at (30, 26.5) with pointerId 4
++      gestureSvgC.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 4, clientX: 30, clientY: 26.5 })
++      );
++      expect(picker.classList.contains("ring-adjusting")).toBe(true);
++      expect(gestureSvgC.hasPointerCapture(4)).toBe(true);
++
++      // Snapshot values
++      const snapCSat = polineC.anchorPoints[0]?.color[1];
++      const snapCX = polineC.anchorPoints[0]?.x;
++      const snapCY = polineC.anchorPoints[0]?.y;
++      const snapCZ = polineC.anchorPoints[0]?.z;
++      const snapCChangeCount = changeCount;
++
++      // Simulate capture loss
++      gestureSvgC.releasePointerCapture(4);
++      expect(gestureSvgC.hasPointerCapture(4)).toBe(false);
++      gestureSvgC.dispatchEvent(
++        new MockPointerEvent("lostpointercapture", { pointerId: 4 })
++      );
++
++      // Assert immediately: no value change, no events, visual state cleared
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++      expect(picker.classList.contains("ring-hover")).toBe(false);
++      expect(polineC.anchorPoints[0]?.color[1]).toBe(snapCSat);
++      expect(polineC.anchorPoints[0]?.x).toBe(snapCX);
++      expect(polineC.anchorPoints[0]?.y).toBe(snapCY);
++      expect(polineC.anchorPoints[0]?.z).toBe(snapCZ);
++      expect(changeCount).toBe(snapCChangeCount);
++
++      // Stale events for interrupted pointer 4
++      gestureSvgC.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 4, clientX: 33.5, clientY: 30 })
++      );
++      gestureSvgC.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 4, clientX: 33.5, clientY: 30 })
++      );
++      gestureSvgC.dispatchEvent(
++        new MockPointerEvent("pointercancel", { pointerId: 4 })
++      );
++
++      expect(polineC.anchorPoints[0]?.color[1]).toBe(snapCSat);
++      expect(polineC.anchorPoints[0]?.x).toBe(snapCX);
++      expect(polineC.anchorPoints[0]?.y).toBe(snapCY);
++      expect(polineC.anchorPoints[0]?.z).toBe(snapCZ);
++      expect(changeCount).toBe(snapCChangeCount);
++
++      // Start fresh rotary gesture on pointerId 5
++      const currentSvgC = host.shadowRoot?.querySelector("svg") as MockElement;
++      currentSvgC.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 5, clientX: 30, clientY: 26.5 })
++      );
++      expect(picker.classList.contains("ring-adjusting")).toBe(true);
++      expect(currentSvgC.hasPointerCapture(5)).toBe(true);
++
++      // Move 90 degrees clockwise to (33.5, 30)
++      currentSvgC.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 5, clientX: 33.5, clientY: 30 })
++      );
++      currentSvgC.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 5, clientX: 33.5, clientY: 30 })
++      );
++
++      expect(polineC.anchorPoints[0]?.color[1]).not.toBe(snapCSat);
++      expect(polineC.anchorPoints[0]?.x).toBeCloseTo(snapCX!, 10);
++      expect(polineC.anchorPoints[0]?.y).toBeCloseTo(snapCY!, 10);
++      expect(changeCount).toBe(1);
++      expectPolineChangeEvent(lastChangeEvent, polineC);
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++      expect(currentSvgC.hasPointerCapture(5)).toBe(false);
++    } finally {
++      picker.removeEventListener("poline-change", onPolineChange);
++      disconnectPicker(picker);
++    }
++  });
++
++  it("F2P::lifecycle::disconnect_cleans_classes", () => {
++    const { picker, poline, svg } = createTestPicker();
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++    expect(picker.classList.contains("ring-adjusting")).toBe(true);
++
++    const host = picker as unknown as MockHTMLElement;
++    const line = host.shadowRoot?.querySelector(".wheel__line") as MockElement;
++    expect(line).toBeDefined();
++    const initialPoints = line?.getAttribute("points");
++    expect(initialPoints).toBeTruthy();
++    const initialFlattenedX0 = poline.flattenedPoints[0]!.x;
++
++    // Record presentation attributes prior to disconnect
++    const initialAnchors = host.shadowRoot?.querySelectorAll(".wheel__anchor") as MockElement[];
++    const initialAnchorAttrs = initialAnchors.map((a) => ({
++      cx: a.getAttribute("cx"),
++      cy: a.getAttribute("cy"),
++      r: a.getAttribute("r"),
++    }));
++    const initialRings = host.shadowRoot?.querySelectorAll(".wheel__saturation-ring") as MockElement[];
++    const initialRingAttrs = initialRings.map((r) => r.getAttribute("d"));
++    const pickerDiv = host.shadowRoot?.querySelector(".picker") as MockElement;
++    const initialMaxL = pickerDiv.style.getPropertyValue("--maxL");
++    const initialMinL = pickerDiv.style.getPropertyValue("--minL");
++
++    let changeDispatchedWhileDisconnected = false;
++    picker.addEventListener("poline-change", () => {
++      changeDispatchedWhileDisconnected = true;
++    });
++
++    disconnectPicker(picker);
++    expect(picker.classList.contains("ring-adjusting")).toBe(false);
++    expect(picker.classList.contains("ring-hover")).toBe(false);
++
++    // Mutate palette data via public Poline API while disconnected
++    const p0 = poline.anchorPoints[0]!;
++    poline.updateAnchorPoint({ point: p0, xyz: [0.1, 0.9, 0.8] });
++    expect(poline.flattenedPoints[0]!.x).not.toBe(initialFlattenedX0);
++
++    // In disconnected state, updateSVG() must be a safe no-op: no DOM changes and no events
++    expect(() => picker.updateSVG()).not.toThrow();
++    expect(line?.getAttribute("points")).toBe(initialPoints);
++    expect(changeDispatchedWhileDisconnected).toBe(false);
++
++    // Assert all recorded attributes remain unchanged
++    const currentAnchors = host.shadowRoot?.querySelectorAll(".wheel__anchor") as MockElement[];
++    currentAnchors.forEach((a, idx) => {
++      expect(a.getAttribute("cx")).toBe(initialAnchorAttrs[idx]?.cx);
++      expect(a.getAttribute("cy")).toBe(initialAnchorAttrs[idx]?.cy);
++      expect(a.getAttribute("r")).toBe(initialAnchorAttrs[idx]?.r);
++    });
++    const currentRings = host.shadowRoot?.querySelectorAll(".wheel__saturation-ring") as MockElement[];
++    currentRings.forEach((r, idx) => {
++      expect(r.getAttribute("d")).toBe(initialRingAttrs[idx]);
++    });
++    expect(pickerDiv.style.getPropertyValue("--maxL")).toBe(initialMaxL);
++    expect(pickerDiv.style.getPropertyValue("--minL")).toBe(initialMinL);
++
++    // Reconnecting resumes synchronization through the current presentation.
++    connectPicker(picker);
++    picker.updateSVG();
++
++    const currentLine = host.shadowRoot?.querySelector(
++      ".wheel__line"
++    ) as MockElement;
++    expect(currentLine).toBeDefined();
++    expect(currentLine.getAttribute("points")).not.toBe(initialPoints);
++  });
++
++  it("F2P::lifecycle::reconnect_restores_clean_state_without_duplicate_events", () => {
++    const { picker, poline, svg } = createTestPicker();
++    svg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 26.5 }));
++
++    disconnectPicker(picker);
++    connectPicker(picker);
++
++    expect(picker.classList.contains("ring-adjusting")).toBe(false);
++
++    const host = picker as unknown as MockHTMLElement;
++    const activeSvg = host.shadowRoot?.querySelector("svg") as MockElement;
++
++    let changeCount = 0;
++    picker.addEventListener("poline-change", () => {
++      changeCount++;
++    });
++
++    activeSvg.dispatchEvent(new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 30, clientY: 30 }));
++    activeSvg.dispatchEvent(new MockPointerEvent("pointermove", { pointerId: 2, clientX: 40, clientY: 40 }));
++    activeSvg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 2, clientX: 40, clientY: 40 }));
++
++    expect(changeCount).toBe(1);
++    expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.4, 2);
++  });
++
++  it("F2P::lifecycle::setpoline_during_active_gesture_invalidates_stale_pointer_events", () => {
++    const picker = new PolinePickerConstructor();
++    (picker as unknown as MockElement).setAttribute("interactive", "");
++    connectPicker(picker);
++
++    try {
++      const host = picker as unknown as MockHTMLElement;
++
++      // =====================================================================
++      // Scenario A: active anchor drag
++      // =====================================================================
++      const oldPolineA = new PolineConstructor({
++        anchorColors: [
++          [120, 0.5, 0.5],
++          [240, 0.5, 0.5],
++        ],
++        numPoints: 4,
++      });
++      const p0 = oldPolineA.anchorPoints[0];
++      const p1 = oldPolineA.anchorPoints[1];
++      if (p0) p0.position = [0.3, 0.3, 0.5];
++      if (p1) p1.position = [0.7, 0.7, 0.5];
++
++      picker.setPoline(oldPolineA);
++
++      let changeCountA = 0;
++      let lastChangeEventA: MockCustomEvent | null = null;
++      const onPolineChangeA = (e: unknown) => {
++        changeCountA++;
++        lastChangeEventA = e as MockCustomEvent;
++      };
++      picker.addEventListener("poline-change", onPolineChangeA);
++
++      const gestureSvgA = host.shadowRoot?.querySelector("svg") as MockElement;
++      expect(gestureSvgA).toBeDefined();
++
++      // Anchor 0 is at (30, 30). Start anchor drag with pointerId 1
++      gestureSvgA.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 30 })
++      );
++      expect(gestureSvgA.hasPointerCapture(1)).toBe(true);
++
++      // Deterministic new palette
++      const newPolineA = new PolineConstructor({
++        anchorColors: [
++          [60, 0.6, 0.6],
++          [180, 0.6, 0.6],
++        ],
++        numPoints: 4,
++      });
++      const np0 = newPolineA.anchorPoints[0];
++      const np1 = newPolineA.anchorPoints[1];
++      if (np0) np0.position = [0.2, 0.2, 0.6];
++      if (np1) np1.position = [0.8, 0.8, 0.6];
++
++      // Replace palette while pointer 1 remains active
++      picker.setPoline(newPolineA);
++
++      // Re-query current SVG from shadowRoot to avoid detached node reference
++      let currentSvgA = host.shadowRoot?.querySelector("svg") as MockElement;
++      expect(currentSvgA).toBeDefined();
++
++      // Assert immediately: no event, no adjusting/hover classes, pointer capture released on original gesture SVG
++      expect(changeCountA).toBe(0);
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++      expect(picker.classList.contains("ring-hover")).toBe(false);
++      expect(gestureSvgA.hasPointerCapture(1)).toBe(false);
++
++      // Snapshot point values in both palettes
++      const oldSnapA0_x = oldPolineA.anchorPoints[0]?.x;
++      const oldSnapA0_y = oldPolineA.anchorPoints[0]?.y;
++      const oldSnapA0_z = oldPolineA.anchorPoints[0]?.z;
++      const oldSnapA0_sat = oldPolineA.anchorPoints[0]?.color[1];
++      const oldSnapA1_x = oldPolineA.anchorPoints[1]?.x;
++      const oldSnapA1_y = oldPolineA.anchorPoints[1]?.y;
++
++      const newSnapA0_x = newPolineA.anchorPoints[0]?.x;
++      const newSnapA0_y = newPolineA.anchorPoints[0]?.y;
++      const newSnapA0_z = newPolineA.anchorPoints[0]?.z;
++      const newSnapA0_sat = newPolineA.anchorPoints[0]?.color[1];
++      const newSnapA1_x = newPolineA.anchorPoints[1]?.x;
++      const newSnapA1_y = newPolineA.anchorPoints[1]?.y;
++
++      // Dispatch stale pointermove, pointerup, and pointercancel for interrupted pointer 1
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 1, clientX: 45, clientY: 45 })
++      );
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 1, clientX: 45, clientY: 45 })
++      );
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("pointercancel", { pointerId: 1 })
++      );
++
++      // Neither palette changed; no events dispatched
++      expect(oldPolineA.anchorPoints[0]?.x).toBe(oldSnapA0_x);
++      expect(oldPolineA.anchorPoints[0]?.y).toBe(oldSnapA0_y);
++      expect(oldPolineA.anchorPoints[0]?.z).toBe(oldSnapA0_z);
++      expect(oldPolineA.anchorPoints[0]?.color[1]).toBe(oldSnapA0_sat);
++      expect(oldPolineA.anchorPoints[1]?.x).toBe(oldSnapA1_x);
++      expect(oldPolineA.anchorPoints[1]?.y).toBe(oldSnapA1_y);
++
++      expect(newPolineA.anchorPoints[0]?.x).toBe(newSnapA0_x);
++      expect(newPolineA.anchorPoints[0]?.y).toBe(newSnapA0_y);
++      expect(newPolineA.anchorPoints[0]?.z).toBe(newSnapA0_z);
++      expect(newPolineA.anchorPoints[0]?.color[1]).toBe(newSnapA0_sat);
++      expect(newPolineA.anchorPoints[1]?.x).toBe(newSnapA1_x);
++      expect(newPolineA.anchorPoints[1]?.y).toBe(newSnapA1_y);
++      expect(changeCountA).toBe(0);
++
++      // Start fresh anchor drag on new palette with pointerId 2 against new anchor 0 (at 20, 20)
++      currentSvgA = host.shadowRoot?.querySelector("svg") as MockElement;
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 20, clientY: 20 })
++      );
++      expect(currentSvgA.hasPointerCapture(2)).toBe(true);
++
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 2, clientX: 35, clientY: 35 })
++      );
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 2, clientX: 35, clientY: 35 })
++      );
++
++      expect(newPolineA.anchorPoints[0]?.x).toBeCloseTo(0.35, 2);
++      expect(newPolineA.anchorPoints[0]?.y).toBeCloseTo(0.35, 2);
++      expect(oldPolineA.anchorPoints[0]?.x).toBe(oldSnapA0_x);
++      expect(oldPolineA.anchorPoints[0]?.y).toBe(oldSnapA0_y);
++      expect(changeCountA).toBe(1);
++      expectPolineChangeEvent(lastChangeEventA, newPolineA);
++
++      picker.removeEventListener("poline-change", onPolineChangeA);
++
++      // =====================================================================
++      // Scenario B: active rotary adjustment
++      // =====================================================================
++      const oldPolineB = new PolineConstructor({
++        anchorColors: [
++          [120, 0.5, 0.5],
++          [240, 0.5, 0.5],
++        ],
++        numPoints: 4,
++      });
++      const bp0 = oldPolineB.anchorPoints[0];
++      if (bp0) bp0.position = [0.3, 0.3, 0.5];
++      picker.setPoline(oldPolineB);
++
++      let changeCountB = 0;
++      let lastChangeEventB: MockCustomEvent | null = null;
++      const onPolineChangeB = (e: unknown) => {
++        changeCountB++;
++        lastChangeEventB = e as MockCustomEvent;
++      };
++      picker.addEventListener("poline-change", onPolineChangeB);
++
++      const gestureSvgB = host.shadowRoot?.querySelector("svg") as MockElement;
++      expect(gestureSvgB).toBeDefined();
++
++      // Begin rotary adjustment on anchor 0 (top of ring is 30, 26.5) with pointerId 3
++      gestureSvgB.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 3, clientX: 30, clientY: 26.5 })
++      );
++      expect(picker.classList.contains("ring-adjusting")).toBe(true);
++      expect(gestureSvgB.hasPointerCapture(3)).toBe(true);
++
++      const newPolineB = new PolineConstructor({
++        anchorColors: [
++          [30, 0.4, 0.4],
++          [150, 0.4, 0.4],
++        ],
++        numPoints: 4,
++      });
++      const bnp0 = newPolineB.anchorPoints[0];
++      if (bnp0) bnp0.position = [0.4, 0.4, 0.5];
++
++      // Replace palette during active rotary adjustment
++      picker.setPoline(newPolineB);
++
++      let currentSvgB = host.shadowRoot?.querySelector("svg") as MockElement;
++      expect(currentSvgB).toBeDefined();
++
++      // Assert adjusting and hover presentation state cleared, capture released on original gesture SVG, no change event
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++      expect(picker.classList.contains("ring-hover")).toBe(false);
++      expect(gestureSvgB.hasPointerCapture(3)).toBe(false);
++      expect(changeCountB).toBe(0);
++
++      // Snapshot saturation and position values
++      const snapOldSatB = oldPolineB.anchorPoints[0]?.color[1];
++      const snapOldXB = oldPolineB.anchorPoints[0]?.x;
++      const snapOldYB = oldPolineB.anchorPoints[0]?.y;
++
++      const snapNewSatB = newPolineB.anchorPoints[0]?.color[1];
++      const snapNewXB = newPolineB.anchorPoints[0]?.x;
++      const snapNewYB = newPolineB.anchorPoints[0]?.y;
++
++      // Send non-zero angular movement and termination events for interrupted pointer 3
++      currentSvgB.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 3, clientX: 33.5, clientY: 30 })
++      );
++      currentSvgB.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 3, clientX: 33.5, clientY: 30 })
++      );
++      currentSvgB.dispatchEvent(
++        new MockPointerEvent("pointercancel", { pointerId: 3 })
++      );
++
++      // Neither palette changed; no events dispatched
++      expect(oldPolineB.anchorPoints[0]?.color[1]).toBe(snapOldSatB);
++      expect(oldPolineB.anchorPoints[0]?.x).toBe(snapOldXB);
++      expect(oldPolineB.anchorPoints[0]?.y).toBe(snapOldYB);
++
++      expect(newPolineB.anchorPoints[0]?.color[1]).toBe(snapNewSatB);
++      expect(newPolineB.anchorPoints[0]?.x).toBe(snapNewXB);
++      expect(newPolineB.anchorPoints[0]?.y).toBe(snapNewYB);
++      expect(changeCountB).toBe(0);
++
++      // Start fresh rotary gesture on new palette with pointerId 4
++      // In newPolineB, anchor 0 is at (40, 40); ring top is at (40, 36.5)
++      currentSvgB = host.shadowRoot?.querySelector("svg") as MockElement;
++      currentSvgB.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 4, clientX: 40, clientY: 36.5 })
++      );
++      expect(picker.classList.contains("ring-adjusting")).toBe(true);
++      expect(currentSvgB.hasPointerCapture(4)).toBe(true);
++
++      // Apply deterministic non-zero angular change (90 degrees clockwise to 43.5, 40)
++      currentSvgB.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 4, clientX: 43.5, clientY: 40 })
++      );
++      currentSvgB.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 4, clientX: 43.5, clientY: 40 })
++      );
++
++      expect(newPolineB.anchorPoints[0]?.color[1]).not.toBe(snapNewSatB);
++      expect(oldPolineB.anchorPoints[0]?.color[1]).toBe(snapOldSatB);
++      expect(changeCountB).toBe(1);
++      expectPolineChangeEvent(lastChangeEventB, newPolineB);
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++
++      picker.removeEventListener("poline-change", onPolineChangeB);
++    } finally {
++      disconnectPicker(picker);
++    }
++  });
++
++  it("F2P::lifecycle::reentrant_change_callbacks_cannot_restore_stale_gestures", () => {
++    // Scenario A: synchronous palette replacement during point addition
++    const pickerA = new PolinePickerConstructor();
++    (pickerA as unknown as MockElement).setAttribute("interactive", "");
++    (pickerA as unknown as MockElement).setAttribute("allow-add-points", "");
++    connectPicker(pickerA);
++
++    let changeCountA = 0;
++    let lastChangeEventA: MockCustomEvent | null = null;
++    let replacementPerformedA = false;
++    const onPolineChangeA = (e: unknown) => {
++      changeCountA++;
++      lastChangeEventA = e as MockCustomEvent;
++      if (!replacementPerformedA) {
++        replacementPerformedA = true;
++        pickerA.setPoline(newPolineA);
++      }
++    };
++
++    const oldPolineA = new PolineConstructor({
++      anchorColors: [
++        [120, 0.5, 0.5],
++        [240, 0.5, 0.5],
++      ],
++      numPoints: 4,
++    });
++    const ap0 = oldPolineA.anchorPoints[0];
++    const ap1 = oldPolineA.anchorPoints[1];
++    if (ap0) ap0.position = [0.3, 0.3, 0.5];
++    if (ap1) ap1.position = [0.7, 0.7, 0.5];
++    pickerA.setPoline(oldPolineA);
++
++    const newPolineA = new PolineConstructor({
++      anchorColors: [
++        [60, 0.6, 0.6],
++        [180, 0.6, 0.6],
++      ],
++      numPoints: 4,
++    });
++    const nap0 = newPolineA.anchorPoints[0];
++    const nap1 = newPolineA.anchorPoints[1];
++    if (nap0) nap0.position = [0.2, 0.2, 0.6];
++    if (nap1) nap1.position = [0.8, 0.8, 0.6];
++
++    const hostA = pickerA as unknown as MockHTMLElement;
++    const gestureSvgA = hostA.shadowRoot?.querySelector("svg") as MockElement;
++    expect(gestureSvgA).toBeDefined();
++
++    pickerA.addEventListener("poline-change", onPolineChangeA);
++
++    try {
++      // Send pointerdown in blank presentation space (away from anchors at 30,30 and 70,70)
++      gestureSvgA.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 11, clientX: 10, clientY: 10 })
++      );
++
++      // Callback must have fired and performed synchronous palette replacement
++      expect(replacementPerformedA).toBe(true);
++      expect(changeCountA).toBe(1);
++      expectPolineChangeEvent(lastChangeEventA, oldPolineA);
++      expect(oldPolineA.anchorPoints.length).toBe(3);
++      expect(newPolineA.anchorPoints.length).toBe(2);
++      expect(gestureSvgA.hasPointerCapture(11)).toBe(false);
++      expect(pickerA.classList.contains("ring-adjusting")).toBe(false);
++      expect(pickerA.classList.contains("ring-hover")).toBe(false);
++
++      // Snapshot point values after callback returns
++      const oldSnapA0_x = oldPolineA.anchorPoints[0]?.x;
++      const oldSnapA0_y = oldPolineA.anchorPoints[0]?.y;
++      const oldSnapA0_z = oldPolineA.anchorPoints[0]?.z;
++      const oldSnapA0_sat = oldPolineA.anchorPoints[0]?.color[1];
++      const oldSnapA1_x = oldPolineA.anchorPoints[1]?.x;
++      const oldSnapA1_y = oldPolineA.anchorPoints[1]?.y;
++      const oldSnapA2_x = oldPolineA.anchorPoints[2]?.x;
++      const oldSnapA2_y = oldPolineA.anchorPoints[2]?.y;
++
++      const newSnapA0_x = newPolineA.anchorPoints[0]?.x;
++      const newSnapA0_y = newPolineA.anchorPoints[0]?.y;
++      const newSnapA0_z = newPolineA.anchorPoints[0]?.z;
++      const newSnapA0_sat = newPolineA.anchorPoints[0]?.color[1];
++      const newSnapA1_x = newPolineA.anchorPoints[1]?.x;
++      const newSnapA1_y = newPolineA.anchorPoints[1]?.y;
++
++      // Dispatch stale pointer events through current bound SVG for pointer 11
++      let currentSvgA = hostA.shadowRoot?.querySelector("svg") as MockElement;
++      expect(currentSvgA).toBeDefined();
++
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 11, clientX: 25, clientY: 25 })
++      );
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 11, clientX: 25, clientY: 25 })
++      );
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("pointercancel", { pointerId: 11 })
++      );
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("lostpointercapture", { pointerId: 11 })
++      );
++
++      // Neither palette mutated; no further change events dispatched
++      expect(oldPolineA.anchorPoints[0]?.x).toBe(oldSnapA0_x);
++      expect(oldPolineA.anchorPoints[0]?.y).toBe(oldSnapA0_y);
++      expect(oldPolineA.anchorPoints[0]?.z).toBe(oldSnapA0_z);
++      expect(oldPolineA.anchorPoints[0]?.color[1]).toBe(oldSnapA0_sat);
++      expect(oldPolineA.anchorPoints[1]?.x).toBe(oldSnapA1_x);
++      expect(oldPolineA.anchorPoints[1]?.y).toBe(oldSnapA1_y);
++      expect(oldPolineA.anchorPoints[2]?.x).toBe(oldSnapA2_x);
++      expect(oldPolineA.anchorPoints[2]?.y).toBe(oldSnapA2_y);
++
++      expect(newPolineA.anchorPoints[0]?.x).toBe(newSnapA0_x);
++      expect(newPolineA.anchorPoints[0]?.y).toBe(newSnapA0_y);
++      expect(newPolineA.anchorPoints[0]?.z).toBe(newSnapA0_z);
++      expect(newPolineA.anchorPoints[0]?.color[1]).toBe(newSnapA0_sat);
++      expect(newPolineA.anchorPoints[1]?.x).toBe(newSnapA1_x);
++      expect(newPolineA.anchorPoints[1]?.y).toBe(newSnapA1_y);
++
++      expect(changeCountA).toBe(1);
++      expect(currentSvgA.hasPointerCapture(11)).toBe(false);
++      expect(gestureSvgA.hasPointerCapture(11)).toBe(false);
++      expect(pickerA.classList.contains("ring-adjusting")).toBe(false);
++      expect(pickerA.classList.contains("ring-hover")).toBe(false);
++
++      // Start fresh gesture on new palette with pointer 12 (at new anchor 0: 20, 20)
++      currentSvgA = hostA.shadowRoot?.querySelector("svg") as MockElement;
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 12, clientX: 20, clientY: 20 })
++      );
++      expect(currentSvgA.hasPointerCapture(12)).toBe(true);
++
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 12, clientX: 35, clientY: 35 })
++      );
++      currentSvgA.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 12, clientX: 35, clientY: 35 })
++      );
++
++      expect(newPolineA.anchorPoints[0]?.x).toBeCloseTo(0.35, 10);
++      expect(newPolineA.anchorPoints[0]?.y).toBeCloseTo(0.35, 10);
++      expect(oldPolineA.anchorPoints[0]?.x).toBe(oldSnapA0_x);
++      expect(oldPolineA.anchorPoints[0]?.y).toBe(oldSnapA0_y);
++      expect(changeCountA).toBe(2);
++      expectPolineChangeEvent(lastChangeEventA, newPolineA);
++      expect(currentSvgA.hasPointerCapture(12)).toBe(false);
++    } finally {
++      pickerA.removeEventListener("poline-change", onPolineChangeA);
++      disconnectPicker(pickerA);
++    }
++
++    // Scenario B: synchronous disconnect during anchor drag
++    const pickerB = new PolinePickerConstructor();
++    (pickerB as unknown as MockElement).setAttribute("interactive", "");
++    connectPicker(pickerB);
++
++    const polineB = new PolineConstructor({
++      anchorColors: [
++        [120, 0.5, 0.5],
++        [240, 0.5, 0.5],
++      ],
++      numPoints: 4,
++    });
++    const bp0 = polineB.anchorPoints[0];
++    const bp1 = polineB.anchorPoints[1];
++    if (bp0) bp0.position = [0.3, 0.3, 0.5];
++    if (bp1) bp1.position = [0.7, 0.7, 0.5];
++    pickerB.setPoline(polineB);
++
++    const hostB = pickerB as unknown as MockHTMLElement;
++    const gestureSvgB = hostB.shadowRoot?.querySelector("svg") as MockElement;
++    expect(gestureSvgB).toBeDefined();
++
++    let changeCountB = 0;
++    let lastChangeEventB: MockCustomEvent | null = null;
++    let disconnectedSyncB = false;
++    const onPolineChangeB = (e: unknown) => {
++      changeCountB++;
++      lastChangeEventB = e as MockCustomEvent;
++      if (!disconnectedSyncB) {
++        disconnectedSyncB = true;
++        disconnectPicker(pickerB);
++      }
++    };
++    pickerB.addEventListener("poline-change", onPolineChangeB);
++
++    try {
++      // Start drag on anchor 0 at (30, 30) with pointer 21
++      gestureSvgB.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 21, clientX: 30, clientY: 30 })
++      );
++      expect(gestureSvgB.hasPointerCapture(21)).toBe(true);
++
++      // Move to (40, 40) triggers data update, change event, and synchronous disconnect
++      gestureSvgB.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 21, clientX: 40, clientY: 40 })
++      );
++
++      expect(disconnectedSyncB).toBe(true);
++      expect((pickerB as unknown as MockNode).isConnected).toBe(false);
++      expect(gestureSvgB.hasPointerCapture(21)).toBe(false);
++      expect(pickerB.classList.contains("ring-adjusting")).toBe(false);
++      expect(pickerB.classList.contains("ring-hover")).toBe(false);
++      expect(changeCountB).toBe(1);
++      expectPolineChangeEvent(lastChangeEventB, polineB);
++
++      // Snapshot after initial legitimate move
++      const snapBX0 = polineB.anchorPoints[0]?.x;
++      const snapBY0 = polineB.anchorPoints[0]?.y;
++      const snapBZ0 = polineB.anchorPoints[0]?.z;
++      const snapBSat0 = polineB.anchorPoints[0]?.color[1];
++
++      // Dispatch stale pointer events to gestureSvgB
++      gestureSvgB.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 21, clientX: 60, clientY: 60 })
++      );
++      gestureSvgB.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 21, clientX: 60, clientY: 60 })
++      );
++      gestureSvgB.dispatchEvent(
++        new MockPointerEvent("pointercancel", { pointerId: 21 })
++      );
++      gestureSvgB.dispatchEvent(
++        new MockPointerEvent("lostpointercapture", { pointerId: 21 })
++      );
++
++      expect(polineB.anchorPoints[0]?.x).toBe(snapBX0);
++      expect(polineB.anchorPoints[0]?.y).toBe(snapBY0);
++      expect(polineB.anchorPoints[0]?.z).toBe(snapBZ0);
++      expect(polineB.anchorPoints[0]?.color[1]).toBe(snapBSat0);
++      expect(changeCountB).toBe(1);
++      expect(pickerB.classList.contains("ring-adjusting")).toBe(false);
++      expect(pickerB.classList.contains("ring-hover")).toBe(false);
++      expect(gestureSvgB.hasPointerCapture(21)).toBe(false);
++
++      // Reconnect and start fresh gesture with pointer 22 on anchor 0 (currently at 40, 40)
++      connectPicker(pickerB);
++      const currentSvgB = hostB.shadowRoot?.querySelector("svg") as MockElement;
++      expect(currentSvgB).toBeDefined();
++
++      currentSvgB.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 22, clientX: 40, clientY: 40 })
++      );
++      expect(currentSvgB.hasPointerCapture(22)).toBe(true);
++
++      currentSvgB.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 22, clientX: 50, clientY: 50 })
++      );
++      currentSvgB.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 22, clientX: 50, clientY: 50 })
++      );
++
++      expect(polineB.anchorPoints[0]?.x).toBeCloseTo(0.5, 10);
++      expect(polineB.anchorPoints[0]?.y).toBeCloseTo(0.5, 10);
++      expect(changeCountB).toBe(2);
++      expectPolineChangeEvent(lastChangeEventB, polineB);
++      expect(currentSvgB.hasPointerCapture(22)).toBe(false);
++    } finally {
++      pickerB.removeEventListener("poline-change", onPolineChangeB);
++      disconnectPicker(pickerB);
++    }
++
++    // Scenario C: synchronous palette replacement during rotary adjustment
++    const pickerC = new PolinePickerConstructor();
++    (pickerC as unknown as MockElement).setAttribute("interactive", "");
++    connectPicker(pickerC);
++
++    const oldPolineC = new PolineConstructor({
++      anchorColors: [
++        [120, 0.5, 0.5],
++        [240, 0.5, 0.5],
++      ],
++      numPoints: 4,
++    });
++    const cp0 = oldPolineC.anchorPoints[0];
++    const cp1 = oldPolineC.anchorPoints[1];
++    if (cp0) cp0.position = [0.4, 0.4, 0.5];
++    if (cp1) cp1.position = [0.8, 0.8, 0.5];
++    pickerC.setPoline(oldPolineC);
++
++    const newPolineC = new PolineConstructor({
++      anchorColors: [
++        [60, 0.6, 0.6],
++        [180, 0.6, 0.6],
++      ],
++      numPoints: 4,
++    });
++    const ncp0 = newPolineC.anchorPoints[0];
++    const ncp1 = newPolineC.anchorPoints[1];
++    if (ncp0) ncp0.position = [0.2, 0.2, 0.6];
++    if (ncp1) ncp1.position = [0.6, 0.6, 0.6];
++
++    const hostC = pickerC as unknown as MockHTMLElement;
++    const gestureSvgC = hostC.shadowRoot?.querySelector("svg") as MockElement;
++    expect(gestureSvgC).toBeDefined();
++
++    let changeCountC = 0;
++    let lastChangeEventC: MockCustomEvent | null = null;
++    let replacementPerformedC = false;
++    const onPolineChangeC = (e: unknown) => {
++      changeCountC++;
++      lastChangeEventC = e as MockCustomEvent;
++      if (!replacementPerformedC) {
++        replacementPerformedC = true;
++        pickerC.setPoline(newPolineC);
++      }
++    };
++    pickerC.addEventListener("poline-change", onPolineChangeC);
++
++    try {
++      // In oldPolineC, anchor 0 is at (40, 40); top of ring is (40, 36.5)
++      gestureSvgC.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 51, clientX: 40, clientY: 36.5 })
++      );
++      expect(pickerC.classList.contains("ring-adjusting")).toBe(true);
++      expect(gestureSvgC.hasPointerCapture(51)).toBe(true);
++
++      // Rotate clockwise by 90 degrees to (43.5, 40), triggering saturation update and synchronous replacement in listener
++      gestureSvgC.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 51, clientX: 43.5, clientY: 40 })
++      );
++
++      // Assert callback executed replacement and invalidated the rotary interaction
++      expect(replacementPerformedC).toBe(true);
++      expect(changeCountC).toBe(1);
++      expectPolineChangeEvent(lastChangeEventC, oldPolineC);
++      expect(oldPolineC.anchorPoints[0]?.color[1]).not.toBe(0.5);
++      expect(newPolineC.anchorPoints[0]?.color[1]).toBe(0.6);
++      expect(gestureSvgC.hasPointerCapture(51)).toBe(false);
++      expect(pickerC.classList.contains("ring-adjusting")).toBe(false);
++      expect(pickerC.classList.contains("ring-hover")).toBe(false);
++
++      // Snapshot values after replacement
++      const oldSnapC0_sat = oldPolineC.anchorPoints[0]?.color[1];
++      const oldSnapC0_x = oldPolineC.anchorPoints[0]?.x;
++      const oldSnapC0_y = oldPolineC.anchorPoints[0]?.y;
++
++      const newSnapC0_sat = newPolineC.anchorPoints[0]?.color[1];
++      const newSnapC0_x = newPolineC.anchorPoints[0]?.x;
++      const newSnapC0_y = newPolineC.anchorPoints[0]?.y;
++
++      // Dispatch stale pointer events for interrupted pointer 51 through current SVG
++      let currentSvgC = hostC.shadowRoot?.querySelector("svg") as MockElement;
++      expect(currentSvgC).toBeDefined();
++
++      currentSvgC.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 51, clientX: 40, clientY: 43.5 })
++      );
++      currentSvgC.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 51, clientX: 40, clientY: 43.5 })
++      );
++      currentSvgC.dispatchEvent(
++        new MockPointerEvent("pointercancel", { pointerId: 51 })
++      );
++      currentSvgC.dispatchEvent(
++        new MockPointerEvent("lostpointercapture", { pointerId: 51 })
++      );
++
++      // Verify neither palette was mutated by stale events and no extra changes dispatched
++      expect(oldPolineC.anchorPoints[0]?.color[1]).toBe(oldSnapC0_sat);
++      expect(oldPolineC.anchorPoints[0]?.x).toBe(oldSnapC0_x);
++      expect(oldPolineC.anchorPoints[0]?.y).toBe(oldSnapC0_y);
++
++      expect(newPolineC.anchorPoints[0]?.color[1]).toBe(newSnapC0_sat);
++      expect(newPolineC.anchorPoints[0]?.x).toBe(newSnapC0_x);
++      expect(newPolineC.anchorPoints[0]?.y).toBe(newSnapC0_y);
++
++      expect(changeCountC).toBe(1);
++      expect(currentSvgC.hasPointerCapture(51)).toBe(false);
++      expect(gestureSvgC.hasPointerCapture(51)).toBe(false);
++      expect(pickerC.classList.contains("ring-adjusting")).toBe(false);
++      expect(pickerC.classList.contains("ring-hover")).toBe(false);
++
++      // Start fresh rotary gesture on new palette with pointer 52
++      // In newPolineC, anchor 0 is at (20, 20); ring top is at (20, 16.5)
++      currentSvgC = hostC.shadowRoot?.querySelector("svg") as MockElement;
++      currentSvgC.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 52, clientX: 20, clientY: 16.5 })
++      );
++      expect(pickerC.classList.contains("ring-adjusting")).toBe(true);
++      expect(currentSvgC.hasPointerCapture(52)).toBe(true);
++
++      // Rotate clockwise by 90 degrees to (23.5, 20)
++      currentSvgC.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 52, clientX: 23.5, clientY: 20 })
++      );
++      currentSvgC.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 52, clientX: 23.5, clientY: 20 })
++      );
++
++      expect(newPolineC.anchorPoints[0]?.color[1]).not.toBe(newSnapC0_sat);
++      expect(oldPolineC.anchorPoints[0]?.color[1]).toBe(oldSnapC0_sat);
++      expect(changeCountC).toBe(2);
++      expectPolineChangeEvent(lastChangeEventC, newPolineC);
++      expect(pickerC.classList.contains("ring-adjusting")).toBe(false);
++      expect(currentSvgC.hasPointerCapture(52)).toBe(false);
++    } finally {
++      pickerC.removeEventListener("poline-change", onPolineChangeC);
++      disconnectPicker(pickerC);
++    }
++  });
++
++  it("F2P::lifecycle::retired_surfaces_cannot_drive_current_interaction", () => {
++    // Each dispatch snapshots its handlers, then the leading target capture
++    // listener retires that binding. Exercise down, move and up independently;
++    // reconnect may either reuse the SVG node or replace it.
++    for (const kind of ["pointerdown", "pointermove", "pointerup"]) {
++      const { picker, poline, svg } = createTestPicker();
++      let currentSvg = svg;
++      let retired = false;
++      let changes = 0;
++      const onChange = (event: unknown) => {
++        changes++;
++        expectPolineChangeEvent(event as MockCustomEvent, poline);
++      };
++      const retireBeforeHandler = () => {
++        if (retired) return;
++        retired = true;
++        disconnectPicker(picker);
++        connectPicker(picker);
++        currentSvg = picker.shadowRoot!.querySelector("svg") as MockElement;
++        if (kind !== "pointerdown") {
++          // Start a new rotary gesture with the SAME pointer id before the
++          // old move/up callback resumes. Its capture and classes must survive.
++          currentSvg.dispatchEvent(new MockPointerEvent("pointerdown", {
++            pointerId: 88, clientX: 30, clientY: 26.5,
++          }));
++          expect(currentSvg.hasPointerCapture(88)).toBe(true);
++          expect(picker.classList.contains("ring-adjusting")).toBe(true);
++        }
++      };
++      picker.addEventListener("poline-change", onChange);
++      if (kind !== "pointerdown") {
++        svg.dispatchEvent(new MockPointerEvent("pointerdown", {
++          pointerId: 88, clientX: 30, clientY: 26.5,
++        }));
++        expect(svg.hasPointerCapture(88)).toBe(true);
++      }
++      svg.addEventListener(kind, retireBeforeHandler, true);
++      try {
++        const before = poline.anchorPoints.map((point) => [...point.position]);
++        svg.dispatchEvent(new MockPointerEvent(kind, {
++          pointerId: 88, clientX: kind === "pointermove" ? 33.5 : 30, clientY: 30,
++        }));
++        expect(retired, `${kind}: leading listener must retire the binding`).toBe(true);
++        expect(poline.anchorPoints.map((point) => point.position), `${kind}: retired callback cannot mutate`).toEqual(before);
++        expect(changes, `${kind}: retired callback cannot notify`).toBe(0);
++        if (kind === "pointerdown") {
++          expect(svg.hasPointerCapture(88), "retired down cannot acquire capture").toBe(false);
++          expect(currentSvg.hasPointerCapture(88)).toBe(false);
++          expect(picker.classList.contains("ring-adjusting")).toBe(false);
++          expect(picker.classList.contains("ring-hover")).toBe(false);
++          currentSvg.dispatchEvent(new MockPointerEvent("pointerdown", {
++            pointerId: 88, clientX: 30, clientY: 26.5,
++          }));
++        }
++        expect(currentSvg.hasPointerCapture(88), `${kind}: current gesture retains capture`).toBe(true);
++        expect(picker.classList.contains("ring-adjusting"), `${kind}: current gesture retains classes`).toBe(true);
++        currentSvg.dispatchEvent(new MockPointerEvent("pointermove", {
++          pointerId: 88, clientX: 33.5, clientY: 30,
++        }));
++        expect(poline.anchorPoints[0]!.color[1]).toBeCloseTo(0.75, 8);
++        expect(changes).toBe(1);
++        currentSvg.dispatchEvent(new MockPointerEvent("pointerup", {
++          pointerId: 88, clientX: 33.5, clientY: 30,
++        }));
++        expect(currentSvg.hasPointerCapture(88)).toBe(false);
++        expect(picker.classList.contains("ring-adjusting")).toBe(false);
++        expect(changes).toBe(1);
++      } finally {
++        svg.removeEventListener(kind, retireBeforeHandler, true);
++        picker.removeEventListener("poline-change", onChange);
++        disconnectPicker(picker);
++      }
++    }
++
++    const picker = new PolinePickerConstructor();
++    (picker as unknown as MockElement).setAttribute("interactive", "");
++    connectPicker(picker);
++
++    const poline = new PolineConstructor({
++      anchorColors: [
++        [120, 0.5, 0.5],
++        [240, 0.5, 0.5],
++      ],
++      numPoints: 4,
++    });
++    const p0 = poline.anchorPoints[0];
++    const p1 = poline.anchorPoints[1];
++    if (p0) p0.position = [0.3, 0.3, 0.5];
++    if (p1) p1.position = [0.7, 0.7, 0.5];
++    picker.setPoline(poline);
++
++    const host = picker as unknown as MockHTMLElement;
++    const previousSvg = host.shadowRoot?.querySelector("svg") as MockElement;
++    expect(previousSvg).toBeDefined();
++
++    disconnectPicker(picker);
++    connectPicker(picker);
++
++    const currentSvg = host.shadowRoot?.querySelector("svg") as MockElement;
++    expect(currentSvg).toBeDefined();
++
++    let changeCount = 0;
++    let lastChangeEvent: MockCustomEvent | null = null;
++    const onPolineChange = (e: unknown) => {
++      changeCount++;
++      lastChangeEvent = e as MockCustomEvent;
++    };
++    picker.addEventListener("poline-change", onPolineChange);
++
++    try {
++      // If the presentation node was replaced, verify the retired previous surface cannot drive interaction
++      if (previousSvg !== currentSvg) {
++        const snapX0 = poline.anchorPoints[0]?.x;
++        const snapY0 = poline.anchorPoints[0]?.y;
++        const snapZ0 = poline.anchorPoints[0]?.z;
++        const snapSat0 = poline.anchorPoints[0]?.color[1];
++
++        previousSvg.dispatchEvent(
++          new MockPointerEvent("pointerdown", { pointerId: 88, clientX: 30, clientY: 30 })
++        );
++        previousSvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 88, clientX: 40, clientY: 40 })
++        );
++        previousSvg.dispatchEvent(
++          new MockPointerEvent("pointerup", { pointerId: 88, clientX: 40, clientY: 40 })
++        );
++        previousSvg.dispatchEvent(
++          new MockPointerEvent("pointercancel", { pointerId: 88 })
++        );
++        previousSvg.dispatchEvent(
++          new MockPointerEvent("lostpointercapture", { pointerId: 88 })
++        );
++
++        expect(poline.anchorPoints[0]?.x).toBe(snapX0);
++        expect(poline.anchorPoints[0]?.y).toBe(snapY0);
++        expect(poline.anchorPoints[0]?.z).toBe(snapZ0);
++        expect(poline.anchorPoints[0]?.color[1]).toBe(snapSat0);
++        expect(changeCount).toBe(0);
++        expect(previousSvg.hasPointerCapture(88)).toBe(false);
++        expect(picker.classList.contains("ring-adjusting")).toBe(false);
++        expect(picker.classList.contains("ring-hover")).toBe(false);
++      }
++
++      // Verify exactly one effective binding on current surface without duplicate listeners
++      currentSvg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 30, clientX: 30, clientY: 30 })
++      );
++      expect(currentSvg.hasPointerCapture(30)).toBe(true);
++
++      currentSvg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 30, clientX: 40, clientY: 40 })
++      );
++      currentSvg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 30, clientX: 40, clientY: 40 })
++      );
++
++      expect(changeCount).toBe(1);
++      expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.4, 10);
++      expect(poline.anchorPoints[0]?.y).toBeCloseTo(0.4, 10);
++      expectPolineChangeEvent(lastChangeEvent, poline);
++      expect(currentSvg.hasPointerCapture(30)).toBe(false);
++
++      // Retired surface must not interfere with an ongoing gesture on the current surface
++      if (previousSvg !== currentSvg) {
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointerdown", { pointerId: 31, clientX: 40, clientY: 40 })
++        );
++        expect(currentSvg.hasPointerCapture(31)).toBe(true);
++
++        const snapActiveX = poline.anchorPoints[0]?.x;
++        const snapActiveY = poline.anchorPoints[0]?.y;
++        const snapActiveZ = poline.anchorPoints[0]?.z;
++        const snapActiveSat = poline.anchorPoints[0]?.color[1];
++        const countBeforeRetiredInterference = changeCount;
++
++        // Deliver pointer input to retired surface during active gesture with SAME pointerId 31
++        previousSvg.dispatchEvent(
++          new MockPointerEvent("pointerdown", { pointerId: 31, clientX: 50, clientY: 50 })
++        );
++        previousSvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 31, clientX: 60, clientY: 60 })
++        );
++        previousSvg.dispatchEvent(
++          new MockPointerEvent("pointerup", { pointerId: 31, clientX: 60, clientY: 60 })
++        );
++        previousSvg.dispatchEvent(
++          new MockPointerEvent("pointercancel", { pointerId: 31 })
++        );
++        previousSvg.dispatchEvent(
++          new MockPointerEvent("lostpointercapture", { pointerId: 31 })
++        );
++
++        // Active gesture on current surface must retain capture and state; no change events
++        expect(currentSvg.hasPointerCapture(31)).toBe(true);
++        expect(picker.classList.contains("ring-adjusting")).toBe(false);
++        expect(picker.classList.contains("ring-hover")).toBe(false);
++        expect(poline.anchorPoints[0]?.x).toBe(snapActiveX);
++        expect(poline.anchorPoints[0]?.y).toBe(snapActiveY);
++        expect(poline.anchorPoints[0]?.z).toBe(snapActiveZ);
++        expect(poline.anchorPoints[0]?.color[1]).toBe(snapActiveSat);
++        expect(changeCount).toBe(countBeforeRetiredInterference);
++
++        // Complete active gesture on current surface
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 31, clientX: 45, clientY: 45 })
++        );
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointerup", { pointerId: 31, clientX: 45, clientY: 45 })
++        );
++
++        expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.45, 10);
++        expect(poline.anchorPoints[0]?.y).toBeCloseTo(0.45, 10);
++        expect(changeCount).toBe(countBeforeRetiredInterference + 1);
++        expectPolineChangeEvent(lastChangeEvent, poline);
++        expect(currentSvg.hasPointerCapture(31)).toBe(false);
++
++        // Clean reuse of pointerId 31 for a fresh gesture
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointerdown", { pointerId: 31, clientX: 45, clientY: 45 })
++        );
++        expect(currentSvg.hasPointerCapture(31)).toBe(true);
++
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 31, clientX: 50, clientY: 50 })
++        );
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointerup", { pointerId: 31, clientX: 50, clientY: 50 })
++        );
++
++        expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.5, 10);
++        expect(poline.anchorPoints[0]?.y).toBeCloseTo(0.5, 10);
++        expect(changeCount).toBe(countBeforeRetiredInterference + 2);
++        expectPolineChangeEvent(lastChangeEvent, poline);
++        expect(currentSvg.hasPointerCapture(31)).toBe(false);
++      } else {
++        // Node reuse branch (previousSvg === currentSvg):
++        // Verify reconnect did not produce duplicate listeners:
++        // Gestures with pointerId 31 produce exactly one change per interaction,
++        // capture is released, and pointerId 31 can be reused cleanly.
++        const countBeforeReuse = changeCount;
++
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointerdown", { pointerId: 31, clientX: 40, clientY: 40 })
++        );
++        expect(currentSvg.hasPointerCapture(31)).toBe(true);
++
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 31, clientX: 45, clientY: 45 })
++        );
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointerup", { pointerId: 31, clientX: 45, clientY: 45 })
++        );
++
++        expect(changeCount).toBe(countBeforeReuse + 1);
++        expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.45, 10);
++        expect(poline.anchorPoints[0]?.y).toBeCloseTo(0.45, 10);
++        expect(currentSvg.hasPointerCapture(31)).toBe(false);
++        expectPolineChangeEvent(lastChangeEvent, poline);
++
++        // Second interaction reusing pointerId 31
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointerdown", { pointerId: 31, clientX: 45, clientY: 45 })
++        );
++        expect(currentSvg.hasPointerCapture(31)).toBe(true);
++
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 31, clientX: 50, clientY: 50 })
++        );
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointerup", { pointerId: 31, clientX: 50, clientY: 50 })
++        );
++
++        expect(changeCount).toBe(countBeforeReuse + 2);
++        expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.5, 10);
++        expect(poline.anchorPoints[0]?.y).toBeCloseTo(0.5, 10);
++        expect(currentSvg.hasPointerCapture(31)).toBe(false);
++        expectPolineChangeEvent(lastChangeEvent, poline);
++      }
++    } finally {
++      picker.removeEventListener("poline-change", onPolineChange);
++      disconnectPicker(picker);
++    }
++  });
++
++  it("F2P::lifecycle::same_palette_reassignment_invalidates_active_gesture", () => {
++    isCoarsePointer = false;
++    const { picker, poline, svg } = createTestPicker();
++
++    let changeCount = 0;
++    let lastChangeEvent: MockCustomEvent | null = null;
++    const onPolineChange = (e: unknown) => {
++      changeCount++;
++      lastChangeEvent = e as MockCustomEvent;
++    };
++    picker.addEventListener("poline-change", onPolineChange);
++
++    try {
++      // Anchor 0 is at [0.3, 0.3, 0.5] (SVG: 30, 30).
++      // Fine-pointer ring hit at (30, 26.5) initiates rotary adjustment.
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 26.5 })
++      );
++      expect(picker.classList.contains("ring-adjusting")).toBe(true);
++      expect(svg.hasPointerCapture(1)).toBe(true);
++      expect(changeCount).toBe(0);
++
++      const satBefore = poline.anchorPoints[0]?.color[1];
++      const snapX = poline.anchorPoints[0]?.x;
++      const snapY = poline.anchorPoints[0]?.y;
++      const snapZ = poline.anchorPoints[0]?.z;
++
++      // Reassign the exact same poline instance that is already attached
++      picker.setPoline(poline);
++
++      // Active gesture must immediately be invalidated, capture released, and transient state cleared
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++      expect(picker.classList.contains("ring-hover")).toBe(false);
++      expect(svg.hasPointerCapture(1)).toBe(false);
++      expect(changeCount).toBe(0);
++      expect(poline.anchorPoints[0]?.color[1]).toBe(satBefore);
++      expect(poline.anchorPoints[0]?.x).toBe(snapX);
++      expect(poline.anchorPoints[0]?.y).toBe(snapY);
++      expect(poline.anchorPoints[0]?.z).toBe(snapZ);
++
++      // Stale pointermove and pointerup dispatched to old gesture surface must have no effect
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 1, clientX: 33.5, clientY: 30 })
++      );
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 1, clientX: 33.5, clientY: 30 })
++      );
++
++      expect(poline.anchorPoints[0]?.color[1]).toBe(satBefore);
++      expect(poline.anchorPoints[0]?.x).toBe(snapX);
++      expect(poline.anchorPoints[0]?.y).toBe(snapY);
++      expect(poline.anchorPoints[0]?.z).toBe(snapZ);
++      expect(changeCount).toBe(0);
++      expect(svg.hasPointerCapture(1)).toBe(false);
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++      expect(picker.classList.contains("ring-hover")).toBe(false);
++
++      // A fresh gesture with pointerId 2 on the current surface succeeds normally
++      const host = picker as unknown as MockHTMLElement;
++      const currentSvg = host.shadowRoot?.querySelector("svg") as MockElement;
++      expect(currentSvg).toBeDefined();
++
++      currentSvg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 30, clientY: 30 })
++      );
++      expect(currentSvg.hasPointerCapture(2)).toBe(true);
++
++      currentSvg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 2, clientX: 40, clientY: 40 })
++      );
++      currentSvg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 2, clientX: 40, clientY: 40 })
++      );
++
++      expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.4, 2);
++      expect(changeCount).toBe(1);
++      expectPolineChangeEvent(lastChangeEvent, poline);
++      expect(currentSvg.hasPointerCapture(2)).toBe(false);
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++    } finally {
++      picker.removeEventListener("poline-change", onPolineChange);
++      disconnectPicker(picker);
++    }
++  });
++
++  it("F2P::lifecycle::reentrant_refresh_cannot_restore_stale_gesture", () => {
++    // ------------------------------------------------------------------------
++    // Scenario A: Pending point-addition operation with synchronous refresh
++    // ------------------------------------------------------------------------
++    {
++      isCoarsePointer = false;
++      const picker = new PolinePickerConstructor();
++      (picker as unknown as MockElement).setAttribute("interactive", "");
++      (picker as unknown as MockElement).setAttribute("allow-add-points", "");
++      connectPicker(picker);
++
++      const poline = new PolineConstructor({
++        anchorColors: [
++          [120, 0.5, 0.5],
++          [240, 0.5, 0.5],
++        ],
++        numPoints: 4,
++      });
++      const p0 = poline.anchorPoints[0];
++      const p1 = poline.anchorPoints[1];
++      if (p0) p0.position = [0.3, 0.3, 0.5];
++      if (p1) p1.position = [0.7, 0.7, 0.5];
++      picker.setPoline(poline);
++
++      const host = picker as unknown as MockHTMLElement;
++      const gestureSvg = host.shadowRoot?.querySelector("svg") as MockElement;
++      expect(gestureSvg).toBeDefined();
++
++      let changeCount = 0;
++      let lastChangeEvent: MockCustomEvent | null = null;
++      let refreshInvoked = false;
++      const onPolineChange = (e: unknown) => {
++        changeCount++;
++        lastChangeEvent = e as MockCustomEvent;
++        if (!refreshInvoked) {
++          refreshInvoked = true;
++          picker.updateSVG();
++        }
++      };
++      picker.addEventListener("poline-change", onPolineChange);
++
++      try {
++        gestureSvg.dispatchEvent(
++          new MockPointerEvent("pointerdown", { pointerId: 10, clientX: 10, clientY: 10 })
++        );
++
++        expect(refreshInvoked).toBe(true);
++        expect(poline.anchorPoints.length).toBe(3);
++        expect(changeCount).toBe(1);
++        expectPolineChangeEvent(lastChangeEvent, poline);
++
++        const currentSvg = host.shadowRoot?.querySelector("svg") as MockElement;
++        expect(currentSvg).toBeDefined();
++        expect(gestureSvg.hasPointerCapture(10)).toBe(false);
++        expect(currentSvg.hasPointerCapture(10)).toBe(false);
++        expect(picker.classList.contains("ring-adjusting")).toBe(false);
++        expect(picker.classList.contains("ring-hover")).toBe(false);
++
++        const snapNewX = poline.anchorPoints[2]?.x;
++        const snapNewY = poline.anchorPoints[2]?.y;
++        const snapNewZ = poline.anchorPoints[2]?.z;
++
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 10, clientX: 20, clientY: 20 })
++        );
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointerup", { pointerId: 10, clientX: 20, clientY: 20 })
++        );
++
++        expect(poline.anchorPoints[2]?.x).toBe(snapNewX);
++        expect(poline.anchorPoints[2]?.y).toBe(snapNewY);
++        expect(poline.anchorPoints[2]?.z).toBe(snapNewZ);
++        expect(changeCount).toBe(1);
++        expect(currentSvg.hasPointerCapture(10)).toBe(false);
++        expect(picker.classList.contains("ring-adjusting")).toBe(false);
++        expect(picker.classList.contains("ring-hover")).toBe(false);
++
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointerdown", { pointerId: 20, clientX: 30, clientY: 30 })
++        );
++        expect(currentSvg.hasPointerCapture(20)).toBe(true);
++
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 20, clientX: 40, clientY: 40 })
++        );
++        currentSvg.dispatchEvent(
++          new MockPointerEvent("pointerup", { pointerId: 20, clientX: 40, clientY: 40 })
++        );
++
++        expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.4, 2);
++        expect(changeCount).toBe(2);
++        expectPolineChangeEvent(lastChangeEvent, poline);
++        expect(currentSvg.hasPointerCapture(20)).toBe(false);
++      } finally {
++        picker.removeEventListener("poline-change", onPolineChange);
++        disconnectPicker(picker);
++      }
++    }
++
++    // ------------------------------------------------------------------------
++    // Scenario B: Active anchor drag with synchronous refresh
++    // ------------------------------------------------------------------------
++    {
++      isCoarsePointer = false;
++      const dragPicker = new PolinePickerConstructor();
++      (dragPicker as unknown as MockElement).setAttribute("interactive", "");
++      connectPicker(dragPicker);
++
++      const dragPoline = new PolineConstructor({
++        anchorColors: [
++          [120, 0.5, 0.5],
++          [240, 0.5, 0.5],
++        ],
++        numPoints: 4,
++      });
++      const dp0 = dragPoline.anchorPoints[0];
++      const dp1 = dragPoline.anchorPoints[1];
++      if (dp0) dp0.position = [0.3, 0.3, 0.5];
++      if (dp1) dp1.position = [0.7, 0.7, 0.5];
++      dragPicker.setPoline(dragPoline);
++
++      const dragHost = dragPicker as unknown as MockHTMLElement;
++      const dragSvg = dragHost.shadowRoot?.querySelector("svg") as MockElement;
++      expect(dragSvg).toBeDefined();
++
++      let dragChangeCount = 0;
++      let lastDragChangeEvent: MockCustomEvent | null = null;
++      let dragRefreshInvoked = false;
++      const onDragPolineChange = (e: unknown) => {
++        dragChangeCount++;
++        lastDragChangeEvent = e as MockCustomEvent;
++        if (!dragRefreshInvoked) {
++          dragRefreshInvoked = true;
++          dragPicker.updateSVG();
++        }
++      };
++      dragPicker.addEventListener("poline-change", onDragPolineChange);
++
++      try {
++        // Start drag on anchor 0 at (30, 30) with pointerId 101
++        dragSvg.dispatchEvent(
++          new MockPointerEvent("pointerdown", { pointerId: 101, clientX: 30, clientY: 30 })
++        );
++        expect(dragSvg.hasPointerCapture(101)).toBe(true);
++        expect(dragPoline.anchorPoints[0]?.x).toBe(0.3);
++        expect(dragPoline.anchorPoints[0]?.y).toBe(0.3);
++        expect(dragChangeCount).toBe(0);
++
++        // Move to (40, 40) triggering first effective move and synchronous refresh in listener
++        dragSvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 101, clientX: 40, clientY: 40 })
++        );
++
++        expect(dragPoline.anchorPoints[0]?.x).toBeCloseTo(0.4, 2);
++        expect(dragPoline.anchorPoints[0]?.y).toBeCloseTo(0.4, 2);
++        expect(dragPoline.anchorPoints[0]?.z).toBe(0.5);
++        expect(dragChangeCount).toBe(1);
++        expectPolineChangeEvent(lastDragChangeEvent, dragPoline);
++        expect(dragRefreshInvoked).toBe(true);
++
++        // Synchronous refresh invalidated the active gesture: capture released, classes cleared
++        expect(dragSvg.hasPointerCapture(101)).toBe(false);
++        expect(dragPicker.classList.contains("ring-adjusting")).toBe(false);
++        expect(dragPicker.classList.contains("ring-hover")).toBe(false);
++
++        const dragSnapX = dragPoline.anchorPoints[0]?.x;
++        const dragSnapY = dragPoline.anchorPoints[0]?.y;
++        const dragSnapZ = dragPoline.anchorPoints[0]?.z;
++        const dragSnapSaturation = dragPoline.anchorPoints[0]?.color[1];
++
++        // Subsequent move/up with stale pointer 101 must not mutate palette or restore state
++        dragSvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 101, clientX: 55, clientY: 55 })
++        );
++        dragSvg.dispatchEvent(
++          new MockPointerEvent("pointerup", { pointerId: 101, clientX: 55, clientY: 55 })
++        );
++
++        expect(dragPoline.anchorPoints[0]?.x).toBe(dragSnapX);
++        expect(dragPoline.anchorPoints[0]?.y).toBe(dragSnapY);
++        expect(dragPoline.anchorPoints[0]?.z).toBe(dragSnapZ);
++        expect(dragPoline.anchorPoints[0]?.color[1]).toBe(dragSnapSaturation);
++        expect(dragChangeCount).toBe(1);
++        expect(dragSvg.hasPointerCapture(101)).toBe(false);
++        expect(dragPicker.classList.contains("ring-adjusting")).toBe(false);
++        expect(dragPicker.classList.contains("ring-hover")).toBe(false);
++
++        // Picker remains usable: new pointer 102 can start and complete fresh drag
++        dragSvg.dispatchEvent(
++          new MockPointerEvent("pointerdown", { pointerId: 102, clientX: 40, clientY: 40 })
++        );
++        expect(dragSvg.hasPointerCapture(102)).toBe(true);
++
++        dragSvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 102, clientX: 50, clientY: 50 })
++        );
++        expect(dragPoline.anchorPoints[0]?.x).toBeCloseTo(0.5, 2);
++        expect(dragPoline.anchorPoints[0]?.y).toBeCloseTo(0.5, 2);
++        expect(dragChangeCount).toBe(2);
++        expectPolineChangeEvent(lastDragChangeEvent, dragPoline);
++
++        dragSvg.dispatchEvent(
++          new MockPointerEvent("pointerup", { pointerId: 102, clientX: 50, clientY: 50 })
++        );
++        expect(dragSvg.hasPointerCapture(102)).toBe(false);
++        expect(dragPicker.classList.contains("ring-adjusting")).toBe(false);
++        expect(dragPicker.classList.contains("ring-hover")).toBe(false);
++      } finally {
++        dragPicker.removeEventListener("poline-change", onDragPolineChange);
++        disconnectPicker(dragPicker);
++      }
++    }
++
++    // ------------------------------------------------------------------------
++    // Scenario C: Active rotary adjustment with synchronous refresh
++    // ------------------------------------------------------------------------
++    {
++      isCoarsePointer = false;
++      const rotaryPicker = new PolinePickerConstructor();
++      (rotaryPicker as unknown as MockElement).setAttribute("interactive", "");
++      connectPicker(rotaryPicker);
++
++      const rotaryPoline = new PolineConstructor({
++        anchorColors: [
++          [120, 0.5, 0.5],
++          [240, 0.5, 0.5],
++        ],
++        numPoints: 4,
++      });
++      const rp0 = rotaryPoline.anchorPoints[0];
++      const rp1 = rotaryPoline.anchorPoints[1];
++      if (rp0) rp0.position = [0.3, 0.3, 0.5];
++      if (rp1) rp1.position = [0.7, 0.7, 0.5];
++      rotaryPicker.setPoline(rotaryPoline);
++
++      const rotaryHost = rotaryPicker as unknown as MockHTMLElement;
++      const rotarySvg = rotaryHost.shadowRoot?.querySelector("svg") as MockElement;
++      expect(rotarySvg).toBeDefined();
++
++      // Start rotary gesture at top of anchor 0's ring band: (30, 26.5) with pointerId 201
++      rotarySvg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 201, clientX: 30, clientY: 26.5 })
++      );
++      expect(rotaryPicker.classList.contains("ring-adjusting")).toBe(true);
++      expect(rotarySvg.hasPointerCapture(201)).toBe(true);
++      expect(rotaryPoline.anchorPoints[0]?.color[1]).toBe(0.5);
++
++      let rotaryChangeCount = 0;
++      let lastRotaryChangeEvent: MockCustomEvent | null = null;
++      let rotaryRefreshInvoked = false;
++      const onRotaryPolineChange = (e: unknown) => {
++        rotaryChangeCount++;
++        lastRotaryChangeEvent = e as MockCustomEvent;
++        if (!rotaryRefreshInvoked) {
++          rotaryRefreshInvoked = true;
++          rotaryPicker.updateSVG();
++        }
++      };
++      rotaryPicker.addEventListener("poline-change", onRotaryPolineChange);
++
++      try {
++        // Effective rotary move from top to right (33.5, 30) triggering change and synchronous refresh
++        rotarySvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 201, clientX: 33.5, clientY: 30 })
++        );
++
++        expect(rotaryPoline.anchorPoints[0]?.color[1]).not.toBe(0.5);
++        expect(rotaryPoline.anchorPoints[0]?.x).toBeCloseTo(0.3, 10);
++        expect(rotaryPoline.anchorPoints[0]?.y).toBeCloseTo(0.3, 10);
++        expect(rotaryChangeCount).toBe(1);
++        expectPolineChangeEvent(lastRotaryChangeEvent, rotaryPoline);
++        expect(rotaryRefreshInvoked).toBe(true);
++
++        // Synchronous refresh invalidated the rotary gesture
++        expect(rotarySvg.hasPointerCapture(201)).toBe(false);
++        expect(rotaryPicker.classList.contains("ring-adjusting")).toBe(false);
++        expect(rotaryPicker.classList.contains("ring-hover")).toBe(false);
++
++        const rotarySnapSaturation = rotaryPoline.anchorPoints[0]?.color[1];
++        const rotarySnapX = rotaryPoline.anchorPoints[0]?.x;
++        const rotarySnapY = rotaryPoline.anchorPoints[0]?.y;
++        const rotarySnapZ = rotaryPoline.anchorPoints[0]?.z;
++
++        // Subsequent rotary move and up with stale pointer 201 must not alter values
++        rotarySvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 201, clientX: 30, clientY: 33.5 })
++        );
++        rotarySvg.dispatchEvent(
++          new MockPointerEvent("pointerup", { pointerId: 201, clientX: 30, clientY: 33.5 })
++        );
++
++        expect(rotaryPoline.anchorPoints[0]?.color[1]).toBe(rotarySnapSaturation);
++        expect(rotaryPoline.anchorPoints[0]?.x).toBe(rotarySnapX);
++        expect(rotaryPoline.anchorPoints[0]?.y).toBe(rotarySnapY);
++        expect(rotaryPoline.anchorPoints[0]?.z).toBe(rotarySnapZ);
++        expect(rotaryChangeCount).toBe(1);
++        expect(rotarySvg.hasPointerCapture(201)).toBe(false);
++        expect(rotaryPicker.classList.contains("ring-adjusting")).toBe(false);
++        expect(rotaryPicker.classList.contains("ring-hover")).toBe(false);
++
++        // Picker remains usable: new pointer 202 can start and complete fresh rotary adjustment
++        rotarySvg.dispatchEvent(
++          new MockPointerEvent("pointerdown", { pointerId: 202, clientX: 30, clientY: 26.5 })
++        );
++        expect(rotarySvg.hasPointerCapture(202)).toBe(true);
++        expect(rotaryPicker.classList.contains("ring-adjusting")).toBe(true);
++
++        rotarySvg.dispatchEvent(
++          new MockPointerEvent("pointermove", { pointerId: 202, clientX: 33.5, clientY: 30 })
++        );
++        expect(rotaryPoline.anchorPoints[0]?.color[1]).not.toBe(rotarySnapSaturation);
++        expect(rotaryChangeCount).toBe(2);
++        expectPolineChangeEvent(lastRotaryChangeEvent, rotaryPoline);
++
++        rotarySvg.dispatchEvent(
++          new MockPointerEvent("pointerup", { pointerId: 202, clientX: 33.5, clientY: 30 })
++        );
++        expect(rotarySvg.hasPointerCapture(202)).toBe(false);
++        expect(rotaryPicker.classList.contains("ring-adjusting")).toBe(false);
++      } finally {
++        rotaryPicker.removeEventListener("poline-change", onRotaryPolineChange);
++        disconnectPicker(rotaryPicker);
++      }
++    }
++  });
++
++  it("F2P::lifecycle::reentrant_replacement_can_start_fresh_gesture", () => {
++    isCoarsePointer = false;
++    const picker = new PolinePickerConstructor();
++    (picker as unknown as MockElement).setAttribute("interactive", "");
++    (picker as unknown as MockElement).setAttribute("allow-add-points", "");
++    connectPicker(picker);
++
++    const oldPoline = new PolineConstructor({
++      anchorColors: [
++        [120, 0.5, 0.5],
++        [240, 0.5, 0.5],
++      ],
++      numPoints: 4,
++    });
++    const op0 = oldPoline.anchorPoints[0];
++    const op1 = oldPoline.anchorPoints[1];
++    if (op0) op0.position = [0.3, 0.3, 0.5];
++    if (op1) op1.position = [0.7, 0.7, 0.5];
++    picker.setPoline(oldPoline);
++
++    const host = picker as unknown as MockHTMLElement;
++    const oldSvg = host.shadowRoot?.querySelector("svg") as MockElement;
++    expect(oldSvg).toBeDefined();
++
++    const newPoline = new PolineConstructor({
++      anchorColors: [
++        [60, 0.6, 0.6],
++        [180, 0.6, 0.6],
++      ],
++      numPoints: 4,
++    });
++    const np0 = newPoline.anchorPoints[0];
++    const np1 = newPoline.anchorPoints[1];
++    if (np0) np0.position = [0.2, 0.2, 0.6];
++    if (np1) np1.position = [0.8, 0.8, 0.6];
++
++    let changeCount = 0;
++    let lastChangeEvent: MockCustomEvent | null = null;
++    let replacementDone = false;
++
++    const onPolineChange = (e: unknown) => {
++      changeCount++;
++      lastChangeEvent = e as MockCustomEvent;
++
++      if (!replacementDone) {
++        replacementDone = true;
++        // Synchronous palette replacement inside change listener
++        picker.setPoline(newPoline);
++
++        // Re-query current SVG surface
++        const currentSurface = host.shadowRoot?.querySelector("svg") as MockElement;
++        expect(currentSurface).toBeDefined();
++
++        // Initiate a fresh gesture on newPoline anchor 0 at (20, 20) with pointerId 42
++        currentSurface.dispatchEvent(
++          new MockPointerEvent("pointerdown", { pointerId: 42, clientX: 20, clientY: 20 })
++        );
++        expect(currentSurface.hasPointerCapture(42)).toBe(true);
++      }
++    };
++    picker.addEventListener("poline-change", onPolineChange);
++
++    try {
++      // Outer operation adds point to oldPoline on blank presentation area at (10, 10)
++      oldSvg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 10, clientX: 10, clientY: 10 })
++      );
++
++      expect(replacementDone).toBe(true);
++      expect(changeCount).toBe(1);
++      expect(oldPoline.anchorPoints.length).toBe(3);
++      expect(newPoline.anchorPoints.length).toBe(2);
++
++      // Re-query current surface after outer pointerdown completes
++      const currentSvg = host.shadowRoot?.querySelector("svg") as MockElement;
++      expect(currentSvg).toBeDefined();
++
++      // Outer pointerdown completion must NOT overwrite or cancel the newer gesture
++      expect(oldSvg.hasPointerCapture(10)).toBe(false);
++      expect(currentSvg.hasPointerCapture(42)).toBe(true);
++      expect(newPoline.anchorPoints[0]?.x).toBeCloseTo(0.2, 2);
++      expect(newPoline.anchorPoints[0]?.y).toBeCloseTo(0.2, 2);
++
++      // Move new pointer on current surface
++      currentSvg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 42, clientX: 35, clientY: 35 })
++      );
++
++      // Only newPoline mutates, and change event detail points to newPoline
++      expect(newPoline.anchorPoints[0]?.x).toBeCloseTo(0.35, 2);
++      expect(newPoline.anchorPoints[0]?.y).toBeCloseTo(0.35, 2);
++      expect(oldPoline.anchorPoints.length).toBe(3);
++      expect(changeCount).toBe(2);
++      expectPolineChangeEvent(lastChangeEvent, newPoline);
++
++      // Finish new gesture cleanly
++      currentSvg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 42, clientX: 35, clientY: 35 })
++      );
++      expect(currentSvg.hasPointerCapture(42)).toBe(false);
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++
++      // Stale events from old pointer delivered to old or current surface have no effect
++      oldSvg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 10, clientX: 50, clientY: 50 })
++      );
++      oldSvg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 10, clientX: 50, clientY: 50 })
++      );
++
++      expect(changeCount).toBe(2);
++      expect(newPoline.anchorPoints[0]?.x).toBeCloseTo(0.35, 2);
++    } finally {
++      picker.removeEventListener("poline-change", onPolineChange);
++      disconnectPicker(picker);
++    }
++  });
++
++  it("F2P::lifecycle::setallowaddpoints_preserves_active_gestures", () => {
++    isCoarsePointer = false;
++    const picker = new PolinePickerConstructor();
++    (picker as unknown as MockElement).setAttribute("interactive", "");
++    (picker as unknown as MockElement).setAttribute("allow-add-points", "");
++    connectPicker(picker);
++
++    const poline = new PolineConstructor({
++      anchorColors: [
++        [120, 0.5, 0.5],
++        [240, 0.5, 0.5],
++      ],
++      numPoints: 4,
++    });
++    const p0 = poline.anchorPoints[0];
++    const p1 = poline.anchorPoints[1];
++    if (p0) p0.position = [0.3, 0.3, 0.5];
++    if (p1) p1.position = [0.7, 0.7, 0.5];
++    picker.setPoline(poline);
++
++    const host = picker as unknown as MockHTMLElement;
++    const svg = host.shadowRoot?.querySelector("svg") as MockElement;
++    expect(svg).toBeDefined();
++
++    let changeCount = 0;
++    let lastChangeEvent: MockCustomEvent | null = null;
++    const onPolineChange = (e: unknown) => {
++      changeCount++;
++      lastChangeEvent = e as MockCustomEvent;
++    };
++    picker.addEventListener("poline-change", onPolineChange);
++
++    try {
++      // ----------------------------------------------------------------------
++      // Scenario A: setAllowAddPoints during normal active anchor drag
++      // ----------------------------------------------------------------------
++      // Anchor 0 is at (30, 30)
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 30 })
++      );
++      expect(svg.hasPointerCapture(1)).toBe(true);
++
++      // Programmatic setAllowAddPoints(false) mid-gesture
++      picker.setAllowAddPoints(false);
++
++      // Must not emit change, must retain pointer capture
++      expect(changeCount).toBe(0);
++      expect(svg.hasPointerCapture(1)).toBe(true);
++
++      // Subsequent pointermove / pointerup must continue to update anchor 0
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 1, clientX: 40, clientY: 40 })
++      );
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 1, clientX: 40, clientY: 40 })
++      );
++
++      expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.4, 2);
++      expect(poline.anchorPoints[0]?.y).toBeCloseTo(0.4, 2);
++      expect(changeCount).toBe(1);
++      expectPolineChangeEvent(lastChangeEvent, poline);
++      expect(svg.hasPointerCapture(1)).toBe(false);
++
++      // ----------------------------------------------------------------------
++      // Scenario B: setAllowAddPoints during normal active rotary adjustment
++      // ----------------------------------------------------------------------
++      // Anchor 0 is now at (40, 40); top of ring is (40, 36.5)
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 40, clientY: 36.5 })
++      );
++      expect(picker.classList.contains("ring-adjusting")).toBe(true);
++      expect(svg.hasPointerCapture(2)).toBe(true);
++      const snapSat = poline.anchorPoints[0]?.color[1];
++
++      // Programmatic setAllowAddPoints(true) mid-gesture
++      picker.setAllowAddPoints(true);
++
++      expect(changeCount).toBe(1);
++      expect(svg.hasPointerCapture(2)).toBe(true);
++      expect(picker.classList.contains("ring-adjusting")).toBe(true);
++
++      // Rotate clockwise 90 degrees to (43.5, 40)
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 2, clientX: 43.5, clientY: 40 })
++      );
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 2, clientX: 43.5, clientY: 40 })
++      );
++
++      expect(poline.anchorPoints[0]?.color[1]).not.toBe(snapSat);
++      expect(changeCount).toBe(2);
++      expectPolineChangeEvent(lastChangeEvent, poline);
++      expect(svg.hasPointerCapture(2)).toBe(false);
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++
++      // ----------------------------------------------------------------------
++      // Scenario C: setAllowAddPoints during synchronous poline-change re-entry
++      // ----------------------------------------------------------------------
++      let reentrantCallDone = false;
++      const reentrantListener = () => {
++        if (!reentrantCallDone) {
++          reentrantCallDone = true;
++          picker.setAllowAddPoints(false);
++        }
++      };
++      picker.addEventListener("poline-change", reentrantListener);
++
++      // Start drag with pointerId 3 on anchor 0 at (40, 40)
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 3, clientX: 40, clientY: 40 })
++      );
++      expect(svg.hasPointerCapture(3)).toBe(true);
++
++      // Move to (45, 45) -> triggers poline-change -> triggers synchronous reentrant setAllowAddPoints(false)
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 3, clientX: 45, clientY: 45 })
++      );
++
++      expect(reentrantCallDone).toBe(true);
++      // Gesture must NOT be cancelled by setAllowAddPoints re-entry: capture retained!
++      expect(svg.hasPointerCapture(3)).toBe(true);
++
++      // Move further to (50, 50) and pointerup
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 3, clientX: 50, clientY: 50 })
++      );
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 3, clientX: 50, clientY: 50 })
++      );
++
++      expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.5, 2);
++      expect(poline.anchorPoints[0]?.y).toBeCloseTo(0.5, 2);
++      expect(changeCount).toBe(4);
++      expect(svg.hasPointerCapture(3)).toBe(false);
++
++      picker.removeEventListener("poline-change", reentrantListener);
++    } finally {
++      picker.removeEventListener("poline-change", onPolineChange);
++      disconnectPicker(picker);
++    }
++  });
++
++  it("F2P::lifecycle::normal_updatesvg_preserves_active_gestures", () => {
++    isCoarsePointer = false;
++    const picker = new PolinePickerConstructor();
++    (picker as unknown as MockElement).setAttribute("interactive", "");
++    connectPicker(picker);
++
++    const poline = new PolineConstructor({
++      anchorColors: [
++        [120, 0.5, 0.5],
++        [240, 0.5, 0.5],
++      ],
++      numPoints: 4,
++    });
++    const p0 = poline.anchorPoints[0];
++    const p1 = poline.anchorPoints[1];
++    if (p0) p0.position = [0.3, 0.3, 0.5];
++    if (p1) p1.position = [0.7, 0.7, 0.5];
++    picker.setPoline(poline);
++
++    const host = picker as unknown as MockHTMLElement;
++    const svg = host.shadowRoot?.querySelector("svg") as MockElement;
++    expect(svg).toBeDefined();
++
++    let changeCount = 0;
++    let lastChangeEvent: MockCustomEvent | null = null;
++    const onPolineChange = (e: unknown) => {
++      changeCount++;
++      lastChangeEvent = e as MockCustomEvent;
++    };
++    picker.addEventListener("poline-change", onPolineChange);
++
++    try {
++      // ----------------------------------------------------------------------
++      // Scenario A: normal updateSVG() during active anchor drag
++      // ----------------------------------------------------------------------
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 30 })
++      );
++      expect(svg.hasPointerCapture(1)).toBe(true);
++
++      // Programmatic updateSVG() while pointer 1 is down
++      picker.updateSVG();
++
++      // Calling updateSVG directly does NOT dispatch poline-change
++      expect(changeCount).toBe(0);
++      // Capture retained on svg
++      expect(svg.hasPointerCapture(1)).toBe(true);
++
++      // Drag proceeds normally
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 1, clientX: 40, clientY: 40 })
++      );
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 1, clientX: 40, clientY: 40 })
++      );
++
++      expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.4, 2);
++      expect(poline.anchorPoints[0]?.y).toBeCloseTo(0.4, 2);
++      expect(changeCount).toBe(1);
++      expectPolineChangeEvent(lastChangeEvent, poline);
++      expect(svg.hasPointerCapture(1)).toBe(false);
++
++      // ----------------------------------------------------------------------
++      // Scenario B: normal updateSVG() during active rotary adjustment
++      // ----------------------------------------------------------------------
++      // Anchor 0 is at (40, 40); top of ring is (40, 36.5)
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 40, clientY: 36.5 })
++      );
++      expect(picker.classList.contains("ring-adjusting")).toBe(true);
++      expect(svg.hasPointerCapture(2)).toBe(true);
++      const snapSat = poline.anchorPoints[0]?.color[1];
++
++      // Programmatic updateSVG() during active rotary gesture
++      picker.updateSVG();
++
++      expect(changeCount).toBe(1);
++      expect(svg.hasPointerCapture(2)).toBe(true);
++      expect(picker.classList.contains("ring-adjusting")).toBe(true);
++
++      // Rotate clockwise 90 degrees to (43.5, 40)
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 2, clientX: 43.5, clientY: 40 })
++      );
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 2, clientX: 43.5, clientY: 40 })
++      );
++
++      expect(poline.anchorPoints[0]?.color[1]).not.toBe(snapSat);
++      expect(changeCount).toBe(2);
++      expectPolineChangeEvent(lastChangeEvent, poline);
++      expect(svg.hasPointerCapture(2)).toBe(false);
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++    } finally {
++      picker.removeEventListener("poline-change", onPolineChange);
++      disconnectPicker(picker);
++    }
++  });
++
++  it("F2P::lifecycle::addpointatposition_gesture_boundaries", () => {
++    isCoarsePointer = false;
++    const picker = new PolinePickerConstructor();
++    (picker as unknown as MockElement).setAttribute("interactive", "");
++    (picker as unknown as MockElement).setAttribute("allow-add-points", "");
++    connectPicker(picker);
++
++    const poline = new PolineConstructor({
++      anchorColors: [
++        [120, 0.5, 0.5],
++        [240, 0.5, 0.5],
++      ],
++      numPoints: 4,
++    });
++    const p0 = poline.anchorPoints[0];
++    const p1 = poline.anchorPoints[1];
++    if (p0) p0.position = [0.3, 0.3, 0.5];
++    if (p1) p1.position = [0.7, 0.7, 0.5];
++    picker.setPoline(poline);
++
++    const host = picker as unknown as MockHTMLElement;
++    const svg = host.shadowRoot?.querySelector("svg") as MockElement;
++    expect(svg).toBeDefined();
++
++    let changeCount = 0;
++    let lastChangeEvent: MockCustomEvent | null = null;
++    const onPolineChange = (e: unknown) => {
++      changeCount++;
++      lastChangeEvent = e as MockCustomEvent;
++    };
++    picker.addEventListener("poline-change", onPolineChange);
++
++    try {
++      // ----------------------------------------------------------------------
++      // Scenario A: normal addPointAtPosition during active anchor drag
++      // ----------------------------------------------------------------------
++      // Start drag with pointerId 1 on anchor 0 at (30, 30)
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 30 })
++      );
++      expect(svg.hasPointerCapture(1)).toBe(true);
++
++      // Programmatic addPointAtPosition(50, 50)
++      const addedPtA = picker.addPointAtPosition(50, 50);
++      expect(addedPtA).toBeDefined();
++      expect(poline.anchorPoints.length).toBe(3);
++      // Exactly 1 change event dispatched for the added point
++      expect(changeCount).toBe(1);
++      expectPolineChangeEvent(lastChangeEvent, poline);
++      // Active drag gesture must NOT be interrupted: capture is retained
++      expect(svg.hasPointerCapture(1)).toBe(true);
++
++      // Drag proceeds to (40, 40) and completes
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 1, clientX: 40, clientY: 40 })
++      );
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 1, clientX: 40, clientY: 40 })
++      );
++
++      // Anchor 0 updated, change event count becomes 2
++      expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.4, 2);
++      expect(poline.anchorPoints[0]?.y).toBeCloseTo(0.4, 2);
++      expect(changeCount).toBe(2);
++      expectPolineChangeEvent(lastChangeEvent, poline);
++      expect(svg.hasPointerCapture(1)).toBe(false);
++
++      // ----------------------------------------------------------------------
++      // Scenario B: normal addPointAtPosition during active rotary adjustment
++      // ----------------------------------------------------------------------
++      // Anchor 0 is at (40, 40); top of ring is (40, 36.5)
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 40, clientY: 36.5 })
++      );
++      expect(picker.classList.contains("ring-adjusting")).toBe(true);
++      expect(svg.hasPointerCapture(2)).toBe(true);
++      const snapSatB = poline.anchorPoints[0]?.color[1];
++
++      // Programmatic addPointAtPosition(60, 60)
++      const addedPtB = picker.addPointAtPosition(60, 60);
++      expect(addedPtB).toBeDefined();
++      expect(poline.anchorPoints.length).toBe(4);
++      // Change count increments to 3
++      expect(changeCount).toBe(3);
++      // Rotary gesture preserved: capture and classes retained
++      expect(svg.hasPointerCapture(2)).toBe(true);
++      expect(picker.classList.contains("ring-adjusting")).toBe(true);
++
++      // Rotary proceeds to (43.5, 40) and completes
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 2, clientX: 43.5, clientY: 40 })
++      );
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 2, clientX: 43.5, clientY: 40 })
++      );
++
++      expect(poline.anchorPoints[0]?.color[1]).not.toBe(snapSatB);
++      expect(changeCount).toBe(4);
++      expectPolineChangeEvent(lastChangeEvent, poline);
++      expect(svg.hasPointerCapture(2)).toBe(false);
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++
++      // ----------------------------------------------------------------------
++      // Scenario C: synchronous reentrant addPointAtPosition during poline-change
++      // ----------------------------------------------------------------------
++      let reentrantAddedPt: unknown = null;
++      let reentrantAddDone = false;
++      const reentrantAddListener = () => {
++        if (!reentrantAddDone) {
++          reentrantAddDone = true;
++          // Synchronous re-entry inside change listener
++          reentrantAddedPt = picker.addPointAtPosition(20, 20);
++        }
++      };
++      picker.addEventListener("poline-change", reentrantAddListener);
++
++      // Start drag with pointerId 3 on anchor 0 at (40, 40)
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 3, clientX: 40, clientY: 40 })
++      );
++      expect(svg.hasPointerCapture(3)).toBe(true);
++
++      // Move to (45, 45) -> triggers poline-change -> calls reentrant addPointAtPosition
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 3, clientX: 45, clientY: 45 })
++      );
++
++      expect(reentrantAddDone).toBe(true);
++      expect(reentrantAddedPt).toBeDefined();
++      expect(poline.anchorPoints.length).toBe(5);
++      // Synchronous re-entry MUST cancel the emitting gesture: capture released, classes cleared!
++      expect(svg.hasPointerCapture(3)).toBe(false);
++      expect(picker.classList.contains("ring-adjusting")).toBe(false);
++      expect(picker.classList.contains("ring-hover")).toBe(false);
++
++      const snapXAfterReentry = poline.anchorPoints[0]?.x;
++      const snapYAfterReentry = poline.anchorPoints[0]?.y;
++      const countAfterReentry = changeCount;
++
++      // Subsequent moves/up from stale pointer 3 must NOT mutate anchor 0 or dispatch change
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 3, clientX: 60, clientY: 60 })
++      );
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 3, clientX: 60, clientY: 60 })
++      );
++
++      expect(poline.anchorPoints[0]?.x).toBe(snapXAfterReentry);
++      expect(poline.anchorPoints[0]?.y).toBe(snapYAfterReentry);
++      expect(changeCount).toBe(countAfterReentry);
++      expect(svg.hasPointerCapture(3)).toBe(false);
++
++      picker.removeEventListener("poline-change", reentrantAddListener);
++
++      // A fresh gesture with pointerId 4 can start and complete cleanly
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerdown", { pointerId: 4, clientX: 45, clientY: 45 })
++      );
++      expect(svg.hasPointerCapture(4)).toBe(true);
++
++      svg.dispatchEvent(
++        new MockPointerEvent("pointermove", { pointerId: 4, clientX: 55, clientY: 55 })
++      );
++      svg.dispatchEvent(
++        new MockPointerEvent("pointerup", { pointerId: 4, clientX: 55, clientY: 55 })
++      );
++
++      expect(poline.anchorPoints[0]?.x).toBeCloseTo(0.55, 2);
++      expect(changeCount).toBe(countAfterReentry + 1);
++      expect(svg.hasPointerCapture(4)).toBe(false);
++    } finally {
++      picker.removeEventListener("poline-change", onPolineChange);
++      disconnectPicker(picker);
++    }
++  });
++
++  it("F2P::event::pointerdown_propagation_branches", () => {
++    isCoarsePointer = false;
++
++    // Helper: setup picker mounted inside a parent container
++    const setupParentAndPicker = (interactive: boolean, allowAddPoints: boolean, withPoline: boolean) => {
++      const parent = new MockElement("div");
++      const picker = new PolinePickerConstructor();
++      parent.appendChild(picker as unknown as MockElement);
++
++      if (interactive) {
++        (picker as unknown as MockElement).setAttribute("interactive", "");
++      }
++      if (allowAddPoints) {
++        (picker as unknown as MockElement).setAttribute("allow-add-points", "");
++      }
++      connectPicker(picker);
++
++      let poline: PolineType | null = null;
++      if (withPoline) {
++        poline = new PolineConstructor({
++          anchorColors: [
++            [120, 0.5, 0.5],
++            [240, 0.5, 0.5],
++          ],
++          numPoints: 4,
++        });
++        const p0 = poline.anchorPoints[0];
++        const p1 = poline.anchorPoints[1];
++        if (p0) p0.position = [0.3, 0.3, 0.5];
++        if (p1) p1.position = [0.7, 0.7, 0.5];
++        picker.setPoline(poline);
++      }
++
++      let parentCount = 0;
++      parent.addEventListener("pointerdown", () => {
++        parentCount++;
++      });
++
++      const host = picker as unknown as MockHTMLElement;
++      const svg = host.shadowRoot?.querySelector("svg") as MockElement;
++      expect(svg).toBeDefined();
++
++      return { parent, picker, svg, poline, getParentCount: () => parentCount };
++    };
++
++    // ------------------------------------------------------------------------
++    // Branch 1: Non-interactive state surface click (positive control: bubbles, propagationStopped === false)
++    // ------------------------------------------------------------------------
++    {
++      const { picker, svg, getParentCount } = setupParentAndPicker(false, false, true);
++      try {
++        const ev1 = new MockPointerEvent("pointerdown", { pointerId: 1, clientX: 30, clientY: 30 });
++        svg.dispatchEvent(ev1);
++        expect(ev1.propagationStopped).toBe(false);
++        expect(getParentCount()).toBe(1);
++        expect(svg.hasPointerCapture(1)).toBe(false);
++      } finally {
++        disconnectPicker(picker);
++      }
++    }
++
++    // ------------------------------------------------------------------------
++    // Branch 2: Interactive state without palette surface click (negative control: intercepted, propagationStopped === true)
++    // ------------------------------------------------------------------------
++    {
++      const { picker, svg, getParentCount } = setupParentAndPicker(true, true, false);
++      try {
++        const ev2 = new MockPointerEvent("pointerdown", { pointerId: 2, clientX: 30, clientY: 30 });
++        svg.dispatchEvent(ev2);
++        expect(ev2.propagationStopped).toBe(true);
++        expect(getParentCount()).toBe(0);
++        expect(svg.hasPointerCapture(2)).toBe(false);
++      } finally {
++        disconnectPicker(picker);
++      }
++    }
++
++    // ------------------------------------------------------------------------
++    // Branch 3: Interactive state, without allow-add-points, clicking blank canvas (negative control: intercepted)
++    // ------------------------------------------------------------------------
++    {
++      const { picker, svg, getParentCount } = setupParentAndPicker(true, false, true);
++      try {
++        // (10, 10) is blank presentation canvas far from anchors (30,30) and (70,70)
++        const ev3 = new MockPointerEvent("pointerdown", { pointerId: 3, clientX: 10, clientY: 10 });
++        svg.dispatchEvent(ev3);
++        expect(ev3.propagationStopped).toBe(true);
++        expect(getParentCount()).toBe(0);
++        expect(svg.hasPointerCapture(3)).toBe(false);
++      } finally {
++        disconnectPicker(picker);
++      }
++    }
++
++    // ------------------------------------------------------------------------
++    // Branch 4: Interactive state clicking anchor core (negative control: intercepted, acquires capture)
++    // ------------------------------------------------------------------------
++    {
++      const { picker, svg, getParentCount } = setupParentAndPicker(true, false, true);
++      try {
++        // (30, 30) is anchor 0 core
++        const ev4 = new MockPointerEvent("pointerdown", { pointerId: 4, clientX: 30, clientY: 30 });
++        svg.dispatchEvent(ev4);
++        expect(ev4.propagationStopped).toBe(true);
++        expect(getParentCount()).toBe(0);
++        expect(svg.hasPointerCapture(4)).toBe(true);
++        svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 4, clientX: 30, clientY: 30 }));
++      } finally {
++        disconnectPicker(picker);
++      }
++    }
++
++    // ------------------------------------------------------------------------
++    // Branch 5: Interactive state secondary pointerdown during active gesture (negative control: intercepted, does not hijack active pointer)
++    // ------------------------------------------------------------------------
++    {
++      const { picker, svg, getParentCount } = setupParentAndPicker(true, true, true);
++      try {
++        // First pointer initiates anchor drag
++        const ev5_1 = new MockPointerEvent("pointerdown", { pointerId: 51, clientX: 30, clientY: 30 });
++        svg.dispatchEvent(ev5_1);
++        expect(ev5_1.propagationStopped).toBe(true);
++        expect(getParentCount()).toBe(0);
++        expect(svg.hasPointerCapture(51)).toBe(true);
++
++        // Secondary pointer down while pointer 51 is active
++        const ev5_2 = new MockPointerEvent("pointerdown", { pointerId: 52, clientX: 70, clientY: 70 });
++        svg.dispatchEvent(ev5_2);
++        // Intercepted: propagation stopped, parent does not receive event
++        expect(ev5_2.propagationStopped).toBe(true);
++        expect(getParentCount()).toBe(0);
++        // Secondary pointer must NOT have capture, primary pointer retains capture
++        expect(svg.hasPointerCapture(52)).toBe(false);
++        expect(svg.hasPointerCapture(51)).toBe(true);
++
++        // Complete primary gesture cleanly
++        svg.dispatchEvent(new MockPointerEvent("pointerup", { pointerId: 51, clientX: 30, clientY: 30 }));
++        expect(svg.hasPointerCapture(51)).toBe(false);
++      } finally {
++        disconnectPicker(picker);
++      }
++    }
++
++    // ------------------------------------------------------------------------
++    // Branch 6: Reconnected after removing interactive attribute (positive control: bubbles, propagationStopped === false)
++    // ------------------------------------------------------------------------
++    {
++      const { picker, svg, getParentCount } = setupParentAndPicker(true, false, true);
++      try {
++        // Remove interactive attribute, disconnect and reconnect
++        (picker as unknown as MockElement).removeAttribute("interactive");
++        disconnectPicker(picker);
++        connectPicker(picker);
++
++        const currentSvg = (picker as unknown as MockHTMLElement).shadowRoot?.querySelector("svg") as MockElement;
++        expect(currentSvg).toBeDefined();
++
++        const countBefore = getParentCount();
++        const ev6 = new MockPointerEvent("pointerdown", { pointerId: 6, clientX: 30, clientY: 30 });
++        currentSvg.dispatchEvent(ev6);
++        expect(ev6.propagationStopped).toBe(false);
++        expect(getParentCount()).toBe(countBefore + 1);
++        expect(currentSvg.hasPointerCapture(6)).toBe(false);
++      } finally {
++        disconnectPicker(picker);
++      }
++    }
++  });
++});

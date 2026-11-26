@@ -1,0 +1,65 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+# The runner generates the model endpoint allowlist from the model configuration. This template leaves service hostnames blank.
+# For local runs, run tools/df-local auth or qualify and enter the model base URL in profile.json when prompted.
+# When using the Harbor CLI directly, first enter the model endpoint hostname for each stage below. Omit the scheme, port, and path.
+
+[task]
+name = "tikiai/cknd-stackprinter-20260915033253-107b0e"
+description = "Build and render cycle-safe exception trees in Stackprinter."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "cknd-stackprinter-20260915033253-107b0e"
+display_title = "Tree-based traceback rendering"
+category = "module_boundary"
+language = "Python"
+repository_url = "https://github.com/cknd/stackprinter"
+base_commit_hash = "7a07a51a806e70c273a96071c87d19289bc0c69e"
+
+[tests]
+fail_to_pass_count = 53
+pass_to_pass_count = 13
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+network_mode = "public"
+environment_mode = "separate"
+user = "root"
+timeout_sec = 3600.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:cknd-stackprinter-20260915033253-107b0e-verifier-image-20261125"
+image_digest = "sha256:632b01d4a8a622cf725ff58f2c843a6e63d03300ccb6b716d478db09cd2b9efd"
+network_mode = "public"
+build_timeout_sec = 1800.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "set -eu\nmkdir -p /logs/artifacts\nrm -f /logs/artifacts/model.patch\ncollect_tmp=$(mktemp -d /logs/artifacts/.collect.XXXXXX)\ntrap 'rm -rf \"$collect_tmp\"' EXIT\nexport GIT_INDEX_FILE=\"$collect_tmp/index\"\ngit -C /workspace/repo rev-parse --verify '7a07a51a806e70c273a96071c87d19289bc0c69e^{commit}' >/dev/null\ngit -C /workspace/repo read-tree 7a07a51a806e70c273a96071c87d19289bc0c69e\ngit -C /workspace/repo add -A -- . ':(exclude,glob)**/__pycache__/**' ':(exclude,glob)**/*.py[cod]' ':(exclude,glob)**/.pytest_cache/**' ':(exclude,glob)**/*.egg-info/**' ':(exclude,glob)**/node_modules/**'\ngit -C /workspace/repo diff --cached --binary --full-index --no-ext-diff --no-textconv 7a07a51a806e70c273a96071c87d19289bc0c69e -- > \"$collect_tmp/model.patch\"\nmv \"$collect_tmp/model.patch\" /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+network_mode = "public"
+timeout_sec = 5400.0
+user = "agent"
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:cknd-stackprinter-20260915033253-107b0e-task-image-20261125"
+image_digest = "sha256:e18c708941db1f58343828080d79eb7ca24fd0bb107548b0db417fa570d4f5d0"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+
+[verifier.env]
+[solution.env]

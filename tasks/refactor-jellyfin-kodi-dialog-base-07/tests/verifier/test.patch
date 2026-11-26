@@ -1,0 +1,2713 @@
+diff --git a/tests/test_connection_dialogs_f2p.py b/tests/test_connection_dialogs_f2p.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d08d351efd3106bd0e5b491ba19ca0a407e46903
+--- /dev/null
++++ b/tests/test_connection_dialogs_f2p.py
+@@ -0,0 +1,1223 @@
++# -*- coding: utf-8 -*-
++
++##################################################################################################
++
++"""F2P tests for consolidating the duplicated window mechanics of the connection dialogs.
++
++The four connection dialogs used to carry their own copy of the same window
++mechanics (``set_args``, the back/previous-menu/parent-directory close handling,
++the list-item and input-field construction, the list control lookup and the
++error indication).  The consolidation goal requires that this behaviour is
++provided by one shared dialog base which every dialog uses, while each dialog
++keeps only its own business logic.
++
++The tests never assert a private helper name, the location of the shared base,
++the error-state encoding or a visibility-condition string; they observe which
++implementation actually runs.  Every dialog interaction is driven through the
++frozen public entry points (``set_args``, ``onInit``, ``onAction``, ``onClick``)
++and the skin control ids, and the recorded call site must be one and the same
++implementation for every consumer and must not be owned by a dialog class.
++
++"""
++
++import sys
++from pathlib import Path
++
++import pytest
++import xbmc
++import xbmcaddon
++import xbmcgui
++
++from jellyfin_kodi.dialogs import LoginManual, ServerConnect, ServerManual, UsersConnect
++
++##################################################################################################
++
++# Kodi action ids.
++ACTION_SELECT_ITEM = 7
++ACTION_PARENT_DIR = 9
++ACTION_PREVIOUS_MENU = 10
++ACTION_BACK = 92
++ACTION_NEUTRAL = 0
++
++# Skin control ids of the connection dialogs.
++LIST = 155
++CONNECT = 200
++CANCEL = 201
++ERROR_TOGGLE = 202
++
++BACK_ACTIONS = (ACTION_PARENT_DIR, ACTION_PREVIOUS_MENU, ACTION_BACK)
++
++DIALOG_CLASSES = (ServerConnect, UsersConnect, ServerManual, LoginManual)
++
++SERVER_ID = "server-id"
++SERVER_ENTRY = {"Id": "s1", "Name": "Alpha", "Address": "http://alpha"}
++USER_ENTRY = {"Id": "u1", "Name": "Alice"}
++
++##################################################################################################
++
++
++class _Action(int):
++    """Kodi action that compares as its action id and exposes ``getId``."""
++
++    def getId(self):
++        return int(self)
++
++
++def _visibility_state(condition):
++    """Interpret a Kodi visibility condition as a boolean state."""
++
++    if isinstance(condition, bool):
++        return condition
++
++    text = str(condition).strip().lower()
++
++    if text.startswith("!"):
++        return not _visibility_state(text[1:])
++
++    return text not in ("false", "0", "")
++
++
++_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
++
++
++def _is_project_code(code):
++    """True when the code object belongs to the project package under test."""
++
++    path = Path(code.co_filename)
++
++    if not path.is_absolute():
++        return False
++
++    try:
++        relative = path.resolve().relative_to(_REPOSITORY_ROOT)
++    except ValueError:
++        return False
++
++    return relative.parts[0] == "jellyfin_kodi"
++
++
++def _function_code(value):
++    if isinstance(value, (classmethod, staticmethod)):
++        value = value.__func__
++
++    return getattr(value, "__code__", None)
++
++
++def _nested_code_objects(code):
++    yield code
++
++    for constant in code.co_consts:
++        if isinstance(constant, type(code)):
++            yield from _nested_code_objects(constant)
++
++
++def _dialog_owned_code(classes=DIALOG_CLASSES):
++    """Code objects of the methods the four dialog classes define themselves."""
++
++    owned = set()
++
++    for dialog_class in classes:
++        for value in dialog_class.__dict__.values():
++            code = _function_code(value)
++            if code is not None:
++                owned.add(code)
++
++    return owned
++
++
++def _owner_class(code, classes=DIALOG_CLASSES):
++    """Class defining the given code object, resolved through the dialog MROs."""
++
++    for dialog_class in classes:
++        for ancestor in dialog_class.__mro__:
++            for value in ancestor.__dict__.values():
++                if _function_code(value) is code:
++                    return ancestor
++
++    return None
++
++
++def _describe(code):
++    return "%s:%s:%s" % (code.co_filename, code.co_firstlineno, code.co_name)
++
++
++def _shared_dialog_bases():
++    """Project-defined classes that are strict ancestors of all four dialogs."""
++
++    common = None
++
++    for dialog_class in DIALOG_CLASSES:
++        ancestors = {
++            ancestor
++            for ancestor in dialog_class.__mro__[1:]
++            if ancestor.__module__.startswith("jellyfin_kodi")
++        }
++        common = ancestors if common is None else common & ancestors
++
++    return common or set()
++
++
++def _other_dialog_classes():
++    """Classes defined by the dialog modules outside the four connection dialogs."""
++
++    from jellyfin_kodi.dialogs import context as context_module
++    from jellyfin_kodi.dialogs import resume as resume_module
++    from jellyfin_kodi.dialogs import skip as skip_module
++
++    classes = []
++
++    for module in (context_module, resume_module, skip_module):
++        for value in vars(module).values():
++            if isinstance(value, type) and value.__module__ == module.__name__:
++                classes.append(value)
++
++    return classes
++
++
++def _assert_shared_site(sites, what):
++    """Assert every consumer reached the same implementation, provided by the shared base."""
++
++    missing = sorted(name for name, code in sites.items() if code is None)
++
++    assert not missing, "%s: no implementation was executed for %s" % (what, missing)
++
++    distinct = []
++
++    for code in sites.values():
++        if code not in distinct:
++            distinct.append(code)
++
++    assert len(distinct) == 1, (
++        "%s: the consumers still run different implementations: %s"
++        % (what, [_describe(code) for code in distinct])
++    )
++
++    shared = distinct[0]
++
++    assert shared not in _dialog_owned_code(), (
++        "%s: the implementation is owned by a dialog class instead of the shared "
++        "dialog base: %s" % (what, _describe(shared))
++    )
++
++    return shared
++
++
++def _frame_chain(frame):
++    """Return ``frame`` and its callers, innermost first."""
++
++    chain = []
++
++    while frame is not None:
++        chain.append(frame)
++        frame = frame.f_back
++
++    return chain
++
++
++def _deepest_common_frame(left, right):
++    """Return the innermost frame shared by two innermost-first frame chains."""
++
++    right_ids = {id(frame) for frame in right}
++
++    for frame in left:
++        if id(frame) in right_ids:
++            return frame
++
++    return None
++
++
++class _RecordingDict(dict):
++    """Instance dictionary that notes the code object writing a watched name."""
++
++    def __init__(self, values, names, writers):
++        dict.__init__(self, values)
++        self._names = names
++        self._writers = writers
++
++    def __setitem__(self, key, value):
++        if key in self._names:
++            self._writers.add(sys._getframe(1).f_code)
++
++        dict.__setitem__(self, key, value)
++
++    def update(self, *args, **kwargs):
++        values = dict(*args, **kwargs)
++
++        for key in values:
++            if key in self._names:
++                self._writers.add(sys._getframe(1).f_code)
++
++        dict.update(self, values)
++
++
++class _SelectionData(dict):
++    def __init__(self, values, watched_key, recorder):
++        dict.__init__(self, values)
++        self.watched_key = watched_key
++        self.recorder = recorder
++
++    def __getitem__(self, key):
++        if key == self.watched_key:
++            self.recorder.note_frames("selection_data", key, sys._getframe(1))
++
++        return dict.__getitem__(self, key)
++
++    def get(self, key, default=None):
++        if key == self.watched_key:
++            self.recorder.note_frames("selection_data", key, sys._getframe(1))
++
++        return dict.get(self, key, default)
++
++
++class _ArgumentWriteProbe(object):
++    """Records which code object copies watched keyword arguments onto a dialog."""
++
++    def __init__(self, dialog, names):
++        self.dialog = dialog
++        self.names = frozenset(names)
++        self.writers = set()
++        self._dialog_class = type(dialog)
++        self._own_setattr = self._dialog_class.__dict__.get("__setattr__")
++        self._inherited_setattr = self._dialog_class.__setattr__
++        self._instance_dict = dialog.__dict__
++        self._installed_dict = None
++
++    def __enter__(self):
++        probe = self
++        dialog = self.dialog
++
++        def recording_setattr(instance, name, value):
++            if instance is dialog and name in probe.names:
++                probe.writers.add(sys._getframe(1).f_code)
++
++            probe._inherited_setattr(instance, name, value)
++
++        self._dialog_class.__setattr__ = recording_setattr
++
++        try:
++            self._installed_dict = _RecordingDict(self._instance_dict, self.names, self.writers)
++            dialog.__dict__ = self._installed_dict
++        except (AttributeError, TypeError):
++            self._installed_dict = None
++
++        return self
++
++    def __exit__(self, *exc_info):
++        if self._installed_dict is not None:
++            self._instance_dict.update(dict(self._installed_dict))
++            self.dialog.__dict__ = self._instance_dict
++            self._installed_dict = None
++
++        if self._own_setattr is None:
++            del self._dialog_class.__setattr__
++        else:
++            self._dialog_class.__setattr__ = self._own_setattr
++
++        return False
++
++
++##################################################################################################
++
++
++class _Recorder(object):
++    """Records which code object performed a watched interaction."""
++
++    def __init__(self):
++        self.events = {}
++        self.frame_events = {}
++
++    def note(self, code, event, payload=None):
++        self.events.setdefault(event, []).append((code, payload))
++
++    def note_frames(self, event, payload, frame):
++        self.frame_events.setdefault(event, []).append(
++            (frame.f_code, payload, _frame_chain(frame))
++        )
++
++    def clear(self):
++        self.events = {}
++        self.frame_events = {}
++
++    def site(self, event, payload=None):
++        for code, extra in self.events.get(event, []):
++            if payload is None or extra == payload:
++                return code
++
++        return None
++
++    def frame_site(self, event, payload=None):
++        for code, extra, frames in self.frame_events.get(event, []):
++            if payload is None or extra == payload:
++                return code, frames
++
++        return None, None
++
++
++class _FakeListItem(object):
++    def __init__(self, label="", label2="", path="", offscreen=False):
++        self.label = label
++        self.properties = {}
++        self.art = {}
++
++    def getLabel(self):
++        return self.label
++
++    def setLabel(self, label):
++        self.label = label
++
++    def setProperty(self, key, value):
++        self.properties[key] = value
++
++    def setProperties(self, values):
++        self.properties.update(values)
++
++    def getProperty(self, key):
++        return self.properties.get(key, "")
++
++    def setArt(self, values):
++        self.art.update(values)
++
++    def getArt(self, key):
++        return self.art.get(key, "")
++
++
++class _FakeControl(object):
++    def __init__(self, control_id, recorder):
++        self.control_id = control_id
++        self.recorder = recorder
++        self.visible_events = []
++        self.labels = []
++        self.images = []
++        self.items = []
++        self.selected_item = None
++        self.types = []
++        self.text = ""
++
++    def _rec(self, event, payload=None):
++        self.recorder.note(sys._getframe(2).f_code, event, payload)
++
++    def getId(self):
++        return self.control_id
++
++    def setVisibleCondition(self, condition, *args, **kwargs):
++        state = _visibility_state(condition)
++        self._rec("setVisibleCondition", state)
++        self.visible_events.append(state)
++
++    def setVisible(self, visible, *args, **kwargs):
++        state = bool(visible)
++        self._rec("setVisibleCondition", state)
++        self.visible_events.append(state)
++
++    @property
++    def visible(self):
++        return self.visible_events[-1] if self.visible_events else None
++
++    def setLabel(self, label="", *args, **kwargs):
++        self._rec("setLabel")
++        self.labels.append(label)
++
++    @property
++    def label(self):
++        return self.labels[-1] if self.labels else None
++
++    def setImage(self, image="", *args, **kwargs):
++        self._rec("setImage")
++        self.images.append(image)
++
++    def addItem(self, item, *args, **kwargs):
++        self._rec("addItem")
++        self.items.append(item)
++
++    def addItems(self, items):
++        self._rec("addItem")
++        self.items.extend(items)
++
++    def size(self):
++        return len(self.items)
++
++    def getListItem(self, index):
++        return self.items[index]
++
++    def getSelectedItem(self):
++        self._rec("getSelectedItem")
++        return self.selected_item
++
++    def selectItem(self, position):
++        self.selected_item = self.items[position]
++
++    def setType(self, type_id, heading="", *args, **kwargs):
++        self._rec("setType", type_id)
++        self.recorder.note_frames("setType", type_id, sys._getframe(1))
++        self.types.append((type_id, heading))
++
++    def getText(self):
++        return self.text
++
++    def setText(self, text):
++        self.text = text
++
++    def setPosition(self, x, y):
++        self.x = x
++        self.y = y
++
++    def setHeight(self, height):
++        self.height = height
++
++    def setWidth(self, width):
++        self.width = width
++
++    def controlUp(self, control):
++        self._rec("controlUp")
++
++    def controlDown(self, control):
++        self._rec("controlDown")
++
++    def setEnabled(self, enabled):
++        pass
++
++    def setNavigation(self, *args, **kwargs):
++        pass
++
++
++class _FakeConnectionManager(object):
++    """Recording stand-in for the Jellyfin connection manager."""
++
++    def __init__(self, connect_to_server_result=None, connect_to_address_result=None, login_result=None):
++        self.calls = []
++        self.server_id = SERVER_ID
++        self.server_info = dict(SERVER_ENTRY, address="http://alpha")
++        self.connect_to_server_result = connect_to_server_result
++        self.connect_to_address_result = connect_to_address_result
++        self.login_result = login_result
++        self.recorder = None
++
++    def _note(self, event):
++        if self.recorder is not None:
++            self.recorder.note(sys._getframe(2).f_code, event)
++
++    def get_server_info(self, server_id):
++        self.calls.append(("get_server_info", server_id))
++        return self.server_info
++
++    def connect_to_server(self, server):
++        self._note("connect_to_server")
++        self.calls.append(("connect_to_server", server))
++        return self.connect_to_server_result
++
++    def connect_to_address(self, address):
++        self._note("connect_to_address")
++        self.calls.append(("connect_to_address", address))
++        return self.connect_to_address_result
++
++    def login(self, server, username, password):
++        self._note("login")
++        self.calls.append(("login", server, username, password))
++        return self.login_result
++
++
++class _DialogHarness(object):
++    """Drives a dialog with recording stand-ins for the Kodi window API."""
++
++    def __init__(self, monkeypatch):
++        self.monkeypatch = monkeypatch
++        self.recorder = _Recorder()
++        self.controls = {}
++        self.added_controls = []
++        self.focused = []
++        self.focused_ids = []
++        self.closed = 0
++        self.focus_id = -1
++        self.edit_controls = []
++        self.list_items = []
++        self._install()
++
++    def new(self):
++        return _DialogHarness(self.monkeypatch)
++
++    def _install(self):
++        harness = self
++        recorder = self.recorder
++
++        class RecordingListItem(_FakeListItem):
++            def __init__(self, *args, **kwargs):
++                recorder.note(sys._getframe(1).f_code, "ListItem")
++                _FakeListItem.__init__(self, *args, **kwargs)
++                harness.list_items.append(self)
++
++        class RecordingControlEdit(_FakeControl):
++            def __init__(self, *args, **kwargs):
++                recorder.note(sys._getframe(1).f_code, "ControlEdit")
++                recorder.note_frames("ControlEdit", self, sys._getframe(1))
++                _FakeControl.__init__(self, None, recorder)
++                harness.edit_controls.append(self)
++
++        self.monkeypatch.setattr(xbmcgui, "ListItem", RecordingListItem)
++        self.monkeypatch.setattr(xbmcgui, "ControlEdit", RecordingControlEdit)
++        self.monkeypatch.setattr(xbmc, "sleep", lambda *args, **kwargs: None)
++        self.monkeypatch.setattr(
++            xbmc, "getLocalizedString", lambda string_id: "LOC:%s" % string_id, raising=False
++        )
++        self.monkeypatch.setattr(
++            xbmcaddon.Addon,
++            "getLocalizedString",
++            lambda self, string_id: "LOC:%s" % string_id,
++            raising=False,
++        )
++
++        # A solution may import the control classes directly into a dialog module.
++        for name, module in list(sys.modules.items()):
++            if module is None or not name.startswith("jellyfin_kodi.dialogs"):
++                continue
++            if getattr(module, "ListItem", None) is not None:
++                self.monkeypatch.setattr(module, "ListItem", RecordingListItem, raising=False)
++            if getattr(module, "ControlEdit", None) is not None:
++                self.monkeypatch.setattr(module, "ControlEdit", RecordingControlEdit, raising=False)
++
++    def dialog(self, dialog_class):
++        dialog = dialog_class("script-jellyfin-connect.xml", "/addon/path", "Default", "720p")
++        dialog.getControl = self.get_control
++        dialog.addControl = self.add_control
++        dialog.setFocus = self.set_focus
++        dialog.setFocusId = self.set_focus_id
++        dialog.getFocus = self.get_focus
++        dialog.getFocusId = self.get_focus_id_value
++        dialog.close = self.close
++        return dialog
++
++    def get_control(self, control_id):
++        self.recorder.note(sys._getframe(1).f_code, "getControl", control_id)
++
++        if control_id not in self.controls:
++            self.controls[control_id] = _FakeControl(control_id, self.recorder)
++
++        return self.controls[control_id]
++
++    def control(self, control_id):
++        return self.get_control(control_id)
++
++    def add_control(self, control):
++        self.recorder.note(sys._getframe(1).f_code, "addControl")
++        self.added_controls.append(control)
++
++    def set_focus(self, control):
++        self.recorder.note(sys._getframe(1).f_code, "setFocus")
++        self.focused.append(control)
++
++    def set_focus_id(self, control_id):
++        self.focus_id = control_id
++
++    def get_focus(self):
++        if self.focused:
++            return self.focused[-1]
++
++        return self.get_control(self.focus_id) if self.focus_id >= 0 else _FakeControl(-1, self.recorder)
++
++    def get_focus_id_value(self):
++        self.recorder.note(sys._getframe(1).f_code, "getFocusId")
++        return self.focus_id
++
++    def close(self):
++        self.recorder.note(sys._getframe(1).f_code, "close")
++        self.closed += 1
++
++    def select_row(self, control_id, index):
++        control = self.control(control_id)
++        control.selected_item = control.items[index]
++        self.focus_id = control_id
++
++    def password_field(self):
++        fields = [
++            control
++            for control in self.edit_controls
++            if any(type_id == xbmcgui.INPUT_TYPE_PASSWORD for type_id, _heading in control.types)
++        ]
++
++        return fields[0] if len(fields) == 1 else None
++
++    def text_field(self):
++        fields = [
++            control
++            for control in self.edit_controls
++            if not any(type_id == xbmcgui.INPUT_TYPE_PASSWORD for type_id, _heading in control.types)
++        ]
++
++        return fields[0] if len(fields) == 1 else None
++
++
++def _server_connect(harness, servers=(SERVER_ENTRY,), connect_manager=None):
++    dialog = harness.dialog(ServerConnect)
++    dialog.set_args(
++        connect_manager=connect_manager or _FakeConnectionManager(),
++        username="",
++        user_image=None,
++        servers=list(servers),
++    )
++    return dialog
++
++
++def _users_connect(harness, users=(USER_ENTRY,)):
++    dialog = harness.dialog(UsersConnect)
++    dialog.set_args(server="http://alpha", users=list(users))
++    return dialog
++
++
++def _server_manual(harness, connect_manager=None):
++    dialog = harness.dialog(ServerManual)
++    dialog.set_args(connect_manager=connect_manager or _FakeConnectionManager())
++    return dialog
++
++
++def _login_manual(harness, connect_manager=None, username=None):
++    dialog = harness.dialog(LoginManual)
++    dialog.set_args(connect_manager=connect_manager or _FakeConnectionManager(), username=username)
++    return dialog
++
++
++def _configure(harness, dialog_class, **kwargs):
++    if dialog_class is ServerConnect:
++        return _server_connect(harness, **kwargs)
++    if dialog_class is UsersConnect:
++        return _users_connect(harness, **kwargs)
++    if dialog_class is ServerManual:
++        return _server_manual(harness, **kwargs)
++    if dialog_class is LoginManual:
++        return _login_manual(harness, **kwargs)
++
++    raise AssertionError("unexpected dialog class %r" % (dialog_class,))
++
++
++@pytest.fixture
++def harness(monkeypatch):
++    return _DialogHarness(monkeypatch)
++
++
++##################################################################################################
++# The consolidation: one shared dialog base carrying the duplicated window behaviour.
++##################################################################################################
++
++
++def test_shared_dialog_base_is_introduced_and_used_by_all_four_dialogs(harness):
++    shared = _shared_dialog_bases()
++
++    assert shared, (
++        "the four connection dialogs do not share a project-defined dialog base, so the "
++        "duplicated window behaviour was not consolidated"
++    )
++
++    assert any(issubclass(base, xbmcgui.WindowXMLDialog) for base in shared), (
++        "none of the shared bases of the four dialogs is a Kodi dialog: %s"
++        % sorted(base.__name__ for base in shared)
++    )
++
++    assert not (shared & set(DIALOG_CLASSES)), (
++        "a dialog class is used as the shared base of the other dialogs: %s"
++        % sorted(base.__name__ for base in shared & set(DIALOG_CLASSES))
++    )
++
++    for dialog_class in DIALOG_CLASSES:
++        assert all(issubclass(dialog_class, base) for base in shared), (
++            "%s does not use the shared dialog base" % dialog_class.__name__
++        )
++
++
++def test_set_args_is_owned_by_the_shared_dialog_base(harness):
++    owners = set()
++
++    for dialog_class in DIALOG_CLASSES:
++        owner = None
++
++        for ancestor in dialog_class.__mro__:
++            if "set_args" in ancestor.__dict__:
++                owner = ancestor
++                break
++
++        assert owner is not None, "%s has no set_args implementation" % dialog_class.__name__
++        owners.add(owner)
++
++    assert len(owners) == 1, (
++        "set_args is still implemented once per dialog instead of once in the shared base: %s"
++        % sorted(owner.__name__ for owner in owners)
++    )
++
++    owner = owners.pop()
++
++    assert owner not in DIALOG_CLASSES, (
++        "set_args is owned by the dialog class %s instead of the shared dialog base"
++        % owner.__name__
++    )
++
++    assert owner in _shared_dialog_bases(), (
++        "set_args is owned by %s, which is not the shared dialog base" % owner.__name__
++    )
++
++
++def test_set_args_copies_arguments_through_the_shared_implementation(harness):
++    writers = {}
++
++    for dialog_class in DIALOG_CLASSES:
++        dialog = harness.dialog(dialog_class)
++
++        with _ArgumentWriteProbe(dialog, ("probe_key",)) as probe:
++            dialog.set_args(probe_key="probe-value")
++
++        assert dialog.probe_key == "probe-value", (
++            "%s.set_args did not copy the supplied keyword argument onto the dialog"
++            % dialog_class.__name__
++        )
++
++        assert probe.writers, (
++            "%s.set_args copied the supplied keyword argument without an observable "
++            "attribute write" % dialog_class.__name__
++        )
++
++        writers[dialog_class.__name__] = {
++            code for code in probe.writers if _is_project_code(code)
++        }
++
++    shared = set.intersection(*writers.values())
++
++    assert shared, (
++        "no single implementation copies the supplied keyword arguments for all four "
++        "dialogs; the recorded writers are: %s"
++        % sorted(_describe(code) for codes in writers.values() for code in codes)
++    )
++
++    extra = {
++        name: sorted(_describe(code) for code in codes - shared)
++        for name, codes in writers.items()
++        if codes != shared
++    }
++
++    assert not extra, (
++        "some dialogs copy the supplied keyword arguments through additional "
++        "implementations: %s" % extra
++    )
++
++    owned = sorted(_describe(code) for code in shared if code in _dialog_owned_code())
++
++    assert not owned, (
++        "the common argument copying is still implemented by a dialog class instead of "
++        "the shared dialog base: %s" % owned
++    )
++
++
++def test_back_previous_menu_and_parent_directory_close_through_the_shared_implementation(harness):
++    sites = {}
++
++    for dialog_class in DIALOG_CLASSES:
++        for action_id in BACK_ACTIONS:
++            case = harness.new()
++            dialog = _configure(case, dialog_class)
++            dialog.onInit()
++            case.recorder.clear()
++            dialog.onAction(_Action(action_id))
++
++            assert case.closed == 1, (
++                "%s did not close on action %s" % (dialog_class.__name__, action_id)
++            )
++
++            sites["%s/action-%s" % (dialog_class.__name__, action_id)] = case.recorder.site("close")
++
++    _assert_shared_site(sites, "back, previous-menu and parent-directory close")
++
++
++def test_list_selection_dispatch_uses_the_shared_implementation(harness):
++    sites = {}
++
++    for dialog_class in (ServerConnect, UsersConnect):
++        case = harness.new()
++
++        if dialog_class is ServerConnect:
++            manager = _FakeConnectionManager(
++                connect_to_server_result={"State": 3, "Servers": [dict(SERVER_ENTRY)]}
++            )
++            dialog = _configure(case, dialog_class, connect_manager=manager)
++        else:
++            dialog = _configure(case, dialog_class)
++
++        dialog.onInit()
++        case.select_row(LIST, 0)
++        case.recorder.clear()
++        dialog.onAction(_Action(ACTION_SELECT_ITEM))
++
++        sites[dialog_class.__name__] = case.recorder.site("getFocusId")
++
++    _assert_shared_site(sites, "list selection dispatch")
++
++
++def test_list_item_construction_uses_the_shared_implementation(harness):
++    """Share row construction or list population, allowing distinct row factories."""
++
++    sites = {event: {} for event in ("ListItem", "addItem")}
++
++    for dialog_class in (ServerConnect, UsersConnect):
++        case = harness.new()
++        dialog = _configure(case, dialog_class)
++        case.recorder.clear()
++        dialog.onInit()
++
++        assert case.control(LIST).items, (
++            "%s did not populate its list" % dialog_class.__name__
++        )
++
++        for event, consumers in sites.items():
++            consumers[dialog_class.__name__] = {
++                code for code, _payload in case.recorder.events.get(event, [])
++            }
++
++    owned = _dialog_owned_code()
++
++    assert any(
++        all(len(codes) == 1 for codes in consumers.values())
++        and len(set.union(*consumers.values())) == 1
++        and not owned.intersection(set.union(*consumers.values()))
++        for consumers in sites.values()
++    ), "list item construction or population must use a shared implementation: %s" % {
++        event: {
++            name: [_describe(code) for code in codes]
++            for name, codes in consumers.items()
++        }
++        for event, consumers in sites.items()
++    }
++
++
++def test_list_control_lookup_uses_the_shared_implementation(harness):
++    sites = {}
++
++    for dialog_class in (ServerConnect, UsersConnect):
++        case = harness.new()
++        dialog = _configure(case, dialog_class)
++        case.recorder.clear()
++        dialog.onInit()
++
++        sites[dialog_class.__name__] = case.recorder.site("getControl", payload=LIST)
++
++    _assert_shared_site(sites, "list control lookup")
++
++
++def test_input_field_construction_uses_the_shared_implementation(harness):
++    sites = {}
++
++    for dialog_class in (ServerManual, LoginManual):
++        case = harness.new()
++        dialog = _configure(case, dialog_class)
++        case.recorder.clear()
++        dialog.onInit()
++
++        assert case.edit_controls, "%s did not build its input fields" % dialog_class.__name__
++
++        sites[dialog_class.__name__] = case.recorder.site("ControlEdit")
++
++    _assert_shared_site(sites, "input field construction")
++
++
++def test_password_input_type_is_applied_by_the_shared_input_builder(harness):
++    login_case = harness.new()
++    login = _configure(login_case, LoginManual)
++    login_case.recorder.clear()
++    login.onInit()
++
++    password_field = login_case.password_field()
++
++    assert password_field is not None, "the manual login dialog has no password input field"
++    assert password_field.types == [(xbmcgui.INPUT_TYPE_PASSWORD, "Please enter password")], (
++        "the password input type or its existing prompt was dropped from the password "
++        "field: %s" % (password_field.types,)
++    )
++
++    type_site, type_frames = login_case.recorder.frame_site(
++        "setType", payload=xbmcgui.INPUT_TYPE_PASSWORD
++    )
++    login_builder, builder_frames = login_case.recorder.frame_site(
++        "ControlEdit", payload=password_field
++    )
++
++    assert type_site is not None, "the password input type was never applied"
++    assert login_builder is not None, "the manual login dialog did not build an input field"
++
++    assert type_site not in _dialog_owned_code(), (
++        "the password input type is applied by dialog-specific code instead of the shared "
++        "input field construction: %s" % _describe(type_site)
++    )
++
++    assert login_builder not in _dialog_owned_code(), (
++        "the password input field is built by dialog-specific code instead of the shared "
++        "input field construction: %s" % _describe(login_builder)
++    )
++
++    responsibility = _deepest_common_frame(builder_frames, type_frames)
++
++    assert responsibility is not None, (
++        "the password input field construction and the password type application do not "
++        "share a call frame"
++    )
++
++    assert _is_project_code(responsibility.f_code), (
++        "the password input type is applied outside the shared input field construction: "
++        "the construction and the type application only meet in %s"
++        % _describe(responsibility.f_code)
++    )
++
++    assert responsibility.f_code not in _dialog_owned_code(), (
++        "the password input type is applied outside the shared input field construction: "
++        "the construction and the type application only meet in the dialog-specific code %s"
++        % _describe(responsibility.f_code)
++    )
++
++    manual_case = harness.new()
++    manual = _configure(manual_case, ServerManual)
++    manual_case.recorder.clear()
++    manual.onInit()
++
++    assert manual_case.edit_controls, "the manual server dialog did not build its input field"
++
++    manual_builder, _manual_frames = manual_case.recorder.frame_site("ControlEdit")
++
++    assert manual_builder is login_builder, (
++        "the manual server and manual login dialogs do not share one input field builder: "
++        "%s vs %s" % (_describe(manual_builder), _describe(login_builder))
++    )
++
++    assert manual_case.password_field() is None, (
++        "the manual server host field was typed as a password input"
++    )
++
++
++def test_empty_input_error_indication_uses_the_shared_implementation(harness):
++    sites = {}
++
++    for dialog_class in (ServerManual, LoginManual):
++        case = harness.new()
++        dialog = _configure(case, dialog_class)
++        dialog.onInit()
++        case.recorder.clear()
++        dialog.onClick(CONNECT)
++
++        assert case.control(ERROR_TOGGLE).visible is True, (
++            "%s did not show the error indication for an empty required input"
++            % dialog_class.__name__
++        )
++
++        sites[dialog_class.__name__] = case.recorder.site("setVisibleCondition", payload=True)
++
++    _assert_shared_site(sites, "empty input error indication")
++
++
++def test_error_indication_reset_uses_the_shared_implementation(harness):
++    sites = {}
++
++    for dialog_class in (ServerManual, LoginManual):
++        case = harness.new()
++        dialog = _configure(case, dialog_class)
++        dialog.onInit()
++        dialog.onClick(CONNECT)
++        assert case.control(ERROR_TOGGLE).visible is True
++
++        case.text_field().setText("some text")
++        case.recorder.clear()
++        dialog.onAction(_Action(ACTION_NEUTRAL))
++
++        assert case.control(ERROR_TOGGLE).visible is False, (
++            "%s did not hide the error indication once the field contained text"
++            % dialog_class.__name__
++        )
++
++        sites[dialog_class.__name__] = case.recorder.site("setVisibleCondition", payload=False)
++
++    _assert_shared_site(sites, "error indication reset")
++
++
++def test_connection_attempts_stay_in_the_dialog_classes(harness):
++    assert _shared_dialog_bases(), (
++        "the four connection dialogs do not share a project-defined dialog base, so the "
++        "duplicated window behaviour was not consolidated"
++    )
++
++    server_case = harness.new()
++    server_manager = _FakeConnectionManager(
++        connect_to_server_result={"State": 3, "Servers": [dict(SERVER_ENTRY)]}
++    )
++    server_manager.recorder = server_case.recorder
++    server = _configure(server_case, ServerConnect, connect_manager=server_manager)
++    server.onInit()
++    server_case.select_row(LIST, 0)
++    server_case.recorder.clear()
++    server.onAction(_Action(ACTION_SELECT_ITEM))
++
++    manual_case = harness.new()
++    manual_manager = _FakeConnectionManager(
++        connect_to_address_result={"State": 3, "Servers": [dict(SERVER_ENTRY)]}
++    )
++    manual_manager.recorder = manual_case.recorder
++    manual = _configure(manual_case, ServerManual, connect_manager=manual_manager)
++    manual.onInit()
++    manual_case.text_field().setText("http://alpha")
++    manual_case.recorder.clear()
++    manual.onClick(CONNECT)
++
++    login_case = harness.new()
++    login_manager = _FakeConnectionManager(login_result=dict(USER_ENTRY))
++    login_manager.recorder = login_case.recorder
++    login = _configure(login_case, LoginManual, connect_manager=login_manager)
++    login.onInit()
++    login_case.text_field().setText("alice")
++    login_case.password_field().setText("secret")
++    login_case.recorder.clear()
++    login.onClick(CONNECT)
++
++    expectations = (
++        (server_case, ServerConnect, "connect_to_server"),
++        (manual_case, ServerManual, "connect_to_address"),
++        (login_case, LoginManual, "login"),
++    )
++
++    for case, dialog_class, event in expectations:
++        site = case.recorder.site(event)
++
++        assert site is not None, (
++            "%s did not reach the connection manager for %s" % (dialog_class.__name__, event)
++        )
++
++        assert _owner_class(site) is dialog_class, (
++            "the connection attempt of %s is not kept in the dialog class but in %s"
++            % (dialog_class.__name__, _describe(site))
++        )
++
++
++def test_list_selection_outcome_stays_in_the_list_dialog_classes(harness):
++    shared_bases = _shared_dialog_bases()
++
++    assert shared_bases, (
++        "the four connection dialogs do not share a project-defined dialog base, so the "
++        "duplicated window behaviour was not consolidated"
++    )
++
++    shared_codes = set()
++
++    for base in shared_bases:
++        for value in base.__dict__.values():
++            definitions = (value,)
++            if isinstance(value, property):
++                definitions = (value.fget, value.fset, value.fdel)
++            for definition in definitions:
++                code = _function_code(definition)
++                if code is not None:
++                    shared_codes.update(_nested_code_objects(code))
++
++    for dialog_class in (ServerConnect, UsersConnect):
++        case = harness.new()
++
++        if dialog_class is ServerConnect:
++            expected_result = dict(SERVER_ENTRY)
++            manager = _FakeConnectionManager(
++                connect_to_server_result=_SelectionData(
++                    {"State": 3, "Servers": [expected_result, {"Id": "other-server"}]},
++                    "Servers",
++                    case.recorder,
++                )
++            )
++            dialog = _configure(case, dialog_class, connect_manager=manager)
++            selected_row = 0
++            selected = dialog.is_server_selected
++            result = dialog.get_server
++        else:
++            expected_result = dict(USER_ENTRY)
++            users = [
++                _SelectionData({"Id": "other-user", "Name": "Other"}, "Id", case.recorder),
++                _SelectionData(expected_result, "Id", case.recorder),
++            ]
++            dialog = _configure(case, dialog_class, users=users)
++            selected_row = 1
++            selected = dialog.is_user_selected
++            result = dialog.get_user
++
++        def close_with_result():
++            assert selected() is True, "selection must be recorded before closing"
++            assert result() == expected_result, "the selected result must be recorded before closing"
++            case.close()
++
++        dialog.close = close_with_result
++
++        dialog.onInit()
++        case.select_row(LIST, selected_row)
++        case.recorder.clear()
++        dialog.onAction(_Action(ACTION_SELECT_ITEM))
++
++        assert case.closed == 1, "%s did not close once on a confirmed row" % dialog_class.__name__
++
++        for _site, key, frames in case.recorder.frame_events.get("selection_data", []):
++            decisions = [
++                frame.f_code for frame in frames
++                if frame.f_code in shared_codes and key in frame.f_code.co_consts
++            ]
++            assert not decisions, (
++                "the shared base chooses the business result field %s for %s at %s"
++                % (key, dialog_class.__name__, _describe(decisions[0]))
++            )
++
++
++def test_shared_base_is_not_used_by_the_other_dialogs(harness):
++    shared = _shared_dialog_bases()
++
++    assert shared, (
++        "the four connection dialogs do not share a project-defined dialog base, so the "
++        "duplicated window behaviour was not consolidated"
++    )
++
++    other_classes = [
++        dialog_class for dialog_class in _other_dialog_classes() if dialog_class not in shared
++    ]
++
++    assert other_classes, "the dialog modules outside the four connection dialogs define no class"
++
++    for dialog_class in other_classes:
++        for base in shared:
++            assert not issubclass(dialog_class, base), (
++                "%s outside the four connection dialogs was moved onto the shared base %s"
++                % (dialog_class.__name__, base.__name__)
++            )
++
++def test_control_lookup_is_not_implemented_by_the_dialogs_themselves(harness):
++    """The controls/focus mechanic the instruction lists as duplicated is
++    consolidated: the skin-control lookup every dialog performs while
++    initialising itself runs through one single implementation, provided by the
++    shared dialog base instead of being copied into each dialog class.
++
++    Only which implementation performed the lookup is observed, driven through
++    the frozen entry points and the skin control ids the instruction keeps
++    frozen.  No helper name, class name, module location, call form or number of
++    unrelated helpers is pinned: the shared base may decompose the rest of the
++    window mechanics however it likes, as long as the lookup calls themselves
++    come from one implementation rather than from a copy per dialog or from a
++    second lookup path inside the same base.
++    """
++
++    implementations = set()
++
++    for dialog_class in DIALOG_CLASSES:
++        case = harness.new()
++        dialog = _configure(case, dialog_class)
++        case.recorder.clear()
++        dialog.onInit()
++
++        entries = case.recorder.events.get("getControl", [])
++
++        assert entries, (
++            "%s looked up no skin control while initialising" % dialog_class.__name__
++        )
++
++        implementations.update(code for code, _payload in entries)
++
++    assert len(implementations) == 1, (
++        "the four dialogs still look their controls up through more than one "
++        "implementation, so the lookup was not consolidated: %s"
++        % sorted(_describe(code) for code in implementations)
++    )
++
++    implementation = next(iter(implementations))
++
++    assert implementation not in _dialog_owned_code(), (
++        "the skin-control lookup is still implemented by a dialog class instead "
++        "of the shared dialog base: %s" % _describe(implementation)
++    )
+diff --git a/tests/test_connection_dialogs_p2p.py b/tests/test_connection_dialogs_p2p.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0606946648576932f53bf05462aec802efa1ee60
+--- /dev/null
++++ b/tests/test_connection_dialogs_p2p.py
+@@ -0,0 +1,1478 @@
++# -*- coding: utf-8 -*-
++
++##################################################################################################
++
++"""Supplemental P2P regression tests for the four connection dialogs.
++
++The tests only drive the frozen public contract: class names and construction,
++``set_args``, the public accessors, the list payloads, initial focus, selection
++and close outcomes and the error indication.  The name, location and
++decomposition of the shared dialog base, its private helpers, the error-state
++encoding and the exact visibility condition strings are free to change and are
++therefore never asserted directly.
++
++The dialogs are driven through the skin control ids that the connection flow
++and the shipped skin XML already use, because no skin XML change is allowed.
++"""
++
++import ast
++import sys
++import xml.etree.ElementTree as ElementTree
++from pathlib import Path
++
++import pytest
++import xbmc
++import xbmcaddon
++import xbmcgui
++
++from jellyfin_kodi.dialogs import LoginManual, ServerConnect, ServerManual, UsersConnect
++from jellyfin_kodi.helper import translate
++from jellyfin_kodi.jellyfin.connection_manager import CONNECTION_STATE
++
++##################################################################################################
++
++# Skin control ids of the connection dialogs.
++LIST = 155
++USER_IMAGE = 150
++MESSAGE_BOX = 202
++MESSAGE = 203
++BUSY = 204
++CANCEL = 201
++MANUAL_SERVER = 206
++
++USERS_MANUAL = 200
++USERS_QUICK_CONNECT = 202
++
++MANUAL_CONNECT = 200
++MANUAL_ERROR_TOGGLE = 202
++MANUAL_ERROR_MSG = 203
++
++LOGIN_SIGN_IN = 200
++LOGIN_ERROR_TOGGLE = 202
++LOGIN_ERROR_MSG = 203
++
++# Kodi action ids.
++ACTION_SELECT_ITEM = 7
++ACTION_PARENT_DIR = 9
++ACTION_PREVIOUS_MENU = 10
++ACTION_BACK = 92
++ACTION_MOUSE_LEFT_CLICK = 100
++NEUTRAL_ACTION = 0
++
++BACK_ACTIONS = (ACTION_BACK, ACTION_PREVIOUS_MENU, ACTION_PARENT_DIR)
++
++PACKAGE_DIRECTORY = Path(__file__).resolve().parents[1] / "jellyfin_kodi" / "dialogs"
++
++SKIN_DIRECTORY = Path(__file__).resolve().parents[1] / "resources" / "skins" / "default" / "1080i"
++
++KODI_MODULES = {"xbmc", "xbmcaddon", "xbmcdrm", "xbmcgui", "xbmcplugin", "xbmcvfs"}
++
++SERVER_XML = SKIN_DIRECTORY / "script-jellyfin-connect-server.xml"
++USERS_XML = SKIN_DIRECTORY / "script-jellyfin-connect-users.xml"
++MANUAL_SERVER_XML = SKIN_DIRECTORY / "script-jellyfin-connect-server-manual.xml"
++MANUAL_LOGIN_XML = SKIN_DIRECTORY / "script-jellyfin-connect-login-manual.xml"
++
++##################################################################################################
++
++
++class FakeAction(int):
++    """Kodi action that compares as its action id and also exposes ``getId``."""
++
++    def getId(self):
++        return int(self)
++
++
++def _visibility_state(condition):
++    """Interpret a Kodi visibility condition as a boolean state."""
++
++    if isinstance(condition, bool):
++        return condition
++
++    text = str(condition).strip().lower()
++
++    if text.startswith("!"):
++        return not _visibility_state(text[1:])
++
++    return text not in ("false", "0", "")
++
++
++class FakeListItem(object):
++    """Minimal ``xbmcgui.ListItem`` recording properties and artwork."""
++
++    def __init__(self, label="", label2="", path="", offscreen=False):
++        self.label = label
++        self.label2 = label2
++        self.properties = {}
++        self.art = {}
++
++    def getLabel(self):
++        return self.label
++
++    def setLabel(self, label):
++        self.label = label
++
++    def setLabel2(self, label2):
++        self.label2 = label2
++
++    def setProperty(self, key, value):
++        self.properties[key] = value
++
++    def setProperties(self, values):
++        self.properties.update(values)
++
++    def getProperty(self, key):
++        return self.properties.get(key, "")
++
++    def setArt(self, values):
++        self.art.update(values)
++
++    def getArt(self, key):
++        return self.art.get(key, "")
++
++
++class FakeControl(object):
++    """Minimal Kodi control recording the calls the dialogs make on it."""
++
++    def __init__(self, control_id, events=None):
++        self.control_id = control_id
++        self.events = events if events is not None else []
++        self.visible_events = []
++        self.labels = []
++        self.images = []
++        self.items = []
++        self.selected_item = None
++        self.types = []
++        self.navigation = []
++        self.text = ""
++
++    def getId(self):
++        return self.control_id
++
++    def _record(self, kind, *payload):
++        self.events.append((kind, self) + payload)
++
++    def setVisibleCondition(self, condition, *args, **kwargs):
++        self._set_visible(_visibility_state(condition))
++
++    def setVisible(self, visible, *args, **kwargs):
++        self._set_visible(bool(visible))
++
++    def _set_visible(self, visible):
++        self.visible_events.append(visible)
++        self._record("visibility", visible)
++
++    @property
++    def visible(self):
++        return self.visible_events[-1] if self.visible_events else None
++
++    def setLabel(self, label="", *args, **kwargs):
++        self.labels.append(label)
++
++    @property
++    def label(self):
++        return self.labels[-1] if self.labels else None
++
++    def setImage(self, image="", *args, **kwargs):
++        self.images.append(image)
++
++    def addItem(self, item, *args, **kwargs):
++        self.items.append(item)
++
++    def addItems(self, items):
++        self.items.extend(items)
++
++    def reset(self):
++        self.items = []
++        self.selected_item = None
++
++    def size(self):
++        return len(self.items)
++
++    def getListItem(self, index):
++        return self.items[index]
++
++    def getSelectedItem(self):
++        return self.selected_item
++
++    def getSelectedPosition(self):
++        try:
++            return self.items.index(self.selected_item)
++        except ValueError:
++            return -1
++
++    def selectItem(self, position):
++        self.selected_item = self.items[position]
++
++    def setType(self, type_id, heading="", *args, **kwargs):
++        self.types.append((type_id, heading))
++        self._record("setType", type_id)
++
++    def getText(self):
++        return self.text
++
++    def setText(self, text):
++        self.text = text
++
++    def setPosition(self, x, y):
++        self.x = x
++        self.y = y
++
++    def setHeight(self, height):
++        self.height = height
++
++    def setWidth(self, width):
++        self.width = width
++
++    def controlUp(self, control):
++        self.navigation.append(("up", control))
++
++    def controlDown(self, control):
++        self.navigation.append(("down", control))
++
++    def controlLeft(self, control):
++        self.navigation.append(("left", control))
++
++    def controlRight(self, control):
++        self.navigation.append(("right", control))
++
++    def setEnabled(self, enabled):
++        pass
++
++    def setNavigation(self, up, down, left=None, right=None):
++        self.navigation.append(("navigation", up, down, left, right))
++
++
++def _is_password_field(control):
++    return any(type_id == xbmcgui.INPUT_TYPE_PASSWORD for type_id, _heading in control.types)
++
++
++class FakeConnectionManager(object):
++    """Recording stand-in for the Jellyfin connection manager."""
++
++    def __init__(
++        self,
++        server_info=None,
++        connect_to_server_result=None,
++        connect_to_address_result=None,
++        login_result=None,
++    ):
++        self.calls = []
++        self.server_id = "server-id"
++        self.server_info = (
++            server_info
++            if server_info is not None
++            else {"Id": "s1", "Name": "Alpha", "address": "http://alpha"}
++        )
++        self.connect_to_server_result = connect_to_server_result
++        self.connect_to_address_result = connect_to_address_result
++        self.login_result = login_result
++        self.observer = None
++
++    def get_server_info(self, server_id):
++        self.calls.append(("get_server_info", server_id))
++        return self.server_info
++
++    def connect_to_server(self, server):
++        self.calls.append(("connect_to_server", server))
++        if self.observer is not None:
++            self.observer()
++        return self.connect_to_server_result
++
++    def connect_to_address(self, address):
++        self.calls.append(("connect_to_address", address))
++        if self.observer is not None:
++            self.observer()
++        return self.connect_to_address_result
++
++    def login(self, server, username, password):
++        self.calls.append(("login", server, username, password))
++        if self.observer is not None:
++            self.observer()
++        return self.login_result
++
++
++class DialogHarness(object):
++    """Drives a dialog with recording stand-ins for the Kodi window API."""
++
++    def __init__(self, monkeypatch):
++        self.monkeypatch = monkeypatch
++        self.events = []
++        self.controls = {}
++        self.added_controls = []
++        self.focused = []
++        self.focused_ids = []
++        self.close_count = 0
++        self.close_observer = None
++        self.focus_id = -1
++        self.edit_controls = []
++        self.list_items = []
++        self._install()
++
++    def new(self):
++        """Return an independent harness (used when a test drives two dialogs)."""
++
++        return DialogHarness(self.monkeypatch)
++
++    def _install(self):
++        harness = self
++
++        class RecordingListItem(FakeListItem):
++            def __init__(self, *args, **kwargs):
++                FakeListItem.__init__(self, *args, **kwargs)
++                harness.list_items.append(self)
++
++        class RecordingControlEdit(FakeControl):
++            def __init__(self, *args, **kwargs):
++                FakeControl.__init__(self, None, harness.events)
++                for index, name in enumerate(("x", "y", "width", "height")):
++                    value = args[index] if len(args) > index else kwargs.get(name)
++                    setattr(self, name, value)
++                harness.edit_controls.append(self)
++
++        self.monkeypatch.setattr(xbmcgui, "ListItem", RecordingListItem)
++        self.monkeypatch.setattr(xbmcgui, "ControlEdit", RecordingControlEdit)
++        self.monkeypatch.setattr(
++            xbmc, "getLocalizedString", lambda string_id: "LOC:%s" % string_id, raising=False
++        )
++        self.monkeypatch.setattr(
++            xbmcaddon.Addon,
++            "getLocalizedString",
++            lambda self, string_id: "LOC:%s" % string_id,
++            raising=False,
++        )
++
++        # A solution may import the control classes directly into a dialog module.
++        for name, module in list(sys.modules.items()):
++            if module is None or not name.startswith("jellyfin_kodi.dialogs"):
++                continue
++            if getattr(module, "ListItem", None) is not None:
++                self.monkeypatch.setattr(module, "ListItem", RecordingListItem, raising=False)
++            if getattr(module, "ControlEdit", None) is not None:
++                self.monkeypatch.setattr(module, "ControlEdit", RecordingControlEdit, raising=False)
++
++    def dialog(self, dialog_class):
++        dialog = dialog_class("script-jellyfin-connect.xml", "/addon/path", "Default", "720p")
++        dialog.getControl = self.get_control
++        dialog.addControl = self.add_control
++        dialog.setFocus = self.set_focus
++        dialog.setFocusId = self.set_focus_id
++        dialog.getFocus = self.get_focus
++        dialog.getFocusId = self.get_focus_id_value
++        dialog.close = self.close
++        return dialog
++
++    def get_control(self, control_id):
++        if control_id not in self.controls:
++            self.controls[control_id] = FakeControl(control_id, self.events)
++        return self.controls[control_id]
++
++    def control(self, control_id):
++        return self.get_control(control_id)
++
++    def add_control(self, control):
++        self.added_controls.append(control)
++        self.events.append(("addControl", control))
++
++    def set_focus(self, control):
++        self.focused.append(control)
++
++    def set_focus_id(self, control_id):
++        self.focused_ids.append(control_id)
++
++    def get_focus(self):
++        if self.focused:
++            return self.focused[-1]
++        return self.get_control(self.focus_id) if self.focus_id >= 0 else FakeControl(-1)
++
++    def get_focus_id_value(self):
++        return self.focus_id
++
++    def close(self):
++        if self.close_observer is not None:
++            self.close_observer()
++        self.close_count += 1
++        self.events.append(("close",))
++
++    def select_row(self, control_id, index):
++        control = self.control(control_id)
++        control.selected_item = control.items[index]
++        self.focus_id = control_id
++
++    def list_is_focused(self, control_id):
++        return self.focused_control() is self.control(control_id) or self.focused_id() == control_id
++
++    def focused_control(self):
++        return self.focused[-1] if self.focused else None
++
++    def focused_id(self):
++        return self.focused_ids[-1] if self.focused_ids else None
++
++    def password_field(self):
++        fields = [control for control in self.edit_controls if _is_password_field(control)]
++        return fields[0] if len(fields) == 1 else None
++
++    def text_field(self):
++        fields = [control for control in self.edit_controls if not _is_password_field(control)]
++        return fields[0] if len(fields) == 1 else None
++
++
++def _server_connect(harness, servers=(), connect_manager=None, user_image=None):
++    dialog = harness.dialog(ServerConnect)
++    dialog.set_args(
++        connect_manager=connect_manager or FakeConnectionManager(),
++        username="",
++        user_image=user_image,
++        servers=list(servers),
++    )
++    return dialog
++
++
++def _users_connect(harness, users, server="http://alpha"):
++    dialog = harness.dialog(UsersConnect)
++    dialog.set_args(server=server, users=list(users))
++    return dialog
++
++
++def _server_manual(harness, connect_manager=None):
++    dialog = harness.dialog(ServerManual)
++    dialog.set_args(connect_manager=connect_manager or FakeConnectionManager())
++    return dialog
++
++
++def _login_manual(harness, connect_manager=None, username=None):
++    dialog = harness.dialog(LoginManual)
++    dialog.set_args(connect_manager=connect_manager or FakeConnectionManager(), username=username)
++    return dialog
++
++
++def _skin_control_ids(path):
++    ids = set()
++    for element in ElementTree.parse(str(path)).iter("control"):
++        control_id = element.get("id")
++        if control_id is not None:
++            ids.add(int(control_id))
++    return ids
++
++
++@pytest.fixture
++def harness(monkeypatch):
++    return DialogHarness(monkeypatch)
++
++##################################################################################################
++
++
++def test_dialog_classes_importable_and_constructible(harness):
++    for dialog_class in (ServerConnect, UsersConnect, ServerManual, LoginManual):
++        dialog = dialog_class("script-jellyfin-connect.xml", "/addon/path", "Default", "720p")
++        assert isinstance(dialog, xbmcgui.WindowXMLDialog)
++        assert callable(dialog.set_args)
++        assert callable(dialog.doModal)
++
++
++def test_set_args_copies_evidenced_keys(harness):
++    connect_manager = FakeConnectionManager()
++    servers = [{"Id": "s1", "Name": "Alpha"}]
++    users = [{"Id": "u1", "Name": "Alice"}]
++
++    dialog = harness.dialog(ServerConnect)
++    dialog.set_args(
++        connect_manager=connect_manager,
++        username="alice",
++        user_image="http://alpha/image.png",
++        servers=servers,
++    )
++    assert dialog.connect_manager is connect_manager
++    assert dialog.username == "alice"
++    assert dialog.user_image == "http://alpha/image.png"
++    assert dialog.servers == servers
++
++    dialog = harness.dialog(UsersConnect)
++    dialog.set_args(server="http://alpha", users=users)
++    assert dialog.server == "http://alpha"
++    assert dialog.users == users
++
++    dialog = harness.dialog(ServerManual)
++    dialog.set_args(connect_manager=connect_manager)
++    assert dialog.connect_manager is connect_manager
++
++    dialog = harness.dialog(LoginManual)
++    dialog.set_args(connect_manager=connect_manager, username="alice")
++    assert dialog.connect_manager is connect_manager
++    assert dialog.username == "alice"
++
++
++def test_set_args_copies_additional_keys_and_keeps_absent_defaults(harness):
++    dialog = harness.dialog(ServerConnect)
++    dialog.set_args(connect_manager=FakeConnectionManager(), extra_key="extra")
++    assert dialog.extra_key == "extra"
++    assert not dialog.servers
++    assert not dialog.user_image
++
++    dialog = harness.dialog(LoginManual)
++    dialog.set_args(connect_manager=FakeConnectionManager())
++    assert not dialog.username
++
++    for dialog_class in (ServerConnect, UsersConnect, ServerManual, LoginManual):
++        dialog = harness.dialog(dialog_class)
++        expected = {
++            "connect_manager": FakeConnectionManager(),
++            "username": "ALIce",
++            "user_image": "http://alpha/avatar.png",
++            "server": "http://alpha",
++            "servers": [{"Id": "s1", "Name": "Alpha"}],
++            "users": [{"Id": "u1", "Name": "Alice"}],
++            "extra_key": object(),
++        }
++        dialog.set_args(**expected)
++        updates = ({}, {"username": "Updated"}, {"user_image": None}, {"extra_key": object()})
++        for update in updates:
++            dialog.set_args(**update)
++            expected.update(update)
++            for name, value in expected.items():
++                assert getattr(dialog, name) is value
++
++
++def test_server_dialog_accessor_defaults(harness):
++    dialog = _server_connect(harness, servers=[{"Id": "s1", "Name": "Alpha"}])
++    dialog.onInit()
++    assert dialog.is_server_selected() is False
++    assert dialog.is_manual_server() is False
++    assert not dialog.get_server()
++
++
++def test_server_dialog_row_selection_records_server_and_closes(harness):
++    servers = [{"Id": "s1", "Name": "Alpha"}]
++    first_entry = {"Id": "s1", "Name": "Alpha", "Address": "http://alpha"}
++    connect_manager = FakeConnectionManager(
++        connect_to_server_result={"State": "Available", "Servers": [first_entry, {"Id": "s2"}]}
++    )
++    dialog = _server_connect(harness, servers=servers, connect_manager=connect_manager)
++    dialog.onInit()
++    harness.select_row(LIST, 0)
++    dialog.onAction(FakeAction(ACTION_SELECT_ITEM))
++
++    assert dialog.is_server_selected() is True
++    assert dialog.get_server() == first_entry
++    assert ("connect_to_server", connect_manager.server_info) in connect_manager.calls
++    assert harness.close_count == 1
++    assert harness.control(MESSAGE_BOX).visible is False
++    assert harness.events.index(("visibility", harness.control(MESSAGE_BOX), False)) < harness.events.index(
++        ("close",)
++    )
++
++
++def test_server_dialog_row_selection_failure_keeps_dialog_open(harness):
++    servers = [{"Id": "s1", "Name": "Alpha"}]
++    connect_manager = FakeConnectionManager(
++        connect_to_server_result={"State": CONNECTION_STATE["Unavailable"], "Servers": []}
++    )
++    dialog = _server_connect(harness, servers=servers, connect_manager=connect_manager)
++    dialog.onInit()
++    harness.select_row(LIST, 0)
++    dialog.onAction(FakeAction(ACTION_MOUSE_LEFT_CLICK))
++
++    assert harness.close_count == 0
++    assert dialog.is_server_selected() is False
++    assert not dialog.get_server()
++
++
++def test_users_dialog_accessor_defaults(harness):
++    dialog = _users_connect(harness, users=[{"Id": "u1", "Name": "Alice"}])
++    dialog.onInit()
++    assert dialog.is_user_selected() is False
++    assert dialog.is_manual_login() is False
++    assert dialog.is_quick_connect() is False
++    assert not dialog.get_user()
++
++
++def test_users_dialog_row_selection_records_matching_user(harness):
++    users = [{"Id": "u1", "Name": "Alice"}, {"Id": "u2", "Name": "Bob"}]
++    for action_id in (ACTION_SELECT_ITEM, ACTION_MOUSE_LEFT_CLICK):
++        case = harness.new()
++        dialog = _users_connect(case, users=users)
++        dialog.onInit()
++        case.select_row(LIST, 1)
++        closing_results = []
++        case.close_observer = lambda: closing_results.append(
++            (dialog.is_user_selected(), dialog.get_user())
++        )
++        dialog.onAction(FakeAction(action_id))
++
++        assert closing_results == [(True, users[1])]
++        assert dialog.is_user_selected() is True
++        assert dialog.get_user() == users[1]
++        assert case.close_count == 1
++
++
++def test_users_dialog_row_selection_without_match_closes_unset(harness):
++    users = [{"Id": "u1", "Name": "Alice"}]
++    for action_id in (ACTION_SELECT_ITEM, ACTION_MOUSE_LEFT_CLICK):
++        case = harness.new()
++        dialog = _users_connect(case, users=users)
++        dialog.onInit()
++        case.select_row(LIST, 0)
++        case.control(LIST).selected_item = FakeListItem("Missing")
++        case.control(LIST).selected_item.setProperty("id", "missing")
++        dialog.onAction(FakeAction(action_id))
++
++        assert case.close_count == 1
++        assert dialog.is_user_selected() is False
++        assert not dialog.get_user()
++
++        unfocused_case = harness.new()
++        unfocused = _users_connect(unfocused_case, users=users)
++        unfocused.onInit()
++        unfocused_case.select_row(LIST, 0)
++        unfocused_case.focus_id = CANCEL
++        unfocused.onAction(FakeAction(action_id))
++
++        assert unfocused_case.close_count == 0
++        assert unfocused.is_user_selected() is False
++        assert not unfocused.get_user()
++
++
++def test_manual_server_accessor_defaults(harness):
++    dialog = _server_manual(harness)
++    dialog.onInit()
++    assert dialog.is_connected() is False
++    assert not dialog.get_server()
++
++
++def test_manual_server_successful_connection_records_server(harness):
++    connected = {"Id": "s1", "Name": "Alpha"}
++    other_server = {"Id": "s2", "Name": "Beta"}
++    connect_manager = FakeConnectionManager(
++        connect_to_address_result={"State": "Available", "Servers": [connected, other_server]}
++    )
++    dialog = _server_manual(harness, connect_manager=connect_manager)
++    dialog.onInit()
++    harness.text_field().setText("http://alpha")
++    closing_results = []
++    harness.close_observer = lambda: closing_results.append(
++        (dialog.is_connected(), dialog.get_server())
++    )
++    dialog.onClick(MANUAL_CONNECT)
++
++    assert closing_results == [(True, connected)]
++    assert dialog.is_connected() is True
++    assert dialog.get_server() == connected
++    assert harness.close_count == 1
++
++
++def test_manual_login_accessor_defaults(harness):
++    dialog = _login_manual(harness)
++    dialog.onInit()
++    assert dialog.is_logged_in() is False
++    assert not dialog.get_user()
++
++
++def test_manual_login_successful_login_records_user(harness):
++    user = {"Id": "u1", "Name": "Alice"}
++    for username, password in (("ALIce", "MiXeD-input"), ("Another.User", "")):
++        case = harness.new()
++        server_info = {"Id": "s-current", "Name": "Current", "address": "http://current:8096"}
++        connect_manager = FakeConnectionManager(server_info=server_info, login_result=user)
++        dialog = _login_manual(case, connect_manager=connect_manager, username="prefilled")
++        dialog.onInit()
++        case.text_field().setText(username)
++        case.password_field().setText(password)
++        closing_results = []
++        case.close_observer = lambda: closing_results.append(
++            (dialog.is_logged_in(), dialog.get_user())
++        )
++        dialog.onClick(LOGIN_SIGN_IN)
++
++        login_calls = [call for call in connect_manager.calls if call[0] == "login"]
++        assert login_calls == [("login", server_info["address"], username, password)]
++        assert closing_results == [(True, user)]
++        assert dialog.is_logged_in() is True
++        assert dialog.get_user() == user
++        assert case.close_count == 1
++
++
++def test_server_list_payload_properties(harness):
++    servers = [
++        {"Id": "s1", "Name": "Alpha", "ExchangeToken": "token"},
++        {"Id": "s2", "Name": "Beta"},
++    ]
++    user_image = "http://alpha/supplied-avatar.png"
++    dialog = _server_connect(harness, servers=servers, user_image=user_image)
++    dialog.onInit()
++
++    assert harness.control(USER_IMAGE).images
++    assert harness.control(USER_IMAGE).images[-1] == user_image
++    items = harness.control(LIST).items
++    assert len(items) == 2
++    assert items[0].getProperty("id") == "s1"
++    assert items[0].getProperty("server_type") == "wifi"
++    assert items[1].getProperty("id") == "s2"
++    assert items[1].getProperty("server_type") == "network"
++
++
++def test_user_list_payload_id_and_icon_artwork(harness):
++    users = [
++        {"Id": "u1", "Name": "Alice", "PrimaryImageTag": "tag"},
++        {"Id": "u2", "Name": "Bob"},
++    ]
++    dialog = _users_connect(harness, users=users, server="http://alpha")
++    dialog.onInit()
++
++    items = harness.control(LIST).items
++    assert len(items) == 2
++    assert items[0].getProperty("id") == "u1"
++    assert items[0].getArt("icon") == "http://alpha/Users/u1/Images/Primary?Format=original"
++    assert items[1].getProperty("id") == "u2"
++    assert items[1].getArt("icon") == "items/logindefault.png"
++
++
++def test_server_list_preserves_supplied_order(harness):
++    servers = [{"Id": "s%d" % index, "Name": "Server %d" % index} for index in range(4)]
++    dialog = _server_connect(harness, servers=servers)
++    dialog.onInit()
++
++    items = harness.control(LIST).items
++    assert [item.getProperty("id") for item in items] == ["s0", "s1", "s2", "s3"]
++    assert [item.getLabel() for item in items] == ["Server 0", "Server 1", "Server 2", "Server 3"]
++
++
++def test_user_list_preserves_supplied_order(harness):
++    users = [{"Id": "u%d" % index, "Name": "User %d" % index} for index in range(4)]
++    dialog = _users_connect(harness, users=users)
++    dialog.onInit()
++
++    items = harness.control(LIST).items
++    assert [item.getProperty("id") for item in items] == ["u0", "u1", "u2", "u3"]
++    assert [item.getLabel() for item in items] == ["User 0", "User 1", "User 2", "User 3"]
++
++
++def test_manual_server_ipv6_host_is_bracketed(harness):
++    connect_manager = FakeConnectionManager(
++        connect_to_address_result={"State": "Available", "Servers": [{"Id": "s1"}]}
++    )
++    dialog = _server_manual(harness, connect_manager=connect_manager)
++    dialog.onInit()
++    harness.text_field().setText("2001:db8::1")
++    dialog.onClick(MANUAL_CONNECT)
++
++    assert ("connect_to_address", "[2001:db8::1]") in connect_manager.calls
++
++
++def test_manual_server_plain_host_is_passed_unchanged(harness):
++    connect_manager = FakeConnectionManager(
++        connect_to_address_result={"State": "Available", "Servers": [{"Id": "s1"}]}
++    )
++    dialog = _server_manual(harness, connect_manager=connect_manager)
++    dialog.onInit()
++    harness.text_field().setText("http://alpha:8096")
++    dialog.onClick(MANUAL_CONNECT)
++
++    assert ("connect_to_address", "http://alpha:8096") in connect_manager.calls
++
++
++def test_server_connect_back_actions_close_without_selection(harness):
++    servers = [{"Id": "s1", "Name": "Alpha"}]
++    connect_manager = FakeConnectionManager(
++        connect_to_server_result={"State": "Available", "Servers": [{"Id": "s1"}]}
++    )
++
++    for action_id in BACK_ACTIONS:
++        harness = harness.new()
++        dialog = _server_connect(harness, servers=servers, connect_manager=connect_manager)
++        dialog.onInit()
++        harness.select_row(LIST, 0)
++        dialog.onAction(FakeAction(action_id))
++
++        assert harness.close_count == 1
++        assert dialog.is_server_selected() is False
++        assert not dialog.get_server()
++        assert dialog.is_manual_server() is False
++
++
++def test_users_connect_back_actions_close_without_flags(harness):
++    users = [{"Id": "u1", "Name": "Alice"}]
++
++    for action_id in BACK_ACTIONS:
++        harness = harness.new()
++        dialog = _users_connect(harness, users=users)
++        dialog.onInit()
++        harness.select_row(LIST, 0)
++        dialog.onAction(FakeAction(action_id))
++
++        assert harness.close_count == 1
++        assert dialog.is_user_selected() is False
++        assert not dialog.get_user()
++        assert dialog.is_manual_login() is False
++        assert dialog.is_quick_connect() is False
++
++
++def test_manual_server_back_actions_close_without_connecting(harness):
++    connect_manager = FakeConnectionManager()
++
++    for action_id in BACK_ACTIONS:
++        harness = harness.new()
++        dialog = _server_manual(harness, connect_manager=connect_manager)
++        dialog.onInit()
++        harness.text_field().setText("http://alpha")
++        dialog.onAction(FakeAction(action_id))
++
++        assert harness.close_count == 1
++        assert dialog.is_connected() is False
++        assert not dialog.get_server()
++        assert connect_manager.calls == []
++
++
++def test_manual_login_back_actions_close_without_logging_in(harness):
++    connect_manager = FakeConnectionManager(login_result={"Id": "u1"})
++
++    for action_id in BACK_ACTIONS:
++        harness = harness.new()
++        dialog = _login_manual(harness, connect_manager=connect_manager, username="alice")
++        dialog.onInit()
++        harness.text_field().setText("alice")
++        harness.password_field().setText("secret")
++        dialog.onAction(FakeAction(action_id))
++
++        assert harness.close_count == 1
++        assert dialog.is_logged_in() is False
++        assert not dialog.get_user()
++        assert connect_manager.calls == []
++
++
++def test_server_connect_manual_server_and_cancel_controls(harness):
++    manual_harness = harness.new()
++    manual = _server_connect(manual_harness)
++    manual.onInit()
++    manual.onClick(MANUAL_SERVER)
++    assert manual.is_manual_server() is True
++    assert manual_harness.close_count == 1
++    assert manual.is_server_selected() is False
++
++    cancel_harness = harness.new()
++    cancel = _server_connect(cancel_harness)
++    cancel.onInit()
++    cancel.onClick(CANCEL)
++    assert cancel_harness.close_count == 1
++    assert cancel.is_manual_server() is False
++    assert cancel.is_server_selected() is False
++
++
++def test_users_connect_manual_login_quick_connect_and_cancel_controls(harness):
++    users = [{"Id": "u1", "Name": "Alice"}]
++
++    manual_harness = harness.new()
++    manual = _users_connect(manual_harness, users=users)
++    manual.onInit()
++    manual.onClick(USERS_MANUAL)
++    assert manual.is_manual_login() is True
++    assert manual_harness.close_count == 1
++    assert manual.is_quick_connect() is False
++
++    quick_harness = harness.new()
++    quick = _users_connect(quick_harness, users=users)
++    quick.onInit()
++    quick.onClick(USERS_QUICK_CONNECT)
++    assert quick.is_quick_connect() is True
++    assert quick_harness.close_count == 1
++    assert quick.is_manual_login() is False
++
++    cancel_harness = harness.new()
++    cancel = _users_connect(cancel_harness, users=users)
++    cancel.onInit()
++    cancel.onClick(CANCEL)
++    assert cancel_harness.close_count == 1
++    assert cancel.is_manual_login() is False
++    assert cancel.is_quick_connect() is False
++
++
++def test_manual_server_cancel_closes_without_connecting(harness):
++    connect_manager = FakeConnectionManager()
++    dialog = _server_manual(harness, connect_manager=connect_manager)
++    dialog.onInit()
++    harness.text_field().setText("http://alpha")
++    dialog.onClick(CANCEL)
++
++    assert harness.close_count == 1
++    assert dialog.is_connected() is False
++    assert connect_manager.calls == []
++
++
++def test_manual_login_cancel_closes_without_logging_in(harness):
++    connect_manager = FakeConnectionManager(login_result={"Id": "u1"})
++    dialog = _login_manual(harness, connect_manager=connect_manager, username="alice")
++    dialog.onInit()
++    harness.text_field().setText("alice")
++    harness.password_field().setText("secret")
++    dialog.onClick(CANCEL)
++
++    assert harness.close_count == 1
++    assert dialog.is_logged_in() is False
++    assert connect_manager.calls == []
++
++
++def test_server_connect_shows_busy_overlay_while_connecting(harness):
++    servers = [{"Id": "s1", "Name": "Alpha"}]
++    connect_manager = FakeConnectionManager(
++        connect_to_server_result={"State": "Available", "Servers": [{"Id": "s1"}]}
++    )
++    dialog = _server_connect(harness, servers=servers, connect_manager=connect_manager)
++    dialog.onInit()
++    observed = {}
++
++    def observe():
++        observed["message_box"] = harness.control(MESSAGE_BOX).visible
++        observed["busy"] = harness.control(BUSY).visible
++        observed["message"] = harness.control(MESSAGE).label
++
++    connect_manager.observer = observe
++    harness.select_row(LIST, 0)
++    dialog.onAction(FakeAction(ACTION_SELECT_ITEM))
++
++    assert observed["message_box"] is True
++    assert observed["busy"] is True
++    assert "Alpha" in observed["message"]
++    assert harness.close_count == 1
++
++
++def test_server_connect_unavailable_hides_busy_and_shows_message(harness):
++    servers = [{"Id": "s1", "Name": "Alpha"}]
++    connect_manager = FakeConnectionManager(
++        connect_to_server_result={"State": CONNECTION_STATE["Unavailable"], "Servers": []}
++    )
++    dialog = _server_connect(harness, servers=servers, connect_manager=connect_manager)
++    dialog.onInit()
++    harness.select_row(LIST, 0)
++    dialog.onAction(FakeAction(ACTION_SELECT_ITEM))
++
++    assert harness.close_count == 0
++    assert harness.control(MESSAGE_BOX).visible is True
++    assert harness.control(BUSY).visible is False
++    assert harness.control(MESSAGE).label == translate(30609)
++
++
++def test_manual_server_empty_input_shows_error_without_connecting(harness):
++    connect_manager = FakeConnectionManager()
++    dialog = _server_manual(harness, connect_manager=connect_manager)
++    dialog.onInit()
++    dialog.onClick(MANUAL_CONNECT)
++
++    assert harness.control(MANUAL_ERROR_TOGGLE).visible is True
++    assert harness.control(MANUAL_ERROR_MSG).label == translate("empty_server")
++    assert harness.close_count == 0
++    assert connect_manager.calls == []
++
++
++def test_manual_server_error_hidden_when_host_text_entered(harness):
++    dialog = _server_manual(harness)
++    dialog.onInit()
++    dialog.onClick(MANUAL_CONNECT)
++    assert harness.control(MANUAL_ERROR_TOGGLE).visible is True
++
++    harness.text_field().setText("http://alpha")
++    dialog.onAction(FakeAction(NEUTRAL_ACTION))
++
++    assert harness.control(MANUAL_ERROR_TOGGLE).visible is False
++    assert harness.close_count == 0
++
++
++def test_manual_login_empty_username_shows_error_without_login(harness):
++    connect_manager = FakeConnectionManager(login_result={"Id": "u1"})
++    dialog = _login_manual(harness, connect_manager=connect_manager)
++    dialog.onInit()
++    harness.password_field().setText("secret")
++    dialog.onClick(LOGIN_SIGN_IN)
++
++    assert harness.control(LOGIN_ERROR_TOGGLE).visible is True
++    assert harness.control(LOGIN_ERROR_MSG).label == translate("empty_user")
++    assert harness.close_count == 0
++    assert connect_manager.calls == []
++
++
++def test_manual_login_error_hidden_when_username_text_entered(harness):
++    dialog = _login_manual(harness)
++    dialog.onInit()
++    dialog.onClick(LOGIN_SIGN_IN)
++    assert harness.control(LOGIN_ERROR_TOGGLE).visible is True
++
++    harness.text_field().setText("alice")
++    dialog.onAction(FakeAction(NEUTRAL_ACTION))
++
++    assert harness.control(LOGIN_ERROR_TOGGLE).visible is False
++    assert harness.close_count == 0
++
++
++def test_manual_login_invalid_credentials_keeps_dialog_open(harness):
++    connect_manager = FakeConnectionManager(login_result=None)
++    dialog = _login_manual(harness, connect_manager=connect_manager, username="alice")
++    dialog.onInit()
++    harness.text_field().setText("alice")
++    harness.password_field().setText("wrong")
++    dialog.onClick(LOGIN_SIGN_IN)
++
++    assert harness.control(LOGIN_ERROR_TOGGLE).visible is True
++    assert harness.control(LOGIN_ERROR_MSG).label == translate("invalid_auth")
++    assert harness.close_count == 0
++    assert dialog.is_logged_in() is False
++    assert ("login", "http://alpha", "alice", "wrong") in connect_manager.calls
++
++
++def test_manual_server_unavailable_keeps_dialog_open(harness):
++    connect_manager = FakeConnectionManager(
++        connect_to_address_result={"State": CONNECTION_STATE["Unavailable"], "Servers": []}
++    )
++    dialog = _server_manual(harness, connect_manager=connect_manager)
++    dialog.onInit()
++    harness.text_field().setText("http://alpha")
++    dialog.onClick(MANUAL_CONNECT)
++
++    assert harness.control(MANUAL_ERROR_TOGGLE).visible is True
++    assert harness.control(MANUAL_ERROR_MSG).label == translate(30609)
++    assert harness.close_count == 0
++    assert dialog.is_connected() is False
++
++
++def test_server_connect_focus_follows_supplied_servers(harness):
++    with_servers = _server_connect(harness, servers=[{"Id": "s1", "Name": "Alpha"}])
++    with_servers.onInit()
++    assert harness.list_is_focused(LIST)
++
++    without_servers_harness = harness.new()
++    without_servers = _server_connect(without_servers_harness)
++    without_servers.onInit()
++    assert without_servers_harness.focused_control() is None
++    assert without_servers_harness.focused_id() is None
++
++
++def test_users_connect_focuses_list(harness):
++    for users in ([], [{"Id": "u1", "Name": "Alice"}]):
++        case = harness.new()
++        dialog = _users_connect(case, users=users)
++        dialog.onInit()
++        assert case.list_is_focused(LIST)
++
++
++def test_manual_server_focuses_host_field(harness):
++    dialog = _server_manual(harness)
++    dialog.onInit()
++    host = harness.text_field()
++    connect = harness.control(MANUAL_CONNECT)
++    cancel = harness.control(CANCEL)
++    assert harness.focused_control() is host
++    assert dict(host.navigation).get("up") is cancel
++    assert dict(host.navigation).get("down") is connect
++    assert dict(connect.navigation).get("up") is host
++    assert dict(cancel.navigation).get("down") is host
++
++
++def test_manual_login_focus_follows_prefilled_username(harness):
++    prefilled = _login_manual(harness, username="alice")
++    prefilled.onInit()
++    assert harness.focused_control() is harness.password_field()
++
++    empty_harness = harness.new()
++    empty = _login_manual(empty_harness, username={})
++    empty.onInit()
++    assert empty_harness.focused_control() is empty_harness.text_field()
++
++    for case in (harness, empty_harness):
++        username = case.text_field()
++        password = case.password_field()
++        signin = case.control(LOGIN_SIGN_IN)
++        cancel = case.control(CANCEL)
++        assert dict(username.navigation).get("up") is cancel
++        assert dict(username.navigation).get("down") is password
++        assert dict(password.navigation).get("up") is username
++        assert dict(password.navigation).get("down") is signin
++        assert dict(signin.navigation).get("up") is password
++        assert dict(cancel.navigation).get("down") is username
++
++
++def test_input_fields_attached_before_password_type_and_keep_prompt(harness):
++    dialog = _login_manual(harness, username="alice")
++    dialog.onInit()
++    password_field = harness.password_field()
++    text_field = harness.text_field()
++
++    assert password_field is not None
++    assert text_field is not None
++    assert (text_field.x, text_field.y, text_field.width, text_field.height) == (755, 433, 415, 40)
++    assert (password_field.x, password_field.y, password_field.width, password_field.height) == (
++        755, 543, 415, 40
++    )
++    assert password_field.types == [(xbmcgui.INPUT_TYPE_PASSWORD, "Please enter password")]
++    assert text_field.types == []
++    assert ("addControl", text_field) in harness.events
++    assert harness.events.index(("addControl", password_field)) < harness.events.index(
++        ("setType", password_field, xbmcgui.INPUT_TYPE_PASSWORD)
++    )
++
++    manual_harness = harness.new()
++    manual = _server_manual(manual_harness)
++    manual.onInit()
++    host_field = manual_harness.text_field()
++    assert host_field is not None
++    assert (host_field.x, host_field.y, host_field.width, host_field.height) == (755, 490, 415, 40)
++    assert ("addControl", host_field) in manual_harness.events
++    assert not _is_password_field(host_field)
++
++
++def test_connection_dialog_skin_xmls_still_declare_the_control_ids(harness):
++    assert {LIST, USER_IMAGE, MESSAGE_BOX, MESSAGE, BUSY, CANCEL, MANUAL_SERVER} <= _skin_control_ids(SERVER_XML)
++    assert {LIST, USERS_MANUAL, CANCEL, USERS_QUICK_CONNECT} <= _skin_control_ids(USERS_XML)
++    assert {MANUAL_CONNECT, CANCEL, MANUAL_ERROR_TOGGLE, MANUAL_ERROR_MSG} <= _skin_control_ids(MANUAL_SERVER_XML)
++    assert {LOGIN_SIGN_IN, CANCEL, LOGIN_ERROR_TOGGLE, LOGIN_ERROR_MSG} <= _skin_control_ids(MANUAL_LOGIN_XML)
++
++
++def test_dialog_layer_does_not_add_third_party_imports(harness):
++    allowed = set(sys.stdlib_module_names) | KODI_MODULES | {"jellyfin_kodi"}
++
++    for path in sorted(PACKAGE_DIRECTORY.glob("*.py")):
++        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
++        for node in ast.walk(tree):
++            if isinstance(node, ast.Import):
++                names = [alias.name.split(".")[0] for alias in node.names]
++            elif isinstance(node, ast.ImportFrom):
++                if node.level:
++                    continue
++                names = [(node.module or "").split(".")[0]]
++            else:
++                continue
++            for name in names:
++                assert name in allowed, "%s imports %r" % (path.name, name)
++
++
++PUBLIC_ACCESSORS = (
++    (ServerConnect, ("is_server_selected", "get_server", "is_manual_server")),
++    (UsersConnect, ("is_user_selected", "get_user", "is_manual_login", "is_quick_connect")),
++    (ServerManual, ("is_connected", "get_server")),
++    (LoginManual, ("is_logged_in", "get_user")),
++)
++
++
++def test_public_accessor_and_argument_surface_preserved(harness):
++    """Every public accessor and argument name consumed by the connection flow stays available."""
++
++    connect_manager = FakeConnectionManager()
++    servers = [{"Id": "s1", "Name": "Alpha"}]
++    users = [{"Id": "u1", "Name": "Alice"}]
++
++    dialog = harness.dialog(ServerConnect)
++    dialog.set_args(
++        connect_manager=connect_manager,
++        username="alice",
++        user_image="http://alpha/image.png",
++        servers=servers,
++    )
++    assert dialog.connect_manager is connect_manager
++    assert dialog.username == "alice"
++    assert dialog.user_image == "http://alpha/image.png"
++    assert dialog.servers == servers
++
++    dialog = harness.dialog(UsersConnect)
++    dialog.set_args(server="http://alpha", users=users)
++    assert dialog.server == "http://alpha"
++    assert dialog.users == users
++
++    dialog = harness.dialog(ServerManual)
++    dialog.set_args(connect_manager=connect_manager)
++    assert dialog.connect_manager is connect_manager
++
++    dialog = harness.dialog(LoginManual)
++    dialog.set_args(connect_manager=connect_manager, username="alice")
++    assert dialog.connect_manager is connect_manager
++    assert dialog.username == "alice"
++
++    for dialog_class, accessors in PUBLIC_ACCESSORS:
++        dialog = harness.dialog(dialog_class)
++        for accessor in accessors:
++            assert callable(getattr(dialog, accessor)), "%s.%s is missing" % (
++                dialog_class.__name__,
++                accessor,
++            )
++
++
++def test_selection_and_error_indication_outcomes_still_recorded(harness):
++    """Selection outcomes and error indications stay observable through the public accessors."""
++
++    connected_server = {"Id": "s1", "Name": "Alpha", "Address": "http://alpha"}
++
++    server_harness = harness.new()
++    connect_manager = FakeConnectionManager(
++        connect_to_server_result={"State": "Available", "Servers": [connected_server]}
++    )
++    dialog = _server_connect(
++        server_harness,
++        servers=[{"Id": "s1", "Name": "Alpha"}],
++        connect_manager=connect_manager,
++    )
++    dialog.onInit()
++    assert dialog.is_server_selected() is False
++    assert not dialog.get_server()
++    server_harness.select_row(LIST, 0)
++    dialog.onAction(FakeAction(ACTION_SELECT_ITEM))
++    assert dialog.is_server_selected() is True
++    assert dialog.get_server() == connected_server
++
++    users = [{"Id": "u1", "Name": "Alice"}, {"Id": "u2", "Name": "Bob"}]
++    users_harness = harness.new()
++    dialog = _users_connect(users_harness, users=users)
++    dialog.onInit()
++    assert dialog.is_user_selected() is False
++    assert not dialog.get_user()
++    users_harness.select_row(LIST, 1)
++    dialog.onAction(FakeAction(ACTION_SELECT_ITEM))
++    assert dialog.is_user_selected() is True
++    assert dialog.get_user() == users[1]
++
++    manual_harness = harness.new()
++    connect_manager = FakeConnectionManager(
++        connect_to_address_result={"State": "Available", "Servers": [connected_server]}
++    )
++    dialog = _server_manual(manual_harness, connect_manager=connect_manager)
++    dialog.onInit()
++    assert dialog.is_connected() is False
++    assert not dialog.get_server()
++    manual_harness.text_field().setText("http://alpha")
++    dialog.onClick(MANUAL_CONNECT)
++    assert dialog.is_connected() is True
++    assert dialog.get_server() == connected_server
++
++    login_harness = harness.new()
++    logged_in_user = {"Id": "u1", "Name": "Alice"}
++    connect_manager = FakeConnectionManager(login_result=logged_in_user)
++    dialog = _login_manual(login_harness, connect_manager=connect_manager, username="alice")
++    dialog.onInit()
++    assert dialog.is_logged_in() is False
++    assert not dialog.get_user()
++    login_harness.text_field().setText("alice")
++    login_harness.password_field().setText("secret")
++    dialog.onClick(LOGIN_SIGN_IN)
++    assert dialog.is_logged_in() is True
++    assert dialog.get_user() == logged_in_user
++
++    empty_manual_harness = harness.new()
++    dialog = _server_manual(empty_manual_harness)
++    dialog.onInit()
++    dialog.onClick(MANUAL_CONNECT)
++    assert empty_manual_harness.control(MANUAL_ERROR_TOGGLE).visible is True
++    assert dialog.is_connected() is False
++
++    empty_login_harness = harness.new()
++    dialog = _login_manual(empty_login_harness)
++    dialog.onInit()
++    dialog.onClick(LOGIN_SIGN_IN)
++    assert empty_login_harness.control(LOGIN_ERROR_TOGGLE).visible is True
++    assert dialog.is_logged_in() is False
++
++
++def test_password_input_and_distinct_list_payloads_preserved(harness):
++    """The deliberate differences between the dialogs are kept."""
++
++    dialog = _login_manual(harness, username="alice")
++    dialog.onInit()
++    password_field = harness.password_field()
++    text_field = harness.text_field()
++    assert password_field is not None
++    assert text_field is not None
++    assert (xbmcgui.INPUT_TYPE_PASSWORD, "Please enter password") in password_field.types
++    assert not _is_password_field(text_field)
++
++    manual_harness = harness.new()
++    dialog = _server_manual(manual_harness)
++    dialog.onInit()
++    assert manual_harness.password_field() is None
++    assert manual_harness.text_field() is not None
++
++    server_harness = harness.new()
++    servers = [
++        {"Id": "s1", "Name": "Alpha", "ExchangeToken": "token"},
++        {"Id": "s2", "Name": "Beta"},
++    ]
++    dialog = _server_connect(server_harness, servers=servers)
++    dialog.onInit()
++    server_items = server_harness.control(LIST).items
++    assert [item.getProperty("id") for item in server_items] == ["s1", "s2"]
++    assert [item.getProperty("server_type") for item in server_items] == ["wifi", "network"]
++
++    user_harness = harness.new()
++    users = [
++        {"Id": "u1", "Name": "Alice", "PrimaryImageTag": "tag"},
++        {"Id": "u2", "Name": "Bob"},
++    ]
++    dialog = _users_connect(user_harness, users=users, server="http://alpha")
++    dialog.onInit()
++    user_items = user_harness.control(LIST).items
++    assert [item.getProperty("id") for item in user_items] == ["u1", "u2"]
++    assert user_items[0].getArt("icon") == "http://alpha/Users/u1/Images/Primary?Format=original"
++    assert user_items[1].getArt("icon") == "items/logindefault.png"
++
++
++def test_close_and_flag_outcomes_unchanged_across_dialogs(harness):
++    """Back/previous-menu/parent-directory, connect controls and cancel keep their outcomes."""
++
++    for action in BACK_ACTIONS:
++        server_harness = harness.new()
++        dialog = _server_connect(server_harness, servers=[{"Id": "s1", "Name": "Alpha"}])
++        dialog.onInit()
++        dialog.onAction(FakeAction(action))
++        assert server_harness.close_count == 1
++        assert dialog.is_server_selected() is False
++        assert dialog.is_manual_server() is False
++
++        users_harness = harness.new()
++        dialog = _users_connect(users_harness, users=[{"Id": "u1", "Name": "Alice"}])
++        dialog.onInit()
++        dialog.onAction(FakeAction(action))
++        assert users_harness.close_count == 1
++        assert dialog.is_user_selected() is False
++        assert dialog.is_manual_login() is False
++        assert dialog.is_quick_connect() is False
++
++        manual_harness = harness.new()
++        dialog = _server_manual(manual_harness)
++        dialog.onInit()
++        dialog.onAction(FakeAction(action))
++        assert manual_harness.close_count == 1
++        assert dialog.is_connected() is False
++
++        login_harness = harness.new()
++        dialog = _login_manual(login_harness)
++        dialog.onInit()
++        dialog.onAction(FakeAction(action))
++        assert login_harness.close_count == 1
++        assert dialog.is_logged_in() is False
++
++    server_harness = harness.new()
++    dialog = _server_connect(server_harness)
++    dialog.onInit()
++    dialog.onClick(MANUAL_SERVER)
++    assert server_harness.close_count == 1
++    assert dialog.is_manual_server() is True
++
++    users_harness = harness.new()
++    dialog = _users_connect(users_harness, users=[])
++    dialog.onInit()
++    dialog.onClick(USERS_MANUAL)
++    assert users_harness.close_count == 1
++    assert dialog.is_manual_login() is True
++
++    users_harness = harness.new()
++    dialog = _users_connect(users_harness, users=[])
++    dialog.onInit()
++    dialog.onClick(USERS_QUICK_CONNECT)
++    assert users_harness.close_count == 1
++    assert dialog.is_quick_connect() is True
++
++    server_harness = harness.new()
++    dialog = _server_connect(server_harness)
++    dialog.onInit()
++    dialog.onClick(CANCEL)
++    assert server_harness.close_count == 1
++    assert dialog.is_manual_server() is False
++
++    users_harness = harness.new()
++    dialog = _users_connect(users_harness, users=[])
++    dialog.onInit()
++    dialog.onClick(CANCEL)
++    assert users_harness.close_count == 1
++    assert dialog.is_manual_login() is False
++    assert dialog.is_quick_connect() is False
++
++
++def test_error_visibility_and_focus_behaviour_unchanged(harness):
++    """The error indication and the initial focus keep their documented behaviour."""
++
++    manual_harness = harness.new()
++    connect_manager = FakeConnectionManager()
++    dialog = _server_manual(manual_harness, connect_manager=connect_manager)
++    dialog.onInit()
++    assert manual_harness.focused_control() is manual_harness.text_field()
++    dialog.onClick(MANUAL_CONNECT)
++    assert manual_harness.control(MANUAL_ERROR_TOGGLE).visible is True
++    assert connect_manager.calls == []
++    manual_harness.text_field().setText("http://alpha")
++    dialog.onAction(FakeAction(NEUTRAL_ACTION))
++    assert manual_harness.control(MANUAL_ERROR_TOGGLE).visible is False
++
++    login_harness = harness.new()
++    connect_manager = FakeConnectionManager(login_result={"Id": "u1"})
++    dialog = _login_manual(login_harness, connect_manager=connect_manager)
++    dialog.onInit()
++    assert login_harness.focused_control() is login_harness.text_field()
++    dialog.onClick(LOGIN_SIGN_IN)
++    assert login_harness.control(LOGIN_ERROR_TOGGLE).visible is True
++    assert connect_manager.calls == []
++    login_harness.text_field().setText("alice")
++    dialog.onAction(FakeAction(NEUTRAL_ACTION))
++    assert login_harness.control(LOGIN_ERROR_TOGGLE).visible is False
++
++    server_harness = harness.new()
++    dialog = _server_connect(server_harness, servers=[{"Id": "s1", "Name": "Alpha"}])
++    dialog.onInit()
++    assert server_harness.list_is_focused(LIST)
++
++    users_harness = harness.new()
++    dialog = _users_connect(users_harness, users=[{"Id": "u1", "Name": "Alice"}])
++    dialog.onInit()
++    assert users_harness.list_is_focused(LIST)
++
++    login_harness = harness.new()
++    dialog = _login_manual(login_harness, username="alice")
++    dialog.onInit()
++    assert login_harness.focused_control() is login_harness.password_field()
++
++
++def test_shared_dialog_capabilities_available_to_all_four_dialogs(harness):
++    """Every dialog keeps the shared window behaviour instead of losing or generalising it."""
++
++    server_harness = harness.new()
++    dialog = _server_connect(server_harness, servers=[{"Id": "s1", "Name": "Alpha"}])
++    dialog.set_args(extra_key="extra")
++    assert dialog.extra_key == "extra"
++    dialog.onInit()
++    assert len(server_harness.control(LIST).items) == 1
++    assert server_harness.list_is_focused(LIST)
++
++    users_harness = harness.new()
++    dialog = _users_connect(users_harness, users=[{"Id": "u1", "Name": "Alice"}])
++    dialog.set_args(extra_key="extra")
++    assert dialog.extra_key == "extra"
++    dialog.onInit()
++    assert len(users_harness.control(LIST).items) == 1
++    assert users_harness.list_is_focused(LIST)
++
++    manual_harness = harness.new()
++    dialog = _server_manual(manual_harness)
++    dialog.set_args(extra_key="extra")
++    assert dialog.extra_key == "extra"
++    dialog.onInit()
++    assert manual_harness.text_field() is not None
++    assert manual_harness.focused_control() is manual_harness.text_field()
++
++    login_harness = harness.new()
++    dialog = _login_manual(login_harness)
++    dialog.set_args(extra_key="extra")
++    assert dialog.extra_key == "extra"
++    dialog.onInit()
++    assert login_harness.text_field() is not None
++    assert login_harness.password_field() is not None
++
++    server_harness = harness.new()
++    servers = [
++        {"Id": "s1", "Name": "Alpha", "ExchangeToken": "token"},
++        {"Id": "s2", "Name": "Beta"},
++    ]
++    dialog = _server_connect(server_harness, servers=servers)
++    dialog.onInit()
++    server_items = server_harness.control(LIST).items
++    assert [item.getProperty("server_type") for item in server_items] == ["wifi", "network"]
++
++    user_harness = harness.new()
++    users = [
++        {"Id": "u1", "Name": "Alice", "PrimaryImageTag": "tag"},
++        {"Id": "u2", "Name": "Bob"},
++    ]
++    dialog = _users_connect(user_harness, users=users, server="http://alpha")
++    dialog.onInit()
++    user_items = user_harness.control(LIST).items
++    assert user_items[0].getArt("icon") == "http://alpha/Users/u1/Images/Primary?Format=original"
++    assert user_items[1].getArt("icon") == "items/logindefault.png"

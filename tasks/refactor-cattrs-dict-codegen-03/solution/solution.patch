@@ -1,0 +1,1979 @@
+diff --git a/src/cattrs/gen/__init__.py b/src/cattrs/gen/__init__.py
+index d5e1772ac9195e7ecd8ca22657efdcc2c9d70ba6..60a6cfe6ce11c60a43453293d632db9e0887163d 100644
+--- a/src/cattrs/gen/__init__.py
++++ b/src/cattrs/gen/__init__.py
+@@ -1,6 +1,5 @@
+ from __future__ import annotations
+ 
+-import re
+ from collections.abc import Callable, Iterable, Mapping
+ from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar
+ 
+@@ -20,20 +19,17 @@ from .._compat import (
+ )
+ from .._generics import deep_copy_with
+ from ..dispatch import UnstructureHook
+-from ..errors import (
+-    AttributeValidationNote,
+-    ClassValidationError,
+-    ForbiddenExtraKeysError,
+-    IterableValidationError,
+-    IterableValidationNote,
+-    StructureHandlerNotFoundError,
+-)
++from ..errors import IterableValidationError, IterableValidationNote
+ from ..fns import identity
+ from ..types import SimpleStructureHook
+ from ._consts import AttributeOverride, already_generating, neutral
+ from ._generics import generate_mapping
+ from ._lc import generate_unique_filename
+-from ._shared import _annotated_override_or_default, find_structure_handler
++from ._shared import (
++    _annotated_override_or_default,
++    _DictHookGenerator,
++    find_structure_handler,
++)
+ 
+ if TYPE_CHECKING:
+     from ..converters import BaseConverter
+@@ -109,11 +105,9 @@ def make_dict_unstructure_fn_from_attrs(
+         is equal to the attribute's value.
+     """
+ 
+-    fn_name = "unstructure_" + cl.__name__
+-    globs = {}
++    generator = _DictHookGenerator(cl, "unstructure", _cattrs_use_linecache)
+     lines = []
+     invocation_lines = []
+-    internal_arg_parts = {}
+ 
+     if _cattrs_use_alias == "from_converter":
+         # BaseConverter doesn't have it so we're careful.
+@@ -178,8 +172,7 @@ def make_dict_unstructure_fn_from_attrs(
+ 
+         if not is_identity:
+             unstruct_handler_name = f"__c_unstr_{attr_name}"
+-            globs[unstruct_handler_name] = handler
+-            internal_arg_parts[unstruct_handler_name] = handler
++            generator.add_binding(unstruct_handler_name, handler)
+             invoke = f"{unstruct_handler_name}(instance.{attr_name})"
+         else:
+             invoke = f"instance.{attr_name}"
+@@ -191,31 +184,25 @@ def make_dict_unstructure_fn_from_attrs(
+             def_name = f"__c_def_{attr_name}"
+ 
+             if isinstance(d, Factory):
+-                globs[def_name] = d.factory
+-                internal_arg_parts[def_name] = d.factory
++                generator.add_binding(def_name, d.factory)
+                 def_str = f"{def_name}(instance)" if d.takes_self else f"{def_name}()"
+             else:
+-                globs[def_name] = d
+-                internal_arg_parts[def_name] = d
++                generator.add_binding(def_name, d)
+                 def_str = def_name
+ 
+             c = a.converter
+             if c is not None:
+                 conv_name = f"__c_conv_{attr_name}"
+                 if isinstance(c, Converter):
+-                    globs[conv_name] = c
+-                    internal_arg_parts[conv_name] = c
++                    generator.add_binding(conv_name, c)
+                     field_name = f"__c_field_{attr_name}"
+-                    globs[field_name] = a
+-                    internal_arg_parts[field_name] = a
++                    generator.add_binding(field_name, a)
+                     def_str = f"{conv_name}({def_str}, instance, {field_name})"
+                 elif isinstance(d, Factory):
+-                    globs[conv_name] = c
+-                    internal_arg_parts[conv_name] = c
++                    generator.add_binding(conv_name, c)
+                     def_str = f"{conv_name}({def_str})"
+                 else:
+-                    globs[def_name] = c(d)
+-                    internal_arg_parts[def_name] = c(d)
++                    generator.add_binding(def_name, c(d))
+ 
+             lines.append(f"  if instance.{attr_name} != {def_str}:")
+             lines.append(f"    res[{kn!r}] = {invoke}")
+@@ -224,31 +212,14 @@ def make_dict_unstructure_fn_from_attrs(
+             # No default or no override.
+             invocation_lines.append(f"{kn!r}: {invoke},")
+ 
+-    internal_arg_line = ", ".join([f"{i}={i}" for i in internal_arg_parts])
+-    if internal_arg_line:
+-        internal_arg_line = f", {internal_arg_line}"
+-    for k, v in internal_arg_parts.items():
+-        globs[k] = v
+-
+-    total_lines = (
+-        [f"def {fn_name}(instance{internal_arg_line}):"]
+-        + ["  res = {"]
++    body_lines = (
++        ["  res = {"]
+         + [f"    {line}" for line in invocation_lines]
+         + ["  }"]
+         + lines
+         + ["  return res"]
+     )
+-    script = "\n".join(total_lines)
+-    fname = generate_unique_filename(
+-        cl, "unstructure", lines=total_lines if _cattrs_use_linecache else []
+-    )
+-
+-    eval(compile(script, fname, "exec"), globs)
+-
+-    res = globs[fn_name]
+-    res.overrides = kwargs
+-
+-    return res
++    return generator.compile(body_lines, "instance", kwargs)
+ 
+ 
+ def make_dict_unstructure_fn(
+@@ -371,30 +342,9 @@ def make_dict_structure_fn_from_attrs(
+         unstructuring.
+     """
+ 
+-    cl_name = cl.__name__
+-    fn_name = "structure_" + cl_name
+-
+-    # We have generic parameters and need to generate a unique name for the function
+-    for p in getattr(cl, "__parameters__", ()):
+-        # This is nasty, I am not sure how best to handle `typing.List[str]` or
+-        # `TClass[int, int]` as a parameter type here
+-        try:
+-            name_base = typevar_map[p.__name__]
+-        except KeyError:
+-            pn = p.__name__
+-            raise StructureHandlerNotFoundError(
+-                f"Missing type for generic argument {pn}, specify it when structuring.",
+-                p,
+-            ) from None
+-        name = getattr(name_base, "__name__", None) or str(name_base)
+-        # `<>` can be present in lambdas
+-        # `|` can be present in unions
+-        name = re.sub(r"[\[\.\] ,<>]", "_", name)
+-        name = re.sub(r"\|", "u", name)
+-        fn_name += f"_{name}"
++    generator = _DictHookGenerator(cl, "structure", _cattrs_use_linecache, typevar_map)
++    generator.ensure_cl()
+ 
+-    internal_arg_parts = {"__cl": cl}
+-    globs = {}
+     lines = []
+     post_lines = []
+     pi_lines = []  # post instantiation lines
+@@ -412,16 +362,12 @@ def make_dict_structure_fn_from_attrs(
+     if _cattrs_prefer_attrib_converters == "from_converter":
+         _cattrs_prefer_attrib_converters = converter._prefer_attrib_converters
+ 
+-    if _cattrs_forbid_extra_keys:
+-        globs["__c_a"] = allowed_fields
+-        globs["__c_feke"] = ForbiddenExtraKeysError
+-
+     if _cattrs_detailed_validation:
+         lines.append("  res = {}")
+         lines.append("  errors = []")
+         invocation_lines.append("**res,")
+-        internal_arg_parts["__c_cve"] = ClassValidationError
+-        internal_arg_parts["__c_avn"] = AttributeValidationNote
++        generator.ensure_cve()
++        generator.ensure_avn()
+         for a in attrs:
+             an = a.name
+             if an in kwargs:
+@@ -454,7 +400,7 @@ def make_dict_structure_fn_from_attrs(
+ 
+             struct_handler_name = f"__c_structure_{an}"
+             if handler is not None:
+-                internal_arg_parts[struct_handler_name] = handler
++                generator.add_binding(struct_handler_name, handler)
+ 
+             ian = a.alias
+             if override.rename is None:
+@@ -471,90 +417,63 @@ def make_dict_structure_fn_from_attrs(
+                 if a.default is not NOTHING:
+                     pi_lines.append(f"{i}if {kn!r} in o:")
+                     i = f"{i}  "
+-                pi_lines.append(f"{i}try:")
+-                i = f"{i}  "
+                 type_name = f"__c_type_{an}"
+-                internal_arg_parts[type_name] = t
++                generator.add_binding(type_name, t)
+                 if handler is not None:
+                     if handler == converter._structure_call:
+-                        internal_arg_parts[struct_handler_name] = t
+-                        pi_lines.append(
+-                            f"{i}instance.{an} = {struct_handler_name}(o[{kn!r}])"
+-                        )
++                        generator.add_binding(struct_handler_name, t)
++                        body = [f"instance.{an} = {struct_handler_name}(o[{kn!r}])"]
+                     else:
+                         tn = f"__c_type_{an}"
+-                        internal_arg_parts[tn] = t
+-                        pi_lines.append(
+-                            f"{i}instance.{an} = {struct_handler_name}(o[{kn!r}], {tn})"
+-                        )
++                        generator.add_binding(tn, t)
++                        body = [
++                            f"instance.{an} = {struct_handler_name}(o[{kn!r}], {tn})"
++                        ]
+                 else:
+-                    pi_lines.append(f"{i}instance.{an} = o[{kn!r}]")
+-                i = i[:-2]
+-                pi_lines.append(f"{i}except Exception as e:")
+-                i = f"{i}  "
+-                pi_lines.append(
+-                    f'{i}e.__notes__ = getattr(e, \'__notes__\', []) + [__c_avn("Structuring class {cl.__qualname__} @ attribute {an}", "{an}", __c_type_{an})]'
++                    body = [f"instance.{an} = o[{kn!r}]"]
++                note = f"Structuring class {cl.__qualname__} @ attribute {an}"
++                pi_lines.extend(
++                    generator.wrap_field_try_except(
++                        body, note, an, type_name, indent=i, use_unpack=False
++                    )
+                 )
+-                pi_lines.append(f"{i}errors.append(e)")
+ 
+             else:
+                 if a.default is not NOTHING:
+                     lines.append(f"{i}if {kn!r} in o:")
+                     i = f"{i}  "
+-                lines.append(f"{i}try:")
+-                i = f"{i}  "
+                 type_name = f"__c_type_{an}"
+-                internal_arg_parts[type_name] = t
++                generator.add_binding(type_name, t)
+                 if handler:
+                     if handler == converter._structure_call:
+-                        internal_arg_parts[struct_handler_name] = t
+-                        lines.append(
+-                            f"{i}res['{ian}'] = {struct_handler_name}(o[{kn!r}])"
+-                        )
++                        generator.add_binding(struct_handler_name, t)
++                        body = [f"res['{ian}'] = {struct_handler_name}(o[{kn!r}])"]
+                     else:
+-                        lines.append(
+-                            f"{i}res['{ian}'] = {struct_handler_name}(o[{kn!r}], {type_name})"
+-                        )
++                        body = [
++                            f"res['{ian}'] = {struct_handler_name}(o[{kn!r}], {type_name})"
++                        ]
+                 else:
+-                    lines.append(f"{i}res['{ian}'] = o[{kn!r}]")
+-                i = i[:-2]
+-                lines.append(f"{i}except Exception as e:")
+-                i = f"{i}  "
+-                lines.append(
+-                    f'{i}e.__notes__ = getattr(e, \'__notes__\', []) + [__c_avn("Structuring class {cl.__qualname__} @ attribute {an}", "{an}", __c_type_{an})]'
++                    body = [f"res['{ian}'] = o[{kn!r}]"]
++                note = f"Structuring class {cl.__qualname__} @ attribute {an}"
++                lines.extend(
++                    generator.wrap_field_try_except(
++                        body, note, an, type_name, indent=i, use_unpack=False
++                    )
+                 )
+-                lines.append(f"{i}errors.append(e)")
+ 
+         if _cattrs_forbid_extra_keys:
+-            post_lines += [
+-                "  unknown_fields = set(o.keys()) - __c_a",
+-                "  if unknown_fields:",
+-                "    errors.append(__c_feke('', __cl, unknown_fields))",
+-            ]
++            generator.add_extra_keys_check(
++                allowed_fields,
++                "set(o.keys()) - __c_a",
++                detailed=True,
++                target_lines=post_lines,
++            )
+ 
+-        post_lines.append(
+-            f"  if errors: raise __c_cve('While structuring ' + {cl_name!r}, errors, __cl)"
++        generator.add_errors_check(post_lines)
++        instantiation_lines = generator.wrap_instantiation(
++            invocation_lines, assign_to_instance=bool(pi_lines), detailed=True
+         )
+-        if not pi_lines:
+-            instantiation_lines = (
+-                ["  try:"]
+-                + ["    return __cl("]
+-                + [f"      {line}" for line in invocation_lines]
+-                + ["    )"]
+-                + [
+-                    f"  except Exception as exc: raise __c_cve('While structuring ' + {cl_name!r}, [exc], __cl)"
+-                ]
+-            )
+-        else:
+-            instantiation_lines = (
+-                ["  try:"]
+-                + ["    instance = __cl("]
+-                + [f"      {line}" for line in invocation_lines]
+-                + ["    )"]
+-                + [
+-                    f"  except Exception as exc: raise __c_cve('While structuring ' + {cl_name!r}, [exc], __cl)"
+-                ]
+-            )
++        if pi_lines:
+             pi_lines.append("  return instance")
+     else:
+         non_required = []
+@@ -607,13 +526,13 @@ def make_dict_structure_fn_from_attrs(
+             if not a.init:
+                 if handler is not None:
+                     struct_handler_name = f"__c_structure_{an}"
+-                    internal_arg_parts[struct_handler_name] = handler
++                    generator.add_binding(struct_handler_name, handler)
+                     if handler == converter._structure_call:
+-                        internal_arg_parts[struct_handler_name] = t
++                        generator.add_binding(struct_handler_name, t)
+                         pi_line = f"  instance.{an} = {struct_handler_name}(o[{kn!r}])"
+                     else:
+                         tn = f"__c_type_{an}"
+-                        internal_arg_parts[tn] = t
++                        generator.add_binding(tn, t)
+                         pi_line = (
+                             f"  instance.{an} = {struct_handler_name}(o[{kn!r}], {tn})"
+                         )
+@@ -624,13 +543,13 @@ def make_dict_structure_fn_from_attrs(
+             else:
+                 if handler:
+                     struct_handler_name = f"__c_structure_{an}"
+-                    internal_arg_parts[struct_handler_name] = handler
++                    generator.add_binding(struct_handler_name, handler)
+                     if handler == converter._structure_call:
+-                        internal_arg_parts[struct_handler_name] = t
++                        generator.add_binding(struct_handler_name, t)
+                         invocation_line = f"{struct_handler_name}(o[{kn!r}]),"
+                     else:
+                         tn = f"__c_type_{an}"
+-                        internal_arg_parts[tn] = t
++                        generator.add_binding(tn, t)
+                         invocation_line = f"{struct_handler_name}(o[{kn!r}], {tn}),"
+                 else:
+                     invocation_line = f"o[{kn!r}],"
+@@ -665,7 +584,7 @@ def make_dict_structure_fn_from_attrs(
+                     )
+ 
+                 struct_handler_name = f"__c_structure_{an}"
+-                internal_arg_parts[struct_handler_name] = handler
++                generator.add_binding(struct_handler_name, handler)
+ 
+                 if override.rename is None:
+                     kn = an if not _cattrs_use_alias else a.alias
+@@ -678,13 +597,13 @@ def make_dict_structure_fn_from_attrs(
+                     pi_lines.append(f"  if {kn!r} in o:")
+                     if handler:
+                         if handler == converter._structure_call:
+-                            internal_arg_parts[struct_handler_name] = t
++                            generator.add_binding(struct_handler_name, t)
+                             pi_lines.append(
+                                 f"    instance.{an} = {struct_handler_name}(o[{kn!r}])"
+                             )
+                         else:
+                             tn = f"__c_type_{an}"
+-                            internal_arg_parts[tn] = t
++                            generator.add_binding(tn, t)
+                             pi_lines.append(
+                                 f"    instance.{an} = {struct_handler_name}(o[{kn!r}], {tn})"
+                             )
+@@ -694,62 +613,35 @@ def make_dict_structure_fn_from_attrs(
+                     post_lines.append(f"  if {kn!r} in o:")
+                     if handler:
+                         if handler == converter._structure_call:
+-                            internal_arg_parts[struct_handler_name] = t
++                            generator.add_binding(struct_handler_name, t)
+                             post_lines.append(
+                                 f"    res['{a.alias}'] = {struct_handler_name}(o[{kn!r}])"
+                             )
+                         else:
+                             tn = f"__c_type_{an}"
+-                            internal_arg_parts[tn] = t
++                            generator.add_binding(tn, t)
+                             post_lines.append(
+                                 f"    res['{a.alias}'] = {struct_handler_name}(o[{kn!r}], {tn})"
+                             )
+                     else:
+                         post_lines.append(f"    res['{a.alias}'] = o[{kn!r}]")
+-        if not pi_lines:
+-            instantiation_lines = (
+-                ["  return __cl("]
+-                + [f"    {line}" for line in invocation_lines]
+-                + ["  )"]
+-            )
+-        else:
+-            instantiation_lines = (
+-                ["  instance = __cl("]
+-                + [f"    {line}" for line in invocation_lines]
+-                + ["  )"]
+-            )
++
++        instantiation_lines = generator.wrap_instantiation(
++            invocation_lines, assign_to_instance=bool(pi_lines), detailed=False
++        )
++        if pi_lines:
+             pi_lines.append("  return instance")
+ 
+         if _cattrs_forbid_extra_keys:
+-            post_lines += [
+-                "  unknown_fields = set(o.keys()) - __c_a",
+-                "  if unknown_fields:",
+-                "    raise __c_feke('', __cl, unknown_fields)",
+-            ]
+-
+-    # At the end, we create the function header.
+-    internal_arg_line = ", ".join([f"{i}={i}" for i in internal_arg_parts])
+-    globs.update(internal_arg_parts)
+-
+-    total_lines = [
+-        f"def {fn_name}(o, _=__cl, {internal_arg_line}):",
+-        *lines,
+-        *post_lines,
+-        *instantiation_lines,
+-        *pi_lines,
+-    ]
+-
+-    script = "\n".join(total_lines)
+-    fname = generate_unique_filename(
+-        cl, "structure", lines=total_lines if _cattrs_use_linecache else []
+-    )
+-
+-    eval(compile(script, fname, "exec"), globs)
+-
+-    res = globs[fn_name]
+-    res.overrides = kwargs
++            generator.add_extra_keys_check(
++                allowed_fields,
++                "set(o.keys()) - __c_a",
++                detailed=False,
++                target_lines=post_lines,
++            )
+ 
+-    return res
++    total_lines = [*lines, *post_lines, *instantiation_lines, *pi_lines]
++    return generator.compile(total_lines, "o, _=__cl", kwargs)
+ 
+ 
+ def make_dict_structure_fn(
+diff --git a/src/cattrs/gen/_shared.py b/src/cattrs/gen/_shared.py
+index 967661eea5f1a60830a19f0e48bc47916255594f..2b8bfcef74f137dc6b92445d4117e7782f9985f9 100644
+--- a/src/cattrs/gen/_shared.py
++++ b/src/cattrs/gen/_shared.py
+@@ -1,14 +1,22 @@
+ from __future__ import annotations
+ 
++import re
++from collections.abc import Mapping
+ from typing import TYPE_CHECKING, Any
+ 
+ from attrs import NOTHING, Attribute, Factory
+ 
+ from .._compat import get_args, is_annotated, is_bare_final
+ from ..dispatch import StructureHook
+-from ..errors import StructureHandlerNotFoundError
++from ..errors import (
++    AttributeValidationNote,
++    ClassValidationError,
++    ForbiddenExtraKeysError,
++    StructureHandlerNotFoundError,
++)
+ from ..fns import raise_error
+ from ._consts import AttributeOverride
++from ._lc import generate_unique_filename
+ 
+ if TYPE_CHECKING:
+     from ..converters import BaseConverter
+@@ -78,3 +86,197 @@ def find_structure_handler(
+     except RecursionError:
+         # This means we're dealing with a reference cycle, so use late binding.
+         return c.structure
++
++
++class _DictHookGenerator:
++    """Shared generator for dictionary structuring and unstructuring hooks."""
++
++    __slots__ = ("cl", "fn_name", "internal_arg_parts", "operation", "use_linecache")
++
++    def __init__(
++        self,
++        cl: type,
++        operation: str,
++        use_linecache: bool = True,
++        typevar_map: Mapping[str, Any] | None = None,
++        fn_name_prefix: str | None = None,
++    ):
++        self.cl = cl
++        self.operation = operation
++        self.use_linecache = use_linecache
++        self.internal_arg_parts: dict[str, Any] = {}
++        if operation == "structure":
++            cl_name = cl.__name__
++            base_name = (
++                f"{fn_name_prefix}_{cl_name}"
++                if fn_name_prefix
++                else f"structure_{cl_name}"
++            )
++            for p in getattr(cl, "__parameters__", ()):
++                try:
++                    if typevar_map is None:
++                        raise KeyError(p.__name__)
++                    name_base = typevar_map[p.__name__]
++                except KeyError:
++                    pn = p.__name__
++                    raise StructureHandlerNotFoundError(
++                        f"Missing type for generic argument {pn}, specify it when structuring.",
++                        p,
++                    ) from None
++                name = getattr(name_base, "__name__", None) or str(name_base)
++                name = re.sub(r"\|", "u", name)
++                name = re.sub(r"[\[\.\] ,<>]", "_", name)
++                name = re.sub(r"[^\w]", "_", name)
++                base_name += f"_{name}"
++            self.fn_name = base_name
++        elif fn_name_prefix:
++            self.fn_name = f"{fn_name_prefix}_{cl.__name__}"
++        else:
++            self.fn_name = f"unstructure_{cl.__name__}"
++
++    def add_binding(self, name: str, val: Any) -> str:
++        self.internal_arg_parts[name] = val
++        return name
++
++    def ensure_cl(self) -> str:
++        return self.add_binding("__cl", self.cl)
++
++    def ensure_cve(self) -> str:
++        return self.add_binding("__c_cve", ClassValidationError)
++
++    def ensure_avn(self) -> str:
++        return self.add_binding("__c_avn", AttributeValidationNote)
++
++    def add_non_mapping_check(self, target_lines: list[str]) -> None:
++        self.ensure_cl()
++        self.ensure_cve()
++        self.add_binding("__c_mapping", Mapping)
++        target_lines.append("  if not isinstance(o, __c_mapping):")
++        te = "TypeError(f'expected a mapping, not {o.__class__.__name__}')"
++        target_lines.append(
++            f"    raise __c_cve('While structuring ' + {self.cl.__name__!r}, [{te}], __cl)"
++        )
++
++    def wrap_field_try_except(
++        self,
++        body_lines: list[str],
++        note_text: str,
++        attr_name: str,
++        type_arg_name: str,
++        indent: str = "  ",
++        use_unpack: bool = False,
++    ) -> list[str]:
++        self.ensure_avn()
++        out = [f"{indent}try:"]
++        for bl in body_lines:
++            out.append(f"{indent}  {bl}")
++        out.append(f"{indent}except Exception as e:")
++        if use_unpack:
++            out.append(
++                f"{indent}  e.__notes__ = [*getattr(e, '__notes__', []), "
++                f"__c_avn({note_text!r}, {attr_name!r}, {type_arg_name})]"
++            )
++        else:
++            out.append(
++                f"{indent}  e.__notes__ = getattr(e, '__notes__', []) + "
++                f'[__c_avn("{note_text}", "{attr_name}", {type_arg_name})]'
++            )
++        out.append(f"{indent}  errors.append(e)")
++        return out
++
++    def add_extra_keys_check(
++        self,
++        allowed_fields: set[str],
++        diff_expr: str,
++        detailed: bool,
++        target_lines: list[str],
++    ) -> None:
++        self.ensure_cl()
++        self.add_binding("__c_a", allowed_fields)
++        self.add_binding("__c_feke", ForbiddenExtraKeysError)
++        target_lines.append(f"  unknown_fields = {diff_expr}")
++        target_lines.append("  if unknown_fields:")
++        if detailed:
++            target_lines.append("    errors.append(__c_feke('', __cl, unknown_fields))")
++        else:
++            target_lines.append("    raise __c_feke('', __cl, unknown_fields)")
++
++    def add_errors_check(self, target_lines: list[str]) -> None:
++        self.ensure_cl()
++        self.ensure_cve()
++        target_lines.append(
++            f"  if errors: raise __c_cve('While structuring ' + {self.cl.__name__!r}, errors, __cl)"
++        )
++
++    def wrap_instantiation(
++        self,
++        invocation_lines: list[str],
++        assign_to_instance: bool = False,
++        detailed: bool = True,
++    ) -> list[str]:
++        self.ensure_cl()
++        if not detailed:
++            if not assign_to_instance:
++                return (
++                    ["  return __cl("]
++                    + [f"    {line}" for line in invocation_lines]
++                    + ["  )"]
++                )
++            return (
++                ["  instance = __cl("]
++                + [f"    {line}" for line in invocation_lines]
++                + ["  )"]
++            )
++        self.ensure_cve()
++        cl_name = self.cl.__name__
++        if not assign_to_instance:
++            return (
++                ["  try:"]
++                + ["    return __cl("]
++                + [f"      {line}" for line in invocation_lines]
++                + ["    )"]
++                + [
++                    f"  except Exception as exc: raise __c_cve('While structuring ' + {cl_name!r}, [exc], __cl)"
++                ]
++            )
++        return (
++            ["  try:"]
++            + ["    instance = __cl("]
++            + [f"      {line}" for line in invocation_lines]
++            + ["    )"]
++            + [
++                f"  except Exception as exc: raise __c_cve('While structuring ' + {cl_name!r}, [exc], __cl)"
++            ]
++        )
++
++    def compile(
++        self,
++        body_lines: list[str],
++        header_args: str = "instance",
++        overrides: dict[str, AttributeOverride] | None = None,
++    ) -> Any:
++        parts = self.internal_arg_parts
++        fn_name = self.fn_name
++        cl = self.cl
++        op = self.operation
++
++        if parts:
++            internal_arg_line = ", ".join([f"{i}={i}" for i in parts])
++            header = f"def {fn_name}({header_args}, {internal_arg_line}):"
++            globs = dict(parts)
++        else:
++            header = f"def {fn_name}({header_args}):"
++            globs = {}
++
++        total_lines = [header, *body_lines]
++        script = "\n".join(total_lines)
++
++        fname = generate_unique_filename(
++            cl, op, lines=total_lines if self.use_linecache else []
++        )
++
++        eval(compile(script, fname, "exec"), globs)
++
++        res = globs[fn_name]
++        res.overrides = overrides if overrides is not None else {}
++        return res
+diff --git a/src/cattrs/gen/typeddicts.py b/src/cattrs/gen/typeddicts.py
+index b12a6d9764de557a0fcaf8f130cfd37ccb276154..6cb2ba9d6c091093e8dd3688e8a75e0e8fad6936 100644
+--- a/src/cattrs/gen/typeddicts.py
++++ b/src/cattrs/gen/typeddicts.py
+@@ -1,8 +1,6 @@
+ from __future__ import annotations
+ 
+-import re
+ import sys
+-from collections.abc import Mapping
+ from inspect import get_annotations
+ from typing import TYPE_CHECKING, Any, Callable, Literal, TypeVar
+ 
+@@ -18,18 +16,15 @@ from .._compat import (
+     is_generic,
+ )
+ from .._generics import deep_copy_with
+-from ..errors import (
+-    AttributeValidationNote,
+-    ClassValidationError,
+-    ForbiddenExtraKeysError,
+-    StructureHandlerNotFoundError,
+-)
+ from ..fns import identity
+ from . import AttributeOverride
+ from ._consts import already_generating, neutral
+ from ._generics import generate_mapping
+-from ._lc import generate_unique_filename
+-from ._shared import _annotated_override_or_default, find_structure_handler
++from ._shared import (
++    _annotated_override_or_default,
++    _DictHookGenerator,
++    find_structure_handler,
++)
+ 
+ if TYPE_CHECKING:
+     from ..converters import BaseConverter
+@@ -60,8 +55,9 @@ def make_dict_unstructure_fn(
+         _linecache_, for easier debugging and better stack traces.
+     """
+     origin = get_origin(cl)
+-    attrs = _adapted_fields(origin or cl)  # type: ignore
+-    req_keys = _required_keys(origin or cl)
++    target = origin if origin is not None else cl
++    attrs = _adapted_fields(target)
++    req_keys = _required_keys(target)
+ 
+     mapping = {}
+     if is_generic(cl):
+@@ -77,19 +73,12 @@ def make_dict_unstructure_fn(
+         if origin is not None:
+             cl = origin
+ 
+-    cl_name = cl.__name__
+-    fn_name = "unstructure_typeddict_" + cl_name
+-    globs = {}
+-    lines = []
+-    internal_arg_parts = {}
+-
+     # We keep track of what we're generating to help with recursive
+     # class graphs.
+     try:
+         working_set = already_generating.working_set
+     except AttributeError:
+-        working_set = set()
+-        already_generating.working_set = working_set
++        already_generating.working_set = working_set = set()
+     if cl in working_set:
+         raise RecursionError()
+     working_set.add(cl)
+@@ -139,6 +128,11 @@ def make_dict_unstructure_fn(
+             # We've not broken the loop.
+             return identity
+ 
++        generator = _DictHookGenerator(
++            cl, "unstructure", _cattrs_use_linecache, None, "unstructure_typeddict"
++        )
++        lines = ["  res = instance.copy()"]
++
+         for ix, a in enumerate(attrs):
+             attr_name = a.name
+             t = a.type
+@@ -190,8 +184,7 @@ def make_dict_unstructure_fn(
+ 
+             if not is_identity:
+                 unstruct_handler_name = f"__c_unstr_{ix}"
+-                globs[unstruct_handler_name] = handler
+-                internal_arg_parts[unstruct_handler_name] = handler
++                generator.add_binding(unstruct_handler_name, handler)
+                 invoke = f"{unstruct_handler_name}(instance[{attr_name!r}])"
+             elif override.rename is None:
+                 # We're not doing anything to this attribute, so
+@@ -207,28 +200,8 @@ def make_dict_unstructure_fn(
+             else:
+                 lines.append(f"  if {attr_name!r} in instance: res[{kn!r}] = {invoke}")
+ 
+-        internal_arg_line = ", ".join([f"{i}={i}" for i in internal_arg_parts])
+-        if internal_arg_line:
+-            internal_arg_line = f", {internal_arg_line}"
+-        for k, v in internal_arg_parts.items():
+-            globs[k] = v
+-
+-        total_lines = [
+-            f"def {fn_name}(instance{internal_arg_line}):",
+-            "  res = instance.copy()",
+-            *lines,
+-            "  return res",
+-        ]
+-        script = "\n".join(total_lines)
+-
+-        fname = generate_unique_filename(
+-            cl, "unstructure", lines=total_lines if _cattrs_use_linecache else []
+-        )
+-
+-        eval(compile(script, fname, "exec"), globs)
+-
+-        res = globs[fn_name]
+-        res.overrides = kwargs
++        lines.append("  return res")
++        res = generator.compile(lines, "instance", kwargs)
+     finally:
+         working_set.remove(cl)
+         if not working_set:
+@@ -277,28 +250,9 @@ def make_dict_structure_fn(
+             mapping = generate_mapping(base, mapping)
+             break
+ 
+-    cl_name = cl.__name__
+-    fn_name = "structure_" + cl_name
+-
+-    # We have generic parameters and need to generate a unique name for the function
+-    for p in getattr(cl, "__parameters__", ()):
+-        try:
+-            name_base = mapping[p.__name__]
+-        except KeyError:
+-            pn = p.__name__
+-            raise StructureHandlerNotFoundError(
+-                f"Missing type for generic argument {pn}, specify it when structuring.",
+-                p,
+-            ) from None
+-        name = getattr(name_base, "__name__", None) or str(name_base)
+-        # `<>` can be present in lambdas
+-        # `|` can be present in unions
+-        name = re.sub(r"[\[\.\] ,<>]", "_", name)
+-        name = re.sub(r"\|", "u", name)
+-        fn_name += f"_{name}"
+-
+-    internal_arg_parts = {"__cl": cl}
+-    globs = {}
++    generator = _DictHookGenerator(cl, "structure", _cattrs_use_linecache, mapping)
++    generator.ensure_cl()
++
+     lines = []
+     post_lines = []
+ 
+@@ -312,26 +266,14 @@ def make_dict_structure_fn(
+     if _cattrs_detailed_validation == "from_converter":
+         _cattrs_detailed_validation = converter.detailed_validation
+ 
+-    if _cattrs_forbid_extra_keys:
+-        globs["__c_a"] = allowed_fields
+-        globs["__c_feke"] = ForbiddenExtraKeysError
+-
+     if _cattrs_detailed_validation:
+         # When running under detailed validation, be extra careful about the
+         # input type so that the correct error is raised if the input isn't a dict.
+-        internal_arg_parts["__c_mapping"] = Mapping
+-        lines.append("  if not isinstance(o, __c_mapping):")
+-        te = "TypeError(f'expected a mapping, not {o.__class__.__name__}')"
+-        lines.append(
+-            f"    raise __c_cve('While structuring ' + {cl.__name__!r}, [{te}], __cl)"
+-        )
+-
+-    lines.append("  res = o.copy()")
+-
+-    if _cattrs_detailed_validation:
++        generator.add_non_mapping_check(lines)
++        lines.append("  res = o.copy()")
+         lines.append("  errors = []")
+-        internal_arg_parts["__c_cve"] = ClassValidationError
+-        internal_arg_parts["__c_avn"] = AttributeValidationNote
++        generator.ensure_cve()
++        generator.ensure_avn()
+         for ix, a in enumerate(attrs):
+             an = a.name
+             attr_required = an in req_keys
+@@ -367,7 +309,7 @@ def make_dict_structure_fn(
+                 handler = find_structure_handler(a, t, converter)
+ 
+             struct_handler_name = f"__c_structure_{ix}"
+-            internal_arg_parts[struct_handler_name] = handler
++            generator.add_binding(struct_handler_name, handler)
+ 
+             kn = an if override.rename is None else override.rename
+             allowed_fields.add(kn)
+@@ -375,40 +317,37 @@ def make_dict_structure_fn(
+             if not attr_required:
+                 lines.append(f"{i}if {kn!r} in o:")
+                 i = f"{i}  "
+-            lines.append(f"{i}try:")
+-            i = f"{i}  "
+ 
+             tn = f"__c_type_{ix}"
+-            internal_arg_parts[tn] = t
++            generator.add_binding(tn, t)
+ 
++            body = []
+             if handler == converter._structure_call:
+-                internal_arg_parts[struct_handler_name] = t
+-                lines.append(f"{i}res[{an!r}] = {struct_handler_name}(o[{kn!r}])")
++                generator.add_binding(struct_handler_name, t)
++                body.append(f"res[{an!r}] = {struct_handler_name}(o[{kn!r}])")
+             else:
+-                lines.append(f"{i}res[{an!r}] = {struct_handler_name}(o[{kn!r}], {tn})")
++                body.append(f"res[{an!r}] = {struct_handler_name}(o[{kn!r}], {tn})")
+             if override.rename is not None:
+-                lines.append(f"{i}del res[{kn!r}]")
+-            i = i[:-2]
+-            lines.append(f"{i}except Exception as e:")
+-            i = f"{i}  "
++                body.append(f"del res[{kn!r}]")
++
+             note = f"Structuring typeddict {cl.__qualname__} @ attribute {an}"
+-            lines.append(
+-                f"{i}e.__notes__ = [*getattr(e, '__notes__', []), "
+-                f"__c_avn({note!r}, {an!r}, {tn})]"
++            lines.extend(
++                generator.wrap_field_try_except(
++                    body, note, an, tn, indent=i, use_unpack=True
++                )
+             )
+-            lines.append(f"{i}errors.append(e)")
+ 
+         if _cattrs_forbid_extra_keys:
+-            post_lines += [
+-                "  unknown_fields = o.keys() - __c_a",
+-                "  if unknown_fields:",
+-                "    errors.append(__c_feke('', __cl, unknown_fields))",
+-            ]
+-
+-        post_lines.append(
+-            f"  if errors: raise __c_cve('While structuring ' + {cl.__name__!r}, errors, __cl)"
+-        )
++            generator.add_extra_keys_check(
++                allowed_fields,
++                "o.keys() - __c_a",
++                detailed=True,
++                target_lines=post_lines,
++            )
++
++        generator.add_errors_check(post_lines)
+     else:
++        lines.append("  res = o.copy()")
+         non_required = []
+ 
+         # The first loop deals with required args.
+@@ -450,13 +389,13 @@ def make_dict_structure_fn(
+             allowed_fields.add(kn)
+ 
+             struct_handler_name = f"__c_structure_{ix}"
+-            internal_arg_parts[struct_handler_name] = handler
++            generator.add_binding(struct_handler_name, handler)
+             if handler == converter._structure_call:
+-                internal_arg_parts[struct_handler_name] = t
++                generator.add_binding(struct_handler_name, t)
+                 invocation_line = f"  res[{an!r}] = {struct_handler_name}(o[{kn!r}])"
+             else:
+                 tn = f"__c_type_{ix}"
+-                internal_arg_parts[tn] = t
++                generator.add_binding(tn, t)
+                 invocation_line = (
+                     f"  res[{an!r}] = {struct_handler_name}(o[{kn!r}], {tn})"
+                 )
+@@ -495,20 +434,20 @@ def make_dict_structure_fn(
+                     handler = converter.get_structure_hook(t)
+ 
+                 struct_handler_name = f"__c_structure_{ix}"
+-                internal_arg_parts[struct_handler_name] = handler
++                generator.add_binding(struct_handler_name, handler)
+ 
+                 ian = an
+                 kn = an if override.rename is None else override.rename
+                 allowed_fields.add(kn)
+                 post_lines.append(f"  if {kn!r} in o:")
+                 if handler == converter._structure_call:
+-                    internal_arg_parts[struct_handler_name] = t
++                    generator.add_binding(struct_handler_name, t)
+                     post_lines.append(
+                         f"    res[{ian!r}] = {struct_handler_name}(o[{kn!r}])"
+                     )
+                 else:
+                     tn = f"__c_type_{ix}"
+-                    internal_arg_parts[tn] = t
++                    generator.add_binding(tn, t)
+                     post_lines.append(
+                         f"    res[{ian!r}] = {struct_handler_name}(o[{kn!r}], {tn})"
+                     )
+@@ -516,33 +455,15 @@ def make_dict_structure_fn(
+                     lines.append(f"  res.pop({override.rename!r}, None)")
+ 
+         if _cattrs_forbid_extra_keys:
+-            post_lines += [
+-                "  unknown_fields = o.keys() - __c_a",
+-                "  if unknown_fields:",
+-                "    raise __c_feke('', __cl, unknown_fields)",
+-            ]
+-
+-    # At the end, we create the function header.
+-    internal_arg_line = ", ".join([f"{i}={i}" for i in internal_arg_parts])
+-    for k, v in internal_arg_parts.items():
+-        globs[k] = v
+-
+-    total_lines = [
+-        f"def {fn_name}(o, _, {internal_arg_line}):",
+-        *lines,
+-        *post_lines,
+-        "  return res",
+-    ]
+-
+-    script = "\n".join(total_lines)
+-    fname = generate_unique_filename(
+-        cl, "structure", lines=total_lines if _cattrs_use_linecache else []
+-    )
++            generator.add_extra_keys_check(
++                allowed_fields,
++                "o.keys() - __c_a",
++                detailed=False,
++                target_lines=post_lines,
++            )
+ 
+-    eval(compile(script, fname, "exec"), globs)
+-    res = globs[fn_name]
+-    res.overrides = kwargs
+-    return res
++    total_lines = [*lines, *post_lines, "  return res"]
++    return generator.compile(total_lines, "o, _", kwargs)
+ 
+ 
+ def _adapted_fields(cls: Any) -> list[Attribute]:
+diff --git a/tests/test_gen.py b/tests/test_gen.py
+index 929a7923b355a4b8346cc9a07416d5cc80830e62..482fe0d2a0ec90746b773705bed536ec6c864515 100644
+--- a/tests/test_gen.py
++++ b/tests/test_gen.py
+@@ -2,11 +2,23 @@
+ 
+ import linecache
+ from traceback import format_exc
++from typing import Annotated
+ 
+-from attrs import define
++from attrs import define, field, fields
++from typing_extensions import TypedDict
+ 
+ from cattrs import Converter
+-from cattrs.gen import make_dict_structure_fn, make_dict_unstructure_fn
++from cattrs.gen import (
++    make_dict_structure_fn,
++    make_dict_structure_fn_from_attrs,
++    make_dict_unstructure_fn,
++    make_dict_unstructure_fn_from_attrs,
++    override,
++)
++from cattrs.gen.typeddicts import make_dict_structure_fn as td_make_dict_structure_fn
++from cattrs.gen.typeddicts import (
++    make_dict_unstructure_fn as td_make_dict_unstructure_fn,
++)
+ 
+ 
+ def test_structure_linecache():
+@@ -92,3 +104,350 @@ def test_linecache_dedup():
+     c.structure(c.unstructure(LinecacheA(1)), LinecacheA)
+ 
+     assert len(linecache.cache) == after
++
++
++def test_typeddict_linecache():
++    """Linecaching for TypedDict structure and unstructure."""
++
++    class TDLinecache(TypedDict):
++        x: int
++        y: str
++
++    c = Converter()
++    before = len(linecache.cache)
++
++    # Disabled linecache does not add entries
++    td_make_dict_unstructure_fn(
++        TDLinecache, c, x=override(rename="xx"), _cattrs_use_linecache=False
++    )
++    td_make_dict_structure_fn(TDLinecache, c, _cattrs_use_linecache=False)
++    assert len(linecache.cache) == before
++
++    # Enabled linecache adds entries
++    td_make_dict_unstructure_fn(
++        TDLinecache, c, x=override(rename="xx"), _cattrs_use_linecache=True
++    )
++    fn_s = td_make_dict_structure_fn(TDLinecache, c, _cattrs_use_linecache=True)
++    assert len(linecache.cache) == before + 2
++
++    # Dedup: same source doesn't add new entries
++    td_make_dict_unstructure_fn(
++        TDLinecache, c, x=override(rename="xx"), _cattrs_use_linecache=True
++    )
++    td_make_dict_structure_fn(TDLinecache, c, _cattrs_use_linecache=True)
++    assert len(linecache.cache) == before + 2
++
++    # Traceback formatting finds source
++    try:
++        fn_s({"x": "not_an_int", "y": "ok"}, TDLinecache)
++    except Exception:
++        tb = format_exc()
++        assert "structure_TDLinecache" in tb
++
++
++def test_from_attrs_linecache():
++    """Linecaching for _from_attrs factories."""
++
++    @define
++    class FromAttrsLC:
++        val: int
++
++    c = Converter()
++    attrs = list(fields(FromAttrsLC))
++    before = len(linecache.cache)
++
++    # Disabled linecache
++    make_dict_unstructure_fn_from_attrs(
++        attrs, FromAttrsLC, c, _cattrs_use_linecache=False
++    )
++    make_dict_structure_fn_from_attrs(
++        attrs, FromAttrsLC, c, _cattrs_use_linecache=False
++    )
++    assert len(linecache.cache) == before
++
++    # Enabled linecache
++    make_dict_unstructure_fn_from_attrs(
++        attrs, FromAttrsLC, c, _cattrs_use_linecache=True
++    )
++    make_dict_structure_fn_from_attrs(attrs, FromAttrsLC, c, _cattrs_use_linecache=True)
++    assert len(linecache.cache) == before + 2
++
++
++def test_linecache_collision_suffixes():
++    """Different source code for the same class receives a -2 suffix and both are in linecache."""
++
++    @define
++    class CollisionClass:
++        a: int
++
++    class TDCollision(TypedDict):
++        a: int
++
++    c = Converter(detailed_validation=False)
++
++    # 1. attrs structure collision
++    fn1 = make_dict_structure_fn(CollisionClass, c, _cattrs_use_linecache=True)
++    fn2 = make_dict_structure_fn(
++        CollisionClass, c, a=override(rename="custom_a"), _cattrs_use_linecache=True
++    )
++    assert fn1.__code__.co_filename in linecache.cache
++    assert fn2.__code__.co_filename in linecache.cache
++    assert fn2.__code__.co_filename.endswith("-2>")
++    assert fn1.__code__.co_filename != fn2.__code__.co_filename
++
++    # 2. attrs unstructure collision
++    u1 = make_dict_unstructure_fn(CollisionClass, c, _cattrs_use_linecache=True)
++    u2 = make_dict_unstructure_fn(
++        CollisionClass, c, a=override(rename="custom_a"), _cattrs_use_linecache=True
++    )
++    assert u1.__code__.co_filename in linecache.cache
++    assert u2.__code__.co_filename in linecache.cache
++    assert u2.__code__.co_filename.endswith("-2>")
++    assert u1.__code__.co_filename != u2.__code__.co_filename
++
++    # 3. TypedDict structure collision
++    td_s1 = td_make_dict_structure_fn(TDCollision, c, _cattrs_use_linecache=True)
++    td_s2 = td_make_dict_structure_fn(
++        TDCollision, c, a=override(rename="custom_a"), _cattrs_use_linecache=True
++    )
++    assert td_s1.__code__.co_filename in linecache.cache
++    assert td_s2.__code__.co_filename in linecache.cache
++    assert td_s2.__code__.co_filename.endswith("-2>")
++    assert td_s1.__code__.co_filename != td_s2.__code__.co_filename
++
++    # 4. TypedDict unstructure collision
++    td_u1 = td_make_dict_unstructure_fn(
++        TDCollision, c, a=override(rename="aa"), _cattrs_use_linecache=True
++    )
++    td_u2 = td_make_dict_unstructure_fn(
++        TDCollision, c, a=override(rename="bb"), _cattrs_use_linecache=True
++    )
++    assert td_u1.__code__.co_filename in linecache.cache
++    assert td_u2.__code__.co_filename in linecache.cache
++    assert td_u2.__code__.co_filename.endswith("-2>")
++    assert td_u1.__code__.co_filename != td_u2.__code__.co_filename
++
++
++def test_traceback_source_lookup():
++    """Traceback lookup finds actual cached source code lines when enabled and not when disabled."""
++
++    @define
++    class AttrsTBSourceEnabled:
++        val: int
++
++    @define
++    class AttrsTBSourceDisabled:
++        val: int
++
++    class TDTBSourceEnabled(TypedDict):
++        val: int
++
++    class TDTBSourceDisabled(TypedDict):
++        val: int
++
++    c = Converter(detailed_validation=False)
++
++    # When linecache is enabled, linecache has the source line
++    fn_en = make_dict_structure_fn(AttrsTBSourceEnabled, c, _cattrs_use_linecache=True)
++    assert linecache.getline(fn_en.__code__.co_filename, 1).startswith("def structure_")
++    try:
++        fn_en({"val": "not_an_int"}, AttrsTBSourceEnabled)
++    except ValueError:
++        tb = format_exc()
++        assert "__c_structure_val" in tb
++
++    # When linecache is disabled on a fresh class, linecache does not have the source
++    fn_dis = make_dict_structure_fn(
++        AttrsTBSourceDisabled, c, _cattrs_use_linecache=False
++    )
++    assert linecache.getline(fn_dis.__code__.co_filename, 1) == ""
++    try:
++        fn_dis({"val": "not_an_int"}, AttrsTBSourceDisabled)
++    except ValueError:
++        tb = format_exc()
++        assert "__c_structure_val" not in tb
++
++    # TypedDict enabled
++    td_fn_en = td_make_dict_structure_fn(
++        TDTBSourceEnabled, c, _cattrs_use_linecache=True
++    )
++    assert linecache.getline(td_fn_en.__code__.co_filename, 1).startswith(
++        "def structure_"
++    )
++    try:
++        td_fn_en({"val": "not_an_int"}, TDTBSourceEnabled)
++    except ValueError:
++        tb = format_exc()
++        assert "__c_structure_0" in tb
++
++    # TypedDict disabled
++    td_fn_dis = td_make_dict_structure_fn(
++        TDTBSourceDisabled, c, _cattrs_use_linecache=False
++    )
++    assert linecache.getline(td_fn_dis.__code__.co_filename, 1) == ""
++    try:
++        td_fn_dis({"val": "not_an_int"}, TDTBSourceDisabled)
++    except ValueError:
++        tb = format_exc()
++        assert "__c_structure_0" not in tb
++
++
++def test_from_attrs_collision_and_traceback():
++    """_from_attrs collision handling and traceback source lookup."""
++
++    @define
++    class FromAttrsCol:
++        val: int
++
++    c = Converter(detailed_validation=False)
++    attrs = list(fields(FromAttrsCol))
++
++    # 1. Structure collision
++    s1 = make_dict_structure_fn_from_attrs(
++        attrs, FromAttrsCol, c, _cattrs_use_linecache=True
++    )
++    s2 = make_dict_structure_fn_from_attrs(
++        attrs,
++        FromAttrsCol,
++        c,
++        val=override(rename="custom_val"),
++        _cattrs_use_linecache=True,
++    )
++    assert s1.__code__.co_filename in linecache.cache
++    assert s2.__code__.co_filename in linecache.cache
++    assert s2.__code__.co_filename.endswith("-2>")
++    assert s1.__code__.co_filename != s2.__code__.co_filename
++
++    # 2. Unstructure collision
++    u1 = make_dict_unstructure_fn_from_attrs(
++        attrs, FromAttrsCol, c, _cattrs_use_linecache=True
++    )
++    u2 = make_dict_unstructure_fn_from_attrs(
++        attrs,
++        FromAttrsCol,
++        c,
++        val=override(rename="custom_val"),
++        _cattrs_use_linecache=True,
++    )
++    assert u1.__code__.co_filename in linecache.cache
++    assert u2.__code__.co_filename in linecache.cache
++    assert u2.__code__.co_filename.endswith("-2>")
++    assert u1.__code__.co_filename != u2.__code__.co_filename
++
++    # 3. Traceback source lookup with _from_attrs (enabled vs disabled)
++    @define
++    class FromAttrsTBEn:
++        val: int
++
++    @define
++    class FromAttrsTBDis:
++        val: int
++
++    fn_en = make_dict_structure_fn_from_attrs(
++        list(fields(FromAttrsTBEn)), FromAttrsTBEn, c, _cattrs_use_linecache=True
++    )
++    assert linecache.getline(fn_en.__code__.co_filename, 1).startswith("def structure_")
++    try:
++        fn_en({"val": "bad"}, FromAttrsTBEn)
++    except ValueError:
++        tb = format_exc()
++        assert "__c_structure_val" in tb
++
++    fn_dis = make_dict_structure_fn_from_attrs(
++        list(fields(FromAttrsTBDis)), FromAttrsTBDis, c, _cattrs_use_linecache=False
++    )
++    assert linecache.getline(fn_dis.__code__.co_filename, 1) == ""
++    try:
++        fn_dis({"val": "bad"}, FromAttrsTBDis)
++    except ValueError:
++        tb = format_exc()
++        assert "__c_structure_val" not in tb
++
++
++def test_overrides_regeneration_and_isolation():
++    """All four dynamic paths support regeneration using hook.overrides, and metadata is isolated."""
++
++    @define
++    class AttrsItem:
++        val: int
++        name: str
++
++    class TDItem(TypedDict):
++        val: int
++        name: str
++
++    c = Converter()
++
++    # 1. Attrs unstructure
++    u_at1 = make_dict_unstructure_fn(
++        AttrsItem, c, val=override(rename="v"), name=override(omit=True)
++    )
++    assert u_at1.overrides["val"].rename == "v"
++    assert u_at1.overrides["name"].omit is True
++    u_at2 = make_dict_unstructure_fn(AttrsItem, c, **u_at1.overrides)
++    assert u_at2.overrides == u_at1.overrides
++    assert u_at2(AttrsItem(10, "test")) == u_at1(AttrsItem(10, "test")) == {"v": 10}
++
++    # 2. Attrs structure
++    s_at1 = make_dict_structure_fn(AttrsItem, c, val=override(rename="v"))
++    assert s_at1.overrides["val"].rename == "v"
++    s_at2 = make_dict_structure_fn(AttrsItem, c, **s_at1.overrides)
++    assert s_at2.overrides == s_at1.overrides
++    assert (
++        s_at2({"v": 10, "name": "test"}, AttrsItem)
++        == s_at1({"v": 10, "name": "test"}, AttrsItem)
++        == AttrsItem(10, "test")
++    )
++
++    # 3. TypedDict unstructure (dynamic path with rename/non-identity)
++    u_td1 = td_make_dict_unstructure_fn(
++        TDItem, c, val=override(rename="v"), name=override(omit=True)
++    )
++    assert u_td1.overrides["val"].rename == "v"
++    assert u_td1.overrides["name"].omit is True
++    u_td2 = td_make_dict_unstructure_fn(TDItem, c, **u_td1.overrides)
++    assert u_td2.overrides == u_td1.overrides
++    assert (
++        u_td2({"val": 10, "name": "test"})
++        == u_td1({"val": 10, "name": "test"})
++        == {"v": 10}
++    )
++
++    # 4. TypedDict structure
++    s_td1 = td_make_dict_structure_fn(TDItem, c, val=override(rename="v"))
++    assert s_td1.overrides["val"].rename == "v"
++    s_td2 = td_make_dict_structure_fn(TDItem, c, **s_td1.overrides)
++    assert s_td2.overrides == s_td1.overrides
++    assert (
++        s_td2({"v": 10, "name": "test"}, TDItem)
++        == s_td1({"v": 10, "name": "test"}, TDItem)
++        == {"val": 10, "name": "test"}
++    )
++
++    # Annotated override and attrs alias implicit rename included in overrides and reusable for regeneration
++    @define
++    class AttrsAliasAnnotated:
++        my_field: Annotated[int, override(rename="annotated_name")]
++        aliased: int = field(alias="custom_alias")
++
++    u_alias = make_dict_unstructure_fn(AttrsAliasAnnotated, c, _cattrs_use_alias=True)
++    assert u_alias.overrides["my_field"].rename == "annotated_name"
++    assert u_alias.overrides["aliased"].rename == "custom_alias"
++    u_alias_regen = make_dict_unstructure_fn(
++        AttrsAliasAnnotated, c, _cattrs_use_alias=True, **u_alias.overrides
++    )
++    assert u_alias_regen.overrides == u_alias.overrides
++    assert (
++        u_alias_regen(AttrsAliasAnnotated(1, 2))
++        == u_alias(AttrsAliasAnnotated(1, 2))
++        == {"annotated_name": 1, "custom_alias": 2}
++    )
++
++    # Metadata isolation between different hooks
++    s_other = td_make_dict_structure_fn(TDItem, c, val=override(rename="different"))
++    assert s_td1.overrides["val"].rename == "v"
++    assert s_other.overrides["val"].rename == "different"
++    assert s_td1.overrides is not s_other.overrides
++    # Modifying one dict doesn't taint the other
++    s_other.overrides["val"] = override(rename="mutated")
++    assert s_td1.overrides["val"].rename == "v"
+diff --git a/tests/test_gen_dict.py b/tests/test_gen_dict.py
+index 5e9e8f0be95a441b09e7efd8d4ff9d0e9f235c21..4c0b289f5280e4cb588a955de6df1430958d5674 100644
+--- a/tests/test_gen_dict.py
++++ b/tests/test_gen_dict.py
+@@ -1,7 +1,8 @@
+ """Tests for generated dict functions."""
+ 
++import inspect
+ from math import ceil
+-from typing import Annotated, Dict, Literal, Type, Union
++from typing import Annotated, Dict, Generic, Literal, Type, TypeVar, Union
+ 
+ import pytest
+ from attrs import NOTHING, Factory, define, field, frozen
+@@ -11,7 +12,13 @@ from hypothesis.strategies import data, just, one_of, sampled_from
+ from cattrs import BaseConverter, Converter
+ from cattrs._compat import adapted_fields, fields
+ from cattrs.errors import ClassValidationError, ForbiddenExtraKeysError
+-from cattrs.gen import make_dict_structure_fn, make_dict_unstructure_fn, override
++from cattrs.gen import (
++    make_dict_structure_fn,
++    make_dict_structure_fn_from_attrs,
++    make_dict_unstructure_fn,
++    make_dict_unstructure_fn_from_attrs,
++    override,
++)
+ 
+ from .helpers import assert_only_unstructured
+ from .typed import nested_typed_classes, simple_typed_classes, simple_typed_dataclasses
+@@ -718,3 +725,164 @@ def test_fields_exception():
+     """fields() raises on a non-attrs, non-dataclass class."""
+     with pytest.raises(Exception):  # noqa: B017
+         fields(int)
++
++
++T_tvm = TypeVar("T_tvm")
++
++
++@define
++class ATvm(Generic[T_tvm]):
++    a: T_tvm
++
++
++def test_typevar_map_none():
++    """Explicit typevar_map with None value works in both detailed_validation modes."""
++    for detailed in (True, False):
++        c = Converter(detailed_validation=detailed)
++        fn = make_dict_structure_fn_from_attrs(
++            fields(ATvm), ATvm, c, typevar_map={"T_tvm": None}
++        )
++        res = fn({"a": 1})
++        assert res == ATvm(a=1)
++
++
++def test_static_default_converter_evaluation_count():
++    """Static default attribute converters are evaluated at generation time for omit-if-default."""
++    calls = []
++
++    def conv(val):
++        calls.append(val)
++        return val * 2
++
++    @define
++    class C:
++        a: int = field(default=5, converter=conv)
++
++    conv_instance = BaseConverter()
++    assert calls == []
++
++    # Generating the unstructure hook evaluates conv(d); the count is not part of the contract
++    fn = make_dict_unstructure_fn(C, conv_instance, _cattrs_omit_if_default=True)
++    generation = list(calls)
++    assert generation and set(generation) == {5}
++
++    # Calling the unstructure hook does not re-evaluate the static default converter
++    inst = C()
++    assert calls == generation + [5]  # attrs __init__ called conv once
++    assert inst.a == 10
++    # Converted default matches, omitted
++    assert fn(inst) == {}
++    assert calls == generation + [5]
++
++    # Non-default value is unstructured and included
++    inst2 = C(a=3)
++    assert inst2.a == 6
++    assert fn(inst2) == {"a": 6}
++
++    # Per-attribute override also evaluates conv(d) during hook generation
++    calls.clear()
++    fn2 = make_dict_unstructure_fn(C, conv_instance, a=override(omit_if_default=True))
++    assert calls and set(calls) == {5}
++    assert fn2(inst) == {}
++
++
++def test_static_default_converter_raising_exception():
++    """Static default attribute converters raising during unstructure hook generation propagate immediately."""
++
++    class CustomConverterError(Exception):
++        pass
++
++    def bad_conv(val):
++        raise CustomConverterError("converter error during default conversion")
++
++    @define
++    class C:
++        a: int = field(default=1, converter=bad_conv)
++
++    conv_instance = BaseConverter()
++    with pytest.raises(
++        CustomConverterError, match="converter error during default conversion"
++    ):
++        make_dict_unstructure_fn(C, conv_instance, _cattrs_omit_if_default=True)
++
++
++def test_from_attrs_signatures_and_defaults():
++    """Signatures, parameter names, orders, and defaults of _from_attrs factories."""
++    sig_u = inspect.signature(make_dict_unstructure_fn_from_attrs)
++    params_u = list(sig_u.parameters.values())
++    assert [p.name for p in params_u[:8]] == [
++        "attrs",
++        "cl",
++        "converter",
++        "typevar_map",
++        "_cattrs_omit_if_default",
++        "_cattrs_use_linecache",
++        "_cattrs_use_alias",
++        "_cattrs_include_init_false",
++    ]
++    assert params_u[3].default == {}
++    assert params_u[4].default is False
++    assert params_u[5].default is True
++    assert params_u[6].default == "from_converter"
++    assert params_u[7].default is False
++    assert params_u[8].kind == inspect.Parameter.VAR_KEYWORD
++
++    sig_s = inspect.signature(make_dict_structure_fn_from_attrs)
++    params_s = list(sig_s.parameters.values())
++    assert [p.name for p in params_s[:10]] == [
++        "attrs",
++        "cl",
++        "converter",
++        "typevar_map",
++        "_cattrs_forbid_extra_keys",
++        "_cattrs_use_linecache",
++        "_cattrs_prefer_attrib_converters",
++        "_cattrs_detailed_validation",
++        "_cattrs_use_alias",
++        "_cattrs_include_init_false",
++    ]
++    assert params_s[3].default == {}
++    assert params_s[4].default == "from_converter"
++    assert params_s[5].default is True
++    assert params_s[6].default == "from_converter"
++    assert params_s[7].default == "from_converter"
++    assert params_s[8].default == "from_converter"
++    assert params_s[9].default is False
++    assert params_s[10].kind == inspect.Parameter.VAR_KEYWORD
++
++
++def test_from_attrs_custom_attrs_list_and_typevar_map_immutability():
++    """_from_attrs factories respect custom attrs lists and do not mutate caller's typevar_map."""
++
++    @define
++    class MultiAttrs:
++        x: int = 1
++        y: str = "hello"
++        z: float = 3.14
++
++    c = Converter()
++    all_f = fields(MultiAttrs)
++    # Custom subset of fields in non-default order
++    custom_attrs = [all_f.z, all_f.x]
++
++    # Custom unstructure only unstructures the provided attrs
++    u_fn = make_dict_unstructure_fn_from_attrs(custom_attrs, MultiAttrs, c)
++    assert u_fn(MultiAttrs(x=10, y="world", z=9.5)) == {"z": 9.5, "x": 10}
++
++    # Custom structure only structures into the provided attrs, leaving other defaults intact
++    s_fn = make_dict_structure_fn_from_attrs(custom_attrs, MultiAttrs, c)
++    assert s_fn({"z": 7.5, "x": 42, "y": "ignored"}) == MultiAttrs(
++        x=42, y="hello", z=7.5
++    )
++
++    # typevar_map immutability and unstructure generic handling
++    tvm = {"T_tvm": int}
++    tvm_copy = dict(tvm)
++
++    u_gen = make_dict_unstructure_fn_from_attrs(fields(ATvm), ATvm, c, typevar_map=tvm)
++    assert tvm == tvm_copy
++    assert u_gen(ATvm(a=99)) == {"a": 99}
++
++    s_gen = make_dict_structure_fn_from_attrs(fields(ATvm), ATvm, c, typevar_map=tvm)
++    assert tvm == tvm_copy
++    assert s_gen({"a": "99"}) == ATvm(a=99)
+diff --git a/tests/test_recursive.py b/tests/test_recursive.py
+index 119f866bcbcb4722548cca241536bdea4a15113d..4349cf05f52da88f7c22f65cfea2ce3f5aa46028 100644
+--- a/tests/test_recursive.py
++++ b/tests/test_recursive.py
+@@ -2,11 +2,26 @@
+ 
+ from __future__ import annotations
+ 
+-from typing import List
++from concurrent.futures import ThreadPoolExecutor
++from typing import Generic, List, TypeVar
+ 
+-from attr import define
++import pytest
++from attr import define, fields
++from typing_extensions import TypedDict
+ 
+ from cattr import Converter
++from cattrs.errors import StructureHandlerNotFoundError
++from cattrs.gen import (
++    make_dict_structure_fn,
++    make_dict_structure_fn_from_attrs,
++    make_dict_unstructure_fn,
++    override,
++)
++from cattrs.gen._consts import already_generating
++from cattrs.gen.typeddicts import make_dict_structure_fn as td_make_dict_structure_fn
++from cattrs.gen.typeddicts import (
++    make_dict_unstructure_fn as td_make_dict_unstructure_fn,
++)
+ 
+ 
+ @define
+@@ -14,6 +29,37 @@ class A:
+     inner: List[A]
+ 
+ 
++T_rec = TypeVar("T_rec")
++
++
++@define
++class GenericRecClass(Generic[T_rec]):
++    val: T_rec
++
++
++class ThreadTD(TypedDict):
++    id: int
++    name: str
++
++
++@define
++class ThreadAttrs:
++    x: int
++
++
++class BadType:
++    pass
++
++
++class TDFail(TypedDict):
++    item: BadType
++
++
++@define
++class AttrsFail:
++    item: BadType
++
++
+ def test_simple_recursive():
+     c = Converter()
+ 
+@@ -23,3 +69,88 @@ def test_simple_recursive():
+     assert unstructured == {"inner": [{"inner": []}]}
+ 
+     assert c.structure(unstructured, A) == orig
++
++
++def test_generation_failure_cleanup_and_retry():
++    """Failed hook generation cleans up already_generating state and retry succeeds."""
++    c = Converter()
++
++    # Missing generic parameter causes failure
++    with pytest.raises(StructureHandlerNotFoundError):
++        make_dict_structure_fn(GenericRecClass, c)
++
++    # State is properly cleaned up
++    assert not hasattr(already_generating, "working_set")
++
++    # Retrying with explicit typevar_map succeeds without recursion error
++    fn = make_dict_structure_fn_from_attrs(
++        fields(GenericRecClass), GenericRecClass, c, typevar_map={"T_rec": int}
++    )
++    res = fn({"val": "42"})
++    assert res.val == 42
++    assert not hasattr(already_generating, "working_set")
++
++
++def test_independent_thread_generation_isolation():
++    """Concurrent hook generation in multiple threads remains isolated and cleans up state."""
++
++    def worker(_):
++        conv = Converter()
++        for _ in range(30):
++            s_td = td_make_dict_structure_fn(ThreadTD, conv)
++            u_td = td_make_dict_unstructure_fn(ThreadTD, conv)
++            s_at = make_dict_structure_fn(ThreadAttrs, conv)
++            u_at = make_dict_unstructure_fn(ThreadAttrs, conv)
++
++            assert s_td({"id": "1", "name": "ok"}, ThreadTD) == {"id": 1, "name": "ok"}
++            assert u_td({"id": 1, "name": "ok"}) == {"id": 1, "name": "ok"}
++            assert s_at({"x": "42"}, ThreadAttrs) == ThreadAttrs(42)
++            assert u_at(ThreadAttrs(42)) == {"x": 42}
++            assert not hasattr(already_generating, "working_set")
++        return True
++
++    with ThreadPoolExecutor(max_workers=8) as ex:
++        results = list(ex.map(worker, range(8)))
++    assert all(results)
++
++
++def test_typeddict_unstructure_failure_cleanup_and_retry():
++    """TypedDict and attrs unstructure hook generation failure cleans up already_generating and retry succeeds."""
++
++    class CustomUnstrError(Exception):
++        pass
++
++    c = Converter()
++    c.register_unstructure_hook_factory(
++        lambda t: t is BadType,
++        lambda _: (_ for _ in ()).throw(
++            CustomUnstrError("unstructure generator failed")
++        ),
++    )
++
++    # 1. TypedDict unstructure hook generation fails
++    with pytest.raises(CustomUnstrError, match="unstructure generator failed"):
++        td_make_dict_unstructure_fn(TDFail, c)
++
++    # Assert already_generating is cleaned up
++    assert not hasattr(already_generating, "working_set")
++
++    # Retrying with a valid override succeeds without recursion error
++    fn = td_make_dict_unstructure_fn(
++        TDFail, c, item=override(unstruct_hook=lambda x: "ok")
++    )
++    assert fn({"item": BadType()}) == {"item": "ok"}
++    assert not hasattr(already_generating, "working_set")
++
++    # 2. Attrs unstructure hook generation fails
++    with pytest.raises(CustomUnstrError, match="unstructure generator failed"):
++        make_dict_unstructure_fn(AttrsFail, c)
++
++    assert not hasattr(already_generating, "working_set")
++
++    # Retrying succeeds
++    fn_at = make_dict_unstructure_fn(
++        AttrsFail, c, item=override(unstruct_hook=lambda x: "ok")
++    )
++    assert fn_at(AttrsFail(BadType())) == {"item": "ok"}
++    assert not hasattr(already_generating, "working_set")
+diff --git a/tests/test_typeddicts.py b/tests/test_typeddicts.py
+index b76da4c9e9f1f44098d0a8e3ede0108e1f6c1343..acc969de25660dc300d77c21c79586c37ff76cb1 100644
+--- a/tests/test_typeddicts.py
++++ b/tests/test_typeddicts.py
+@@ -13,11 +13,14 @@ from typing_extensions import NotRequired, Required
+ from cattrs import BaseConverter, Converter, transform_error
+ from cattrs._compat import ExtensionsTypedDict, get_notrequired_base, is_generic
+ from cattrs.errors import (
++    AttributeValidationNote,
+     ClassValidationError,
+     ForbiddenExtraKeysError,
+     StructureHandlerNotFoundError,
+ )
++from cattrs.fns import identity
+ from cattrs.gen import already_generating, override
++from cattrs.gen._consts import neutral
+ from cattrs.gen._generics import generate_mapping
+ from cattrs.gen.typeddicts import (
+     get_annots,
+@@ -534,3 +537,201 @@ def test_nondict_input():
+     assert transform_error(exc.value) == [
+         "invalid type (expected a mapping, not list) @ $"
+     ]
++
++    # Fast mode (detailed_validation=False) non-mapping input baseline exceptions
++    class SimpleTDNonDict(TypedDict):
++        a: int
++
++    c_fast = Converter(detailed_validation=False)
++    with raises(AttributeError, match="'int' object has no attribute 'copy'"):
++        c_fast.structure(1, SimpleTDNonDict)
++
++    with raises(TypeError, match="list indices must be integers or slices"):
++        c_fast.structure([1], SimpleTDNonDict)
++
++
++def test_typeddict_detailed_validation_notes_and_input_non_mutation():
++    """Detailed validation aggregates errors with notes, and input dict is never mutated."""
++
++    class TDMulti(TypedDict):
++        a: int
++        b: int
++
++    c = Converter(detailed_validation=True, forbid_extra_keys=True)
++    orig_in = {"a": "bad_a", "b": "bad_b", "extra": 1}
++    input_copy = orig_in.copy()
++
++    with raises(ClassValidationError) as exc:
++        c.structure(orig_in, TDMulti)
++
++    # Input dict was not mutated
++    assert orig_in == input_copy
++
++    # Exception message and cl
++    assert exc.value.message == f"While structuring {TDMulti.__name__}"
++    assert str(exc.value).startswith(f"While structuring {TDMulti.__name__}")
++    assert exc.value.cl is TDMulti
++
++    # Errors include both field failures and forbidden extra keys in order
++    errs = exc.value.exceptions
++    assert len(errs) == 3
++
++    # Check field a failure
++    note_a = errs[0].__notes__[0]
++    assert isinstance(note_a, AttributeValidationNote)
++    assert note_a == f"Structuring typeddict {TDMulti.__qualname__} @ attribute a"
++    assert note_a.name == "a"
++    assert note_a.type is int
++
++    # Check field b failure
++    note_b = errs[1].__notes__[0]
++    assert isinstance(note_b, AttributeValidationNote)
++    assert note_b == f"Structuring typeddict {TDMulti.__qualname__} @ attribute b"
++    assert note_b.name == "b"
++    assert note_b.type is int
++
++    # Check forbidden extra keys error
++    assert isinstance(errs[2], ForbiddenExtraKeysError)
++    assert errs[2].cl is TDMulti
++    assert errs[2].extra_fields == {"extra"}
++
++    # Renamed field still reports declared attribute name in note
++    fn_rename = make_dict_structure_fn(
++        TDMulti, c, _cattrs_detailed_validation=True, a=override(rename="custom_a")
++    )
++    with raises(ClassValidationError) as exc_ren:
++        fn_rename({"custom_a": "bad_a", "b": 1}, TDMulti)
++    note_ren = exc_ren.value.exceptions[0].__notes__[0]
++    assert note_ren.name == "a"
++    assert note_ren == f"Structuring typeddict {TDMulti.__qualname__} @ attribute a"
++
++    # Pre-existing notes on field exceptions are preserved
++    def handler_with_note(val, t):
++        err = ValueError("pre-error")
++        err.__notes__ = ["pre-existing custom note"]
++        raise err
++
++    fn_pre = make_dict_structure_fn(
++        TDMulti,
++        c,
++        _cattrs_detailed_validation=True,
++        a=override(struct_hook=handler_with_note),
++    )
++    with raises(ClassValidationError) as exc_pre:
++        fn_pre({"a": "bad", "b": 1}, TDMulti)
++    notes_list = exc_pre.value.exceptions[0].__notes__
++    assert "pre-existing custom note" in notes_list
++    assert any(isinstance(n, AttributeValidationNote) for n in notes_list)
++
++    # Missing required field in detailed validation
++    with raises(ClassValidationError) as exc_req:
++        c.structure({"b": 1}, TDMulti)
++    req_err = exc_req.value.exceptions[0]
++    assert isinstance(req_err, KeyError)
++    assert req_err.__notes__[0].name == "a"
++
++    # Fast mode (detailed_validation=False) field failure propagation without wrapping
++    c_fast = Converter(detailed_validation=False)
++    with raises(ValueError) as exc_fast:
++        c_fast.structure({"a": "bad_a", "b": 1}, TDMulti)
++    assert not isinstance(exc_fast.value, ClassValidationError)
++    assert getattr(exc_fast.value, "__notes__", None) is None or not any(
++        isinstance(n, AttributeValidationNote) for n in exc_fast.value.__notes__
++    )
++
++    with raises(KeyError) as exc_fast_key:
++        c_fast.structure({"b": 1}, TDMulti)
++    assert not isinstance(exc_fast_key.value, ClassValidationError)
++
++
++def test_typeddict_unstructure_identity_and_failure_input_immutability():
++    """Empty TypedDict, neutral overrides, equivalent copy, and unstructure failure input non-mutation."""
++
++    class EmptyTD(TypedDict):
++        pass
++
++    class SimpleTD(TypedDict):
++        a: int
++        b: str
++
++    c = Converter()
++
++    # 1. Empty TypedDict preserves identity
++    empty_fn = make_dict_unstructure_fn(EmptyTD, c)
++    assert empty_fn is identity
++    empty_in = {}
++    assert empty_fn(empty_in) is empty_in
++
++    # 2. Neutral overrides preserve identity when handlers are identity
++    neutral_fn = make_dict_unstructure_fn(SimpleTD, c, a=override(), b=neutral)
++    assert neutral_fn is identity
++    simple_in = {"a": 1, "b": "hello"}
++    assert neutral_fn(simple_in) is simple_in
++
++    # 3. Custom handler returning same value creates a new copy (is not input)
++    copy_fn = make_dict_unstructure_fn(
++        SimpleTD, c, a=override(unstruct_hook=lambda x: x)
++    )
++    assert copy_fn is not identity
++    copy_out = copy_fn(simple_in)
++    assert copy_out == simple_in
++    assert copy_out is not simple_in
++
++    # 4. Handler failure during unstructuring does not mutate caller's input mapping
++    def bad_unstructure(_):
++        raise ValueError("unstructure handler failed")
++
++    fail_fn = make_dict_unstructure_fn(
++        SimpleTD,
++        c,
++        a=override(unstruct_hook=bad_unstructure),
++        b=override(rename="b_new"),
++    )
++    fail_in = {"a": 42, "b": "preserved"}
++    fail_snapshot = dict(fail_in)
++    with raises(ValueError, match="unstructure handler failed"):
++        fail_fn(fail_in)
++    assert fail_in == fail_snapshot
++
++
++def test_typeddict_structure_optional_copy_and_fast_mode():
++    """Structure hook with optional keys in both fast and detailed modes: returns copy, tolerates missing keys, preserves extra keys."""
++
++    class OptTD(TypedDict, total=False):
++        a: int
++        b: str
++        c: int
++
++    for detailed in (False, True):
++        c = Converter(detailed_validation=detailed)
++        fn = make_dict_structure_fn(
++            OptTD,
++            c,
++            _cattrs_detailed_validation=detailed,
++            b=override(rename="renamed_b"),
++            c=override(omit=True),
++        )
++
++        # 1. Missing optional keys: does not raise, does not insert missing keys, returns copy, input unchanged
++        inp1 = {"a": 10, "extra": "allowed"}
++        inp1_snapshot = dict(inp1)
++        res1 = fn(inp1, OptTD)
++        assert res1 is not inp1
++        assert inp1 == inp1_snapshot
++        assert res1["a"] == 10
++        assert "b" not in res1
++        assert "c" not in res1
++        assert "renamed_b" not in res1
++        assert res1["extra"] == "allowed"
++
++        # 2. Present optional keys: renaming moves to declared name; omit skips conversion but keeps extra key if allowed
++        inp2 = {"a": 20, "renamed_b": "b_val", "c": "keep_raw", "extra": 99}
++        inp2_snapshot = dict(inp2)
++        res2 = fn(inp2, OptTD)
++        assert res2 is not inp2
++        assert inp2 == inp2_snapshot
++        assert res2["a"] == 20
++        assert res2["b"] == "b_val"
++        assert "renamed_b" not in res2
++        assert res2["c"] == "keep_raw"
++        assert res2["extra"] == 99

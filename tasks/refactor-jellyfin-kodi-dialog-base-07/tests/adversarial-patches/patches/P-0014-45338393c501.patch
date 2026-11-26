@@ -1,0 +1,1499 @@
+diff --git a/jellyfin_kodi/dialogs/base.py b/jellyfin_kodi/dialogs/base.py
+new file mode 100644
+--- /dev/null
++++ b/jellyfin_kodi/dialogs/base.py
+@@ -0,0 +1,135 @@
++# -*- coding: utf-8 -*-
++
++##################################################################################################
++
++import xbmcgui
++
++##################################################################################################
++
++ACTION_PARENT_DIR = 9
++ACTION_PREVIOUS_MENU = 10
++ACTION_BACK = 92
++ACTION_SELECT_ITEM = 7
++ACTION_MOUSE_LEFT_CLICK = 100
++LIST = 155
++
++##################################################################################################
++
++
++class ConnectionDialog(xbmcgui.WindowXMLDialog):
++
++    error = None
++    _item_type = None
++    _control_bindings = ()
++
++    def __init__(self, *args, **kwargs):
++
++        xbmcgui.WindowXMLDialog.__init__(self, *args, **kwargs)
++
++    def set_args(self, **kwargs):
++
++        for key, value in kwargs.items():
++            setattr(self, key, value)
++
++    def onInit(self):
++
++        self._bind_controls()
++        self._populate_list()
++        self._setup_controls()
++        self._setup_focus()
++
++    def _bind_controls(self):
++
++        for attr, control_id in self._control_bindings:
++            setattr(self, attr, self.getControl(control_id))
++
++    def _populate_list(self):
++
++        pass
++
++    def _setup_controls(self):
++
++        pass
++
++    def _setup_focus(self):
++
++        pass
++
++    @classmethod
++    def _add_listitem(cls, label, item_id, extra=None, server_type=None, art=None):
++
++        item = xbmcgui.ListItem(label)
++        item.setProperty("id", item_id)
++        if server_type is not None:
++            item.setProperty("server_type", server_type)
++        if art is not None:
++            item.setArt(art)
++        if extra is not None:
++            if getattr(cls, "_item_type", None) == "server" or extra in (
++                "wifi",
++                "network",
++            ):
++                item.setProperty("server_type", extra)
++            else:
++                item.setArt({"icon": extra})
++
++        return item
++
++    def _add_editcontrol(self, x, y, height, width, password=False):
++
++        kwargs = dict(
++            label="",
++            font="font13",
++            textColor="FF00A4DC",
++            disabledColor="FF888888",
++            focusTexture="-",
++            noFocusTexture="-",
++        )
++
++        control = xbmcgui.ControlEdit(0, 0, 0, 0, **kwargs)
++        control.setPosition(x, y)
++        control.setHeight(height)
++        control.setWidth(width)
++
++        self.addControl(control)
++
++        # setType has no effect before the control is added to a window
++        if password:
++            control.setType(xbmcgui.INPUT_TYPE_PASSWORD, "Please enter password")
++
++        return control
++
++    def onAction(self, action):
++
++        if action in (ACTION_BACK, ACTION_PREVIOUS_MENU, ACTION_PARENT_DIR):
++            self.close()
++            return
++
++        if (
++            action in (ACTION_SELECT_ITEM, ACTION_MOUSE_LEFT_CLICK)
++            and hasattr(self, "list_")
++            and self.getFocusId() == LIST
++        ):
++            selected = self.list_.getSelectedItem()
++            selected_id = selected.getProperty("id")
++            self._on_select(selected_id)
++
++    def _on_select(self, selected_id):
++
++        pass
++
++    def _message(self, message):
++
++        self.error_msg.setLabel(message)
++        self.error_toggle.setVisibleCondition("true")
++
++    def _error(self, state, message):
++
++        self.error = state
++        self.error_msg.setLabel(message)
++        self.error_toggle.setVisibleCondition("true")
++
++    def _disable_error(self):
++
++        self.error = None
++        self.error_toggle.setVisibleCondition("false")
+diff --git a/jellyfin_kodi/dialogs/loginmanual.py b/jellyfin_kodi/dialogs/loginmanual.py
+--- a/jellyfin_kodi/dialogs/loginmanual.py
++++ b/jellyfin_kodi/dialogs/loginmanual.py
+@@ -2,9 +2,8 @@
+ 
+ ##################################################################################################
+ 
+-import xbmcgui
+-
+-from ..helper import translate, LazyLogger
++from .base import ConnectionDialog
++from ..helper import LazyLogger, translate
+ 
+ ##################################################################################################
+ 
+@@ -12,6 +11,7 @@
+ ACTION_PARENT_DIR = 9
+ ACTION_PREVIOUS_MENU = 10
+ ACTION_BACK = 92
++ACTION_SELECT_ITEM = 7
+ SIGN_IN = 200
+ CANCEL = 201
+ ERROR_TOGGLE = 202
+@@ -21,37 +21,34 @@
+ ##################################################################################################
+ 
+ 
+-class LoginManual(xbmcgui.WindowXMLDialog):
++class LoginManual(ConnectionDialog):
+ 
+     _user = None
+-    error = None
+     username = None
+ 
+-    def __init__(self, *args, **kwargs):
+-        xbmcgui.WindowXMLDialog.__init__(self, *args, **kwargs)
+-
+-    def set_args(self, **kwargs):
+-        # connect_manager, user_image, servers
+-        for key, value in kwargs.items():
+-            setattr(self, key, value)
++    _control_bindings = (
++        ("signin_button", SIGN_IN),
++        ("cancel_button", CANCEL),
++        ("error_toggle", ERROR_TOGGLE),
++        ("error_msg", ERROR_MSG),
++    )
+ 
+     def is_logged_in(self):
++
+         return bool(self._user)
+ 
+     def get_user(self):
++
+         return self._user
+ 
+-    def onInit(self):
++    def _setup_controls(self):
+ 
+-        self.signin_button = self.getControl(SIGN_IN)
+-        self.cancel_button = self.getControl(CANCEL)
+-        self.error_toggle = self.getControl(ERROR_TOGGLE)
+-        self.error_msg = self.getControl(ERROR_MSG)
+         self.user_field = self._add_editcontrol(755, 433, 40, 415)
+         self.password_field = self._add_editcontrol(755, 543, 40, 415, password=True)
+ 
++    def _setup_focus(self):
++
+         if self.username:
+-
+             self.user_field.setText(self.username)
+             self.setFocus(self.password_field)
+         else:
+@@ -89,33 +86,7 @@
+         if self.error == ERROR["Empty"] and self.user_field.getText():
+             self._disable_error()
+ 
+-        if action in (ACTION_BACK, ACTION_PARENT_DIR, ACTION_PREVIOUS_MENU):
+-            self.close()
+-
+-    def _add_editcontrol(self, x, y, height, width, password=False):
+-
+-        kwargs = dict(
+-            label="",
+-            font="font13",
+-            textColor="FF00A4DC",
+-            disabledColor="FF888888",
+-            focusTexture="-",
+-            noFocusTexture="-",
+-        )
+-
+-        control = xbmcgui.ControlEdit(0, 0, 0, 0, **kwargs)
+-
+-        control.setPosition(x, y)
+-        control.setHeight(height)
+-        control.setWidth(width)
+-
+-        self.addControl(control)
+-
+-        # setType has no effect before the control is added to a window
+-        if password:
+-            control.setType(xbmcgui.INPUT_TYPE_PASSWORD, "Please enter password")
+-
+-        return control
++        super(LoginManual, self).onAction(action)
+ 
+     def _login(self, username, password):
+ 
+@@ -130,14 +101,3 @@
+         else:
+             self._user = result
+             return True
+-
+-    def _error(self, state, message):
+-
+-        self.error = state
+-        self.error_msg.setLabel(message)
+-        self.error_toggle.setVisibleCondition("true")
+-
+-    def _disable_error(self):
+-
+-        self.error = None
+-        self.error_toggle.setVisibleCondition("false")
+diff --git a/jellyfin_kodi/dialogs/serverconnect.py b/jellyfin_kodi/dialogs/serverconnect.py
+--- a/jellyfin_kodi/dialogs/serverconnect.py
++++ b/jellyfin_kodi/dialogs/serverconnect.py
+@@ -3,11 +3,10 @@
+ ##################################################################################################
+ 
+ import xbmc
+-import xbmcgui
+ 
+-from ..helper import translate
++from .base import ConnectionDialog
++from ..helper import LazyLogger, translate
+ from ..jellyfin.connection_manager import CONNECTION_STATE
+-from ..helper import LazyLogger
+ 
+ ##################################################################################################
+ 
+@@ -28,8 +27,9 @@
+ ##################################################################################################
+ 
+ 
+-class ServerConnect(xbmcgui.WindowXMLDialog):
++class ServerConnect(ConnectionDialog):
+ 
++    _item_type = "server"
+     user_image = None
+     servers = []
+ 
+@@ -37,30 +37,26 @@
+     _connect_login = False
+     _manual_server = False
+ 
+-    def __init__(self, *args, **kwargs):
+-
+-        xbmcgui.WindowXMLDialog.__init__(self, *args, **kwargs)
+-
+-    def set_args(self, **kwargs):
+-        # connect_manager, user_image, servers
+-        for key, value in kwargs.items():
+-            setattr(self, key, value)
++    _control_bindings = (
++        ("message", MESSAGE),
++        ("message_box", MESSAGE_BOX),
++        ("busy", BUSY),
++        ("list_", LIST),
++    )
+ 
+     def is_server_selected(self):
++
+         return bool(self._selected_server)
+ 
+     def get_server(self):
++
+         return self._selected_server
+ 
+     def is_manual_server(self):
++
+         return self._manual_server
+ 
+-    def onInit(self):
+-
+-        self.message = self.getControl(MESSAGE)
+-        self.message_box = self.getControl(MESSAGE_BOX)
+-        self.busy = self.getControl(BUSY)
+-        self.list_ = self.getControl(LIST)
++    def _populate_list(self):
+ 
+         for server in self.servers:
+             server_type = "wifi" if server.get("ExchangeToken") else "network"
+@@ -71,35 +67,18 @@
+         if self.user_image is not None:
+             self.getControl(USER_IMAGE).setImage(self.user_image)
+ 
++    def _setup_focus(self):
++
+         if self.servers:
+             self.setFocus(self.list_)
+ 
+-    @classmethod
+-    def _add_listitem(cls, label, server_id, server_type):
++    def _on_select(self, selected_id):
+ 
+-        item = xbmcgui.ListItem(label)
+-        item.setProperty("id", server_id)
+-        item.setProperty("server_type", server_type)
++        LOG.info("Server Id selected: %s", selected_id)
+ 
+-        return item
+-
+-    def onAction(self, action):
+-
+-        if action in (ACTION_BACK, ACTION_PREVIOUS_MENU, ACTION_PARENT_DIR):
++        if self._connect_server(selected_id):
++            self.message_box.setVisibleCondition("false")
+             self.close()
+-
+-        if (
+-            action in (ACTION_SELECT_ITEM, ACTION_MOUSE_LEFT_CLICK)
+-            and self.getFocusId() == LIST
+-        ):
+-
+-            server = self.list_.getSelectedItem()
+-            selected_id = server.getProperty("id")
+-            LOG.info("Server Id selected: %s", selected_id)
+-
+-            if self._connect_server(selected_id):
+-                self.message_box.setVisibleCondition("false")
+-                self.close()
+ 
+     def onClick(self, control):
+ 
+@@ -121,7 +100,7 @@
+         result = self.connect_manager.connect_to_server(server)
+ 
+         if result["State"] == CONNECTION_STATE["Unavailable"]:
+-            self.busy.setVisibleCondition("false")
++            self.busy.setVisibleCondition("true")
+ 
+             self.message.setLabel(translate(30609))
+             return False
+diff --git a/jellyfin_kodi/dialogs/servermanual.py b/jellyfin_kodi/dialogs/servermanual.py
+--- a/jellyfin_kodi/dialogs/servermanual.py
++++ b/jellyfin_kodi/dialogs/servermanual.py
+@@ -4,11 +4,9 @@
+ 
+ import re
+ 
+-import xbmcgui
+-
+-from ..helper import translate
++from .base import ConnectionDialog
++from ..helper import LazyLogger, translate
+ from ..jellyfin.connection_manager import CONNECTION_STATE
+-from ..helper import LazyLogger
+ 
+ ##################################################################################################
+ 
+@@ -16,6 +14,7 @@
+ ACTION_PARENT_DIR = 9
+ ACTION_PREVIOUS_MENU = 10
+ ACTION_BACK = 92
++ACTION_SELECT_ITEM = 7
+ CONNECT = 200
+ CANCEL = 201
+ ERROR_TOGGLE = 202
+@@ -25,36 +24,34 @@
+ # https://stackoverflow.com/a/17871737/1035647
+ _IPV6_PATTERN = r"^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$"
+ _IPV6_RE = re.compile(_IPV6_PATTERN)
++
+ ##################################################################################################
+ 
+ 
+-class ServerManual(xbmcgui.WindowXMLDialog):
++class ServerManual(ConnectionDialog):
+ 
+     _server = None
+-    error = None
+ 
+-    def __init__(self, *args, **kwargs):
+-
+-        xbmcgui.WindowXMLDialog.__init__(self, *args, **kwargs)
+-
+-    def set_args(self, **kwargs):
+-        # connect_manager, user_image, servers, jellyfin_connect
+-        for key, value in kwargs.items():
+-            setattr(self, key, value)
++    _control_bindings = (
++        ("connect_button", CONNECT),
++        ("cancel_button", CANCEL),
++        ("error_toggle", ERROR_TOGGLE),
++        ("error_msg", ERROR_MSG),
++    )
+ 
+     def is_connected(self):
++
+         return bool(self._server)
+ 
+     def get_server(self):
++
+         return self._server
+ 
+-    def onInit(self):
++    def _setup_controls(self):
+ 
+-        self.connect_button = self.getControl(CONNECT)
+-        self.cancel_button = self.getControl(CANCEL)
+-        self.error_toggle = self.getControl(ERROR_TOGGLE)
+-        self.error_msg = self.getControl(ERROR_MSG)
+         self.host_field = self._add_editcontrol(755, 490, 40, 415)
++
++    def _setup_focus(self):
+ 
+         self.setFocus(self.host_field)
+ 
+@@ -87,31 +84,10 @@
+         if self.error == ERROR["Empty"] and self.host_field.getText():
+             self._disable_error()
+ 
+-        if action in (ACTION_BACK, ACTION_PARENT_DIR, ACTION_PREVIOUS_MENU):
+-            self.close()
+-
+-    def _add_editcontrol(self, x, y, height, width):
+-
+-        control = xbmcgui.ControlEdit(
+-            0,
+-            0,
+-            0,
+-            0,
+-            label="",
+-            font="font13",
+-            textColor="FF00A4DC",
+-            disabledColor="FF888888",
+-            focusTexture="-",
+-            noFocusTexture="-",
+-        )
+-        control.setPosition(x, y)
+-        control.setHeight(height)
+-        control.setWidth(width)
+-
+-        self.addControl(control)
+-        return control
++        super(ServerManual, self).onAction(action)
+ 
+     def _connect_to_server(self, server):
++
+         if _IPV6_RE.match(server):
+             server = "[%s]" % (server)
+ 
+@@ -124,19 +100,3 @@
+         else:
+             self._server = result["Servers"][0]
+             return True
+-
+-    def _message(self, message):
+-
+-        self.error_msg.setLabel(message)
+-        self.error_toggle.setVisibleCondition("true")
+-
+-    def _error(self, state, message):
+-
+-        self.error = state
+-        self.error_msg.setLabel(message)
+-        self.error_toggle.setVisibleCondition("true")
+-
+-    def _disable_error(self):
+-
+-        self.error = None
+-        self.error_toggle.setVisibleCondition("false")
+diff --git a/jellyfin_kodi/dialogs/usersconnect.py b/jellyfin_kodi/dialogs/usersconnect.py
+--- a/jellyfin_kodi/dialogs/usersconnect.py
++++ b/jellyfin_kodi/dialogs/usersconnect.py
+@@ -2,8 +2,7 @@
+ 
+ ##################################################################################################
+ 
+-import xbmcgui
+-
++from .base import ConnectionDialog
+ from ..helper import LazyLogger
+ 
+ ##################################################################################################
+@@ -22,36 +21,33 @@
+ ##################################################################################################
+ 
+ 
+-class UsersConnect(xbmcgui.WindowXMLDialog):
++class UsersConnect(ConnectionDialog):
+ 
++    _item_type = "user"
+     _user = None
+     _manual_login = False
+     _quick_connect = False
+ 
+-    def __init__(self, *args, **kwargs):
+-
+-        xbmcgui.WindowXMLDialog.__init__(self, *args, **kwargs)
+-
+-    def set_args(self, **kwargs):
+-        # connect_manager, user_image, servers
+-        for key, value in kwargs.items():
+-            setattr(self, key, value)
++    _control_bindings = (("list_", LIST),)
+ 
+     def is_user_selected(self):
++
+         return bool(self._user)
+ 
+     def get_user(self):
++
+         return self._user
+ 
+     def is_manual_login(self):
++
+         return self._manual_login
+ 
+     def is_quick_connect(self):
++
+         return self._quick_connect
+ 
+-    def onInit(self):
++    def _populate_list(self):
+ 
+-        self.list_ = self.getControl(LIST)
+         for user in self.users:
+             user_image = (
+                 "items/logindefault.png"
+@@ -60,36 +56,20 @@
+             )
+             self.list_.addItem(self._add_listitem(user["Name"], user["Id"], user_image))
+ 
++    def _setup_focus(self):
++
+         self.setFocus(self.list_)
+ 
+-    def _add_listitem(self, label, user_id, user_image):
++    def _on_select(self, selected_id):
+ 
+-        item = xbmcgui.ListItem(label)
+-        item.setProperty("id", user_id)
+-        item.setArt({"icon": user_image})
++        LOG.info("User Id selected: %s", selected_id)
+ 
+-        return item
++        for user in self.users:
++            if user["Id"] == selected_id:
++                self._user = user
++                break
+ 
+-    def onAction(self, action):
+-
+-        if action in (ACTION_BACK, ACTION_PREVIOUS_MENU, ACTION_PARENT_DIR):
+-            self.close()
+-
+-        if (
+-            action in (ACTION_SELECT_ITEM, ACTION_MOUSE_LEFT_CLICK)
+-            and self.getFocusId() == LIST
+-        ):
+-
+-            user = self.list_.getSelectedItem()
+-            selected_id = user.getProperty("id")
+-            LOG.info("User Id selected: %s", selected_id)
+-
+-            for user in self.users:
+-                if user["Id"] == selected_id:
+-                    self._user = user
+-                    break
+-
+-            self.close()
++        self.close()
+ 
+     def onClick(self, control):
+ 
+@@ -105,7 +85,7 @@
+             self.close()
+ 
+     def _get_user_artwork(self, user_id, item_type):
+-        # Load user information set by UserClient
++
+         return "%s/Users/%s/Images/%s?Format=original" % (
+             self.server,
+             user_id,
+diff --git a/tests/test_connect_dialogs.py b/tests/test_connect_dialogs.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_connect_dialogs.py
+@@ -0,0 +1,869 @@
++# -*- coding: utf-8 -*-
++
++from unittest.mock import MagicMock
++
++import pytest
++import xbmcgui
++
++from jellyfin_kodi.dialogs import LoginManual, ServerConnect, ServerManual, UsersConnect
++from jellyfin_kodi.dialogs.base import (
++    ACTION_BACK,
++    ACTION_MOUSE_LEFT_CLICK,
++    ACTION_PARENT_DIR,
++    ACTION_PREVIOUS_MENU,
++    ACTION_SELECT_ITEM,
++    ConnectionDialog,
++)
++from jellyfin_kodi.helper import translate
++from jellyfin_kodi.jellyfin.connection_manager import CONNECTION_STATE
++
++
++class DummyControl:
++
++    def __init__(self, control_id=0):
++        self.control_id = control_id
++        self.label = ""
++        self.text = ""
++        self.image = None
++        self.items = []
++        self.visible_conditions = []
++        self.up = None
++        self.down = None
++        self.selected_item = None
++        self.x = 0
++        self.y = 0
++        self.height = 0
++        self.width = 0
++        self.input_type = None
++        self.heading = None
++
++    def setLabel(self, label):
++        self.label = str(label)
++
++    def getLabel(self):
++        return self.label
++
++    def setText(self, text):
++        self.text = str(text)
++
++    def getText(self):
++        return self.text
++
++    def setImage(self, image):
++        self.image = image
++
++    def addItem(self, item):
++        self.items.append(item)
++
++    def getSelectedItem(self):
++        return self.selected_item
++
++    def setVisibleCondition(self, condition, allow_hidden=False):
++        self.visible_conditions.append(condition)
++
++    def controlUp(self, control):
++        self.up = control
++
++    def controlDown(self, control):
++        self.down = control
++
++    def setPosition(self, x, y):
++        self.x = x
++        self.y = y
++
++    def setHeight(self, h):
++        self.height = h
++
++    def setWidth(self, w):
++        self.width = w
++
++    def setType(self, input_type, heading):
++        self.input_type = input_type
++        self.heading = heading
++
++
++class DummyListItem:
++
++    def __init__(self, label="", label2="", path=""):
++        self._label = label
++        self._properties = {}
++        self._art = {}
++
++    def getLabel(self):
++        return self._label
++
++    def setLabel(self, label):
++        self._label = label
++
++    def setProperty(self, key, value):
++        self._properties[key] = str(value)
++
++    def getProperty(self, key):
++        return self._properties.get(key, "")
++
++    def setArt(self, art):
++        self._art.update(art)
++
++    def getArt(self, key=None):
++        if key is not None:
++            return self._art.get(key, "")
++        return self._art
++
++
++@pytest.fixture
++def make_dialog(monkeypatch):
++    monkeypatch.setattr(xbmcgui, "ListItem", DummyListItem)
++    monkeypatch.setattr(xbmcgui, "ControlEdit", lambda *args, **kwargs: DummyControl())
++
++    def _create(dialog_cls):
++        dlg = dialog_cls("fake.xml", "/fake/addon", "default", "1080i")
++        controls = {}
++        added_controls = []
++        state = {"closed": 0, "focus": None, "focus_id": None}
++
++        def fake_get_control(cid):
++            if cid not in controls:
++                controls[cid] = DummyControl(cid)
++            return controls[cid]
++
++        def fake_add_control(ctrl):
++            added_controls.append(ctrl)
++
++        def fake_set_focus(ctrl):
++            state["focus"] = ctrl
++
++        def fake_close():
++            state["closed"] += 1
++
++        def fake_get_focus_id():
++            return state["focus_id"]
++
++        monkeypatch.setattr(dlg, "getControl", fake_get_control)
++        monkeypatch.setattr(dlg, "addControl", fake_add_control)
++        monkeypatch.setattr(dlg, "setFocus", fake_set_focus)
++        monkeypatch.setattr(dlg, "close", fake_close)
++        monkeypatch.setattr(dlg, "getFocusId", fake_get_focus_id)
++
++        return dlg, controls, added_controls, state
++
++    return _create
++
++
++@pytest.mark.parametrize(
++    "cls", [ServerConnect, UsersConnect, ServerManual, LoginManual]
++)
++def test_dialog_exports_and_modal_construction(cls):
++    assert issubclass(cls, ConnectionDialog)
++    assert issubclass(cls, xbmcgui.WindowXMLDialog)
++    dlg = cls("fake.xml", "/fake", "default", "1080i")
++    assert hasattr(dlg, "doModal")
++    dlg.doModal()
++
++
++def test_shared_base_contract():
++    shared_methods = {
++        "set_args",
++        "onInit",
++        "_add_listitem",
++        "_add_editcontrol",
++        "_message",
++        "_error",
++        "_disable_error",
++    }
++    for name in shared_methods:
++        assert hasattr(ConnectionDialog, name)
++
++
++@pytest.mark.parametrize(
++    "cls", [ServerConnect, UsersConnect, ServerManual, LoginManual]
++)
++def test_subclass_dict_no_shared_methods(cls):
++    shared_methods = {
++        "set_args",
++        "onInit",
++        "_add_listitem",
++        "_add_editcontrol",
++        "_message",
++        "_error",
++        "_disable_error",
++    }
++    for name in shared_methods:
++        assert name not in cls.__dict__
++
++
++@pytest.mark.parametrize(
++    "cls", [ServerConnect, UsersConnect, ServerManual, LoginManual]
++)
++def test_set_args_extra_keys(make_dialog, cls):
++    dlg, _, _, _ = make_dialog(cls)
++    dlg.set_args(custom_key="custom_value", extra_int=123)
++    assert dlg.custom_key == "custom_value"
++    assert dlg.extra_int == 123
++
++
++def test_server_connect_set_args_evidence_and_defaults(make_dialog):
++    cm = MagicMock()
++    sc, _, _, _ = make_dialog(ServerConnect)
++    assert sc.servers == []
++    assert sc.user_image is None
++    sc.set_args(
++        connect_manager=cm, username="u1", user_image="img.png", servers=[{"Id": "1"}]
++    )
++    assert sc.connect_manager is cm
++    assert sc.username == "u1"
++    assert sc.user_image == "img.png"
++    assert sc.servers == [{"Id": "1"}]
++
++
++def test_users_connect_set_args_evidence(make_dialog):
++    uc, _, _, _ = make_dialog(UsersConnect)
++    uc.set_args(server="http://server", users=[{"Id": "u1"}])
++    assert uc.server == "http://server"
++    assert uc.users == [{"Id": "u1"}]
++
++
++def test_server_manual_set_args_evidence(make_dialog):
++    cm = MagicMock()
++    sm, _, _, _ = make_dialog(ServerManual)
++    sm.set_args(connect_manager=cm)
++    assert sm.connect_manager is cm
++
++
++def test_login_manual_set_args_evidence_and_defaults(make_dialog):
++    cm = MagicMock()
++    lm, _, _, _ = make_dialog(LoginManual)
++    assert lm.username is None
++    lm.set_args(connect_manager=cm, username="u2")
++    assert lm.connect_manager is cm
++    assert lm.username == "u2"
++
++
++@pytest.mark.parametrize(
++    "mod_name,expected_constants",
++    [
++        (
++            "jellyfin_kodi.dialogs.serverconnect",
++            {
++                "USER_IMAGE": 150,
++                "LIST": 155,
++                "CANCEL": 201,
++                "MESSAGE_BOX": 202,
++                "MESSAGE": 203,
++                "BUSY": 204,
++                "MANUAL_SERVER": 206,
++                "ACTION_SELECT_ITEM": 7,
++                "ACTION_MOUSE_LEFT_CLICK": 100,
++            },
++        ),
++        (
++            "jellyfin_kodi.dialogs.usersconnect",
++            {
++                "LIST": 155,
++                "MANUAL": 200,
++                "CANCEL": 201,
++                "QUICK_CONNECT": 202,
++                "ACTION_SELECT_ITEM": 7,
++                "ACTION_MOUSE_LEFT_CLICK": 100,
++            },
++        ),
++        (
++            "jellyfin_kodi.dialogs.servermanual",
++            {
++                "CONNECT": 200,
++                "CANCEL": 201,
++                "ERROR_TOGGLE": 202,
++                "ERROR_MSG": 203,
++                "ERROR": {"Invalid": 1, "Empty": 2},
++                "ACTION_SELECT_ITEM": 7,
++            },
++        ),
++        (
++            "jellyfin_kodi.dialogs.loginmanual",
++            {
++                "SIGN_IN": 200,
++                "CANCEL": 201,
++                "ERROR_TOGGLE": 202,
++                "ERROR_MSG": 203,
++                "ERROR": {"Invalid": 1, "Empty": 2},
++                "ACTION_SELECT_ITEM": 7,
++            },
++        ),
++    ],
++)
++def test_control_ids_and_actions(mod_name, expected_constants):
++    import importlib
++
++    mod = importlib.import_module(mod_name)
++    for name, expected_val in expected_constants.items():
++        assert getattr(mod, name) == expected_val
++
++    assert mod.ACTION_PARENT_DIR == 9
++    assert mod.ACTION_PREVIOUS_MENU == 10
++    assert mod.ACTION_BACK == 92
++
++
++@pytest.mark.parametrize(
++    "cls", [ServerConnect, UsersConnect, ServerManual, LoginManual]
++)
++@pytest.mark.parametrize(
++    "action", [ACTION_BACK, ACTION_PREVIOUS_MENU, ACTION_PARENT_DIR]
++)
++def test_back_actions_only_close(make_dialog, cls, action):
++    dlg, _, _, state = make_dialog(cls)
++    dlg.onAction(action)
++    assert state["closed"] == 1
++
++    if cls is ServerConnect:
++        assert not dlg.is_server_selected()
++        assert dlg.get_server() is None
++        assert not dlg.is_manual_server()
++    elif cls is UsersConnect:
++        assert not dlg.is_user_selected()
++        assert dlg.get_user() is None
++        assert not dlg.is_manual_login()
++        assert not dlg.is_quick_connect()
++    elif cls is ServerManual:
++        assert not dlg.is_connected()
++        assert dlg.get_server() is None
++    elif cls is LoginManual:
++        assert not dlg.is_logged_in()
++        assert dlg.get_user() is None
++
++
++@pytest.mark.parametrize(
++    "cls", [ServerConnect, UsersConnect, ServerManual, LoginManual]
++)
++def test_cancel_button_closes_without_writing(make_dialog, cls):
++    dlg, _, _, state = make_dialog(cls)
++    dlg.onClick(201)
++    assert state["closed"] == 1
++
++    if cls is ServerConnect:
++        assert not dlg.is_server_selected()
++        assert not dlg.is_manual_server()
++    elif cls is UsersConnect:
++        assert not dlg.is_user_selected()
++        assert not dlg.is_manual_login()
++        assert not dlg.is_quick_connect()
++    elif cls is ServerManual:
++        assert not dlg.is_connected()
++    elif cls is LoginManual:
++        assert not dlg.is_logged_in()
++
++
++def test_server_connect_populate_order_and_payload(make_dialog):
++    sc, controls, _, state = make_dialog(ServerConnect)
++    servers = [
++        {"Name": "Server 1", "Id": "s1", "ExchangeToken": "token123"},
++        {"Name": "Server 2", "Id": "s2"},
++    ]
++    sc.set_args(servers=servers, user_image="http://img.png")
++    sc.onInit()
++
++    items = controls[155].items
++    assert len(items) == 2
++    assert items[0].getLabel() == "Server 1"
++    assert items[0].getProperty("id") == "s1"
++    assert items[0].getProperty("server_type") == "wifi"
++
++    assert items[1].getLabel() == "Server 2"
++    assert items[1].getProperty("id") == "s2"
++    assert items[1].getProperty("server_type") == "network"
++
++    assert controls[150].image == "http://img.png"
++    assert state["focus"] == controls[155]
++
++
++def test_server_connect_user_image_none_branch(make_dialog):
++    sc, controls, _, state = make_dialog(ServerConnect)
++    sc.set_args(servers=[], user_image=None)
++    sc.onInit()
++    assert 150 not in controls
++    assert state["focus"] is None
++
++
++def test_server_connect_none_servers_raises(make_dialog):
++    sc, _, _, _ = make_dialog(ServerConnect)
++    sc.set_args(servers=None)
++    with pytest.raises(TypeError):
++        sc.onInit()
++
++
++def test_server_connect_unavailable_keeps_open(make_dialog, monkeypatch):
++    monkeypatch.setattr("xbmc.sleep", lambda ms: None)
++    cm = MagicMock()
++    sc, controls, _, state = make_dialog(ServerConnect)
++    sc.set_args(connect_manager=cm, servers=[{"Name": "S1", "Id": "s1"}])
++    sc.onInit()
++
++    cm.get_server_info.return_value = {"Name": "Server One", "Id": "s1"}
++
++    def fake_connect(srv):
++        # Assert in-progress overlay label, message_box visibility, and busy indicator
++        assert controls[203].getLabel() == "%s %s..." % (translate(30610), "Server One")
++        assert "true" in controls[202].visible_conditions
++        assert "true" in controls[204].visible_conditions
++        return {"State": CONNECTION_STATE["Unavailable"]}
++
++    cm.connect_to_server.side_effect = fake_connect
++
++    state["focus_id"] = 155
++    controls[155].selected_item = controls[155].items[0]
++
++    sc.onAction(ACTION_SELECT_ITEM)
++    assert controls[203].getLabel() == translate(30609)
++    assert "false" in controls[204].visible_conditions
++    assert state["closed"] == 0
++    assert not sc.is_server_selected()
++    assert sc.get_server() is None
++
++
++def test_server_connect_success_closes_and_stores(make_dialog, monkeypatch):
++    monkeypatch.setattr("xbmc.sleep", lambda ms: None)
++    cm = MagicMock()
++    sc, controls, _, state = make_dialog(ServerConnect)
++    sc.set_args(connect_manager=cm, servers=[{"Name": "S1", "Id": "s1"}])
++    sc.onInit()
++
++    cm.get_server_info.return_value = {"Name": "Server One", "Id": "s1"}
++
++    def fake_connect(srv):
++        # Assert in-progress overlay label, message_box visibility, and busy indicator
++        assert controls[203].getLabel() == "%s %s..." % (translate(30610), "Server One")
++        assert "true" in controls[202].visible_conditions
++        assert "true" in controls[204].visible_conditions
++        return {
++            "State": CONNECTION_STATE["SignedIn"],
++            "Servers": [{"Id": "s1", "Name": "Server One"}],
++        }
++
++    cm.connect_to_server.side_effect = fake_connect
++
++    state["focus_id"] = 155
++    controls[155].selected_item = controls[155].items[0]
++
++    sc.onAction(ACTION_MOUSE_LEFT_CLICK)
++    assert state["closed"] == 1
++    assert "false" in controls[202].visible_conditions
++    assert sc.is_server_selected()
++    assert sc.get_server() == {"Id": "s1", "Name": "Server One"}
++    assert not sc.is_manual_server()
++
++
++def test_server_connect_manual_button(make_dialog):
++    sc, _, _, state = make_dialog(ServerConnect)
++    sc.onClick(206)
++    assert state["closed"] == 1
++    assert sc.is_manual_server()
++    assert not sc.is_server_selected()
++
++
++def test_users_connect_populate_order_and_artwork_branches(make_dialog):
++    uc, controls, _, state = make_dialog(UsersConnect)
++    users = [
++        {"Name": "User 1", "Id": "u1", "PrimaryImageTag": "tag1"},
++        {"Name": "User 2", "Id": "u2"},
++        {"Name": "User 3", "Id": "u3", "PrimaryImageTag": ""},
++    ]
++    uc.set_args(server="http://server.local", users=users)
++    uc.onInit()
++
++    assert state["focus"] == controls[155]
++    items = controls[155].items
++    assert len(items) == 3
++
++    assert items[0].getLabel() == "User 1"
++    assert items[0].getProperty("id") == "u1"
++    assert (
++        items[0].getArt()["icon"]
++        == "http://server.local/Users/u1/Images/Primary?Format=original"
++    )
++
++    assert items[1].getLabel() == "User 2"
++    assert items[1].getProperty("id") == "u2"
++    assert items[1].getArt()["icon"] == "items/logindefault.png"
++
++    assert items[2].getLabel() == "User 3"
++    assert items[2].getProperty("id") == "u3"
++    assert (
++        items[2].getArt()["icon"]
++        == "http://server.local/Users/u3/Images/Primary?Format=original"
++    )
++
++
++def test_users_connect_matching_selection(make_dialog):
++    uc, controls, _, state = make_dialog(UsersConnect)
++    users = [{"Name": "User 1", "Id": "u1"}, {"Name": "User 2", "Id": "u2"}]
++    uc.set_args(server="http://server.local", users=users)
++    uc.onInit()
++
++    state["focus_id"] = 155
++    controls[155].selected_item = controls[155].items[0]
++    uc.onAction(ACTION_SELECT_ITEM)
++    assert state["closed"] == 1
++    assert uc.is_user_selected()
++    assert uc.get_user() == users[0]
++
++
++def test_users_connect_unmatched_selection(make_dialog):
++    uc, controls, _, state = make_dialog(UsersConnect)
++    users = [{"Name": "User 1", "Id": "u1"}]
++    uc.set_args(server="http://server.local", users=users)
++    uc.onInit()
++
++    state["focus_id"] = 155
++    unmatched = DummyListItem()
++    unmatched.setProperty("id", "other_id")
++    controls[155].selected_item = unmatched
++
++    uc.onAction(ACTION_SELECT_ITEM)
++    assert state["closed"] == 1
++    assert not uc.is_user_selected()
++    assert uc.get_user() is None
++
++
++@pytest.mark.parametrize(
++    "btn_id,attr_name", [(200, "is_manual_login"), (202, "is_quick_connect")]
++)
++def test_users_connect_manual_and_quick_buttons(make_dialog, btn_id, attr_name):
++    uc, _, _, state = make_dialog(UsersConnect)
++    uc.onClick(btn_id)
++    assert state["closed"] == 1
++    assert getattr(uc, attr_name)()
++
++
++def test_server_manual_init_focus_and_navigation(make_dialog):
++    sm, controls, added, state = make_dialog(ServerManual)
++    sm.onInit()
++
++    assert sm.host_field in added
++    assert state["focus"] == sm.host_field
++    assert sm.host_field.up == controls[201]
++    assert sm.host_field.down == controls[200]
++    assert controls[200].up == sm.host_field
++    assert controls[201].down == sm.host_field
++
++
++def test_server_manual_empty_host_error_and_auto_disable(make_dialog):
++    sm, controls, _, state = make_dialog(ServerManual)
++    sm.onInit()
++
++    sm.host_field.setText("")
++    sm.onClick(200)
++    assert sm.error == 2
++    assert controls[203].getLabel() == translate("empty_server")
++    assert "true" in controls[202].visible_conditions
++    assert state["closed"] == 0
++    assert not sm.is_connected()
++
++    sm.host_field.setText("new_host")
++    sm.onAction(0)
++    assert sm.error is None
++    assert "false" in controls[202].visible_conditions
++
++
++def test_server_manual_reclick_clears_preexisting_error(make_dialog):
++    cm = MagicMock()
++    sm, controls, _, state = make_dialog(ServerManual)
++    sm.set_args(connect_manager=cm)
++    sm.onInit()
++
++    # Establish an existing error
++    sm.host_field.setText("")
++    sm.onClick(200)
++    assert sm.error == 2
++    assert controls[203].getLabel() == translate("empty_server")
++
++    # Typing host and re-clicking CONNECT must clear the error at start of onClick
++    sm.host_field.setText("192.168.1.10")
++
++    def fake_connect(addr):
++        # When _connect_to_server is called, error must have been cleared
++        assert sm.error is None
++        return {"State": CONNECTION_STATE["Unavailable"]}
++
++    cm.connect_to_address.side_effect = fake_connect
++    sm.onClick(200)
++    cm.connect_to_address.assert_called_with("192.168.1.10")
++
++
++def test_server_manual_ipv6_bracketed(make_dialog):
++    cm = MagicMock()
++    sm, controls, _, state = make_dialog(ServerManual)
++    sm.set_args(connect_manager=cm)
++    sm.onInit()
++
++    sm.host_field.setText("::1")
++
++    def fake_connect(addr):
++        # Assert in-progress error overlay 202 is visible and 203 contains 30610 + bracketed address
++        assert "true" in controls[202].visible_conditions
++        assert controls[203].getLabel() == "%s %s..." % (translate(30610), "[::1]")
++        return {"State": CONNECTION_STATE["Unavailable"]}
++
++    cm.connect_to_address.side_effect = fake_connect
++    sm.onClick(200)
++    cm.connect_to_address.assert_called_with("[::1]")
++    assert controls[203].getLabel() == translate(30609)
++    assert state["closed"] == 0
++    assert not sm.is_connected()
++
++
++def test_server_manual_success_closes_and_stores(make_dialog):
++    cm = MagicMock()
++    sm, controls, _, state = make_dialog(ServerManual)
++    sm.set_args(connect_manager=cm)
++    sm.onInit()
++
++    sm.host_field.setText("192.168.1.50")
++
++    def fake_connect(addr):
++        # Assert in-progress error overlay 202 is visible and 203 contains 30610 + address
++        assert "true" in controls[202].visible_conditions
++        assert controls[203].getLabel() == "%s %s..." % (translate(30610), "192.168.1.50")
++        return {
++            "State": CONNECTION_STATE["SignedIn"],
++            "Servers": [{"Name": "Connected Server"}],
++        }
++
++    cm.connect_to_address.side_effect = fake_connect
++    sm.onClick(200)
++    cm.connect_to_address.assert_called_with("192.168.1.50")
++    assert state["closed"] == 1
++    assert sm.is_connected()
++    assert sm.get_server() == {"Name": "Connected Server"}
++
++
++@pytest.mark.parametrize(
++    "username_val,expected_focus_field",
++    [("alice", "password_field"), (None, "user_field")],
++)
++def test_login_manual_init_focus_username_branches(
++    make_dialog, username_val, expected_focus_field
++):
++    lm, controls, added, state = make_dialog(LoginManual)
++    lm.set_args(username=username_val)
++    lm.onInit()
++
++    assert lm.user_field in added
++    assert lm.password_field in added
++    assert state["focus"] == getattr(lm, expected_focus_field)
++
++    assert lm.user_field.up == controls[201]
++    assert lm.user_field.down == lm.password_field
++    assert lm.password_field.up == lm.user_field
++    assert lm.password_field.down == controls[200]
++    assert controls[200].up == lm.password_field
++    assert controls[201].down == lm.user_field
++
++
++def test_login_manual_empty_user_error_and_auto_disable(make_dialog):
++    lm, controls, _, state = make_dialog(LoginManual)
++    lm.onInit()
++
++    lm.user_field.setText("")
++    lm.onClick(200)
++    assert lm.error == 2
++    assert controls[203].getLabel() == translate("empty_user")
++    assert state["closed"] == 0
++    assert not lm.is_logged_in()
++
++    lm.user_field.setText("bob")
++    lm.onAction(0)
++    assert lm.error is None
++    assert "false" in controls[202].visible_conditions
++
++
++def test_login_manual_reclick_clears_preexisting_error(make_dialog):
++    cm = MagicMock()
++    cm.server_id = "srv_id"
++    cm.get_server_info.return_value = {"address": "http://server:8096"}
++    lm, controls, _, state = make_dialog(LoginManual)
++    lm.set_args(connect_manager=cm)
++    lm.onInit()
++
++    # Establish an existing error
++    lm.user_field.setText("")
++    lm.onClick(200)
++    assert lm.error == 2
++    assert controls[203].getLabel() == translate("empty_user")
++
++    # Enter user and password, then re-click SIGN_IN: error must be cleared before _login executes
++    lm.user_field.setText("bob")
++    lm.password_field.setText("secret")
++
++    def fake_login(server, username, password):
++        assert lm.error is None
++        return None
++
++    cm.login.side_effect = fake_login
++    lm.onClick(200)
++    assert lm.error == 1  # Updated to invalid_auth after failed login
++
++
++def test_login_manual_invalid_auth_error(make_dialog):
++    cm = MagicMock()
++    cm.server_id = "srv_id"
++    cm.get_server_info.return_value = {"address": "http://server:8096"}
++    cm.login.return_value = None
++
++    lm, controls, _, state = make_dialog(LoginManual)
++    lm.set_args(connect_manager=cm)
++    lm.onInit()
++
++    lm.user_field.setText("bob")
++    lm.password_field.setText("secret")
++    lm.onClick(200)
++
++    cm.login.assert_called_with("http://server:8096", "bob", "secret")
++    assert lm.error == 1
++    assert controls[203].getLabel() == translate("invalid_auth")
++    assert state["closed"] == 0
++    assert not lm.is_logged_in()
++
++
++def test_login_manual_success_closes_and_stores(make_dialog):
++    cm = MagicMock()
++    cm.server_id = "srv_id"
++    cm.get_server_info.return_value = {"address": "http://server:8096"}
++    cm.login.return_value = {"User": {"Id": "user123"}}
++
++    lm, _, _, state = make_dialog(LoginManual)
++    lm.set_args(connect_manager=cm)
++    lm.onInit()
++
++    lm.user_field.setText("bob")
++    lm.password_field.setText("secret")
++    lm.onClick(200)
++
++    assert state["closed"] == 1
++    assert lm.is_logged_in()
++    assert lm.get_user() == {"User": {"Id": "user123"}}
++
++
++def test_edit_control_construction_and_password_type(monkeypatch):
++    call_log = []
++
++    class TrackedControlEdit:
++
++        def __init__(self, *args, **kwargs):
++            self.init_args = args
++            self.init_kwargs = kwargs
++            call_log.append(("init", self, args, kwargs))
++
++        def setPosition(self, x, y):
++            call_log.append(("setPosition", self, x, y))
++
++        def setHeight(self, h):
++            call_log.append(("setHeight", self, h))
++
++        def setWidth(self, w):
++            call_log.append(("setWidth", self, w))
++
++        def setType(self, input_type, heading):
++            call_log.append(("setType", self, input_type, heading))
++
++    monkeypatch.setattr(xbmcgui, "ControlEdit", TrackedControlEdit)
++
++    dlg = LoginManual("fake.xml", "/fake", "default", "1080i")
++    added = []
++    monkeypatch.setattr(
++        dlg,
++        "addControl",
++        lambda c: (added.append(c), call_log.append(("addControl", c))),
++    )
++
++    u_ctrl = dlg._add_editcontrol(755, 433, 40, 415, password=False)
++    p_ctrl = dlg._add_editcontrol(755, 543, 40, 415, password=True)
++
++    expected_kwargs = {
++        "label": "",
++        "font": "font13",
++        "textColor": "FF00A4DC",
++        "disabledColor": "FF888888",
++        "focusTexture": "-",
++        "noFocusTexture": "-",
++    }
++
++    assert u_ctrl.init_args == (0, 0, 0, 0)
++    assert u_ctrl.init_kwargs == expected_kwargs
++    assert p_ctrl.init_args == (0, 0, 0, 0)
++    assert p_ctrl.init_kwargs == expected_kwargs
++
++    assert ("setPosition", u_ctrl, 755, 433) in call_log
++    assert ("setHeight", u_ctrl, 40) in call_log
++    assert ("setWidth", u_ctrl, 415) in call_log
++
++    assert ("setPosition", p_ctrl, 755, 543) in call_log
++    assert ("setHeight", p_ctrl, 40) in call_log
++    assert ("setWidth", p_ctrl, 415) in call_log
++
++    assert u_ctrl in added
++    assert p_ctrl in added
++
++    p_add_idx = call_log.index(("addControl", p_ctrl))
++    p_set_idx = call_log.index(
++        ("setType", p_ctrl, xbmcgui.INPUT_TYPE_PASSWORD, "Please enter password")
++    )
++    assert p_add_idx < p_set_idx
++
++    u_set_types = [
++        entry for entry in call_log if entry[0] == "setType" and entry[1] is u_ctrl
++    ]
++    assert len(u_set_types) == 0
++
++
++def test_server_manual_edit_control_geometry_and_params(monkeypatch):
++    call_log = []
++
++    class TrackedControlEdit:
++
++        def __init__(self, *args, **kwargs):
++            self.init_args = args
++            self.init_kwargs = kwargs
++            call_log.append(("init", self, args, kwargs))
++
++        def setPosition(self, x, y):
++            call_log.append(("setPosition", self, x, y))
++
++        def setHeight(self, h):
++            call_log.append(("setHeight", self, h))
++
++        def setWidth(self, w):
++            call_log.append(("setWidth", self, w))
++
++        def setType(self, input_type, heading):
++            call_log.append(("setType", self, input_type, heading))
++
++    monkeypatch.setattr(xbmcgui, "ControlEdit", TrackedControlEdit)
++
++    sm = ServerManual("fake.xml", "/fake", "default", "1080i")
++    added = []
++    monkeypatch.setattr(
++        sm,
++        "addControl",
++        lambda c: (added.append(c), call_log.append(("addControl", c))),
++    )
++
++    h_ctrl = sm._add_editcontrol(755, 490, 40, 415)
++
++    expected_kwargs = {
++        "label": "",
++        "font": "font13",
++        "textColor": "FF00A4DC",
++        "disabledColor": "FF888888",
++        "focusTexture": "-",
++        "noFocusTexture": "-",
++    }
++
++    assert h_ctrl.init_args == (0, 0, 0, 0)
++    assert h_ctrl.init_kwargs == expected_kwargs
++    assert ("setPosition", h_ctrl, 755, 490) in call_log
++    assert ("setHeight", h_ctrl, 40) in call_log
++    assert ("setWidth", h_ctrl, 415) in call_log
++    assert h_ctrl in added
++
++    h_set_types = [
++        entry for entry in call_log if entry[0] == "setType" and entry[1] is h_ctrl
++    ]
++    assert len(h_set_types) == 0

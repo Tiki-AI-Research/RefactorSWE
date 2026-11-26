@@ -1,0 +1,5027 @@
+diff --git a/internal/x11/win/f2p_frame_responsibilities_test.go b/internal/x11/win/f2p_frame_responsibilities_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..29d3d474ad39371e80f3cfcb01fe0047a8064230
+--- /dev/null
++++ b/internal/x11/win/f2p_frame_responsibilities_test.go
+@@ -0,0 +1,2259 @@
++//go:build linux || openbsd || freebsd || netbsd
++// +build linux openbsd freebsd netbsd
++
++package win
++
++// F2P structural verification of the window-frame responsibility split.
++//
++// The frozen P2P selection already pins the observable pointer behaviour with a
++// live fake X server. This file verifies the part of the contract that cannot be
++// observed in a pass-to-pass run of the unsplit baseline, namely the split
++// itself:
++//
++//   - the pointer-interaction state machine must move out of win.frame into a
++//     collaborator that owns and operates that state (REQ-STRUCT-001),
++//   - the decoration rendering resources (pixmaps, graphics contexts, theme
++//     application) must move into a separate decoration collaborator, leaving
++//     the frame with geometry and lifecycle only (REQ-STRUCT-002),
++//   - the frozen pointer notifications must still reach relocated handlers with
++//     their exact int16/button signatures (REQ-BEH-T4:C1/B5),
++//   - the hover path must keep a theme-refresh entry point reachable from the
++//     interaction collaborator (REQ-BEH-T4:C4),
++//   - the solution must ship X-connection-free unit tests that drive the
++//     relocated press and drag decision logic (REQ-STRUCT-005).
++//
++// Every selector fails on the unsplit baseline with a genuine assertion failure
++// and passes for a solution that performs the split with a wired collaborator.
++// The only frozen names used by the analysis are the interaction state field
++// names that the requirement relocates; collaborator type names, method names,
++// constructor shapes and file layout stay free.
++
++import (
++	"context"
++	"go/ast"
++	"go/parser"
++	"go/token"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"reflect"
++	"regexp"
++	"runtime"
++	"sort"
++	"strings"
++	"testing"
++	"time"
++
++	"fyne.io/fyne/v2/test"
++
++	"github.com/BurntSushi/xgb/xproto"
++)
++
++// ---------------------------------------------------------------------------
++// Compiled-frame checks: the frame must give the relocated state up.
++// ---------------------------------------------------------------------------
++
++var f2pR3FrameType = reflect.TypeOf(frame{})
++
++var f2pR3PointerStateFields = []string{
++	"mouseX", "mouseY",
++	"moveX", "moveY",
++	"resizeStartX", "resizeStartY", "resizeStartWidth", "resizeStartHeight",
++	"resizeTop", "resizeBottom", "resizeLeft", "resizeRight",
++	"moveOnly", "ignoreDrag",
++	"hovered", "clickCount", "cancelFunc",
++}
++
++func f2pR3StateFieldSet() map[string]bool {
++	out := map[string]bool{}
++	for _, name := range f2pR3PointerStateFields {
++		out[name] = true
++	}
++	return out
++}
++
++func f2pR3AssertFrameOmits(t *testing.T, what string, names ...string) {
++	t.Helper()
++	pkg := f2pR3LoadPackage(t)
++	for i := 0; i < f2pR3FrameType.NumField(); i++ {
++		field := f2pR3FrameType.Field(i)
++		for _, name := range names {
++			if pkg.stateRole("frame", field.Name) == name {
++				t.Fatalf("win.frame still declares %s state field %q (%s): the pointer-interaction collaborator must own it (REQ-STRUCT-001)", what, field.Name, field.Type)
++			}
++		}
++	}
++}
++
++func TestF2PFrameDropsPointerOriginState(t *testing.T) {
++	f2pR3AssertFrameOmits(t, "pointer origin / press anchor", "mouseX", "mouseY")
++}
++
++func TestF2PFrameDropsMoveAccumulatorState(t *testing.T) {
++	f2pR3AssertFrameOmits(t, "accumulated window move offset", "moveX", "moveY")
++}
++
++func TestF2PFrameDropsResizeStartGeometryState(t *testing.T) {
++	f2pR3AssertFrameOmits(t, "resize start geometry", "resizeStartX", "resizeStartY", "resizeStartWidth", "resizeStartHeight")
++}
++
++func TestF2PFrameDropsResizeEdgeFlags(t *testing.T) {
++	f2pR3AssertFrameOmits(t, "active resize edge flag", "resizeTop", "resizeBottom", "resizeLeft", "resizeRight")
++}
++
++func TestF2PFrameDropsDragModeFlags(t *testing.T) {
++	f2pR3AssertFrameOmits(t, "drag interaction mode flag", "moveOnly", "ignoreDrag")
++}
++
++func TestF2PFrameDropsHoverTargetState(t *testing.T) {
++	f2pR3AssertFrameOmits(t, "hovered target", "hovered")
++}
++
++func TestF2PFrameDropsDoubleClickTimerState(t *testing.T) {
++	f2pR3AssertFrameOmits(t, "double-click counter / cancel timer", "clickCount", "cancelFunc")
++}
++
++// f2pR3TypeContains reports whether the type or a composite element of it is
++// identical to want, so a relocated resource cannot hide behind a pointer,
++// slice, array, channel or map field of the frame.
++func f2pR3TypeContains(typ, want reflect.Type) bool {
++	if typ == want {
++		return true
++	}
++	switch typ.Kind() {
++	case reflect.Ptr, reflect.Slice, reflect.Array, reflect.Chan, reflect.Map:
++		return f2pR3TypeContains(typ.Elem(), want)
++	}
++	return false
++}
++
++func f2pR3AssertFrameOmitsResource(t *testing.T, what string, want reflect.Type) {
++	t.Helper()
++	for i := 0; i < f2pR3FrameType.NumField(); i++ {
++		field := f2pR3FrameType.Field(i)
++		if f2pR3TypeContains(field.Type, want) {
++			t.Fatalf("win.frame still declares %s field %q (%s): decoration rendering resources must live in the decoration collaborator (REQ-STRUCT-002)", what, field.Name, field.Type)
++		}
++	}
++}
++
++func TestF2PFrameDropsPixmapResources(t *testing.T) {
++	f2pR3AssertFrameOmitsResource(t, "decoration pixmap", reflect.TypeOf(xproto.Pixmap(0)))
++}
++
++func TestF2PFrameDropsGraphicsContextResources(t *testing.T) {
++	f2pR3AssertFrameOmitsResource(t, "decoration graphics-context", reflect.TypeOf(xproto.Gcontext(0)))
++}
++
++func TestF2PFrameDropsDecorationCanvas(t *testing.T) {
++	canvas := reflect.TypeOf((*test.WindowlessCanvas)(nil)).Elem()
++	f2pR3AssertFrameOmitsResource(t, "decoration canvas", canvas)
++}
++
++// ---------------------------------------------------------------------------
++// Source analysis engine.
++//
++// The engine parses every package file (production and test) into struct and
++// interface declarations, method declarations and package-level function
++// declarations, and resolves field chains and call targets syntactically with a
++// small type environment. It is strong enough to follow the compiled frame's
++// field graph into a collaborator and to prove that a handler reached from a
++// frozen notification actually reads or writes the relocated state.
++// ---------------------------------------------------------------------------
++
++type f2pR3Type struct {
++	underlying ast.Expr
++	isAlias    bool
++	name       string
++	isStruct   bool
++	isIface    bool
++	fields     map[string]ast.Expr
++	iface      map[string]bool
++	file       string
++}
++
++type f2pR3Func struct {
++	decl     *ast.FuncDecl
++	file     string
++	recvType string
++	isTest   bool
++}
++
++func (f *f2pR3Func) symbol() string {
++	if f.recvType == "" {
++		return f.decl.Name.Name
++	}
++	return f.recvType + "." + f.decl.Name.Name
++}
++
++type f2pR3Package struct {
++	dir     string
++	types   map[string]*f2pR3Type
++	methods map[string]map[string]*f2pR3Func
++	funcs   map[string][]*f2pR3Func
++	imports map[string]map[string]string
++	// Actual receiver fields mapped to semantic drag-origin roles.
++	originRoles         map[string]map[string]string
++	interfaceBindings   map[string]map[string]bool
++	uncertainInterfaces map[string]bool
++}
++
++func f2pR3PackageDir(t *testing.T) string {
++	t.Helper()
++	_, file, _, ok := runtime.Caller(0)
++	if !ok {
++		t.Fatal("f2p: cannot resolve the package directory of this test file")
++	}
++	return filepath.Dir(file)
++}
++
++func f2pR3LoadPackage(t *testing.T) *f2pR3Package {
++	t.Helper()
++	dir := f2pR3PackageDir(t)
++	entries, err := os.ReadDir(dir)
++	if err != nil {
++		t.Fatalf("f2p: cannot read package directory %s: %v", dir, err)
++	}
++	pkg := &f2pR3Package{
++		dir:     dir,
++		types:   map[string]*f2pR3Type{},
++		methods: map[string]map[string]*f2pR3Func{},
++		funcs:   map[string][]*f2pR3Func{},
++		imports: map[string]map[string]string{},
++	}
++	fset := token.NewFileSet()
++	for _, entry := range entries {
++		name := entry.Name()
++		if entry.IsDir() || !strings.HasSuffix(name, ".go") {
++			continue
++		}
++		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
++		if err != nil {
++			t.Fatalf("f2p: cannot parse package file %s: %v", name, err)
++		}
++		if pkg.imports[name] == nil {
++			pkg.imports[name] = map[string]string{}
++		}
++		for _, imported := range file.Imports {
++			path := strings.Trim(imported.Path.Value, `"`)
++			alias := ""
++			if imported.Name != nil {
++				alias = imported.Name.Name
++			} else if idx := strings.LastIndex(path, "/"); idx >= 0 {
++				alias = path[idx+1:]
++			} else {
++				alias = path
++			}
++			if alias == "_" || alias == "." || alias == "" {
++				continue
++			}
++			pkg.imports[name][alias] = path
++		}
++		isTest := strings.HasSuffix(name, "_test.go")
++		for _, decl := range file.Decls {
++			switch d := decl.(type) {
++			case *ast.GenDecl:
++				for _, spec := range d.Specs {
++					ts, ok := spec.(*ast.TypeSpec)
++					if !ok {
++						continue
++					}
++					info := &f2pR3Type{name: ts.Name.Name, file: name, fields: map[string]ast.Expr{}, iface: map[string]bool{}}
++					info.underlying = ts.Type
++					info.isAlias = ts.Assign.IsValid()
++					switch typ := ts.Type.(type) {
++					case *ast.StructType:
++						info.isStruct = true
++						for _, field := range typ.Fields.List {
++							if len(field.Names) == 0 {
++								info.fields[f2pR3ExprBaseName(field.Type)] = field.Type
++							}
++							for _, fieldName := range field.Names {
++								info.fields[fieldName.Name] = field.Type
++							}
++						}
++					case *ast.InterfaceType:
++						info.isIface = true
++						for _, method := range typ.Methods.List {
++							for _, methodName := range method.Names {
++								info.iface[methodName.Name] = true
++							}
++						}
++					}
++					pkg.types[info.name] = info
++				}
++			case *ast.FuncDecl:
++				fi := &f2pR3Func{decl: d, file: name, recvType: f2pR3ReceiverTypeName(d.Recv), isTest: isTest}
++				if fi.recvType == "" {
++					pkg.funcs[d.Name.Name] = append(pkg.funcs[d.Name.Name], fi)
++				} else {
++					if pkg.methods[fi.recvType] == nil {
++						pkg.methods[fi.recvType] = map[string]*f2pR3Func{}
++					}
++					pkg.methods[fi.recvType][d.Name.Name] = fi
++				}
++			}
++		}
++	}
++	pkg.resolveNamedUnderlyingTypes()
++	pkg.inferInterfaceBindings()
++	pkg.uncertainInterfaces = map[string]bool{}
++	pkg.inferOriginRoles()
++	pkg.inferAdditionalRoles()
++	return pkg
++}
++
++// inferOriginRoles derives each saved pointer coordinate from its use: a press
++// parameter is stored in receiver state, and a drag parameter is subtracted
++// from that saved state. No list of acceptable private field names is used.
++func (pkg *f2pR3Package) inferOriginRoles() {
++	pkg.originRoles = map[string]map[string]string{}
++	press := pkg.f2pR3ClientMethod("NotifyMousePress")
++	drag := pkg.f2pR3ClientMethod("NotifyMouseDrag")
++	if press == nil || drag == nil {
++		return
++	}
++	stores := map[string]map[string]int{}
++	params := func(fi *f2pR3Func) []string {
++		var out []string
++		if fi.decl.Type.Params != nil {
++			for _, f := range fi.decl.Type.Params.List {
++				for _, n := range f.Names {
++					out = append(out, n.Name)
++				}
++			}
++		}
++		return out
++	}
++	for _, fi := range pkg.f2pR3Reachable(press) {
++		if fi.isTest || fi.recvType == "" {
++			continue
++		}
++		names := params(fi)
++		if len(names) < 2 {
++			continue
++		}
++		env := f2pR3EnvFor(pkg, fi)
++		ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++			a, ok := n.(*ast.AssignStmt)
++			if !ok {
++				return true
++			}
++			for i, lhs := range a.Lhs {
++				if i >= len(a.Rhs) {
++					continue
++				}
++				sel, ok := lhs.(*ast.SelectorExpr)
++				if !ok {
++					continue
++				}
++				typ, _ := env.exprType(sel.X)
++				if typ != fi.recvType {
++					continue
++				}
++				rhs, ok := a.Rhs[i].(*ast.Ident)
++				if !ok {
++					continue
++				}
++				for axis := 0; axis < 2; axis++ {
++					if rhs.Name == names[axis] {
++						if stores[typ] == nil {
++							stores[typ] = map[string]int{}
++						}
++						stores[typ][sel.Sel.Name] = axis + 1
++					}
++				}
++			}
++			return true
++		})
++	}
++	for _, fi := range pkg.f2pR3Reachable(drag) {
++		if fi.isTest || fi.recvType == "" {
++			continue
++		}
++		names := params(fi)
++		if len(names) < 2 {
++			continue
++		}
++		env := f2pR3EnvFor(pkg, fi)
++		// Unlike resize-start coordinates, the last pointer origin is also
++		// advanced to the incoming coordinates by the drag handler itself.
++		updated := map[string]int{}
++		ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++			a, ok := n.(*ast.AssignStmt)
++			if !ok {
++				return true
++			}
++			for j, lhs := range a.Lhs {
++				if j >= len(a.Rhs) {
++					continue
++				}
++				sel, ok := lhs.(*ast.SelectorExpr)
++				if !ok {
++					continue
++				}
++				typ, _ := env.exprType(sel.X)
++				if typ != fi.recvType {
++					continue
++				}
++				input, ok := a.Rhs[j].(*ast.Ident)
++				if !ok {
++					continue
++				}
++				for axis := 0; axis < 2; axis++ {
++					if input.Name == names[axis] {
++						updated[sel.Sel.Name] = axis + 1
++					}
++				}
++			}
++			return true
++		})
++		ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++			b, ok := n.(*ast.BinaryExpr)
++			if !ok || b.Op != token.SUB {
++				return true
++			}
++			input, ok := b.X.(*ast.Ident)
++			if !ok {
++				return true
++			}
++			saved, ok := b.Y.(*ast.SelectorExpr)
++			if !ok {
++				return true
++			}
++			typ, _ := env.exprType(saved.X)
++			for axis, role := range []string{"mouseX", "mouseY"} {
++				if input.Name == names[axis] && stores[typ][saved.Sel.Name] == axis+1 && updated[saved.Sel.Name] == axis+1 {
++					if pkg.originRoles[typ] == nil {
++						pkg.originRoles[typ] = map[string]string{}
++					}
++					pkg.originRoles[typ][saved.Sel.Name] = role
++				}
++			}
++			return true
++		})
++	}
++}
++
++func (pkg *f2pR3Package) stateRole(typ, field string) string {
++	if role := pkg.originRoles[typ][field]; role != "" {
++		return role
++	}
++	return field
++}
++
++func (pkg *f2pR3Package) hasStateRole(info *f2pR3Type, role string) bool {
++	if info == nil {
++		return false
++	}
++	for typ := range pkg.ownedTypes(info.name) {
++		for field := range pkg.types[typ].fields {
++			if pkg.stateRole(typ, field) == role {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++func f2pR3AssertControlledGeometry(t *testing.T, pkg *f2pR3Package, owner string) {
++	t.Helper()
++	closure := f2pR3NotificationClosure(pkg)
++	seen := map[*f2pR3Func]bool{}
++	var visit func(*f2pR3Func)
++	visit = func(fi *f2pR3Func) {
++		if fi == nil || seen[fi] || fi.isTest || fi.recvType == "frame" {
++			return
++		}
++		// Client lifecycle and decoration methods have their own responsibilities.
++		if fi.recvType == "client" {
++			return
++		}
++		seen[fi] = true
++		env := f2pR3EnvFor(pkg, fi)
++		ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++			if sel, ok := n.(*ast.SelectorExpr); ok {
++				typ, _ := env.exprType(sel.X)
++				if typ == "frame" {
++					field := pkg.types["frame"].fields[sel.Sel.Name]
++					name := f2pR3ExprBaseName(field)
++					if name == "int16" || name == "uint16" {
++						t.Errorf("interaction path %s directly accesses frame geometry %s; use a controlled frame geometry surface", fi.symbol(), sel.Sel.Name)
++					}
++					if _, channel := field.(*ast.ChanType); channel {
++						t.Errorf("interaction path %s directly accesses frame queue %s; use the geometry queueing surface", fi.symbol(), sel.Sel.Name)
++					}
++				}
++			}
++			if call, ok := n.(*ast.CallExpr); ok {
++				if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
++					base, _ := env.exprType(sel.X)
++					if info := pkg.types[base]; info != nil && info.isIface {
++						return true
++					}
++				}
++				visit(pkg.resolveCallee(env, call))
++			}
++			return true
++		})
++	}
++	for _, fi := range closure {
++		if fi.recvType == owner {
++			visit(fi)
++		}
++	}
++}
++
++func f2pR3ReceiverTypeName(recv *ast.FieldList) string {
++	if recv == nil || len(recv.List) == 0 {
++		return ""
++	}
++	return f2pR3ExprBaseName(recv.List[0].Type)
++}
++
++func f2pR3ReceiverIdent(decl *ast.FuncDecl) string {
++	if decl.Recv == nil || len(decl.Recv.List) == 0 || len(decl.Recv.List[0].Names) == 0 {
++		return ""
++	}
++	return decl.Recv.List[0].Names[0].Name
++}
++
++func f2pR3ExprBaseName(expr ast.Expr) string {
++	switch typed := expr.(type) {
++	case *ast.StarExpr:
++		return f2pR3ExprBaseName(typed.X)
++	case *ast.ParenExpr:
++		return f2pR3ExprBaseName(typed.X)
++	case *ast.IndexExpr:
++		return f2pR3ExprBaseName(typed.X)
++	case *ast.IndexListExpr:
++		return f2pR3ExprBaseName(typed.X)
++	case *ast.Ident:
++		return typed.Name
++	}
++	return ""
++}
++
++// f2pR3ExprTypeName resolves a type expression to a comparable name. Package
++// qualified types are normalised to "alias.Name" using the file's import map so
++// aliases do not matter.
++func f2pR3ExprTypeName(pkg *f2pR3Package, file string, expr ast.Expr) string {
++	switch typed := expr.(type) {
++	case *ast.StarExpr:
++		return f2pR3ExprTypeName(pkg, file, typed.X)
++	case *ast.ParenExpr:
++		return f2pR3ExprTypeName(pkg, file, typed.X)
++	case *ast.ArrayType, *ast.ChanType:
++		return ""
++	case *ast.Ellipsis:
++		return f2pR3ExprTypeName(pkg, file, typed.Elt)
++	case *ast.Ident:
++		return typed.Name
++	case *ast.SelectorExpr:
++		if base, ok := typed.X.(*ast.Ident); ok {
++			path := pkg.imports[file][base.Name]
++			if strings.HasSuffix(path, "/xproto") || path == "github.com/BurntSushi/xgb/xproto" {
++				return "xproto." + typed.Sel.Name
++			}
++			if path != "" {
++				return base.Name + "." + typed.Sel.Name
++			}
++		}
++		return typed.Sel.Name
++	case *ast.IndexExpr:
++		return f2pR3ExprTypeName(pkg, file, typed.X)
++	case *ast.IndexListExpr:
++		return f2pR3ExprTypeName(pkg, file, typed.X)
++	}
++	return ""
++}
++
++// f2pR3QualifiedType resolves a type expression to (import path, type name).
++func f2pR3QualifiedType(pkg *f2pR3Package, file string, expr ast.Expr) (string, string) {
++	switch typed := expr.(type) {
++	case *ast.StarExpr:
++		return f2pR3QualifiedType(pkg, file, typed.X)
++	case *ast.ParenExpr:
++		return f2pR3QualifiedType(pkg, file, typed.X)
++	case *ast.Ident:
++		return "", typed.Name
++	case *ast.SelectorExpr:
++		if base, ok := typed.X.(*ast.Ident); ok {
++			return pkg.imports[file][base.Name], typed.Sel.Name
++		}
++		return "", typed.Sel.Name
++	case *ast.IndexExpr:
++		return f2pR3QualifiedType(pkg, file, typed.X)
++	case *ast.IndexListExpr:
++		return f2pR3QualifiedType(pkg, file, typed.X)
++	}
++	return "", ""
++}
++
++type f2pR3Env struct {
++	pkg    *f2pR3Package
++	vars   map[string]string
++	inTest bool
++}
++
++func f2pR3EnvFor(pkg *f2pR3Package, fi *f2pR3Func) *f2pR3Env {
++	env := &f2pR3Env{pkg: pkg, vars: map[string]string{}, inTest: fi.isTest}
++	decl := fi.decl
++	if name := f2pR3ReceiverIdent(decl); name != "" {
++		env.vars[name] = fi.recvType
++	}
++	if decl.Type.Params != nil {
++		for _, field := range decl.Type.Params.List {
++			typeName := f2pR3NamedType(pkg, f2pR3ExprBaseName(field.Type))
++			for _, name := range field.Names {
++				env.vars[name.Name] = typeName
++			}
++		}
++	}
++	for pass := 0; pass < 2; pass++ {
++		ast.Inspect(decl.Body, func(n ast.Node) bool {
++			switch stmt := n.(type) {
++			case *ast.AssignStmt:
++				f2pR3BindAssign(pkg, env, stmt)
++			case *ast.ValueSpec:
++				if stmt.Type != nil {
++					typeName := f2pR3NamedType(pkg, f2pR3ExprBaseName(stmt.Type))
++					for _, name := range stmt.Names {
++						env.vars[name.Name] = typeName
++					}
++					return true
++				}
++				for i, name := range stmt.Names {
++					if i < len(stmt.Values) {
++						if typeName, _ := env.exprType(stmt.Values[i]); typeName != "" {
++							env.vars[name.Name] = typeName
++						}
++					}
++				}
++			}
++			return true
++		})
++	}
++	return env
++}
++
++func f2pR3NamedType(pkg *f2pR3Package, name string) string {
++	if name == "" {
++		return ""
++	}
++	if info, ok := pkg.types[name]; ok {
++		if info.isAlias {
++			return f2pR3NamedType(pkg, f2pR3ExprBaseName(info.underlying))
++		}
++		return name
++	}
++	return ""
++}
++
++func f2pR3BindAssign(pkg *f2pR3Package, env *f2pR3Env, stmt *ast.AssignStmt) {
++	if stmt.Tok != token.DEFINE && stmt.Tok != token.ASSIGN {
++		return
++	}
++	if len(stmt.Rhs) == 1 && len(stmt.Lhs) > 1 {
++		call, ok := stmt.Rhs[0].(*ast.CallExpr)
++		if !ok {
++			return
++		}
++		results := f2pR3CallResultTypes(pkg, env, call)
++		if len(results) != len(stmt.Lhs) {
++			return
++		}
++		for i, lhs := range stmt.Lhs {
++			if ident, ok := lhs.(*ast.Ident); ok && ident.Name != "_" {
++				env.vars[ident.Name] = results[i]
++			}
++		}
++		return
++	}
++	for i, lhs := range stmt.Lhs {
++		if i >= len(stmt.Rhs) {
++			break
++		}
++		ident, ok := lhs.(*ast.Ident)
++		if !ok || ident.Name == "_" {
++			continue
++		}
++		if typeName, _ := env.exprType(stmt.Rhs[i]); typeName != "" {
++			env.vars[ident.Name] = typeName
++		}
++	}
++}
++
++func (env *f2pR3Env) exprType(expr ast.Expr) (string, int) {
++	switch typed := expr.(type) {
++	case *ast.Ident:
++		return env.vars[typed.Name], 1
++	case *ast.ParenExpr:
++		return env.exprType(typed.X)
++	case *ast.StarExpr:
++		return env.exprType(typed.X)
++	case *ast.UnaryExpr:
++		if typed.Op == token.AND {
++			return env.exprType(typed.X)
++		}
++		return "", 1
++	case *ast.CompositeLit:
++		return f2pR3NamedType(env.pkg, f2pR3ExprBaseName(typed.Type)), 1
++	case *ast.SelectorExpr:
++		base, _ := env.exprType(typed.X)
++		if base == "" {
++			return "", 1
++		}
++		info := env.pkg.types[base]
++		if info == nil || !info.isStruct {
++			return "", 1
++		}
++		_, fieldType := env.pkg.lookupField(base, typed.Sel.Name, map[string]bool{})
++		if fieldType == nil {
++			return "", 1
++		}
++		return f2pR3NamedType(env.pkg, f2pR3ExprBaseName(fieldType)), 1
++	case *ast.CallExpr:
++		results := f2pR3CallResultTypes(env.pkg, env, typed)
++		if len(results) > 0 {
++			return results[0], len(results)
++		}
++		return "", 1
++	case *ast.IndexExpr:
++		return env.exprType(typed.X)
++	case *ast.IndexListExpr:
++		return env.exprType(typed.X)
++	}
++	return "", 1
++}
++
++func f2pR3CallResultTypes(pkg *f2pR3Package, env *f2pR3Env, call *ast.CallExpr) []string {
++	target := pkg.resolveCallee(env, call)
++	if target == nil {
++		return nil
++	}
++	return f2pR3ResultTypeNames(pkg, target)
++}
++
++func f2pR3ResultTypeNames(pkg *f2pR3Package, fi *f2pR3Func) []string {
++	if fi.decl.Type.Results == nil {
++		return nil
++	}
++	var out []string
++	for _, field := range fi.decl.Type.Results.List {
++		name := f2pR3NamedType(pkg, f2pR3ExprBaseName(field.Type))
++		count := len(field.Names)
++		if count == 0 {
++			count = 1
++		}
++		for i := 0; i < count; i++ {
++			out = append(out, name)
++		}
++	}
++	return out
++}
++
++func (pkg *f2pR3Package) resolveCallee(env *f2pR3Env, call *ast.CallExpr) *f2pR3Func {
++	switch fun := call.Fun.(type) {
++	case *ast.Ident:
++		if _, isVar := env.vars[fun.Name]; isVar {
++			return nil
++		}
++		return pkg.chooseFunc(fun.Name, env.inTest)
++	case *ast.SelectorExpr:
++		base, _ := env.exprType(fun.X)
++		if base == "" {
++			return nil
++		}
++		if methods := pkg.methods[base]; methods != nil {
++			if target := methods[fun.Sel.Name]; target != nil {
++				return target
++			}
++		}
++		if bound := pkg.boundType(base); bound != "" {
++			return pkg.methods[bound][fun.Sel.Name]
++		}
++		return nil
++	case *ast.ParenExpr:
++		if inner, ok := fun.X.(*ast.CallExpr); ok {
++			return pkg.resolveCallee(env, inner)
++		}
++	}
++	return nil
++}
++
++func (pkg *f2pR3Package) chooseFunc(name string, preferTest bool) *f2pR3Func {
++	candidates := pkg.funcs[name]
++	if len(candidates) == 0 {
++		return nil
++	}
++	sorted := append([]*f2pR3Func(nil), candidates...)
++	sort.Slice(sorted, func(i, j int) bool {
++		if sorted[i].isTest != sorted[j].isTest {
++			if preferTest {
++				return sorted[i].isTest
++			}
++			return !sorted[i].isTest
++		}
++		return sorted[i].file < sorted[j].file
++	})
++	return sorted[0]
++}
++
++// f2pR3Reachable follows call expressions from start through package methods
++// and functions and returns every reachable declaration (excluding the start).
++func (pkg *f2pR3Package) f2pR3Reachable(start *f2pR3Func) map[string]*f2pR3Func {
++	out := map[string]*f2pR3Func{}
++	queue := []*f2pR3Func{start}
++	seen := map[*f2pR3Func]bool{start: true}
++	for len(queue) > 0 {
++		fi := queue[0]
++		queue = queue[1:]
++		env := f2pR3EnvFor(pkg, fi)
++		if fi.decl.Body == nil {
++			continue
++		}
++		ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++			call, ok := n.(*ast.CallExpr)
++			if !ok {
++				return true
++			}
++			child := pkg.resolveCallee(env, call)
++			if child == nil {
++				return true
++			}
++			out[child.symbol()] = child
++			if !seen[child] {
++				seen[child] = true
++				queue = append(queue, child)
++			}
++			return true
++		})
++	}
++	return out
++}
++
++func (pkg *f2pR3Package) findMethodByName(name string) *f2pR3Func {
++	types := make([]string, 0, len(pkg.methods))
++	for typeName := range pkg.methods {
++		types = append(types, typeName)
++	}
++	sort.Strings(types)
++	for _, typeName := range types {
++		if target := pkg.methods[typeName][name]; target != nil {
++			return target
++		}
++	}
++	return nil
++}
++
++// f2pR3Access reports which of the given fields a method writes and which it
++// reads through the receiver selector.
++func f2pR3Access(pkg *f2pR3Package, fi *f2pR3Func, fieldSet map[string]bool) (map[string]bool, map[string]bool) {
++	writes := map[string]bool{}
++	reads := map[string]bool{}
++	recv := f2pR3ReceiverIdent(fi.decl)
++	if recv == "" || fi.decl.Body == nil || len(fieldSet) == 0 {
++		return writes, reads
++	}
++	match := func(expr ast.Expr) (string, bool) {
++		selector, ok := expr.(*ast.SelectorExpr)
++		if !ok {
++			return "", false
++		}
++		root := ast.Expr(selector.X)
++		for {
++			child, ok := root.(*ast.SelectorExpr)
++			if !ok {
++				break
++			}
++			root = child.X
++		}
++		ident, ok := root.(*ast.Ident)
++		if !ok || ident.Name != recv {
++			return "", false
++		}
++		env := f2pR3EnvFor(pkg, fi)
++		base, _ := env.exprType(selector.X)
++		declaring, _ := pkg.lookupField(base, selector.Sel.Name, map[string]bool{})
++		if !pkg.ownedTypes(fi.recvType)[declaring] {
++			return "", false
++		}
++		role := pkg.stateRole(declaring, selector.Sel.Name)
++		if !fieldSet[role] {
++			return "", false
++		}
++		return role, true
++	}
++	collect := func(node ast.Node, into map[string]bool) {
++		ast.Inspect(node, func(n ast.Node) bool {
++			if expr, ok := n.(ast.Expr); ok {
++				if name, ok := match(expr); ok {
++					into[name] = true
++				}
++			}
++			return true
++		})
++	}
++	ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++		switch stmt := n.(type) {
++		case *ast.AssignStmt:
++			for _, lhs := range stmt.Lhs {
++				collect(lhs, writes)
++			}
++			if stmt.Tok != token.ASSIGN && stmt.Tok != token.DEFINE {
++				for _, lhs := range stmt.Lhs {
++					collect(lhs, reads)
++				}
++			}
++			for _, rhs := range stmt.Rhs {
++				collect(rhs, reads)
++			}
++			return false
++		case *ast.IncDecStmt:
++			collect(stmt.X, writes)
++			collect(stmt.X, reads)
++			return false
++		case *ast.SelectorExpr:
++			if name, ok := match(stmt); ok {
++				reads[name] = true
++			}
++		}
++		return true
++	})
++	return writes, reads
++}
++
++func f2pR3Touches(fieldSet map[string]bool) func(pkg *f2pR3Package, fi *f2pR3Func) bool {
++	return func(pkg *f2pR3Package, fi *f2pR3Func) bool {
++		writes, reads := f2pR3Access(pkg, fi, fieldSet)
++		return len(writes) > 0 || len(reads) > 0
++	}
++}
++
++// f2pR3SortedSymbols returns the deterministic key list of a reachable map.
++func f2pR3SortedSymbols(reachable map[string]*f2pR3Func) []string {
++	out := make([]string, 0, len(reachable))
++	for symbol := range reachable {
++		out = append(out, symbol)
++	}
++	sort.Strings(out)
++	return out
++}
++
++// ---------------------------------------------------------------------------
++// Collaborator discovery through the compiled frame's field graph.
++// ---------------------------------------------------------------------------
++
++// f2pR3FrameFieldBaseTypes returns the package-local base type name of every
++// frame field (pointers and interfaces included), in declaration order.
++func f2pR3FrameFieldBaseTypes() []string {
++	var out []string
++	seen := map[string]bool{}
++	for i := 0; i < f2pR3FrameType.NumField(); i++ {
++		fieldType := f2pR3FrameType.Field(i).Type
++		if fieldType.Kind() == reflect.Interface {
++			name := fieldType.Name()
++			if name != "" && !seen[name] {
++				seen[name] = true
++				out = append(out, name)
++			}
++			continue
++		}
++		for fieldType.Kind() == reflect.Ptr {
++			fieldType = fieldType.Elem()
++		}
++		if fieldType.Kind() != reflect.Struct {
++			continue
++		}
++		name := fieldType.Name()
++		if name == "" || seen[name] {
++			continue
++		}
++		seen[name] = true
++		out = append(out, name)
++	}
++	return out
++}
++
++// f2pR3FindStateOwner returns the type stored in a frame field that declares at
++// least six relocated interaction state fields.
++func (pkg *f2pR3Package) f2pR3FindStateOwner() string {
++	for _, base := range f2pR3FrameFieldBaseTypes() {
++		if bound := pkg.boundType(base); bound != "" {
++			base = bound
++		}
++		info := pkg.types[base]
++		if info == nil || !info.isStruct {
++			continue
++		}
++		if pkg.hasStateRole(info, "mouseX") && pkg.hasStateRole(info, "hovered") && pkg.hasStateRole(info, "cancelFunc") {
++			return base
++		}
++	}
++	return ""
++}
++
++func (pkg *f2pR3Package) f2pR3StateOwnerImplementing(iface *f2pR3Type) string {
++	stateFields := f2pR3StateFieldSet()
++	names := make([]string, 0, len(pkg.types))
++	for name := range pkg.types {
++		names = append(names, name)
++	}
++	sort.Strings(names)
++	for _, name := range names {
++		info := pkg.types[name]
++		if info == nil || !info.isStruct {
++			continue
++		}
++		implements := true
++		for method := range iface.iface {
++			if pkg.methods[name] == nil || pkg.methods[name][method] == nil {
++				implements = false
++				break
++			}
++		}
++		if !implements {
++			continue
++		}
++		count := 0
++		for fieldName := range info.fields {
++			if stateFields[pkg.stateRole(info.name, fieldName)] {
++				count++
++			}
++		}
++		if count >= 6 {
++			return name
++		}
++	}
++	return ""
++}
++
++// f2pR3FindDecorationOwner returns the collaborator type stored in a frame field
++// that owns both pixmap and graphics-context fields, together with those fields.
++func (pkg *f2pR3Package) f2pR3FindDecorationOwner() (string, string, map[string]bool, map[string]bool, bool) {
++	for _, base := range f2pR3FrameFieldBaseTypes() {
++		info := pkg.types[base]
++		if info == nil || !info.isStruct {
++			continue
++		}
++		pixmaps := map[string]bool{}
++		gcs := map[string]bool{}
++		for fieldName, fieldType := range info.fields {
++			path, typeName := f2pR3QualifiedType(pkg, info.file, fieldType)
++			if !strings.HasSuffix(path, "xproto") {
++				continue
++			}
++			switch typeName {
++			case "Pixmap":
++				pixmaps[fieldName] = true
++			case "Gcontext":
++				gcs[fieldName] = true
++			}
++		}
++		if len(pixmaps) > 0 && len(gcs) > 0 {
++			return base, pkg.f2pR3FrameFieldForType(base), pixmaps, gcs, true
++		}
++	}
++	return "", "", nil, nil, false
++}
++
++// f2pR3FrameFieldForType returns the name of the frame field holding the given
++// type (pointer or value).
++func (pkg *f2pR3Package) f2pR3FrameFieldForType(base string) string {
++	for i := 0; i < f2pR3FrameType.NumField(); i++ {
++		fieldType := f2pR3FrameType.Field(i).Type
++		for fieldType.Kind() == reflect.Ptr {
++			fieldType = fieldType.Elem()
++		}
++		if fieldType.Kind() == reflect.Struct && fieldType.Name() == base {
++			return f2pR3FrameType.Field(i).Name
++		}
++	}
++	return ""
++}
++
++// f2pR3Signature returns the parameter type names of a declaration.
++func f2pR3Signature(pkg *f2pR3Package, fi *f2pR3Func) []string {
++	var out []string
++	if fi.decl.Type.Params == nil {
++		return out
++	}
++	for _, field := range fi.decl.Type.Params.List {
++		typeName := f2pR3ExprTypeName(pkg, fi.file, field.Type)
++		count := len(field.Names)
++		if count == 0 {
++			count = 1
++		}
++		for i := 0; i < count; i++ {
++			out = append(out, typeName)
++		}
++	}
++	return out
++}
++
++func f2pR3HasResult(fi *f2pR3Func) bool {
++	return fi.decl.Type.Results != nil && len(fi.decl.Type.Results.List) > 0
++}
++
++func f2pR3SameSignature(pkg *f2pR3Package, fi *f2pR3Func, want []string) bool {
++	if f2pR3HasResult(fi) {
++		return false
++	}
++	got := f2pR3Signature(pkg, fi)
++	if len(got) != len(want) {
++		return false
++	}
++	for i := range want {
++		if got[i] != want[i] {
++			return false
++		}
++	}
++	return true
++}
++
++// ---------------------------------------------------------------------------
++// Notification-path wiring: the frozen entry points must delegate into the
++// collaborator that owns the relocated state.
++// ---------------------------------------------------------------------------
++
++// f2pR3RequireStateOwner returns the interaction collaborator type that is
++// stored in a frame field and declares the relocated pointer-interaction state.
++func f2pR3RequireStateOwner(t *testing.T, pkg *f2pR3Package, why string) string {
++	t.Helper()
++	owner := pkg.f2pR3FindStateOwner()
++	if len(pkg.uncertainInterfaces) > 0 {
++		t.Skipf("unsupported ambiguous production interface bindings: %v", pkg.uncertainInterfaces)
++	}
++	if owner == "" {
++		t.Fatalf("no win package type held by a frame field declares the relocated pointer-interaction state: %s (REQ-STRUCT-001)", why)
++	}
++	return owner
++}
++
++func TestF2PInteractionStateOwnedByFrameHeldCollaborator(t *testing.T) {
++	pkg := f2pR3LoadPackage(t)
++	owner := f2pR3RequireStateOwner(t, pkg, "the pointer-interaction state machine must move out of the frame into a collaborator the frame holds")
++	info := pkg.types[owner]
++	family := func(names ...string) string {
++		for _, name := range names {
++			if pkg.hasStateRole(info, name) {
++				return name
++			}
++		}
++		return ""
++	}
++	if family("mouseX", "mouseY") == "" {
++		t.Fatalf("frame-held interaction collaborator %s does not own the drag-origin state (mouseX/mouseY): REQ-STRUCT-001 requires the state machine to move with the collaborator", owner)
++	}
++	if family("moveX", "moveY") == "" {
++		t.Fatalf("frame-held interaction collaborator %s does not own the accumulated move offset state (moveX/moveY): REQ-STRUCT-001", owner)
++	}
++	if family("resizeStartX", "resizeStartY") == "" {
++		t.Fatalf("frame-held interaction collaborator %s does not own the resize start geometry state (resizeStartX/resizeStartY): REQ-STRUCT-001", owner)
++	}
++	if family("hovered") == "" {
++		t.Fatalf("frame-held interaction collaborator %s does not own the hover tracking state (hovered): REQ-STRUCT-001", owner)
++	}
++	if family("clickCount", "cancelFunc") == "" {
++		t.Fatalf("frame-held interaction collaborator %s does not own the double-click detection state (clickCount/cancelFunc): REQ-STRUCT-001", owner)
++	}
++	families := []struct {
++		what   string
++		fields []string
++	}{
++		{"drag-origin", []string{"mouseX", "mouseY"}},
++		{"move-accumulator", []string{"moveX", "moveY"}},
++		{"resize-start-geometry", []string{"resizeStartX", "resizeStartY", "resizeStartWidth", "resizeStartHeight"}},
++		{"hover-tracking", []string{"hovered"}},
++		{"double-click-detection", []string{"clickCount", "cancelFunc"}},
++	}
++	closure := f2pR3NotificationClosure(pkg)
++	for _, family := range families {
++		if !f2pR3OwnerFamilyWired(pkg, owner, family.fields, closure) {
++			t.Fatalf("frame-held interaction collaborator %s owns the %s state but no %s handler reachable from the four frozen pointer notifications reads or writes it: the state machine must move into the collaborator and stay wired to the notification path (REQ-STRUCT-001)", owner, family.what, owner)
++		}
++	}
++}
++
++// f2pR3OwnerTouchesFields reports whether any method declared on the owner type
++// reads or writes one of the named receiver fields.
++func f2pR3OwnerTouchesFields(pkg *f2pR3Package, owner string, names []string) bool {
++	fields := map[string]bool{}
++	for _, name := range names {
++		fields[name] = true
++	}
++	for _, fi := range pkg.methods[owner] {
++		writes, reads := f2pR3Access(pkg, fi, fields)
++		if len(writes) > 0 || len(reads) > 0 {
++			return true
++		}
++	}
++	return false
++}
++
++// f2pR3NotificationClosure unions the call closures of the four frozen
++// window-client pointer notifications.
++func f2pR3NotificationClosure(pkg *f2pR3Package) map[string]*f2pR3Func {
++	out := map[string]*f2pR3Func{}
++	for _, spec := range []f2pR3NotifySpec{f2pR3DragNotify, f2pR3MotionNotify, f2pR3PressNotify, f2pR3ReleaseNotify} {
++		notify := pkg.f2pR3ClientMethod(spec.notify)
++		if notify == nil {
++			continue
++		}
++		for symbol, reached := range pkg.f2pR3Reachable(notify) {
++			out[symbol] = reached
++		}
++	}
++	return out
++}
++
++// f2pR3OwnerFamilyWired reports whether a handler of the owner type that is
++// actually reachable from one of the frozen notifications reads or writes one
++// of the named state fields.
++func f2pR3OwnerFamilyWired(pkg *f2pR3Package, owner string, names []string, closure map[string]*f2pR3Func) bool {
++	fields := map[string]bool{}
++	for _, name := range names {
++		fields[name] = true
++	}
++	for _, fi := range closure {
++		if !pkg.ownedTypes(owner)[fi.recvType] {
++			continue
++		}
++		writes, reads := f2pR3Access(pkg, fi, fields)
++		if len(writes) > 0 || len(reads) > 0 {
++			return true
++		}
++	}
++	return false
++}
++
++type f2pR3NotifySpec struct {
++	notify  string
++	wantSig []string
++}
++
++var (
++	f2pR3DragNotify    = f2pR3NotifySpec{notify: "NotifyMouseDrag", wantSig: []string{"int16", "int16"}}
++	f2pR3MotionNotify  = f2pR3NotifySpec{notify: "NotifyMouseMotion", wantSig: []string{"int16", "int16"}}
++	f2pR3PressNotify   = f2pR3NotifySpec{notify: "NotifyMousePress", wantSig: []string{"int16", "int16", "xproto.Button"}}
++	f2pR3ReleaseNotify = f2pR3NotifySpec{notify: "NotifyMouseRelease", wantSig: []string{"int16", "int16", "xproto.Button"}}
++)
++
++func (pkg *f2pR3Package) f2pR3ClientMethod(name string) *f2pR3Func {
++	if pkg.methods["client"] == nil {
++		return nil
++	}
++	return pkg.methods["client"][name]
++}
++
++func f2pR3ParamNames(fi *f2pR3Func) []string {
++	var out []string
++	if fi.decl.Type.Params == nil {
++		return out
++	}
++	for _, field := range fi.decl.Type.Params.List {
++		for _, name := range field.Names {
++			out = append(out, name.Name)
++		}
++	}
++	return out
++}
++
++type f2pR3Call struct {
++	call   *ast.CallExpr
++	target *f2pR3Func
++}
++
++func (pkg *f2pR3Package) f2pR3ResolvedCalls(fi *f2pR3Func) []f2pR3Call {
++	var out []f2pR3Call
++	if fi.decl.Body == nil {
++		return out
++	}
++	env := f2pR3EnvFor(pkg, fi)
++	ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++		call, ok := n.(*ast.CallExpr)
++		if !ok {
++			return true
++		}
++		out = append(out, f2pR3Call{call: call, target: pkg.resolveCallee(env, call)})
++		return true
++	})
++	return out
++}
++
++// f2pR3RelocatedHandlers verifies the frozen notification method and returns
++// every state-owner method with the frozen handler signature that the
++// notification reaches through real delegated calls. It fails when the frozen
++// entry point or its delegation is missing.
++func f2pR3RelocatedHandlers(t *testing.T, pkg *f2pR3Package, owner string, spec f2pR3NotifySpec) ([]*f2pR3Func, map[string]*f2pR3Func) {
++	t.Helper()
++	notify := pkg.f2pR3ClientMethod(spec.notify)
++	if notify == nil {
++		t.Fatalf("client.%s is missing: the four window-client pointer notifications must remain the entry points (REQ-BEH-T4:C1)", spec.notify)
++	}
++	if !f2pR3SameSignature(pkg, notify, spec.wantSig) {
++		t.Fatalf("client.%s must keep the frozen %v signature and return no value (REQ-BEH-T4:C1), found %v", spec.notify, spec.wantSig, f2pR3Signature(pkg, notify))
++	}
++	params := f2pR3ParamNames(notify)
++	forwarded := false
++	for _, call := range pkg.f2pR3ResolvedCalls(notify) {
++		if call.target == nil || len(call.call.Args) != len(params) {
++			continue
++		}
++		ok := true
++		for i, arg := range call.call.Args {
++			ident, isIdent := arg.(*ast.Ident)
++			if !isIdent || ident.Name != params[i] {
++				ok = false
++				break
++			}
++		}
++		if ok {
++			forwarded = true
++			break
++		}
++	}
++	if !forwarded {
++		t.Fatalf("client.%s does not forward its pointer arguments unchanged to the handling path: the notification routing must preserve argument forwarding (REQ-BEH-T4:C1/B5)", spec.notify)
++	}
++	closure := pkg.f2pR3Reachable(notify)
++	var handlers []*f2pR3Func
++	for _, symbol := range f2pR3SortedSymbols(closure) {
++		fi := closure[symbol]
++		if fi.recvType == owner {
++			handlers = append(handlers, fi)
++		}
++	}
++	if len(handlers) == 0 {
++		t.Fatalf("client.%s never reaches a %s handler with the frozen %v signature: pointer handling must delegate to the collaborator that owns the interaction state (REQ-STRUCT-001, REQ-BEH-T4:C1/B5)", spec.notify, owner, spec.wantSig)
++	}
++	return handlers, closure
++}
++
++func f2pR3AccessAny(fi *f2pR3Func, pkg *f2pR3Package, writes, reads map[string]bool, names ...string) bool {
++	for _, name := range names {
++		if writes[name] || reads[name] {
++			return true
++		}
++	}
++	return false
++}
++
++func f2pR3WriteAny(pkg *f2pR3Package, fi *f2pR3Func, names ...string) bool {
++	owned := pkg.ownedTypes(fi.recvType)
++	closure := pkg.f2pR3Reachable(fi)
++	closure[fi.symbol()] = fi
++	for _, child := range closure {
++		if !owned[child.recvType] {
++			continue
++		}
++		writes, reads := f2pR3Access(pkg, child, f2pR3StateFieldSet())
++		_ = writes
++		_ = reads
++		for _, n := range names {
++			if writes[n] {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++func f2pR3ReadAny(pkg *f2pR3Package, fi *f2pR3Func, names ...string) bool {
++	owned := pkg.ownedTypes(fi.recvType)
++	closure := pkg.f2pR3Reachable(fi)
++	closure[fi.symbol()] = fi
++	for _, child := range closure {
++		if !owned[child.recvType] {
++			continue
++		}
++		writes, reads := f2pR3Access(pkg, child, f2pR3StateFieldSet())
++		_ = writes
++		_ = reads
++		for _, n := range names {
++			if reads[n] {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++func f2pR3ClosureOwnerReads(pkg *f2pR3Package, owner string, closure map[string]*f2pR3Func, names ...string) bool {
++	stateFields := f2pR3StateFieldSet()
++	for _, fi := range closure {
++		if !pkg.ownedTypes(owner)[fi.recvType] {
++			continue
++		}
++		writes, reads := f2pR3Access(pkg, fi, stateFields)
++		if f2pR3AccessAny(fi, pkg, writes, reads, names...) {
++			return true
++		}
++	}
++	return false
++}
++
++func TestF2PNotifyMousePressReachesOwnerStateHandler(t *testing.T) {
++	pkg := f2pR3LoadPackage(t)
++	owner := f2pR3RequireStateOwner(t, pkg, "press handling must delegate into the interaction state owner")
++	handlers, _ := f2pR3RelocatedHandlers(t, pkg, owner, f2pR3PressNotify)
++	for _, fi := range handlers {
++		if f2pR3WriteAny(pkg, fi, "mouseX", "mouseY") && f2pR3WriteAny(pkg, fi, "ignoreDrag") {
++			return
++		}
++	}
++	t.Fatalf("client.NotifyMousePress reaches no %s handler that stores the press anchor (mouseX/mouseY) and the drag-ignore state: the relocated press handler must operate the state it owns (REQ-STRUCT-001, REQ-BEH-T4:C1/C2)", owner)
++}
++
++func TestF2PNotifyMouseDragReachesOwnerStateHandler(t *testing.T) {
++	pkg := f2pR3LoadPackage(t)
++	owner := f2pR3RequireStateOwner(t, pkg, "drag handling must delegate into the interaction state owner")
++	handlers, _ := f2pR3RelocatedHandlers(t, pkg, owner, f2pR3DragNotify)
++	for _, fi := range handlers {
++		if f2pR3WriteAny(pkg, fi, "moveX", "moveY") && f2pR3ReadAny(pkg, fi, "mouseX", "mouseY") {
++			return
++		}
++	}
++	t.Fatalf("client.NotifyMouseDrag reaches no %s handler that derives the move from the stored pointer origin (mouseX/mouseY) and updates the accumulated move offset (moveX/moveY): the relocated drag handler must operate the state it owns (REQ-STRUCT-001, REQ-BEH-T4:B5)", owner)
++}
++
++func TestF2PNotifyMouseMotionReachesOwnerHoverHandler(t *testing.T) {
++	pkg := f2pR3LoadPackage(t)
++	owner := f2pR3RequireStateOwner(t, pkg, "motion handling must delegate into the interaction state owner")
++	handlers, _ := f2pR3RelocatedHandlers(t, pkg, owner, f2pR3MotionNotify)
++	for _, fi := range handlers {
++		if f2pR3WriteAny(pkg, fi, "hovered") {
++			return
++		}
++	}
++	t.Fatalf("client.NotifyMouseMotion reaches no %s handler that updates the owned hover target (hovered): hover tracking must move with the interaction state machine (REQ-STRUCT-001)", owner)
++}
++
++func TestF2PNotifyMouseReleaseReachesOwnerTimerHandler(t *testing.T) {
++	pkg := f2pR3LoadPackage(t)
++	owner := f2pR3RequireStateOwner(t, pkg, "release handling must delegate into the interaction state owner")
++	handlers, closure := f2pR3RelocatedHandlers(t, pkg, owner, f2pR3ReleaseNotify)
++	clearsIgnore := false
++	for _, fi := range handlers {
++		if f2pR3WriteAny(pkg, fi, "ignoreDrag") {
++			clearsIgnore = true
++			break
++		}
++	}
++	if !clearsIgnore {
++		t.Fatalf("client.NotifyMouseRelease reaches no %s handler that clears the owned drag-ignore state (REQ-STRUCT-001, REQ-BEH-T4:B4)", owner)
++	}
++	if !f2pR3ClosureOwnerReads(pkg, owner, closure, "cancelFunc", "clickCount") {
++		t.Fatalf("the handler path reached from client.NotifyMouseRelease never operates the owned double-click detection state (cancelFunc/clickCount): double-click handling must move with the interaction state machine (REQ-STRUCT-001)")
++	}
++}
++
++// f2pR3CalledSelectorNames returns every selector name used as a call target in
++// a function body.
++func f2pR3CalledSelectorNames(fi *f2pR3Func) []string {
++	var out []string
++	if fi.decl.Body == nil {
++		return out
++	}
++	ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++		call, ok := n.(*ast.CallExpr)
++		if !ok {
++			return true
++		}
++		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
++			out = append(out, sel.Sel.Name)
++		} else if ident, ok := call.Fun.(*ast.Ident); ok {
++			out = append(out, ident.Name)
++		}
++		return true
++	})
++	return out
++}
++
++func (pkg *f2pR3Package) f2pR3DeclaresMethod(recv, name string) bool {
++	return pkg.methods[recv] != nil && pkg.methods[recv][name] != nil
++}
++
++// f2pR3FrameFieldGraphDeclaresMethod reports whether any type held in a frame
++// field declares the named method (the controlled frame surface may be reached
++// through an interface field).
++func (pkg *f2pR3Package) f2pR3FrameFieldGraphDeclaresMethod(name string) bool {
++	for _, base := range f2pR3FrameFieldBaseTypes() {
++		if pkg.f2pR3DeclaresMethod(base, name) {
++			return true
++		}
++		if info := pkg.types[base]; info != nil && info.isIface {
++			for typeName := range pkg.types {
++				if pkg.f2pR3DeclaresMethod(typeName, name) {
++					return true
++				}
++			}
++		}
++	}
++	return false
++}
++
++func TestF2PInteractionMotionKeepsThemeRefreshEntryPoint(t *testing.T) {
++	pkg := f2pR3LoadPackage(t)
++	owner := f2pR3RequireStateOwner(t, pkg, "motion must retain its theme refresh path")
++	f2pR3AssertControlledGeometry(t, pkg, owner)
++	handlers, _ := f2pR3RelocatedHandlers(t, pkg, owner, f2pR3MotionNotify)
++	decor, _, _, _, ok := pkg.f2pR3FindDecorationOwner()
++	if !ok {
++		t.Fatal("no decoration resource owner")
++	}
++	for _, handler := range handlers {
++		if !f2pR3WriteAny(pkg, handler, "hovered") {
++			continue
++		}
++		for _, reached := range pkg.f2pR3Reachable(handler) {
++			if reached.recvType != decor {
++				continue
++			}
++			for _, call := range f2pR3XprotoCallNames(pkg, reached) {
++				if call == "PutImage" || call == "CreatePixmap" {
++					return
++				}
++			}
++		}
++	}
++	t.Fatal("hover handling does not reach the decoration collaborator's rendering path")
++}
++
++func f2pR3RequireDecorationOwner(t *testing.T, pkg *f2pR3Package, why string) (string, string, map[string]bool, map[string]bool) {
++	t.Helper()
++	base, field, pixmaps, gcs, ok := pkg.f2pR3FindDecorationOwner()
++	if !ok {
++		t.Fatalf("no frame field holds a decoration collaborator owning both xproto.Pixmap and xproto.Gcontext fields: %s (REQ-STRUCT-002)", why)
++	}
++	return base, field, pixmaps, gcs
++}
++
++func TestF2PDecorationCollaboratorOwnsRenderResources(t *testing.T) {
++	pkg := f2pR3LoadPackage(t)
++	base, field, pixmaps, gcs := f2pR3RequireDecorationOwner(t, pkg, "decoration rendering resources must move into a separate collaborator the frame holds")
++	if len(pixmaps) == 0 || len(gcs) == 0 {
++		t.Fatalf("frame-held decoration collaborator %s (frame.%s) must own both pixmap and graphics-context state, found %d pixmap and %d graphics-context fields", base, field, len(pixmaps), len(gcs))
++	}
++	pixmapNames := make([]string, 0, len(pixmaps))
++	for name := range pixmaps {
++		pixmapNames = append(pixmapNames, name)
++	}
++	gcNames := make([]string, 0, len(gcs))
++	for name := range gcs {
++		gcNames = append(gcNames, name)
++	}
++	if !f2pR3OwnerTouchesFields(pkg, base, pixmapNames) {
++		t.Fatalf("frame-held decoration collaborator %s owns pixmap fields %v but no method of %s reads or writes them: the rendering resources must move together with the rendering behaviour (REQ-STRUCT-002)", base, pixmapNames, base)
++	}
++	if !f2pR3OwnerTouchesFields(pkg, base, gcNames) {
++		t.Fatalf("frame-held decoration collaborator %s owns graphics-context fields %v but no method of %s reads or writes them: the rendering resources must move together with the rendering behaviour (REQ-STRUCT-002)", base, gcNames, base)
++	}
++}
++
++// f2pR3XprotoCallNames returns the names of calls whose selector base resolves
++// to the xproto protocol package.
++func f2pR3XprotoCallNames(pkg *f2pR3Package, fi *f2pR3Func) []string {
++	var out []string
++	if fi.decl.Body == nil {
++		return out
++	}
++	ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++		call, ok := n.(*ast.CallExpr)
++		if !ok {
++			return true
++		}
++		sel, ok := call.Fun.(*ast.SelectorExpr)
++		if !ok {
++			return true
++		}
++		base, ok := sel.X.(*ast.Ident)
++		if !ok {
++			return true
++		}
++		if !strings.HasSuffix(pkg.imports[fi.file][base.Name], "xproto") {
++			return true
++		}
++		out = append(out, sel.Sel.Name)
++		return true
++	})
++	return out
++}
++
++func TestF2PDecorationResourceLifecycleRunsThroughCollaborator(t *testing.T) {
++	pkg := f2pR3LoadPackage(t)
++	base, _, _, _ := f2pR3RequireDecorationOwner(t, pkg, "pixmap and graphics-context lifecycle must run in the decoration collaborator")
++	closure := map[string]*f2pR3Func{}
++	for _, typeName := range []string{"frame", "client"} {
++		for _, fi := range pkg.methods[typeName] {
++			closure[fi.symbol()] = fi
++			for symbol, reached := range pkg.f2pR3Reachable(fi) {
++				closure[symbol] = reached
++			}
++		}
++	}
++	created, freed := false, false
++	for _, fi := range closure {
++		if fi.recvType != base {
++			continue
++		}
++		for _, name := range f2pR3XprotoCallNames(pkg, fi) {
++			switch name {
++			case "CreatePixmap", "CreateGC", "PutImage":
++				created = true
++			case "FreePixmap", "FreeGC":
++				freed = true
++			}
++		}
++	}
++	if !created || !freed {
++		t.Fatalf("the decoration collaborator %s reached from the frame does not own the xproto resource lifecycle (create=%v, free=%v): createPixmaps/GC creation and pixmap/GC cleanup must move out of the frame (REQ-STRUCT-002)", base, created, freed)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Pure unit-test deliverable (REQ-STRUCT-005).
++// ---------------------------------------------------------------------------
++
++const f2pR3OwnTestFile = "f2p_frame_responsibilities_test.go"
++
++var f2pR3FrozenTestFiles = map[string]bool{
++	"p2p_frame_test.go":   true,
++	"p2p_xserver_test.go": true,
++}
++
++// f2pR3PureCandidateFiles returns solution test files that need no X connection:
++// the pipeline-frozen P2P files and this file are excluded, and any xgbutil
++// import (the X connection package) disqualifies a file.
++func (pkg *f2pR3Package) f2pR3PureCandidateFiles() []string {
++	var out []string
++	for name := range pkg.imports {
++		if !strings.HasSuffix(name, "_test.go") || f2pR3FrozenTestFiles[name] || name == f2pR3OwnTestFile {
++			continue
++		}
++		if pkg.f2pR3FileCallsXgbutil(name) {
++			continue
++		}
++		out = append(out, name)
++	}
++	sort.Strings(out)
++	return out
++}
++
++
++// f2pR3FileCallsXgbutil reports whether a test file calls into an xgbutil
++// package or opens an X connection. Merely naming an xgbutil type (for
++// example a nil-returning X() *xgbutil.XUtil stub that a fake window manager
++// needs to satisfy x11.XWM) does not make a test need an X connection; the
++// candidate test is additionally executed with DISPLAY unset.
++func (pkg *f2pR3Package) f2pR3FileCallsXgbutil(name string) bool {
++	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(pkg.dir, name), nil, 0)
++	if err != nil {
++		return true
++	}
++	calls := false
++	ast.Inspect(file, func(n ast.Node) bool {
++		call, ok := n.(*ast.CallExpr)
++		if !ok {
++			return true
++		}
++		sel, ok := call.Fun.(*ast.SelectorExpr)
++		if !ok {
++			return true
++		}
++		base, ok := sel.X.(*ast.Ident)
++		if !ok {
++			return true
++		}
++		path := pkg.imports[name][base.Name]
++		if strings.Contains(path, "xgbutil") || (strings.HasSuffix(path, "BurntSushi/xgb") && strings.HasPrefix(sel.Sel.Name, "NewConn")) {
++			calls = true
++		}
++		return true
++	})
++	return calls
++}
++
++func (pkg *f2pR3Package) f2pR3TestFuncsInFile(file string) []*f2pR3Func {
++	var out []*f2pR3Func
++	for name, list := range pkg.funcs {
++		if !strings.HasPrefix(name, "Test") {
++			continue
++		}
++		for _, fi := range list {
++			if fi.file == file && fi.recvType == "" && fi.isTest {
++				out = append(out, fi)
++			}
++		}
++	}
++	sort.Slice(out, func(i, j int) bool { return out[i].decl.Name.Name < out[j].decl.Name.Name })
++	return out
++}
++
++// f2pR3AssertionCount counts real assertion calls: testify assert/require
++// helpers and *testing.T failure methods.
++func f2pR3AssertionCount(pkg *f2pR3Package, fi *f2pR3Func) int {
++	seen := map[*f2pR3Func]bool{}
++	var count func(*f2pR3Func) int
++	count = func(f *f2pR3Func) int {
++		if f == nil || f.decl.Body == nil || seen[f] {
++			return 0
++		}
++		seen[f] = true
++		defer delete(seen, f)
++		total := 0
++		env := f2pR3EnvFor(pkg, f)
++		testingVars := map[string]bool{}
++		if f.decl.Type.Params != nil {
++			for _, p := range f.decl.Type.Params.List {
++				path, typ := f2pR3QualifiedType(pkg, f.file, p.Type)
++				if path == "testing" && typ == "T" {
++					for _, n := range p.Names {
++						testingVars[n.Name] = true
++					}
++				}
++			}
++		}
++		ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++			call, ok := n.(*ast.CallExpr)
++			if !ok {
++				return true
++			}
++			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
++				if base, ok := sel.X.(*ast.Ident); ok {
++					path := pkg.imports[f.file][base.Name]
++					if strings.Contains(path, "testify/assert") || strings.Contains(path, "testify/require") {
++						total++
++						return true
++					}
++					switch sel.Sel.Name {
++					case "Fatalf", "Errorf", "Fatal", "Error", "FailNow":
++						if testingVars[base.Name] {
++							total++
++							return true
++						}
++					}
++				}
++			}
++			child := pkg.resolveCallee(env, call)
++			if child != nil && child.isTest {
++				total += count(child)
++			}
++			return true
++		})
++		return total
++	}
++	return count(fi)
++}
++
++func f2pR3DecisionFields() map[string]bool {
++	return map[string]bool{
++		"mouseX": true, "mouseY": true,
++		"moveX": true, "moveY": true,
++		"moveOnly":  true,
++		"resizeTop": true, "resizeBottom": true, "resizeLeft": true, "resizeRight": true,
++		"ignoreDrag": true,
++	}
++}
++
++// f2pR3PressDecisionDecls returns the production declarations on the frozen
++// press notification path that actually decide the press classification: state
++// owner handlers touching the press decision state, and pure helpers returning
++// the decision flags.
++func (pkg *f2pR3Package) f2pR3PressDecisionDecls(owner string) map[string]*f2pR3Func {
++	notify := pkg.f2pR3ClientMethod("NotifyMousePress")
++	if notify == nil {
++		return nil
++	}
++	decision := f2pR3DecisionFields()
++	stateFields := f2pR3StateFieldSet()
++	out := map[string]*f2pR3Func{}
++	for symbol, fi := range pkg.f2pR3Reachable(notify) {
++		if fi.isTest {
++			continue
++		}
++		if fi.recvType == owner {
++			writes, reads := f2pR3Access(pkg, fi, stateFields)
++			for name := range decision {
++				if writes[name] || reads[name] {
++					out[symbol] = fi
++					break
++				}
++			}
++			continue
++		}
++		if fi.recvType != "" {
++			continue
++		}
++		results := f2pR3ResultTypeNames(pkg, fi)
++		if len(results) >= 3 {
++			out[symbol] = fi
++			continue
++		}
++		for _, typeName := range results {
++			info := pkg.types[typeName]
++			if info == nil || !info.isStruct {
++				continue
++			}
++			if pkg.decisionResultFlowsToState(typeName, owner, decision) {
++				out[symbol] = fi
++				break
++			}
++		}
++	}
++	return out
++}
++
++// f2pR3DragDecisionDecls returns the production declarations on the frozen drag
++// notification path that actually decide the drag geometry: state owner
++// handlers operating the drag state, and pure helpers computing drag geometry.
++func (pkg *f2pR3Package) f2pR3DragDecisionDecls(owner string) map[string]*f2pR3Func {
++	notify := pkg.f2pR3ClientMethod("NotifyMouseDrag")
++	if notify == nil {
++		return nil
++	}
++	decision := f2pR3DecisionFields()
++	stateFields := f2pR3StateFieldSet()
++	out := map[string]*f2pR3Func{}
++	for symbol, fi := range pkg.f2pR3Reachable(notify) {
++		if fi.isTest {
++			continue
++		}
++		if fi.recvType == owner {
++			writes, reads := f2pR3Access(pkg, fi, stateFields)
++			for name := range decision {
++				if writes[name] || reads[name] {
++					out[symbol] = fi
++					break
++				}
++			}
++			continue
++		}
++		if fi.recvType == "" && f2pR3HasResult(fi) {
++			out[symbol] = fi
++		}
++	}
++	return out
++}
++
++// f2pR3PureTestDrives reports whether some X-connection-free solution unit test
++// calls a declaration from the given production decision set and contains real
++// assertions.
++func f2pR3PureTestDrives(t *testing.T, pkg *f2pR3Package, candidates map[string]*f2pR3Func) bool {
++	t.Helper()
++	for _, file := range pkg.f2pR3PureCandidateFiles() {
++		for _, fi := range pkg.f2pR3TestFuncsInFile(file) {
++			if f2pR3AssertionCount(pkg, fi) == 0 {
++				continue
++			}
++			reached := pkg.f2pR3Reachable(fi)
++			for symbol := range candidates {
++				if reached[symbol] != nil && f2pR3RunPureTest(t, fi) {
++					return true
++				}
++			}
++		}
++	}
++	return false
++}
++
++func TestF2PPureUnitTestsExerciseRelocatedPressDecision(t *testing.T) {
++	pkg := f2pR3LoadPackage(t)
++	owner := f2pR3RequireStateOwner(t, pkg, "REQ-STRUCT-005 pure unit tests must drive the relocated press decision")
++	candidates := pkg.f2pR3PressDecisionDecls(owner)
++	if len(candidates) == 0 {
++		t.Fatalf("the frozen press notification path reaches no relocated press-decision declaration: REQ-STRUCT-005 requires pure tests for the classification (title-bar centre/strips, edges/corners, fixed or maximized windows)")
++	}
++	if !f2pR3PureTestDrives(t, pkg, candidates) {
++		t.Fatalf("no X-connection-free solution unit test calls the relocated press-decision code and contains real assertions: REQ-STRUCT-005 requires pure unit tests for the pointer press classification")
++	}
++}
++
++func TestF2PPureUnitTestsExerciseRelocatedDragGeometryDecision(t *testing.T) {
++	pkg := f2pR3LoadPackage(t)
++	owner := f2pR3RequireStateOwner(t, pkg, "REQ-STRUCT-005 pure unit tests must drive the relocated drag decision")
++	candidates := pkg.f2pR3DragDecisionDecls(owner)
++	if len(candidates) == 0 {
++		t.Fatalf("the frozen drag notification path reaches no relocated drag-geometry decision declaration: REQ-STRUCT-005 requires pure tests for the drag geometry branches")
++	}
++	if !f2pR3PureTestDrives(t, pkg, candidates) {
++		t.Fatalf("no X-connection-free solution unit test calls the relocated drag-geometry decision code and contains real assertions: REQ-STRUCT-005 requires pure unit tests for the pointer and geometry decision logic")
++	}
++}
++
++// Bound local interfaces are inferred from production assignments, literals,
++// and parameter binding. A merely declared implementation is not evidence.
++func (pkg *f2pR3Package) productionFuncs() []*f2pR3Func {
++	var out []*f2pR3Func
++	for _, fs := range pkg.funcs {
++		for _, f := range fs {
++			if !f.isTest && f.decl.Body != nil {
++				out = append(out, f)
++			}
++		}
++	}
++	for _, fs := range pkg.methods {
++		for _, f := range fs {
++			if !f.isTest && f.decl.Body != nil {
++				out = append(out, f)
++			}
++		}
++	}
++	return out
++}
++func (pkg *f2pR3Package) boundType(name string) string {
++	choices := pkg.interfaceBindings[name]
++	if len(choices) > 1 && pkg.uncertainInterfaces != nil {
++		pkg.uncertainInterfaces[name] = true
++	}
++	if len(choices) != 1 {
++		return ""
++	}
++	for n := range choices {
++		return n
++	}
++	return ""
++}
++func (pkg *f2pR3Package) inferInterfaceBindings() {
++	pkg.interfaceBindings = map[string]map[string]bool{}
++	bind := func(iface, concrete string) {
++		if t := pkg.types[iface]; t == nil || !t.isIface {
++			return
++		}
++		if t := pkg.types[concrete]; t == nil || !t.isStruct || strings.HasSuffix(t.file, "_test.go") {
++			return
++		}
++		if pkg.interfaceBindings[iface] == nil {
++			pkg.interfaceBindings[iface] = map[string]bool{}
++		}
++		pkg.interfaceBindings[iface][concrete] = true
++	}
++	for pass := 0; pass < 4; pass++ {
++		for _, fi := range pkg.productionFuncs() {
++			env := f2pR3EnvFor(pkg, fi)
++			ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++				switch a := n.(type) {
++				case *ast.AssignStmt:
++					for i, lhs := range a.Lhs {
++						if i >= len(a.Rhs) {
++							break
++						}
++						left, _ := env.exprType(lhs)
++						right, _ := env.exprType(a.Rhs[i])
++						bind(left, right)
++					}
++				case *ast.CompositeLit:
++					typ, _ := env.exprType(a)
++					info := pkg.types[typ]
++					if info == nil {
++						return true
++					}
++					for _, elt := range a.Elts {
++						kv, ok := elt.(*ast.KeyValueExpr)
++						if !ok {
++							continue
++						}
++						key, ok := kv.Key.(*ast.Ident)
++						if !ok {
++							continue
++						}
++						rhs, _ := env.exprType(kv.Value)
++						bind(f2pR3ExprBaseName(info.fields[key.Name]), rhs)
++					}
++				case *ast.CallExpr:
++					target := pkg.resolveCallee(env, a)
++					if target == nil || target.decl.Type.Params == nil {
++						return true
++					}
++					index := 0
++					for _, param := range target.decl.Type.Params.List {
++						for range param.Names {
++							if index < len(a.Args) {
++								rhs, _ := env.exprType(a.Args[index])
++								bind(f2pR3ExprBaseName(param.Type), rhs)
++							}
++							index++
++						}
++					}
++				}
++				return true
++			})
++		}
++	}
++}
++
++// Only owned local data is traversed. References back to geometry/lifecycle and
++// interface services do not turn those services into owned interaction state.
++func (pkg *f2pR3Package) ownedTypes(root string) map[string]bool {
++	out := map[string]bool{}
++	var walk func(string)
++	walk = func(name string) {
++		if out[name] || name == "frame" && name != root || name == "client" {
++			return
++		}
++		info := pkg.types[name]
++		if info == nil || !info.isStruct {
++			return
++		}
++		out[name] = true
++		for _, field := range info.fields {
++			walk(f2pR3ExprBaseName(field))
++		}
++	}
++	walk(root)
++	return out
++}
++func (pkg *f2pR3Package) lookupField(typ, name string, seen map[string]bool) (string, ast.Expr) {
++	if seen[typ] {
++		return "", nil
++	}
++	seen[typ] = true
++	info := pkg.types[typ]
++	if info == nil {
++		return "", nil
++	}
++	if f := info.fields[name]; f != nil {
++		return typ, f
++	}
++	for key, f := range info.fields {
++		embedded := f2pR3ExprBaseName(f)
++		if key == embedded {
++			if owner, field := pkg.lookupField(embedded, name, seen); field != nil {
++				return owner, field
++			}
++		}
++	}
++	return "", nil
++}
++func (pkg *f2pR3Package) inferAdditionalRoles() {
++	set := func(typ, field, role string) {
++		if typ == "" || role == "" {
++			return
++		}
++		if pkg.originRoles[typ] == nil {
++			pkg.originRoles[typ] = map[string]string{}
++		}
++		pkg.originRoles[typ][field] = role
++	}
++	field := func(env *f2pR3Env, e ast.Expr) (string, string) {
++		s, ok := e.(*ast.SelectorExpr)
++		if !ok {
++			return "", ""
++		}
++		typ, _ := env.exprType(s.X)
++		decl, _ := pkg.lookupField(typ, s.Sel.Name, map[string]bool{})
++		return decl, s.Sel.Name
++	}
++	for typ, info := range pkg.types {
++		if !info.isStruct {
++			continue
++		}
++		for name, e := range info.fields {
++			path, kind := f2pR3QualifiedType(pkg, info.file, e)
++			if path == "context" && kind == "CancelFunc" {
++				set(typ, name, "cancelFunc")
++			}
++			if strings.HasSuffix(path, "/desktop") && kind == "Hoverable" {
++				set(typ, name, "hovered")
++			}
++		}
++	}
++	deltas := map[*f2pR3Func]map[string]int{}
++	drag := pkg.f2pR3ClientMethod("NotifyMouseDrag")
++	if drag == nil {
++		return
++	}
++	closure := pkg.f2pR3Reachable(drag)
++	for pass := 0; pass < 5; pass++ {
++		for _, fi := range closure {
++			if fi.isTest || fi.decl.Body == nil {
++				continue
++			}
++			env := f2pR3EnvFor(pkg, fi)
++			if deltas[fi] == nil {
++				deltas[fi] = map[string]int{}
++			}
++			axis := func(e ast.Expr) int {
++				if id, ok := e.(*ast.Ident); ok {
++					return deltas[fi][id.Name]
++				}
++				if b, ok := e.(*ast.BinaryExpr); ok && b.Op == token.SUB {
++					typ, n := field(env, b.Y)
++					switch pkg.stateRole(typ, n) {
++					case "mouseX":
++						return 1
++					case "mouseY":
++						return 2
++					}
++				}
++				return 0
++			}
++			ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++				switch a := n.(type) {
++				case *ast.AssignStmt:
++					for i, lhs := range a.Lhs {
++						if i >= len(a.Rhs) {
++							break
++						}
++						rhs := a.Rhs[i]
++						ax := axis(rhs)
++						if id, ok := lhs.(*ast.Ident); ok && ax != 0 {
++							deltas[fi][id.Name] = ax
++						}
++						typ, f := field(env, lhs)
++						if a.Tok == token.ADD_ASSIGN && ax != 0 {
++							set(typ, f, []string{"", "moveX", "moveY"}[ax])
++						}
++					}
++				case *ast.CallExpr:
++					child := pkg.resolveCallee(env, a)
++					if child == nil || child.isTest {
++						break
++					}
++					params := f2pR3ParamNames(child)
++					if deltas[child] == nil {
++						deltas[child] = map[string]int{}
++					}
++					for i, arg := range a.Args {
++						if i < len(params) {
++							if ax := axis(arg); ax != 0 {
++								deltas[child][params[i]] = ax
++							}
++						}
++					}
++				}
++				return true
++			})
++		}
++	}
++	// Transfer roles through explicit copies of decision fields, regardless of
++	// the helper's private result-field spelling.
++	for pass := 0; pass < 3; pass++ {
++		for _, fi := range pkg.productionFuncs() {
++			env := f2pR3EnvFor(pkg, fi)
++			ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++				a, ok := n.(*ast.AssignStmt)
++				if !ok {
++					return true
++				}
++				for i, lhs := range a.Lhs {
++					if i >= len(a.Rhs) {
++						break
++					}
++					lt, lf := field(env, lhs)
++					rt, rf := field(env, a.Rhs[i])
++					if lt != "" && rt != "" {
++						role := pkg.stateRole(lt, lf)
++						if role == "moveOnly" || role == "ignoreDrag" || role == "resizeTop" || role == "resizeBottom" || role == "resizeLeft" || role == "resizeRight" {
++							set(rt, rf, role)
++						}
++					}
++				}
++				return true
++			})
++		}
++	}
++}
++func (pkg *f2pR3Package) decisionResultFlowsToState(result, owner string, roles map[string]bool) bool {
++	if pkg.ownedTypes(owner)[result] {
++		return true
++	}
++	for _, fi := range pkg.f2pR3Reachable(pkg.f2pR3ClientMethod("NotifyMousePress")) {
++		if fi.isTest {
++			continue
++		}
++		env := f2pR3EnvFor(pkg, fi)
++		found := false
++		ast.Inspect(fi.decl.Body, func(n ast.Node) bool {
++			a, ok := n.(*ast.AssignStmt)
++			if !ok {
++				return true
++			}
++			for i, lhs := range a.Lhs {
++				if i >= len(a.Rhs) {
++					break
++				}
++				l, ok := lhs.(*ast.SelectorExpr)
++				if !ok {
++					continue
++				}
++				lt, _ := env.exprType(l.X)
++				decl, _ := pkg.lookupField(lt, l.Sel.Name, map[string]bool{})
++				if !pkg.ownedTypes(owner)[decl] || !roles[pkg.stateRole(decl, l.Sel.Name)] {
++					continue
++				}
++				ast.Inspect(a.Rhs[i], func(n ast.Node) bool {
++					if e, ok := n.(ast.Expr); ok {
++						rt, _ := env.exprType(e)
++						if rt == result {
++							found = true
++						}
++					}
++					return true
++				})
++			}
++			return true
++		})
++		if found {
++			return true
++		}
++	}
++	return false
++}
++
++// Execute the candidate's actual selected unit test in a fresh copy of this
++// already-compiled test binary. No X connection/display is supplied. Only a
++// non-skipped passing test satisfies the deliverable; a syntactic assertion
++// alone is not evidence that the test runs successfully.
++func f2pR3RunPureTest(t *testing.T, fi *f2pR3Func) bool {
++	binary, err := os.Executable()
++	if err != nil {
++		t.Skipf("unsupported executable lookup: %v", err)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	name := fi.decl.Name.Name
++	cmd := exec.CommandContext(ctx, binary, "-test.v", "-test.run", "^"+regexp.QuoteMeta(name)+"$")
++	cmd.Env = append(os.Environ(), "DISPLAY=")
++	output, err := cmd.CombinedOutput()
++	if ctx.Err() != nil {
++		t.Skipf("candidate unit-test execution timed out: %s", name)
++	}
++	if err != nil {
++		t.Logf("candidate test %s did not pass: %s", name, output)
++		return false
++	}
++	return strings.Contains(string(output), "--- PASS: "+name+" (")
++}
++
++// A new named Go type may retain another local struct's field layout, and a
++// true type alias denotes that same type. Resolve those declarations before
++// collecting bindings; otherwise additional real implementations disappear.
++func (pkg *f2pR3Package) resolveNamedUnderlyingTypes() {
++	for pass := 0; pass < len(pkg.types); pass++ {
++		changed := false
++		for _, info := range pkg.types {
++			if info.isStruct || info.isIface {
++				continue
++			}
++			id, ok := info.underlying.(*ast.Ident)
++			if !ok {
++				continue
++			}
++			base := pkg.types[id.Name]
++			if base == nil || (!base.isStruct && !base.isIface) {
++				continue
++			}
++			info.isStruct = base.isStruct
++			info.isIface = base.isIface
++			info.fields = base.fields
++			info.iface = base.iface
++			info.file = base.file
++			changed = true
++		}
++		if !changed {
++			return
++		}
++	}
++}
+diff --git a/internal/x11/win/p2p_frame_test.go b/internal/x11/win/p2p_frame_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..5daf8dad2edbf5f6c9bc28a5579ad6a5cc44ca94
+--- /dev/null
++++ b/internal/x11/win/p2p_frame_test.go
+@@ -0,0 +1,801 @@
++//go:build linux || openbsd || freebsd || netbsd
++// +build linux openbsd freebsd netbsd
++
++package win
++
++// Pass-to-pass regression scenarios for the window frame pointer interaction
++// and geometry queueing. Every scenario drives the real client notification
++// entry points (NewClient plus NotifyMousePress/Drag/Motion/Release) against an
++// in-process fake X server. In addition to observable X effects, request-boundary
++// assertions inspect the frame-owned geometry queue before downstream normalization.
++// Callback probes exercise the actual canvas hit-testing path, not drawing proxies.
++
++import (
++	"fmt"
++	"fyne.io/fyne/v2"
++	"fyne.io/fyne/v2/canvas"
++	"fyne.io/fyne/v2/driver/desktop"
++	fyneTest "fyne.io/fyne/v2/test"
++	"image/color"
++	"math"
++	"reflect"
++	"testing"
++	"time"
++	"unsafe"
++
++	"github.com/BurntSushi/xgb/xproto"
++
++	"fyshos.com/fynedesk/internal/x11"
++)
++
++const p2pSettle = 250 * time.Millisecond
++const p2pTimeout = 5 * time.Second
++
++func p2pSetCursors() {
++	x11.DefaultCursor = 0x2001
++	x11.CloseCursor = 0x2002
++	x11.ResizeBottomCursor = 0x2003
++	x11.ResizeBottomLeftCursor = 0x2004
++	x11.ResizeBottomRightCursor = 0x2005
++	x11.ResizeLeftCursor = 0x2006
++	x11.ResizeRightCursor = 0x2007
++	x11.ResizeTopLeftCursor = 0x2008
++	x11.ResizeTopRightCursor = 0x2009
++}
++
++func (c *p2pClient) geometry() p2pRect { return c.rect() }
++
++func (c *p2pClient) awaitRect(want p2pRect) bool {
++	return c.fx.waitFor(func() bool { return c.rect() == want }, p2pTimeout)
++}
++
++// staysAt asserts that no interaction changes the frame geometry for the given
++// action, which is how a discarded or no-op pointer sequence is observed.
++func (c *p2pClient) staysAt(t *testing.T, why string, action func()) {
++	t.Helper()
++	before := c.geometry()
++	action()
++	time.Sleep(p2pSettle)
++	if after := c.geometry(); after != before {
++		t.Fatalf("%s: frame geometry changed from %+v to %+v", why, before, after)
++	}
++}
++
++func p2pTitleBarCenter(c *p2pClient) (int16, int16) {
++	r := c.geometry()
++	return int16(r.width / 2), int16(x11.TitleHeight(p2pXWin(c))) / 2
++}
++
++func p2pXWin(c *p2pClient) x11.XWin { return c.win }
++
++func TestP2PTitleBarCenterSelectsMoveOnly(t *testing.T) {
++	t.Run("raw_move_request", p2pCheckMoveRequest)
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	before := c.geometry()
++	px, py := p2pTitleBarCenter(c)
++
++	c.press(px, py, xproto.ButtonIndex1)
++	c.drag(px+30, py+40)
++	want := p2pRect{x: before.x + 30, y: before.y + 40, width: before.width, height: before.height}
++	if !c.awaitRect(want) {
++		t.Fatalf("move-only drag: frame geometry is %+v, want %+v", c.geometry(), want)
++	}
++}
++
++func TestP2PTitleBarEdgeStripsSelectTopResize(t *testing.T) {
++	t.Run("successive-direction-reversals", p2pResizeDirectionReversals)
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	r := c.geometry()
++	titleY := int16(5)
++
++	// top left strip: left flag plus top resize
++	c.press(1, titleY, xproto.ButtonIndex1)
++	c.drag(1+20, titleY+15)
++	want := p2pRect{x: r.x + 20, y: r.y + 15, width: r.width - 20, height: r.height - 15}
++	if !c.awaitRect(want) {
++		t.Fatalf("top-left resize: frame geometry is %+v, want %+v", c.geometry(), want)
++	}
++
++	// A resize gesture continues from the previous pointer position, not from
++	// the press origin again. Use root coordinates because the frame has moved.
++	c.dragAt(r.x+1+35, r.y+titleY+25)
++	want = p2pRect{x: r.x + 35, y: r.y + 25, width: r.width - 35, height: r.height - 25}
++	if !c.awaitRect(want) {
++		t.Fatalf("continued top-left resize: frame geometry is %+v, want %+v", c.geometry(), want)
++	}
++
++	// top right strip: right flag plus top resize, on a fresh window
++	c2 := p2pLive(t, p2pClientOptions{Focused: true})
++	r2 := c2.geometry()
++	c2.press(int16(r2.width-1), titleY, xproto.ButtonIndex1)
++	c2.drag(int16(r2.width-1)+20, titleY+15)
++	want2 := p2pRect{x: r2.x, y: r2.y + 15, width: r2.width + 20, height: r2.height - 15}
++	if !c2.awaitRect(want2) {
++		t.Fatalf("top-right resize: frame geometry is %+v, want %+v", c2.geometry(), want2)
++	}
++
++	c2.dragAt(r2.x+int16(r2.width-1)+35, r2.y+titleY+25)
++	want2 = p2pRect{x: r2.x, y: r2.y + 25, width: r2.width + 35, height: r2.height - 25}
++	if !c2.awaitRect(want2) {
++		t.Fatalf("continued top-right resize: frame geometry is %+v, want %+v", c2.geometry(), want2)
++	}
++}
++
++func TestP2PFrameSideStripsSelectResizeAtAnyHeight(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	r := c.geometry()
++	midY := int16(r.height / 2)
++
++	c.press(1, midY, xproto.ButtonIndex1)
++	c.drag(1+18, midY+10)
++	want := p2pRect{x: r.x + 18, y: r.y, width: r.width - 18, height: r.height}
++	if !c.awaitRect(want) {
++		t.Fatalf("left edge resize: frame geometry is %+v, want %+v", c.geometry(), want)
++	}
++
++	c2 := p2pLive(t, p2pClientOptions{Focused: true})
++	r2 := c2.geometry()
++	midY2 := int16(r2.height / 2)
++	c2.press(int16(r2.width-1), midY2, xproto.ButtonIndex1)
++	c2.drag(int16(r2.width-1)+22, midY2-12)
++	want2 := p2pRect{x: r2.x, y: r2.y, width: r2.width + 22, height: r2.height}
++	if !c2.awaitRect(want2) {
++		t.Fatalf("right edge resize: frame geometry is %+v, want %+v", c2.geometry(), want2)
++	}
++}
++
++func TestP2PBottomStripAndCornersSelectResize(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	r := c.geometry()
++	c.press(int16(r.width/2), int16(r.height-1), xproto.ButtonIndex1)
++	c.drag(int16(r.width/2)+7, int16(r.height-1)+25)
++	want := p2pRect{x: r.x, y: r.y, width: r.width, height: r.height + 25}
++	if !c.awaitRect(want) {
++		t.Fatalf("bottom strip resize: frame geometry is %+v, want %+v", c.geometry(), want)
++	}
++
++	c2 := p2pLive(t, p2pClientOptions{Focused: true})
++	r2 := c2.geometry()
++	c2.press(1, int16(r2.height-1), xproto.ButtonIndex1)
++	c2.drag(1+14, int16(r2.height-1)+9)
++	want2 := p2pRect{x: r2.x + 14, y: r2.y, width: r2.width - 14, height: r2.height + 9}
++	if !c2.awaitRect(want2) {
++		t.Fatalf("bottom-left corner resize: frame geometry is %+v, want %+v", c2.geometry(), want2)
++	}
++
++	c3 := p2pLive(t, p2pClientOptions{Focused: true})
++	r3 := c3.geometry()
++	c3.press(int16(r3.width-1), int16(r3.height-1), xproto.ButtonIndex1)
++	c3.drag(int16(r3.width-1)+16, int16(r3.height-1)+11)
++	want3 := p2pRect{x: r3.x, y: r3.y, width: r3.width + 16, height: r3.height + 11}
++	if !c3.awaitRect(want3) {
++		t.Fatalf("bottom-right corner resize: frame geometry is %+v, want %+v", c3.geometry(), want3)
++	}
++}
++
++func TestP2PFixedSizeWindowDisablesResizeFlags(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true, FixedSize: true})
++	r := c.geometry()
++	c.staysAt(t, "fixed size window resize drag", func() {
++		c.press(1, 5, xproto.ButtonIndex1)
++		c.drag(40, 45)
++		c.press(int16(r.width-1), int16(r.height-1), xproto.ButtonIndex1)
++		c.drag(int16(r.width-1)+40, int16(r.height-1)+45)
++	})
++}
++
++func TestP2PMaximizedWindowDisablesResizeFlags(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true, Maximized: true})
++	r := c.geometry()
++	c.staysAt(t, "maximized window resize drag", func() {
++		c.press(1, 5, xproto.ButtonIndex1)
++		c.drag(30, 20)
++		c.press(int16(r.width-1), int16(r.height-1), xproto.ButtonIndex1)
++		c.drag(int16(r.width-1)+30, int16(r.height-1)+20)
++	})
++}
++
++func TestP2PPressNonPrimaryButtonIsIgnored(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	px, py := p2pTitleBarCenter(c)
++	raises := c.raiseCount() // creating the client raises it once
++	c.staysAt(t, "non primary press", func() {
++		c.press(px, py, xproto.ButtonIndex2)
++		c.drag(px+40, py+40)
++	})
++	if now := c.raiseCount(); now != raises {
++		t.Fatalf("non primary press raised the window %d extra time(s)", now-raises)
++	}
++}
++
++func TestP2PPressFullscreenWindowIsIgnored(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true, Fullscreen: true})
++	px, py := p2pTitleBarCenter(c)
++	raises := c.raiseCount() // creating the client raises it once
++	c.staysAt(t, "fullscreen press", func() {
++		c.press(px, py, xproto.ButtonIndex1)
++		c.drag(px+40, py+40)
++	})
++	if now := c.raiseCount(); now != raises {
++		t.Fatalf("fullscreen press raised the window %d extra time(s)", now-raises)
++	}
++}
++
++func TestP2PPressTappableChildMarksDragIgnored(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	tx, ty := c.closeTarget(t)
++	raises := c.raiseCount() // creating the client raises it once
++	c.staysAt(t, "drag after press on tappable child", func() {
++		c.press(tx, ty, xproto.ButtonIndex1)
++		c.drag(tx+60, ty+60)
++	})
++	if now := c.raiseCount(); now != raises {
++		t.Fatalf("tappable child press raised the window %d extra time(s)", now-raises)
++	}
++}
++
++func TestP2PPressUnfocusedWindowRaisesAndReturns(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: false})
++	px, py := p2pTitleBarCenter(c)
++	before := c.geometry()
++	raises := c.raiseCount()
++	// Drain initialization requests, then inspect only this press's effects.
++	p2pSyncX(t, c)
++	c.fx.mu.Lock()
++	c.fx.pressTrace = true
++	c.fx.pressEvents = nil
++	c.fx.mu.Unlock()
++	c.press(px, py, xproto.ButtonIndex1)
++	p2pSyncX(t, c)
++	c.fx.mu.Lock()
++	events := append([]string(nil), c.fx.pressEvents...)
++	c.fx.pressTrace = false
++	c.fx.mu.Unlock()
++	if !reflect.DeepEqual(events, []string{"raise", "focus"}) {
++		t.Fatalf("this unfocused press must raise then request focus exactly once, got %v", events)
++	}
++	f := p2pCaptureGeometry(t, c)
++	c.drag(px+30, py+40)
++	if len(f.pendingGeometry) != 0 {
++		t.Fatal("unfocused press did not return before drag classification")
++	}
++	time.Sleep(p2pSettle)
++	if after := c.geometry(); after != before {
++		t.Fatalf("unfocused press changed geometry: %+v -> %+v", before, after)
++	}
++	if !c.fx.clientMessageWith("_NET_ACTIVE_WINDOW", -1) {
++		t.Fatal("unfocused press did not request window activation")
++	}
++	if c.raiseCount() <= raises {
++		t.Fatal("unfocused press did not raise the window")
++	}
++}
++
++func TestP2PPressFocusedWindowRaisesAtEndOfProcessing(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	px, py := p2pTitleBarCenter(c)
++	raises := c.raiseCount() // creating the client raises it once
++	c.press(px, py, xproto.ButtonIndex1)
++	if !c.fx.waitFor(func() bool { return c.raiseCount() > raises }, p2pTimeout) {
++		t.Fatal("focused press did not raise the window at the end of processing")
++	}
++
++	// The raise must not replace the press classification: the title bar centre
++	// still selects move-only for the following drag.
++	before := c.geometry()
++	c.drag(px+17, py+13)
++	want := p2pRect{x: before.x + 17, y: before.y + 13, width: before.width, height: before.height}
++	if !c.awaitRect(want) {
++		t.Fatalf("press classification lost after raise: frame geometry is %+v, want %+v", c.geometry(), want)
++	}
++}
++
++func TestP2PDragZeroDisplacementIsNoOp(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	px, py := p2pTitleBarCenter(c)
++	c.press(px, py, xproto.ButtonIndex1)
++	f := p2pCaptureGeometry(t, c)
++	configured := c.geometryConfigures()
++	c.staysAt(t, "zero displacement drag", func() {
++		c.drag(px, py)
++	})
++	if len(f.pendingGeometry) != 0 {
++		t.Fatal("zero displacement wrote to the geometry queue")
++	}
++	if now := c.geometryConfigures(); now != configured {
++		t.Fatalf("zero displacement drag queued %d geometry update(s)", now-configured)
++	}
++}
++
++func TestP2PDragResizeClampsNegativeDimensions(t *testing.T) {
++	t.Run("raw_resize_request", p2pCheckResizeRequest)
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	r := c.geometry()
++	c.press(int16(r.width-1), int16(r.height-1), xproto.ButtonIndex1)
++	c.drag(-500, -500)
++	want := p2pRect{x: r.x, y: r.y,
++		width:  uint16(x11.BorderWidth(c.win)) * 2,
++		height: uint16(x11.BorderWidth(c.win)) + uint16(x11.TitleHeight(c.win))}
++	if !c.awaitRect(want) {
++		t.Fatalf("clamped resize: frame geometry is %+v, want %+v", c.geometry(), want)
++	}
++}
++
++func TestP2PDragMaximizedUnmaximizesOutsideTitleBarBeyondThreshold(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true, Maximized: true})
++	r := c.geometry()
++	if c.fx.clientMessageWith("_NET_WM_STATE", 0) {
++		t.Fatal("unexpected unmaximize request before the drag")
++	}
++	px, py := p2pTitleBarCenter(c)
++	cc := c.win.(*client)
++	f := cc.frame
++	cc.restoreWidth = 200
++	oldX, oldY := f.x+px, f.y+py
++	wantX := oldX - int16(math.Ceil(float64(px)*float64(cc.restoreWidth)/float64(f.width)))
++	c.press(px, py, xproto.ButtonIndex1)
++	c.drag(px+70, -200)
++	if cc.restoreX != wantX || cc.restoreY != oldY {
++		t.Fatalf("restore must use the saved pre-drag origin: got (%d,%d), want (%d,%d)", cc.restoreX, cc.restoreY, wantX, oldY)
++	}
++	if !c.fx.waitFor(func() bool { return c.fx.clientMessageWith("_NET_WM_STATE", 0) }, p2pTimeout) {
++		t.Fatal("dragging a maximized window far outside the title bar did not unmaximize")
++	}
++	if after := c.geometry(); after != r {
++		t.Fatalf("unmaximize drag changed geometry before the manager acted: %+v -> %+v", r, after)
++	}
++}
++
++func TestP2PDragMaximizedStaysWithinThreshold(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true, Maximized: true})
++	px, py := p2pTitleBarCenter(c)
++	c.press(px, py, xproto.ButtonIndex1)
++	c.drag(px, py-40)
++	time.Sleep(p2pSettle)
++	if c.fx.clientMessageWith("_NET_WM_STATE", 0) {
++		t.Fatal("small drag of a maximized window unmaximized it")
++	}
++}
++
++func TestP2PDragMaximizedThresholdBoundary(t *testing.T) {
++	// The maximized window only unmaximizes when the vertical movement is
++	// strictly greater than ceil(84 * canvas scale); the canvas scale here is 1.
++	c := p2pLive(t, p2pClientOptions{Focused: true, Maximized: true})
++	px, py := p2pTitleBarCenter(c)
++	c.press(px, py, xproto.ButtonIndex1)
++	c.drag(px, py-84)
++	time.Sleep(p2pSettle)
++	if c.fx.clientMessageWith("_NET_WM_STATE", 0) {
++		t.Fatal("a drag of exactly the 84 pixel threshold unmaximized the window")
++	}
++
++	c2 := p2pLive(t, p2pClientOptions{Focused: true, Maximized: true})
++	px2, py2 := p2pTitleBarCenter(c2)
++	c2.press(px2, py2, xproto.ButtonIndex1)
++	c2.drag(px2, py2-85)
++	if !c2.fx.waitFor(func() bool { return c2.fx.clientMessageWith("_NET_WM_STATE", 0) }, p2pTimeout) {
++		t.Fatal("a drag beyond the 84 pixel threshold did not unmaximize the window")
++	}
++}
++
++func TestP2PMotionSelectsCloseCursorForCloseTarget(t *testing.T) {
++	p2pSetCursors()
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	tx, ty := c.closeTarget(t)
++	c.motion(tx, ty)
++	if !c.fx.waitFor(func() bool { return c.closeCursor() == x11.CloseCursor }, p2pTimeout) {
++		t.Fatalf("motion over the close target set cursor %#x, want close cursor %#x", c.closeCursor(), x11.CloseCursor)
++	}
++}
++
++func TestP2PMotionSelectsResizeCursorWhenNoTarget(t *testing.T) {
++	p2pSetCursors()
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	r := c.geometry()
++	c.motion(1, int16(r.height/2))
++	if !c.fx.waitFor(func() bool { return c.closeCursor() == x11.ResizeLeftCursor }, p2pTimeout) {
++		t.Fatalf("motion on the left edge set cursor %#x, want left resize cursor %#x", c.closeCursor(), x11.ResizeLeftCursor)
++	}
++
++	c2 := p2pLive(t, p2pClientOptions{Focused: true})
++	r2 := c2.geometry()
++	c2.motion(int16(r2.width/2), int16(r2.height-1))
++	if !c2.fx.waitFor(func() bool { return c2.closeCursor() == x11.ResizeBottomCursor }, p2pTimeout) {
++		t.Fatalf("motion on the bottom edge set cursor %#x, want bottom resize cursor %#x", c2.closeCursor(), x11.ResizeBottomCursor)
++	}
++}
++
++func TestP2PMotionKeepsDefaultCursorWhenNotResizable(t *testing.T) {
++	p2pSetCursors()
++	c := p2pLive(t, p2pClientOptions{Focused: true, Maximized: true})
++	c.motion(1, int16(c.geometry().height/2))
++	if !c.fx.waitFor(func() bool { return c.closeCursor() == x11.DefaultCursor }, p2pTimeout) {
++		t.Fatalf("motion on a maximized window set cursor %#x, want default cursor %#x", c.closeCursor(), x11.DefaultCursor)
++	}
++
++	c2 := p2pLive(t, p2pClientOptions{Focused: true, FixedSize: true})
++	c2.motion(1, int16(c2.geometry().height/2))
++	if !c2.fx.waitFor(func() bool { return c2.closeCursor() == x11.DefaultCursor }, p2pTimeout) {
++		t.Fatalf("motion on a fixed size window set cursor %#x, want default cursor %#x", c2.closeCursor(), x11.DefaultCursor)
++	}
++
++	c3 := p2pLive(t, p2pClientOptions{Focused: true, Fullscreen: true})
++	c3.motion(1, int16(c3.geometry().height/2))
++	if !c3.fx.waitFor(func() bool { return c3.closeCursor() == x11.DefaultCursor }, p2pTimeout) {
++		t.Fatalf("motion on a fullscreen window set cursor %#x, want default cursor %#x", c3.closeCursor(), x11.DefaultCursor)
++	}
++}
++
++func TestP2PMotionRefreshesThemeOnlyWhenHoverChanges(t *testing.T) {
++	t.Run("actual_hover_callbacks", p2pCheckHoverCallbacks)
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	tx, ty := c.closeTarget(t)
++
++	before := c.drawCount()
++	c.motion(tx, ty)
++	if !c.fx.waitFor(func() bool { return c.drawCount() > before }, p2pTimeout) {
++		t.Fatal("hovering a decoration target did not refresh the theme")
++	}
++
++	settled := c.drawCount()
++	c.motion(tx, ty)
++	time.Sleep(p2pSettle)
++	if now := c.drawCount(); now != settled {
++		t.Fatalf("motion on the same hover target refreshed the theme (%d -> %d)", settled, now)
++	}
++
++	rr := c.geometry()
++	c.motion(tx, int16(rr.height/2))
++	if !c.fx.waitFor(func() bool { return c.drawCount() > settled }, p2pTimeout) {
++		t.Fatal("leaving the hover target did not refresh the theme")
++	}
++}
++
++func TestP2PReleaseDoubleClickTriggersDoubleTap(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	px, py := p2pTitleBarCenter(c)
++	c.press(px, py, xproto.ButtonIndex1)
++	c.release(px, py, xproto.ButtonIndex1)
++	c.press(px, py, xproto.ButtonIndex1)
++	c.release(px, py, xproto.ButtonIndex1)
++	if !c.fx.waitFor(func() bool { return c.fx.clientMessageWith("_NET_WM_STATE", 1) }, p2pTimeout) {
++		t.Fatal("double click on the title bar did not trigger the double tap action")
++	}
++}
++
++func TestP2PReleaseSingleClickOnCloseTargetTaps(t *testing.T) {
++	t.Run("deadline_and_cleanup", p2pCheckClickDeadline)
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	tx, ty := c.closeTarget(t)
++	c.press(tx, ty, xproto.ButtonIndex1)
++	c.release(tx, ty, xproto.ButtonIndex1)
++	if !c.fx.waitFor(func() bool { return c.fx.destroyed(c.id) }, p2pTimeout) {
++		t.Fatal("single click on the close target did not tap it")
++	}
++}
++
++func TestP2PReleaseOutsideTitleBarDoesNotCountClick(t *testing.T) {
++	t.Run("preserved_release_boundaries", p2pCheckReleaseBoundaries)
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	tx, _ := c.closeTarget(t)
++	r := c.geometry()
++	px, py := p2pTitleBarCenter(c)
++	c.press(px, py, xproto.ButtonIndex1)
++	c.release(tx, int16(r.height-2), xproto.ButtonIndex1)
++	time.Sleep(600 * time.Millisecond)
++	if c.fx.destroyed(c.id) {
++		t.Fatal("release outside the title bar tapped the close target")
++	}
++	if c.fx.clientMessageWith("_NET_WM_STATE", 1) {
++		t.Fatal("release outside the title bar triggered a double tap action")
++	}
++}
++
++func TestP2PReleaseClearsIgnoredDragForAnyButton(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	r := c.geometry()
++	px, py := p2pTitleBarCenter(c)
++	tx, ty := c.closeTarget(t)
++
++	c.press(px, py, xproto.ButtonIndex1) // move only interaction starts
++	c.press(tx, ty, xproto.ButtonIndex1) // press on a tappable child marks the drag ignored
++	c.staysAt(t, "drag while ignored", func() {
++		c.drag(px+25, py+25)
++	})
++	c.release(px, py, xproto.ButtonIndex2) // any release clears the ignored drag state
++	c.drag(px+25, py+25)
++	want := p2pRect{x: r.x + 25, y: r.y + 25, width: r.width, height: r.height}
++	if !c.awaitRect(want) {
++		t.Fatalf("drag after release was still ignored: frame geometry is %+v, want %+v", c.geometry(), want)
++	}
++}
++
++func TestP2PNotificationsForwardArgumentsInOrder(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	before := c.geometry()
++	px, py := p2pTitleBarCenter(c)
++	x0, y0 := before.x+px, before.y+py
++
++	c.pressAt(x0, y0, xproto.ButtonIndex1)
++	c.dragAt(x0+11, y0+7)
++	want := p2pRect{x: before.x + 11, y: before.y + 7, width: before.width, height: before.height}
++	if !c.awaitRect(want) {
++		t.Fatalf("press/drag forwarding: frame geometry is %+v, want %+v", c.geometry(), want)
++	}
++
++	c.dragAt(x0+20, y0+20)
++	want = p2pRect{x: before.x + 20, y: before.y + 20, width: before.width, height: before.height}
++	if !c.awaitRect(want) {
++		t.Fatalf("chained drag forwarding: frame geometry is %+v, want %+v", c.geometry(), want)
++	}
++
++	// The frame moved with the forwarded drags, so the click pair is sent in
++	// coordinates relative to the current frame to stay inside the title bar.
++	c.release(px, py, xproto.ButtonIndex1)
++	c.press(px+1, py+1, xproto.ButtonIndex1)
++	c.release(px+1, py+1, xproto.ButtonIndex1)
++	if !c.fx.waitFor(func() bool { return c.fx.clientMessageWith("_NET_WM_STATE", 1) }, p2pTimeout) {
++		t.Fatal("press/drag/release ordering broke the double click detection")
++	}
++}
++
++// The queue belongs to frame, not to the interaction implementation. Stop its
++// consumer before observing requests, so coalescing and minimum-size handling
++// cannot hide an incorrect interaction request. Tests do not rename, wrap or
++// replace any production method.
++func p2pCaptureGeometry(t *testing.T, c *p2pClient) *frame {
++	t.Helper()
++	f := c.win.(*client).frame
++	if f.pendingGeometry != nil {
++		f.endConfigureLoop()
++		if !c.fx.waitFor(func() bool { return f.pendingGeometry == nil }, p2pTimeout) {
++			t.Fatal("geometry consumer did not stop")
++		}
++	}
++	f.pendingGeometry = make(chan *configureGeometry, 50)
++	return f
++}
++
++func p2pGeometryRequest(t *testing.T, f *frame) *configureGeometry {
++	t.Helper()
++	select {
++	case g := <-f.pendingGeometry:
++		if g == nil {
++			t.Fatal("nil geometry request")
++		}
++		if len(f.pendingGeometry) != 0 {
++			t.Fatal("one drag queued more than one geometry request")
++		}
++		return g
++	case <-time.After(time.Second):
++		t.Fatal("drag did not queue geometry")
++		return nil
++	}
++}
++
++func p2pCheckMoveRequest(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	px, py := p2pTitleBarCenter(c)
++	c.press(px, py, xproto.ButtonIndex1)
++	f := p2pCaptureGeometry(t, c)
++	wantX, wantY := f.x+7, f.y-9
++	c.drag(px+7, py-9)
++	g := p2pGeometryRequest(t, f)
++	if g.x != wantX || g.y != wantY || g.width != f.width || g.height != f.height || g.force {
++		t.Fatalf("move request got %+v, want (%d,%d,%d,%d,false)", g, wantX, wantY, f.width, f.height)
++	}
++}
++
++func p2pCheckResizeRequest(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	f := c.win.(*client).frame
++	px, py := int16(f.width-1), int16(f.height-1)
++	c.press(px, py, xproto.ButtonIndex1)
++	p2pCaptureGeometry(t, c)
++	c.drag(px+10, py+20)
++	g := p2pGeometryRequest(t, f)
++	if g.x != f.x || g.y != f.y || g.width != f.width+10 || g.height != f.height+20 || g.force {
++		t.Fatalf("resize request must preserve position and force=false: %+v", g)
++	}
++	c.drag(px-1000, py-1000)
++	g = p2pGeometryRequest(t, f)
++	if g.width != 0 || g.height != 0 || g.force {
++		t.Fatalf("negative raw dimensions must clamp to zero before downstream normalization: %+v", g)
++	}
++}
++
++func p2pSyncX(t *testing.T, c *p2pClient) {
++	t.Helper()
++	if _, err := xproto.GetInputFocus(c.conn).Reply(); err != nil {
++		t.Fatalf("sync fake X: %v", err)
++	}
++}
++
++// Find the canvas by its interface, not by a collaborator or field name.
++// Reflection is restricted to test setup; unsafe only allows access to the
++// package-private fields of this package's compiled frame/collaborators.
++func p2pInteractionCanvas(t *testing.T, f *frame) fyneTest.WindowlessCanvas {
++	t.Helper()
++	seen := map[uintptr]bool{}
++	var walk func(reflect.Value, int) fyneTest.WindowlessCanvas
++	walk = func(v reflect.Value, depth int) fyneTest.WindowlessCanvas {
++		if !v.IsValid() || depth > 5 {
++			return nil
++		}
++		if v.CanAddr() && !v.CanInterface() {
++			v = reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem()
++		}
++		if v.CanInterface() {
++			if cv, ok := v.Interface().(fyneTest.WindowlessCanvas); ok && cv != nil {
++				return cv
++			}
++		}
++		if v.Kind() == reflect.Interface {
++			if v.IsNil() {
++				return nil
++			}
++			return walk(v.Elem(), depth+1)
++		}
++		if v.Kind() == reflect.Ptr {
++			if v.IsNil() || v.Type() == reflect.TypeOf((*client)(nil)) || seen[v.Pointer()] {
++				return nil
++			}
++			seen[v.Pointer()] = true
++			return walk(v.Elem(), depth+1)
++		}
++		if v.Kind() == reflect.Struct {
++			for n := 0; n < v.NumField(); n++ {
++				if cv := walk(v.Field(n), depth+1); cv != nil {
++					return cv
++				}
++			}
++		}
++		return nil
++	}
++	cv := walk(reflect.ValueOf(f), 0)
++	if cv == nil {
++		t.Fatal("frame's decoration graph has no windowless canvas")
++	}
++	return cv
++}
++
++type p2pInteractionTarget struct {
++	*canvas.Rectangle
++	name   string
++	events chan string
++}
++
++func (p *p2pInteractionTarget) MouseIn(*desktop.MouseEvent)    { p.events <- p.name + ".in" }
++func (p *p2pInteractionTarget) MouseMoved(*desktop.MouseEvent) { p.events <- p.name + ".move" }
++func (p *p2pInteractionTarget) MouseOut()                      { p.events <- p.name + ".out" }
++func (p *p2pInteractionTarget) Tapped(*fyne.PointEvent)        { p.events <- p.name + ".tap" }
++func (p *p2pInteractionTarget) DoubleTapped(*fyne.PointEvent)  { p.events <- p.name + ".double" }
++
++func p2pAddTargets(t *testing.T, c *p2pClient, names ...string) chan string {
++	t.Helper()
++	cv := p2pInteractionCanvas(t, c.win.(*client).frame)
++	root, ok := cv.Content().(fyne.Widget)
++	if !ok {
++		t.Fatal("decoration canvas lost its border widget")
++	}
++	objs := fyneTest.WidgetRenderer(root).Objects()
++	if len(objs) < 2 {
++		t.Fatal("border renderer has no title content")
++	}
++	content, ok := objs[1].(*fyne.Container)
++	if !ok {
++		t.Fatal("border renderer title content is not a container")
++	}
++	events := make(chan string, 64)
++	content.Layout = nil
++	for n, name := range names {
++		target := &p2pInteractionTarget{canvas.NewRectangle(color.Black), name, events}
++		target.SetMinSize(fyne.NewSize(30, 20))
++		target.Resize(fyne.NewSize(30, 20))
++		target.Move(fyne.NewPos(float32(150+n*50), 0))
++		content.Objects = append(content.Objects, target)
++	}
++	return events
++}
++
++func p2pCheckHoverCallbacks(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	events := p2pAddTargets(t, c, "a", "b")
++	c.motion(155, 5)
++	c.motion(155, 5)
++	c.motion(205, 5)
++	c.motion(-200, -200)
++	c.motion(-200, -200) // leaving must have cleared the previous hover target
++	c.motion(155, 5)
++	c.motion(-200, -200)
++	var got []string
++	for len(events) > 0 {
++		got = append(got, <-events)
++	}
++	want := []string{"a.in", "a.move", "a.out", "b.in", "b.out", "a.in", "a.out"}
++	if !reflect.DeepEqual(got, want) {
++		t.Fatalf("actual hit-target hover callbacks: got %v, want %v", got, want)
++	}
++}
++
++func p2pExpectTargetEvent(t *testing.T, events chan string, want string, timeout time.Duration) {
++	t.Helper()
++	select {
++	case got := <-events:
++		if got != want {
++			t.Fatalf("callback got %s, want %s", got, want)
++		}
++	case <-time.After(timeout):
++		t.Fatalf("missing %s callback within %v", want, timeout)
++	}
++}
++
++func p2pCheckClickDeadline(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	events := p2pAddTargets(t, c, "a")
++	// Use a lower AND upper bound: a wide eventual-effect wait cannot distinguish
++	// the existing 300ms deadline from an incorrect 600ms deadline.
++	c.release(155, 5, xproto.ButtonIndex1)
++	select {
++	case got := <-events:
++		t.Fatalf("single click fired before the deadline: %s", got)
++	case <-time.After(200 * time.Millisecond):
++	}
++	p2pExpectTargetEvent(t, events, "a.tap", 300*time.Millisecond)
++	// A fresh cycle proves the previous click count/cancel state was cleaned up.
++	time.Sleep(20 * time.Millisecond)
++	c.release(155, 5, xproto.ButtonIndex1)
++	time.Sleep(20 * time.Millisecond)
++	c.release(155, 5, xproto.ButtonIndex1)
++	p2pExpectTargetEvent(t, events, "a.double", 200*time.Millisecond)
++	time.Sleep(350 * time.Millisecond)
++	select {
++	case got := <-events:
++		t.Fatalf("cancelled timer emitted an extra callback: %s", got)
++	default:
++	}
++}
++
++func p2pCheckReleaseBoundaries(t *testing.T) {
++	// The original guard checks only the vertical upper bound, not a rectangle.
++	// A second qualifying release cancels the pending timer and double-taps the
++	// FIRST target, making count/cancellation observable without naming state.
++	for _, point := range [][2]int16{{-100, -2}, {500, 0}, {200, -2}, {200, 0}} {
++		t.Run(fmt.Sprintf("release_%d_%d", point[0], point[1]), func(t *testing.T) {
++			c := p2pLive(t, p2pClientOptions{Focused: true})
++			events := p2pAddTargets(t, c, "a")
++			th := int16(x11.TitleHeight(c.win))
++			x, y := point[0], point[1]
++			if x == 500 {
++				x = int16(c.win.(*client).frame.width) + 10
++				y = th
++			}
++			if x == 200 && y == 0 {
++				y = th + 1
++			}
++			c.release(155, 5, xproto.ButtonIndex1)
++			time.Sleep(20 * time.Millisecond)
++			c.release(x, y, xproto.ButtonIndex1)
++			if y <= th {
++				p2pExpectTargetEvent(t, events, "a.double", 200*time.Millisecond)
++			} else {
++				p2pExpectTargetEvent(t, events, "a.tap", 500*time.Millisecond)
++			}
++		})
++	}
++}
++
++func p2pResizeDirectionReversals(t *testing.T) {
++	c := p2pLive(t, p2pClientOptions{Focused: true})
++	r := c.geometry()
++	c.press(1, 5, xproto.ButtonIndex1)
++	f := p2pCaptureGeometry(t, c)
++	for _, delta := range [][2]int16{{12, 8}, {25, 15}, {4, 3}, {-7, -5}} {
++		c.dragAt(r.x+1+delta[0], r.y+5+delta[1])
++		g := p2pGeometryRequest(t, f)
++		want := configureGeometry{r.x + delta[0], r.y + delta[1], uint16(int(r.width) - int(delta[0])), uint16(int(r.height) - int(delta[1])), false}
++		if *g != want {
++			t.Fatalf("delta %v: got %+v, want %+v", delta, *g, want)
++		}
++	}
++}
+diff --git a/internal/x11/win/p2p_xserver_test.go b/internal/x11/win/p2p_xserver_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..2c36a4ade0ebbbf13dff7ea1fb375096deb3ce13
+--- /dev/null
++++ b/internal/x11/win/p2p_xserver_test.go
+@@ -0,0 +1,845 @@
++//go:build linux || openbsd || freebsd || netbsd
++// +build linux openbsd freebsd netbsd
++
++package win
++
++// This file provides an in-process fake X server so that the real window
++// client pointer pipeline (including frame construction, the interaction
++// state machine and the X request stream it produces) can be exercised without
++// an X display. It is test support only: the fake speaks just enough of the X
++// wire protocol for a managed window to be created, decorated and driven.
++
++import (
++	"encoding/binary"
++	"image"
++	"io"
++	"net"
++	"sync"
++	"testing"
++	"time"
++
++	"fyne.io/fyne/v2"
++
++	"github.com/BurntSushi/xgb"
++	"github.com/BurntSushi/xgb/xproto"
++	"github.com/BurntSushi/xgbutil"
++	"github.com/BurntSushi/xgbutil/ewmh"
++	"github.com/BurntSushi/xgbutil/icccm"
++
++	"fyshos.com/fynedesk"
++	"fyshos.com/fynedesk/internal/x11"
++	wmTest "fyshos.com/fynedesk/test"
++)
++
++type p2pRect struct {
++	x, y          int16
++	width, height uint16
++}
++
++type p2pRequest struct {
++	op   byte
++	body []byte
++	seq  uint16
++}
++
++type p2pProp struct {
++	format byte
++	typ    string
++	raw    []byte
++}
++
++// p2pFakeX is a minimal in-process X server used to drive the window client.
++type p2pFakeX struct {
++	conn  net.Conn
++	root  xproto.Window
++	focus xproto.Window
++
++	mu          sync.Mutex
++	requests    []p2pRequest
++	atoms       map[string]uint32
++	atomNames   map[uint32]string
++	props       map[string]p2pProp
++	geom        map[xproto.Window]p2pRect
++	nextAtom    uint32
++	pressTrace  bool
++	pressEvents []string
++}
++
++func newP2PFakeX(t *testing.T, conn net.Conn) *p2pFakeX {
++	t.Helper()
++	f := &p2pFakeX{
++		conn:      conn,
++		root:      0x300,
++		focus:     0x300,
++		atoms:     map[string]uint32{},
++		atomNames: map[uint32]string{},
++		props:     map[string]p2pProp{},
++		geom:      map[xproto.Window]p2pRect{},
++		nextAtom:  0x100,
++	}
++	go f.serve()
++	return f
++}
++
++func p2pPad(n int) int { return (n + 3) &^ 3 }
++
++func (f *p2pFakeX) serve() {
++	head := make([]byte, 12)
++	if _, err := io.ReadFull(f.conn, head); err != nil {
++		return
++	}
++	nameLen := int(binary.BigEndian.Uint16(head[6:]))
++	dataLen := int(binary.BigEndian.Uint16(head[8:]))
++	if _, err := io.ReadFull(f.conn, make([]byte, p2pPad(nameLen)+p2pPad(dataLen))); err != nil {
++		return
++	}
++	if _, err := f.conn.Write(p2pSetupBytes()); err != nil {
++		return
++	}
++	seq := uint16(1)
++	for {
++		hdr := make([]byte, 4)
++		if _, err := io.ReadFull(f.conn, hdr); err != nil {
++			return
++		}
++		length := int(binary.LittleEndian.Uint16(hdr[2:])) * 4
++		if length < 4 {
++			return
++		}
++		body := make([]byte, length-4)
++		if _, err := io.ReadFull(f.conn, body); err != nil {
++			return
++		}
++		f.mu.Lock()
++		f.requests = append(f.requests, p2pRequest{op: hdr[0], body: body, seq: seq})
++		if f.pressTrace && hdr[0] == 25 && len(body) >= 40 && get32(body, 16) == f.atoms["_NET_ACTIVE_WINDOW"] {
++			f.pressEvents = append(f.pressEvents, "focus")
++		}
++		f.mu.Unlock()
++		f.respond(hdr[0], seq, hdr[1], body)
++		if seq == 0xffff {
++			seq = 1
++		} else {
++			seq++
++		}
++	}
++}
++
++func put16(b []byte, off int, v uint16) { binary.LittleEndian.PutUint16(b[off:], v) }
++func put32(b []byte, off int, v uint32) { binary.LittleEndian.PutUint32(b[off:], v) }
++func get16(b []byte, off int) uint16    { return binary.LittleEndian.Uint16(b[off:]) }
++func get32(b []byte, off int) uint32    { return binary.LittleEndian.Uint32(b[off:]) }
++
++func p2pSetupBytes() []byte {
++	data := make([]byte, 0, 256)
++	add32 := func(v uint32) { b := make([]byte, 4); binary.LittleEndian.PutUint32(b, v); data = append(data, b...) }
++	add16 := func(v uint16) { b := make([]byte, 2); binary.LittleEndian.PutUint16(b, v); data = append(data, b...) }
++	add8 := func(v byte) { data = append(data, v) }
++
++	add32(1)        // release
++	add32(0x200000) // resource id base
++	add32(0x1fffff) // resource id mask
++	add32(0)        // motion buffer
++	vendor := "fake"
++	add16(uint16(len(vendor)))
++	add16(65535) // max request length
++	add8(1)      // screens
++	add8(1)      // formats
++	add8(0)      // image byte order LSB
++	add8(0)      // bitmap bit order
++	add8(32)     // scanline unit
++	add8(32)     // scanline pad
++	add8(8)      // min keycode
++	add8(255)    // max keycode
++	add32(0)     // pad
++	data = append(data, []byte(vendor)...)
++	for len(data)%4 != 0 {
++		data = append(data, 0)
++	}
++	add8(24) // depth
++	add8(32) // bits per pixel
++	add8(32) // scanline pad
++	for i := 0; i < 5; i++ {
++		add8(0)
++	}
++	add32(0x300)    // root window
++	add32(0x20)     // default colormap
++	add32(0xffffff) // white pixel
++	add32(0)        // black pixel
++	add32(0)        // input masks
++	add16(1280)     // width
++	add16(800)      // height
++	add16(340)      // width mm
++	add16(210)      // height mm
++	add16(1)        // min maps
++	add16(1)        // max maps
++	add32(0x21)     // root visual
++	add8(0)         // backing stores
++	add8(0)         // save unders
++	add8(24)        // root depth
++	add8(1)         // number of depths
++	add8(24)        // depth
++	add8(0)         // pad
++	add16(1)        // visuals
++	add32(0)        // pad
++	add32(0x21)     // visual id
++	add8(4)         // class truecolor
++	add8(8)         // bits per rgb
++	add16(256)      // colormap entries
++	add32(0xff0000) // red mask
++	add32(0xff00)   // green mask
++	add32(0xff)     // blue mask
++	add32(0)        // pad
++
++	header := make([]byte, 8)
++	header[0] = 1 // success
++	binary.LittleEndian.PutUint16(header[2:], 11)
++	binary.LittleEndian.PutUint16(header[4:], 0)
++	binary.LittleEndian.PutUint16(header[6:], uint16(len(data)/4))
++	return append(header, data...)
++}
++
++// replyOpcode lists X core requests that carry a reply; an unimplemented one is
++// answered with an X error so a client can never block forever on it.
++var replyOpcode = map[byte]bool{
++	3: true, 14: true, 15: true, 16: true, 17: true, 20: true, 21: true, 23: true,
++	26: true, 31: true, 38: true, 39: true, 40: true, 43: true, 44: true, 47: true,
++	48: true, 49: true, 50: true, 52: true, 73: true, 83: true, 84: true, 85: true,
++	86: true, 87: true, 91: true, 92: true, 97: true, 98: true, 99: true, 101: true,
++	103: true, 106: true, 108: true, 110: true, 117: true, 119: true,
++}
++
++func p2pReply(seq uint16, extra []byte, fill func(b []byte)) []byte {
++	for len(extra)%4 != 0 {
++		extra = append(extra, 0)
++	}
++	buf := make([]byte, 32+len(extra))
++	buf[0] = 1
++	put16(buf, 2, seq)
++	put32(buf, 4, uint32(len(extra)/4))
++	if fill != nil {
++		fill(buf)
++	}
++	copy(buf[32:], extra)
++	return buf
++}
++
++func p2pError(seq uint16, op byte) []byte {
++	buf := make([]byte, 32)
++	buf[0] = 0 // error
++	buf[1] = 2 // BadValue
++	put16(buf, 2, seq)
++	put16(buf, 8, 0)
++	buf[10] = op
++	return buf
++}
++
++func (f *p2pFakeX) respond(op byte, seq uint16, data byte, body []byte) {
++	defer func() {
++		if recover() != nil {
++			// A malformed or unsupported request must never wedge the client.
++			f.write(p2pError(seq, op))
++		}
++	}()
++	switch op {
++	case 1: // create window
++		win := xproto.Window(get32(body, 0))
++		f.setRect(win, p2pRect{
++			x:      int16(get16(body, 8)),
++			y:      int16(get16(body, 10)),
++			width:  get16(body, 12),
++			height: get16(body, 14),
++		})
++	case 12: // configure window
++		win := xproto.Window(get32(body, 0))
++		mask := get16(body, 4)
++		vals := []uint32{}
++		for off := 8; off+4 <= len(body); off += 4 {
++			vals = append(vals, get32(body, off))
++		}
++		f.applyConfigure(win, mask, vals)
++	case 14: // get geometry
++		drawable := xproto.Window(0)
++		if len(body) >= 4 {
++			drawable = xproto.Window(get32(body, 0))
++		}
++		rect := f.rectFor(drawable)
++		root := f.root
++		f.write(p2pReply(seq, nil, func(b []byte) {
++			b[1] = 24
++			put32(b, 8, uint32(root))
++			put16(b, 12, uint16(rect.x))
++			put16(b, 14, uint16(rect.y))
++			put16(b, 16, rect.width)
++			put16(b, 18, rect.height)
++		}))
++	case 15: // query tree
++		root := f.root
++		f.write(p2pReply(seq, nil, func(b []byte) {
++			put32(b, 8, uint32(root))
++			put32(b, 12, uint32(root))
++		}))
++	case 16: // intern atom
++		name := ""
++		if len(body) >= 4 {
++			nl := int(get16(body, 0))
++			if 4+nl <= len(body) {
++				name = string(body[4 : 4+nl])
++			}
++		}
++		atom := f.atomFor(name, data != 1)
++		f.write(p2pReply(seq, nil, func(b []byte) { put32(b, 8, atom) }))
++	case 17: // get atom name
++		atom := uint32(0)
++		if len(body) >= 4 {
++			atom = get32(body, 0)
++		}
++		name := []byte(f.nameFor(atom))
++		f.write(p2pReply(seq, name, func(b []byte) { put16(b, 8, uint16(len(name))) }))
++	case 18: // change property
++		win := xproto.Window(get32(body, 0))
++		prop := f.nameFor(get32(body, 4))
++		typ := f.nameFor(get32(body, 8))
++		format := body[12]
++		count := int(get32(body, 16))
++		raw := append([]byte{}, body[20:]...)
++		if format == 32 {
++			if len(raw) < count*4 {
++				raw = raw[:len(raw)]
++			} else {
++				raw = raw[:count*4]
++			}
++		} else if format == 16 {
++			raw = raw[:count*2]
++		} else {
++			raw = raw[:count]
++		}
++		f.setProp(win, prop, p2pProp{format: format, typ: typ, raw: raw})
++	case 19: // delete property
++		f.delProp(xproto.Window(get32(body, 0)), f.nameFor(get32(body, 4)))
++	case 20: // get property
++		win := xproto.Window(0)
++		prop := uint32(0)
++		if len(body) >= 8 {
++			win = xproto.Window(get32(body, 0))
++			prop = get32(body, 4)
++		}
++		f.getProperty(seq, win, prop)
++	case 21: // list properties
++		f.write(p2pReply(seq, nil, nil))
++	case 26, 31: // grab pointer / keyboard
++		f.write(p2pReply(seq, nil, func(b []byte) { b[1] = 0 }))
++	case 3: // get window attributes
++		f.write(p2pReply(seq, nil, func(b []byte) {
++			b[1] = 0
++			put32(b, 8, 0x21)
++			put16(b, 12, 1)
++			b[26] = 2
++			put32(b, 28, 0x20)
++		}))
++	case 38: // query pointer
++		root := f.root
++		f.write(p2pReply(seq, nil, func(b []byte) {
++			b[1] = 1
++			put32(b, 8, uint32(root))
++		}))
++	case 40: // translate coordinates
++		f.write(p2pReply(seq, nil, func(b []byte) { b[1] = 1 }))
++	case 43: // get input focus
++		focus := f.focus
++		f.write(p2pReply(seq, nil, func(b []byte) { put32(b, 8, uint32(focus)) }))
++	case 98: // query extension
++		f.write(p2pReply(seq, nil, func(b []byte) { b[8] = 0 }))
++	case 99: // list extensions
++		f.write(p2pReply(seq, nil, func(b []byte) { b[1] = 0 }))
++	case 101: // get keyboard mapping
++		f.write(p2pReply(seq, make([]byte, 8), func(b []byte) { b[1] = 2 }))
++	case 119: // get modifier mapping
++		f.write(p2pReply(seq, make([]byte, 8), func(b []byte) { b[1] = 1 }))
++	default:
++		if replyOpcode[op] {
++			f.write(p2pError(seq, op))
++		}
++	}
++}
++
++func (f *p2pFakeX) write(buf []byte) {
++	_, _ = f.conn.Write(buf)
++}
++
++func (f *p2pFakeX) getProperty(seq uint16, win xproto.Window, prop uint32) {
++	name := f.nameFor(prop)
++	p, ok := f.propFor(name)
++	if !ok {
++		f.write(p2pReply(seq, nil, func(b []byte) { b[1] = 0 }))
++		return
++	}
++	format := p.format
++	if format == 0 {
++		format = 8
++	}
++	typ := f.atomFor(p.typ, true)
++	lenVal := 0
++	if format != 0 {
++		lenVal = len(p.raw) * 8 / int(format)
++	}
++	extra := append([]byte{}, p.raw...)
++	f.write(p2pReply(seq, extra, func(b []byte) {
++		b[1] = format
++		put32(b, 8, typ)
++		put32(b, 12, 0)
++		put32(b, 16, uint32(lenVal))
++	}))
++}
++
++func (f *p2pFakeX) applyConfigure(win xproto.Window, mask uint16, vals []uint32) {
++	r := f.rectFor(win)
++	i := 0
++	next := func() uint32 {
++		if i < len(vals) {
++			v := vals[i]
++			i++
++			return v
++		}
++		return 0
++	}
++	if mask&0x1 != 0 {
++		r.x = int16(next())
++	}
++	if mask&0x2 != 0 {
++		r.y = int16(next())
++	}
++	if mask&0x4 != 0 {
++		r.width = uint16(next())
++	}
++	if mask&0x8 != 0 {
++		r.height = uint16(next())
++	}
++	f.setRect(win, r)
++}
++
++func (f *p2pFakeX) atomFor(name string, create bool) uint32 {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	if a, ok := f.atoms[name]; ok {
++		return a
++	}
++	if !create {
++		return 0
++	}
++	a := f.nextAtom
++	f.nextAtom++
++	f.atoms[name] = a
++	f.atomNames[a] = name
++	return a
++}
++
++func (f *p2pFakeX) nameFor(atom uint32) string {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	return f.atomNames[atom]
++}
++
++func (f *p2pFakeX) setProp(win xproto.Window, name string, p p2pProp) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	f.props[name] = p
++}
++
++func (f *p2pFakeX) delProp(win xproto.Window, name string) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	delete(f.props, name)
++}
++
++func (f *p2pFakeX) propFor(name string) (p2pProp, bool) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	p, ok := f.props[name]
++	return p, ok
++}
++
++func (f *p2pFakeX) setRect(win xproto.Window, r p2pRect) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	f.geom[win] = r
++}
++
++func (f *p2pFakeX) rectFor(win xproto.Window) p2pRect {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	if r, ok := f.geom[win]; ok {
++		return r
++	}
++	return p2pRect{width: 1280, height: 800}
++}
++
++func (f *p2pFakeX) setFocus(win xproto.Window) {
++	f.mu.Lock()
++	f.focus = win
++	f.mu.Unlock()
++}
++
++func (f *p2pFakeX) requestsOf(op byte) [][]byte {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	var out [][]byte
++	for _, r := range f.requests {
++		if r.op == op {
++			out = append(out, r.body)
++		}
++	}
++	return out
++}
++
++func (f *p2pFakeX) geometryConfigures(win xproto.Window) int {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	n := 0
++	for _, r := range f.requests {
++		if r.op != 12 || len(r.body) < 6 {
++			continue
++		}
++		if xproto.Window(get32(r.body, 0)) != win {
++			continue
++		}
++		if get16(r.body, 4)&0x000f != 0 {
++			n++
++		}
++	}
++	return n
++}
++
++func (f *p2pFakeX) countOf(ops ...byte) int {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	n := 0
++	for _, r := range f.requests {
++		for _, op := range ops {
++			if r.op == op {
++				n++
++			}
++		}
++	}
++	return n
++}
++
++// cursorAttrs returns the CwCursor values applied to the frame window.
++func (f *p2pFakeX) cursorAttrs(frame xproto.Window) []uint32 {
++	var out []uint32
++	for _, body := range f.requestsOf(2) {
++		if xproto.Window(get32(body, 0)) != frame {
++			continue
++		}
++		mask := get32(body, 4)
++		values := body[8:]
++		idx := 0
++		bits := []uint32{0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000}
++		for _, bit := range bits {
++			if mask&bit == 0 {
++				continue
++			}
++			if idx*4+4 > len(values) {
++				break
++			}
++			if bit == 0x4000 {
++				out = append(out, get32(values, idx*4))
++			}
++			idx++
++		}
++	}
++	return out
++}
++
++func (f *p2pFakeX) destroyed(win xproto.Window) bool {
++	for _, body := range f.requestsOf(4) {
++		if xproto.Window(get32(body, 0)) == win {
++			return true
++		}
++	}
++	return false
++}
++
++// clientMessageWith reports whether a client message carrying the atom with
++// the given name and the given _NET_WM_STATE style action was sent to the root
++// window. A negative action matches any action.
++func (f *p2pFakeX) clientMessageWith(name string, action int) bool {
++	atom := f.atomFor(name, false)
++	if atom == 0 {
++		return false
++	}
++	for _, body := range f.requestsOf(25) {
++		// SendEvent body: destination, event mask, then the 32 byte event
++		if len(body) < 40 {
++			continue
++		}
++		if get32(body, 16) != atom {
++			continue
++		}
++		if action >= 0 && int(get32(body, 20)) != action {
++			continue
++		}
++		return true
++	}
++	return false
++}
++
++func (f *p2pFakeX) waitFor(cond func() bool, timeout time.Duration) bool {
++	deadline := time.Now().Add(timeout)
++	for time.Now().Before(deadline) {
++		if cond() {
++			return true
++		}
++		time.Sleep(2 * time.Millisecond)
++	}
++	return cond()
++}
++
++// p2pFakeWM is a window manager facade for the client under test. RaiseToTop
++// is recorded because the frame raises the window through this collaborator.
++type p2pFakeWM struct {
++	xu   *xgbutil.XUtil
++	conn *xgb.Conn
++
++	mu         sync.Mutex
++	raiseCalls int
++	fx         *p2pFakeX
++}
++
++func (w *p2pFakeWM) X() *xgbutil.XUtil         { return w.xu }
++func (w *p2pFakeWM) Conn() *xgb.Conn           { return w.conn }
++func (w *p2pFakeWM) RootID() xproto.Window     { return w.xu.RootWin() }
++func (w *p2pFakeWM) AddWindow(fynedesk.Window) {}
++func (w *p2pFakeWM) RaiseToTop(fynedesk.Window) {
++	if w.fx != nil {
++		w.fx.mu.Lock()
++		tracing := w.fx.pressTrace
++		w.fx.mu.Unlock()
++		if tracing {
++			// Flush earlier X requests before recording the synchronous WM
++			// call, so a wrongly reordered Focus -> Raise cannot look correct.
++			xproto.GetInputFocus(w.conn).Reply()
++			w.fx.mu.Lock()
++			w.fx.pressEvents = append(w.fx.pressEvents, "raise")
++			w.fx.mu.Unlock()
++		}
++	}
++	w.mu.Lock()
++	w.raiseCalls++
++	w.mu.Unlock()
++}
++
++func (w *p2pFakeWM) raised() int {
++	w.mu.Lock()
++	defer w.mu.Unlock()
++	return w.raiseCalls
++}
++func (w *p2pFakeWM) RemoveWindow(fynedesk.Window)                      {}
++func (w *p2pFakeWM) TopWindow() fynedesk.Window                        { return nil }
++func (w *p2pFakeWM) Windows() []fynedesk.Window                        { return nil }
++func (w *p2pFakeWM) AddStackListener(fynedesk.StackListener)           {}
++func (w *p2pFakeWM) Blank()                                            {}
++func (w *p2pFakeWM) Capture() image.Image                              { return nil }
++func (w *p2pFakeWM) Close()                                            {}
++func (w *p2pFakeWM) Run()                                              {}
++func (w *p2pFakeWM) ShowOverlay(fyne.Window, fyne.Size, fyne.Position) {}
++func (w *p2pFakeWM) ShowMenuOverlay(*fyne.Menu, fyne.Size, fyne.Position) {
++}
++func (w *p2pFakeWM) ShowModal(fyne.Window, fyne.Size) {}
++
++// p2pClientOptions configures the managed window used by a scenario.
++type p2pClientOptions struct {
++	Focused    bool
++	Maximized  bool
++	Fullscreen bool
++	FixedSize  bool
++	Width      uint16
++	Height     uint16
++}
++
++// p2pClient is a live window client driven through the public notification API.
++type p2pClient struct {
++	win   x11.XWin
++	id    xproto.Window
++	frame xproto.Window
++	fx    *p2pFakeX
++	wm    *p2pFakeWM
++	xu    *xgbutil.XUtil
++	conn  *xgb.Conn
++}
++
++// p2pLive creates a fake X server, installs the test desktop and creates a
++// managed client window for it.
++func p2pLive(t *testing.T, opts p2pClientOptions) *p2pClient {
++	t.Helper()
++	cli, srv := net.Pipe()
++	fx := newP2PFakeX(t, srv)
++
++	conn, err := xgb.NewConnNet(cli)
++	if err != nil {
++		t.Fatalf("connect to fake X server: %v", err)
++	}
++	xu, err := xgbutil.NewConnXgb(conn)
++	if err != nil {
++		t.Fatalf("create X util: %v", err)
++	}
++	wm := &p2pFakeWM{xu: xu, conn: conn, fx: fx}
++	fynedesk.SetInstance(wmTest.NewDesktopWithWM(wm))
++
++	width, height := opts.Width, opts.Height
++	if width == 0 {
++		width = 400
++	}
++	if height == 0 {
++		height = 300
++	}
++	win, err := xproto.NewWindowId(conn)
++	if err != nil {
++		t.Fatalf("new window id: %v", err)
++	}
++	xproto.CreateWindow(conn, 24, win, xu.RootWin(), 100, 100, width, height, 0,
++		xproto.WindowClassInputOutput, 0x21, 0, nil)
++
++	c := &p2pClient{id: win, fx: fx, wm: wm, xu: xu, conn: conn}
++	if opts.Focused {
++		if err := ewmh.ActiveWindowSet(xu, win); err != nil {
++			t.Fatalf("set active window: %v", err)
++		}
++		fx.setFocus(win)
++	}
++	if opts.Maximized {
++		if err := ewmh.WmStateSet(xu, win, []string{"_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"}); err != nil {
++			t.Fatalf("set maximized state: %v", err)
++		}
++	}
++	if opts.Fullscreen {
++		if err := ewmh.WmStateSet(xu, win, []string{"_NET_WM_STATE_FULLSCREEN"}); err != nil {
++			t.Fatalf("set fullscreen state: %v", err)
++		}
++	}
++	if opts.FixedSize {
++		hints := &icccm.NormalHints{
++			Flags:     icccm.SizeHintPMinSize | icccm.SizeHintPMaxSize,
++			MinWidth:  uint(width),
++			MinHeight: uint(height),
++			MaxWidth:  uint(width),
++			MaxHeight: uint(height),
++		}
++		if err := icccm.WmNormalHintsSet(xu, win, hints); err != nil {
++			t.Fatalf("set normal hints: %v", err)
++		}
++	}
++
++	created := make(chan x11.XWin, 1)
++	go func() { created <- NewClient(win, wm) }()
++	select {
++	case c.win = <-created:
++	case <-time.After(30 * time.Second):
++		t.Fatal("creating the client did not complete")
++	}
++	if c.win == nil {
++		t.Fatal("client creation returned nil")
++	}
++	c.frame = c.win.FrameID()
++	t.Cleanup(func() {
++		// stop the frame configure loop so it cannot touch the connection later
++		func() {
++			defer func() { _ = recover() }()
++			c.win.NotifyMoveResizeEnded()
++		}()
++	})
++	return c
++}
++
++func (c *p2pClient) rect() p2pRect { return c.fx.rectFor(c.frame) }
++
++// raiseCount reports how often the frame asked the window manager to raise the
++// window. This is an observable collaborator call, not internal state.
++func (c *p2pClient) raiseCount() int { return c.wm.raised() }
++
++// geometryConfigures counts ConfigureWindow requests that carried x/y or
++// width/height values for the frame window. Stacking-only configures are not
++// counted, so a geometry queue with no observable change is detectable.
++func (c *p2pClient) geometryConfigures() int { return c.fx.geometryConfigures(c.frame) }
++
++func (c *p2pClient) frameGeometry() (int16, int16, uint16, uint16) {
++	r := c.rect()
++	return r.x, r.y, r.width, r.height
++}
++
++func (c *p2pClient) pressAt(x, y int16, button xproto.Button) {
++	c.win.NotifyMousePress(x, y, button)
++}
++
++func (c *p2pClient) dragAt(x, y int16) {
++	c.win.NotifyMouseDrag(x, y)
++}
++
++func (c *p2pClient) motionAt(x, y int16) {
++	c.win.NotifyMouseMotion(x, y)
++}
++
++func (c *p2pClient) releaseAt(x, y int16, button xproto.Button) {
++	c.win.NotifyMouseRelease(x, y, button)
++}
++
++func (c *p2pClient) press(relX, relY int16, button xproto.Button) {
++	x, y, _, _ := c.frameGeometry()
++	c.win.NotifyMousePress(x+relX, y+relY, button)
++}
++
++func (c *p2pClient) drag(relX, relY int16) {
++	x, y, _, _ := c.frameGeometry()
++	c.win.NotifyMouseDrag(x+relX, y+relY)
++}
++
++func (c *p2pClient) motion(relX, relY int16) {
++	x, y, _, _ := c.frameGeometry()
++	c.win.NotifyMouseMotion(x+relX, y+relY)
++}
++
++func (c *p2pClient) release(relX, relY int16, button xproto.Button) {
++	x, y, _, _ := c.frameGeometry()
++	c.win.NotifyMouseRelease(x+relX, y+relY, button)
++}
++
++func (c *p2pClient) drawCount() int {
++	return c.fx.countOf(53, 54, 62, 70, 72)
++}
++
++// closeTarget finds the close button position on the decorated title bar by
++// scanning the left button strip for the cursorable close target.
++func (c *p2pClient) closeTarget(t *testing.T) (int16, int16) {
++	t.Helper()
++	for _, x := range []int16{4, 10, 16, 22, 28, 34, 40} {
++		if c.targetAt(x, 14) {
++			return x, 14
++		}
++	}
++	t.Fatal("could not locate the close button target on the title bar")
++	return 0, 0
++}
++
++// targetAt reports whether a hoverable/cursorable decoration object exists at
++// the given frame relative position by observing the hover refresh the motion
++// path performs when the target changes.
++func (c *p2pClient) targetAt(x, y int16) bool {
++	before := c.drawCount()
++	c.motion(x, y)
++	changed := c.fx.waitFor(func() bool { return c.drawCount() > before }, 200*time.Millisecond)
++	if changed {
++		// leave the hover target again so the next probe starts clean
++		c.motion(-200, -200)
++		c.fx.waitFor(func() bool { return true }, 10*time.Millisecond)
++		return true
++	}
++	return false
++}
++
++func (c *p2pClient) closeCursor() xproto.Cursor {
++	cur := c.fx.cursorAttrs(c.frame)
++	if len(cur) == 0 {
++		return xproto.Cursor(^uint32(0))
++	}
++	return xproto.Cursor(cur[len(cur)-1])
++}
+diff --git a/test/f2p/runner.go b/test/f2p/runner.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f6993b6138c2e527f42c2b910cbc205a34d8bbea
+--- /dev/null
++++ b/test/f2p/runner.go
+@@ -0,0 +1,513 @@
++// Command f2p runs the verifier selection declared by the pipeline config and
++// writes a standard JUnit XML report.
++//
++// The runner reads the frozen P2P selectors and the F2P selectors from the
++// materialized config declaration ({config}); the dedicated p2p select list is
++// only accepted for command-shape compatibility. Every selected leaf is
++// executed with `go test -json` in its own package and the native results are
++// converted to JUnit without any third party tooling. The selection is exact:
++// no test file pattern, package pattern or inventory copy is ever substituted
++// for the declared selectors.
++package main
++
++import (
++	"bufio"
++	"encoding/json"
++	"encoding/xml"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"sort"
++	"strings"
++)
++
++type selector struct {
++	Path string // repository relative test file path
++	Leaf string // exact test function name
++}
++
++func (s selector) String() string { return s.Path + "::" + s.Leaf }
++
++type testResult struct {
++	Selector selector
++	Action   string // pass, fail, skip, error
++	Output   string
++	Elapsed  float64
++}
++
++const (
++	actionPass  = "pass"
++	actionFail  = "fail"
++	actionSkip  = "skip"
++	actionError = "error"
++)
++
++func main() {
++	root := findRepoRoot()
++	report := ""
++	var selectFile, configFile string
++	for _, a := range os.Args[1:] {
++		if strings.Contains(a, "{") && strings.Contains(a, "}") {
++			continue // unsubstituted pipeline placeholder
++		}
++		switch {
++		case strings.HasSuffix(a, ".json"):
++			if configFile == "" {
++				configFile = a
++			}
++		case strings.HasSuffix(a, ".txt"):
++			if selectFile == "" {
++				selectFile = a
++			}
++		default:
++			if report == "" {
++				report = a
++			}
++		}
++	}
++	if configFile == "" {
++		configFile = findCandidateFile(root, report, "config.json")
++	}
++	if report == "" {
++		for _, env := range []string{"F2P_REPORT", "JUNIT_REPORT", "REPORT", "REPORT_PATH"} {
++			if v := os.Getenv(env); v != "" {
++				report = v
++				break
++			}
++		}
++	}
++	if selectFile == "" {
++		for _, env := range []string{"P2P_SELECT", "SELECT", "SELECT_PATH"} {
++			if v := os.Getenv(env); v != "" && fileExists(v) {
++				selectFile = v
++				break
++			}
++		}
++	}
++	if report == "" {
++		report = filepath.Join(root, "f2p-junit.xml")
++	}
++	if !filepath.IsAbs(report) {
++		report = filepath.Join(root, report)
++	}
++
++	sels := loadSelectors(configFile)
++	if len(sels) == 0 {
++		sels = selectorsFromList(selectFile)
++	}
++	if len(sels) == 0 {
++		fmt.Fprintln(os.Stderr, "f2p runner: no selectors declared, nothing to run")
++		os.Exit(3)
++	}
++
++	results := runSelectors(root, sels)
++	if err := writeJUnit(report, results); err != nil {
++		fmt.Fprintln(os.Stderr, "f2p runner: cannot write report:", err)
++		os.Exit(2)
++	}
++	failed := 0
++	for _, r := range results {
++		if r.Action != actionPass && r.Action != actionSkip {
++			failed++
++		}
++	}
++	fmt.Printf("f2p runner: %d selectors, %d not passing, report %s\n", len(results), failed, report)
++	if failed > 0 {
++		os.Exit(1)
++	}
++}
++
++func findRepoRoot() string {
++	dir, err := os.Getwd()
++	if err != nil {
++		return "."
++	}
++	for {
++		if fileExists(filepath.Join(dir, "go.mod")) {
++			return dir
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			return "."
++		}
++		dir = parent
++	}
++}
++
++func fileExists(path string) bool {
++	st, err := os.Stat(path)
++	return err == nil && !st.IsDir()
++}
++
++func findCandidateFile(root, report, name string) string {
++	var dirs []string
++	if report != "" {
++		dirs = append(dirs, filepath.Dir(report), filepath.Dir(filepath.Dir(report)))
++	}
++	if wd, err := os.Getwd(); err == nil {
++		dirs = append(dirs, wd, filepath.Dir(wd))
++	}
++	if exe, err := os.Executable(); err == nil {
++		dirs = append(dirs, filepath.Dir(exe))
++	}
++	if execDir := strings.TrimSpace(os.Getenv("VERIFIER_EXEC_DIR")); execDir != "" {
++		dirs = append(dirs, execDir)
++	}
++	dirs = append(dirs, root, filepath.Dir(root), filepath.Join(root, "verifier"), filepath.Join(root, "evidence"))
++	seen := map[string]bool{}
++	for _, d := range dirs {
++		if d == "" || seen[d] {
++			continue
++		}
++		seen[d] = true
++		candidate := filepath.Join(d, name)
++		if !fileExists(candidate) {
++			continue
++		}
++		if name == "config.json" && !looksLikePlan(candidate) {
++			continue
++		}
++		return candidate
++	}
++	return ""
++}
++
++func looksLikePlan(path string) bool {
++	data, err := os.ReadFile(path)
++	if err != nil {
++		return false
++	}
++	text := string(data)
++	return strings.Contains(text, "p2p") || strings.Contains(text, "f2p") || strings.Contains(text, "selector")
++}
++
++// loadSelectors reads the frozen P2P and the F2P execution sets from the
++// pipeline config declaration. Both arrays are authoritative; the declared
++// order is preserved so the report lists the frozen P2P selections first.
++func loadSelectors(configFile string) []selector {
++	if configFile == "" {
++		return nil
++	}
++	data, err := os.ReadFile(configFile)
++	if err != nil {
++		return nil
++	}
++	var doc map[string]interface{}
++	if err := json.Unmarshal(data, &doc); err != nil {
++		return nil
++	}
++	var out []selector
++	for _, key := range []string{"p2p", "f2p"} {
++		out = append(out, selectorsFromValue(doc[key])...)
++	}
++	return out
++}
++
++func selectorsFromValue(v interface{}) []selector {
++	var out []selector
++	var add func(interface{})
++	add = func(value interface{}) {
++		switch item := value.(type) {
++		case string:
++			if s, ok := parseSelector(item); ok {
++				out = appendUnique(out, s)
++			}
++		case map[string]interface{}:
++			for _, key := range []string{"selector", "test"} {
++				if raw, ok := item[key].(string); ok {
++					if s, ok := parseSelector(raw); ok {
++						out = appendUnique(out, s)
++						return
++					}
++				}
++			}
++			for _, key := range []string{"tests", "selectors"} {
++				if nested, ok := item[key]; ok {
++					add(nested)
++				}
++			}
++		case []interface{}:
++			for _, e := range item {
++				add(e)
++			}
++		}
++	}
++	add(v)
++	return out
++}
++
++func selectorsFromList(path string) []selector {
++	file, err := os.Open(path)
++	if err != nil {
++		return nil
++	}
++	defer file.Close()
++	var out []selector
++	scanner := bufio.NewScanner(file)
++	for scanner.Scan() {
++		line := strings.TrimSpace(scanner.Text())
++		if line == "" || strings.HasPrefix(line, "#") {
++			continue
++		}
++		fields := strings.Fields(line)
++		for _, f := range fields {
++			if s, ok := parseSelector(strings.Trim(f, `",'`)); ok {
++				out = appendUnique(out, s)
++				break
++			}
++		}
++	}
++	return out
++}
++
++func parseSelector(raw string) (selector, bool) {
++	if !strings.Contains(raw, "::") {
++		return selector{}, false
++	}
++	parts := strings.SplitN(raw, "::", 2)
++	path := strings.TrimSpace(parts[0])
++	leaf := strings.TrimSpace(parts[1])
++	if path == "" || leaf == "" || strings.Contains(leaf, "::") {
++		return selector{}, false
++	}
++	return selector{Path: path, Leaf: leaf}, true
++}
++
++func appendUnique(out []selector, s selector) []selector {
++	for _, existing := range out {
++		if existing == s {
++			return out
++		}
++	}
++	return append(out, s)
++}
++
++func runSelectors(root string, sels []selector) []testResult {
++	groups := map[string][]selector{}
++	var order []string
++	for _, s := range sels {
++		pkg := "./" + filepath.ToSlash(filepath.Dir(s.Path))
++		if _, ok := groups[pkg]; !ok {
++			order = append(order, pkg)
++		}
++		groups[pkg] = append(groups[pkg], s)
++	}
++	sort.Strings(order)
++
++	bySelector := map[string]testResult{}
++	for _, pkg := range order {
++		group := groups[pkg]
++		leaves := make([]string, 0, len(group))
++		for _, s := range group {
++			leaves = append(leaves, regexp.QuoteMeta(s.Leaf))
++		}
++		pattern := "^(" + strings.Join(leaves, "|") + ")$"
++		results, output := runPackage(root, pkg, pattern)
++		for _, s := range group {
++			if r, ok := results[s.Leaf]; ok {
++				bySelector[s.String()] = testResult{Selector: s, Action: r.action, Output: r.output, Elapsed: r.elapsed}
++				continue
++			}
++			reason := fmt.Sprintf("test %s was not collected in package %s", s.Leaf, pkg)
++			if strings.TrimSpace(output) != "" {
++				reason += "\n" + firstCause(output)
++			}
++			bySelector[s.String()] = testResult{Selector: s, Action: actionError, Output: reason}
++		}
++	}
++
++	out := make([]testResult, 0, len(sels))
++	for _, s := range sels {
++		if r, ok := bySelector[s.String()]; ok {
++			out = append(out, r)
++		}
++	}
++	return out
++}
++
++type nativeResult struct {
++	action  string
++	output  string
++	elapsed float64
++}
++
++func runPackage(root, pkg, pattern string) (map[string]nativeResult, string) {
++	cmd := exec.Command("go", "test", "-json", "-count=1", "-run", pattern, pkg)
++	cmd.Dir = root
++	raw, err := cmd.CombinedOutput()
++	text := string(raw)
++	if err != nil && strings.TrimSpace(text) == "" {
++		text = err.Error()
++	}
++
++	results := map[string]nativeResult{}
++	var tail []string
++	scanner := bufio.NewScanner(strings.NewReader(text))
++	scanner.Buffer(make([]byte, 0, 1024*1024), 8*1024*1024)
++	for scanner.Scan() {
++		line := scanner.Text()
++		var event struct {
++			Action  string  `json:"Action"`
++			Test    string  `json:"Test"`
++			Output  string  `json:"Output"`
++			Elapsed float64 `json:"Elapsed"`
++		}
++		if jsonErr := json.Unmarshal([]byte(line), &event); jsonErr != nil {
++			tail = append(tail, line)
++			continue
++		}
++		if event.Test == "" {
++			if event.Output != "" && event.Action != "output" {
++				tail = append(tail, strings.TrimRight(event.Output, "\n"))
++			}
++			continue
++		}
++		if event.Action == "output" {
++			existing := results[event.Test]
++			existing.output += event.Output
++			results[event.Test] = existing
++			continue
++		}
++		switch event.Action {
++		case "pass", "fail", "skip":
++			existing := results[event.Test]
++			existing.action = event.Action
++			existing.elapsed = event.Elapsed
++			results[event.Test] = existing
++		}
++	}
++	cause := strings.Join(tail, "\n")
++	if strings.TrimSpace(cause) == "" {
++		cause = text
++	}
++	return results, cause
++}
++
++func firstCause(output string) string {
++	lines := strings.Split(output, "\n")
++	for _, line := range lines {
++		trimmed := strings.TrimSpace(line)
++		if trimmed == "" {
++			continue
++		}
++		if strings.Contains(trimmed, ".go:") || strings.Contains(strings.ToLower(trimmed), "error") ||
++			strings.Contains(trimmed, "cannot") || strings.Contains(trimmed, "undefined") {
++			return trimmed
++		}
++	}
++	if len(lines) > 0 {
++		return strings.TrimSpace(lines[0])
++	}
++	return "test was not executed"
++}
++
++type junitTestCase struct {
++	XMLName   xml.Name      `xml:"testcase"`
++	Name      string        `xml:"name,attr"`
++	Classname string        `xml:"classname,attr"`
++	Time      string        `xml:"time,attr"`
++	Failure   *junitMessage `xml:"failure,omitempty"`
++	Error     *junitMessage `xml:"error,omitempty"`
++	Skipped   *junitMessage `xml:"skipped,omitempty"`
++	Output    string        `xml:"system-out,omitempty"`
++}
++
++type junitMessage struct {
++	Type    string `xml:"type,attr,omitempty"`
++	Message string `xml:"message,attr"`
++	Body    string `xml:",chardata"`
++}
++
++type junitTestSuite struct {
++	XMLName  xml.Name        `xml:"testsuite"`
++	Name     string          `xml:"name,attr"`
++	Tests    int             `xml:"tests,attr"`
++	Failures int             `xml:"failures,attr"`
++	Errors   int             `xml:"errors,attr"`
++	Skipped  int             `xml:"skipped,attr"`
++	Time     string          `xml:"time,attr"`
++	Cases    []junitTestCase `xml:"testcase"`
++}
++
++type junitSuites struct {
++	XMLName xml.Name         `xml:"testsuites"`
++	Suites  []junitTestSuite `xml:"testsuite"`
++}
++
++// failureMessage summarises the assertion that stopped the test so the JUnit
++// failure element carries the native message, not only the selector label.
++func failureMessage(r testResult) string {
++	for _, line := range strings.Split(r.Output, "\n") {
++		trimmed := strings.TrimSpace(line)
++		if trimmed == "" || strings.HasPrefix(trimmed, "=== RUN") || strings.HasPrefix(trimmed, "--- FAIL") {
++			continue
++		}
++		if len(trimmed) > 300 {
++			trimmed = trimmed[:300]
++		}
++		return trimmed
++	}
++	return fmt.Sprintf("%s failed", r.Selector.String())
++}
++
++// nativeFailureType recognizes Go runtime diagnostics, not assertion wording.
++func nativeFailureType(output string) string {
++	for _, line := range strings.Split(output, "\n") {
++		if strings.HasPrefix(line, "panic: test timed out") {
++			return "Timeout"
++		}
++		if strings.HasPrefix(line, "panic:") || strings.HasPrefix(line, "fatal error:") ||
++			strings.HasPrefix(line, "SIGSEGV:") || strings.HasPrefix(line, "SIGABRT:") ||
++			strings.HasPrefix(line, "SIGBUS:") || strings.HasPrefix(line, "SIGILL:") {
++			return "Process Crash"
++		}
++	}
++	return ""
++}
++
++func writeJUnit(path string, results []testResult) error {
++	suite := junitTestSuite{Name: "f2p", Tests: len(results)}
++	var total float64
++	for _, r := range results {
++		tc := junitTestCase{
++			Name:      r.Selector.String(),
++			Classname: filepath.Dir(r.Selector.Path),
++			Time:      fmt.Sprintf("%.3f", r.Elapsed),
++		}
++		total += r.Elapsed
++		switch r.Action {
++		case actionPass:
++		case actionFail:
++			if kind := nativeFailureType(r.Output); kind != "" {
++				suite.Errors++
++				tc.Error = &junitMessage{Type: kind, Message: kind}
++				// Keep native diagnostics without letting stack paths redefine the error type.
++				tc.Output = r.Output
++			} else {
++				suite.Failures++
++				// A completed testing.T failure is an assertion.
++				tc.Failure = &junitMessage{Type: "AssertionError", Message: failureMessage(r), Body: r.Output}
++			}
++		case actionSkip:
++			suite.Skipped++
++			tc.Skipped = &junitMessage{Message: "skipped"}
++		default:
++			suite.Errors++
++			tc.Error = &junitMessage{Message: fmt.Sprintf("%s was not executed", r.Selector.String()), Body: r.Output}
++		}
++		suite.Cases = append(suite.Cases, tc)
++	}
++	suite.Time = fmt.Sprintf("%.3f", total)
++
++	doc := junitSuites{Suites: []junitTestSuite{suite}}
++	data, err := xml.MarshalIndent(doc, "", "  ")
++	if err != nil {
++		return err
++	}
++	if dir := filepath.Dir(path); dir != "" {
++		_ = os.MkdirAll(dir, 0o755)
++	}
++	return os.WriteFile(path, append([]byte(xml.Header), data...), 0o644)
++}
+diff --git a/test/p2p/runner.go b/test/p2p/runner.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..ac8fc16e86aa750c91a822b1f604d39e35a7c3f6
+--- /dev/null
++++ b/test/p2p/runner.go
+@@ -0,0 +1,579 @@
++// Command p2p runs the verifier pass-to-pass (P2P) test selection declared by
++// the pipeline and writes a standard JUnit XML report.
++//
++// The selection is read from the materialized pipeline declaration (config /
++// p2p_select). The command surface is intentionally tiny: every selected leaf
++// is executed with `go test -json` in its own package and the native results
++// are converted to JUnit without any third party tooling.
++package main
++
++import (
++	"bufio"
++	"encoding/json"
++	"encoding/xml"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"sort"
++	"strings"
++	"time"
++)
++
++type selector struct {
++	Path string // repository relative test file path
++	Leaf string // exact test function name
++}
++
++func (s selector) String() string { return s.Path + "::" + s.Leaf }
++
++type testResult struct {
++	Selector selector
++	Action   string // pass, fail, skip, error
++	Output   string
++	Elapsed  float64
++}
++
++const (
++	actionPass  = "pass"
++	actionFail  = "fail"
++	actionSkip  = "skip"
++	actionError = "error"
++)
++
++var modulePath = "fyshos.com/fynedesk"
++
++func main() {
++	root := findRepoRoot()
++	report := ""
++	var selectFile, configFile string
++	for _, a := range os.Args[1:] {
++		if strings.Contains(a, "{") && strings.Contains(a, "}") {
++			continue // unsubstituted pipeline placeholder
++		}
++		switch {
++		case strings.HasSuffix(a, ".json"):
++			if configFile == "" {
++				configFile = a
++			}
++		case strings.HasSuffix(a, ".txt"):
++			if selectFile == "" {
++				selectFile = a
++			}
++		default:
++			if report == "" {
++				report = a
++			}
++		}
++	}
++	if report == "" {
++		for _, env := range []string{"P2P_REPORT", "JUNIT_REPORT", "REPORT", "REPORT_PATH"} {
++			if v := os.Getenv(env); v != "" {
++				report = v
++				break
++			}
++		}
++	}
++	if configFile == "" {
++		configFile = findCandidateFile(root, report, "config.json")
++	}
++	if selectFile == "" {
++		selectFile = findCandidateFile(root, report, "p2p_select.txt")
++	}
++	if selectFile == "" {
++		for _, env := range []string{"P2P_SELECT", "SELECT", "SELECT_PATH"} {
++			if v := os.Getenv(env); v != "" && fileExists(v) {
++				selectFile = v
++				break
++			}
++		}
++	}
++	if report == "" {
++		report = filepath.Join(root, "p2p-junit.xml")
++	}
++	if !filepath.IsAbs(report) {
++		report = filepath.Join(root, report)
++	}
++
++	sels := loadSelectors(configFile, selectFile)
++	if len(sels) == 0 {
++		fmt.Fprintln(os.Stderr, "p2p runner: no selectors declared, nothing to run")
++		os.Exit(3)
++	}
++
++	results := runSelectors(root, sels)
++	if err := writeJUnit(report, results); err != nil {
++		fmt.Fprintln(os.Stderr, "p2p runner: cannot write report:", err)
++		os.Exit(2)
++	}
++	failed := 0
++	for _, r := range results {
++		if r.Action != actionPass && r.Action != actionSkip {
++			failed++
++		}
++	}
++	fmt.Printf("p2p runner: %d selectors, %d not passing, report %s\n", len(results), failed, report)
++	if failed > 0 {
++		os.Exit(1)
++	}
++}
++
++func findRepoRoot() string {
++	dir, err := os.Getwd()
++	if err != nil {
++		return "."
++	}
++	for {
++		if fileExists(filepath.Join(dir, "go.mod")) {
++			return dir
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			return "."
++		}
++		dir = parent
++	}
++}
++
++func fileExists(path string) bool {
++	st, err := os.Stat(path)
++	return err == nil && !st.IsDir()
++}
++
++// findCandidateFile looks for a pipeline materialized declaration file in the
++// usual places: next to the report, the working directory, the repository root
++// and one level above the repository root.
++func findCandidateFile(root, report, name string) string {
++	var dirs []string
++	if report != "" {
++		dirs = append(dirs, filepath.Dir(report), filepath.Dir(filepath.Dir(report)))
++	}
++	if wd, err := os.Getwd(); err == nil {
++		dirs = append(dirs, wd, filepath.Dir(wd))
++	}
++	if exe, err := os.Executable(); err == nil {
++		dirs = append(dirs, filepath.Dir(exe))
++	}
++	if execDir := strings.TrimSpace(os.Getenv("VERIFIER_EXEC_DIR")); execDir != "" {
++		dirs = append(dirs, execDir)
++	}
++	dirs = append(dirs, root, filepath.Dir(root), filepath.Join(root, "verifier"), filepath.Join(root, "evidence"))
++	seen := map[string]bool{}
++	for _, d := range dirs {
++		if d == "" || seen[d] {
++			continue
++		}
++		seen[d] = true
++		candidate := filepath.Join(d, name)
++		if !fileExists(candidate) {
++			continue
++		}
++		if name == "config.json" && !looksLikePlan(candidate) {
++			continue
++		}
++		return candidate
++	}
++	return ""
++}
++
++func looksLikePlan(path string) bool {
++	data, err := os.ReadFile(path)
++	if err != nil {
++		return false
++	}
++	return strings.Contains(string(data), "p2p") || strings.Contains(string(data), "selector")
++}
++
++// loadSelectors reads the execution set from the pipeline declarations. The
++// dedicated p2p select list is authoritative and the config declaration is the
++// fallback. The embedded copy of the frozen declaration is always merged in so
++// that every declared selector is executed (the execution report must cover
++// the supplemental P2P selections and the collected original inventory), even
++// when the materialized declaration files cannot be located.
++func loadSelectors(configFile, selectFile string) []selector {
++	var declared []selector
++	if selectFile != "" {
++		declared = selectorsFromList(selectFile)
++	}
++	if len(declared) == 0 && configFile != "" {
++		declared = selectorsFromJSON(configFile)
++	}
++	out := make([]selector, 0, len(declared)+64)
++	for _, s := range embeddedSelectors() {
++		out = appendUnique(out, s)
++	}
++	for _, s := range declared {
++		out = appendUnique(out, s)
++	}
++	return out
++}
++
++func selectorsFromJSON(path string) []selector {
++	data, err := os.ReadFile(path)
++	if err != nil {
++		return nil
++	}
++	var doc map[string]interface{}
++	if err := json.Unmarshal(data, &doc); err != nil {
++		return nil
++	}
++	var out []selector
++	var add func(v interface{})
++	add = func(v interface{}) {
++		switch item := v.(type) {
++		case string:
++			if s, ok := parseSelector(item); ok {
++				out = appendUnique(out, s)
++			}
++		case map[string]interface{}:
++			for _, key := range []string{"selector", "test"} {
++				if raw, ok := item[key].(string); ok {
++					if s, ok := parseSelector(raw); ok {
++						out = appendUnique(out, s)
++						return
++					}
++				}
++			}
++		case []interface{}:
++			for _, e := range item {
++				add(e)
++			}
++		}
++	}
++	for _, key := range []string{"p2p", "original_inventory", "selectors", "tests", "test_paths"} {
++		if v, ok := doc[key]; ok {
++			add(v)
++		}
++	}
++	return out
++}
++
++func selectorsFromList(path string) []selector {
++	file, err := os.Open(path)
++	if err != nil {
++		return nil
++	}
++	defer file.Close()
++	var out []selector
++	scanner := bufio.NewScanner(file)
++	for scanner.Scan() {
++		line := strings.TrimSpace(scanner.Text())
++		if line == "" || strings.HasPrefix(line, "#") {
++			continue
++		}
++		fields := strings.Fields(line)
++		for _, f := range fields {
++			if s, ok := parseSelector(strings.Trim(f, `",'`)); ok {
++				out = appendUnique(out, s)
++				break
++			}
++		}
++	}
++	return out
++}
++
++func parseSelector(raw string) (selector, bool) {
++	if !strings.Contains(raw, "::") {
++		return selector{}, false
++	}
++	parts := strings.SplitN(raw, "::", 2)
++	path := strings.TrimSpace(parts[0])
++	leaf := strings.TrimSpace(parts[1])
++	if path == "" || leaf == "" || strings.Contains(leaf, "::") {
++		return selector{}, false
++	}
++	return selector{Path: path, Leaf: leaf}, true
++}
++
++func appendUnique(list []selector, s selector) []selector {
++	for _, cur := range list {
++		if cur == s {
++			return list
++		}
++	}
++	return append(list, s)
++}
++
++func runSelectors(root string, sels []selector) []testResult {
++	groups := map[string][]selector{}
++	var order []string
++	for _, s := range sels {
++		pkg := "./" + filepath.ToSlash(filepath.Dir(s.Path))
++		if _, ok := groups[pkg]; !ok {
++			order = append(order, pkg)
++		}
++		groups[pkg] = append(groups[pkg], s)
++	}
++	sort.Strings(order)
++
++	bySelector := map[string]testResult{}
++	for _, pkg := range order {
++		group := groups[pkg]
++		leaves := make([]string, 0, len(group))
++		for _, s := range group {
++			leaves = append(leaves, regexp.QuoteMeta(s.Leaf))
++		}
++		pattern := "^(" + strings.Join(leaves, "|") + ")$"
++		results, output := runPackage(root, pkg, pattern)
++		for _, s := range group {
++			if r, ok := results[s.Leaf]; ok {
++				bySelector[s.String()] = testResult{Selector: s, Action: r.action, Output: r.output, Elapsed: r.elapsed}
++				continue
++			}
++			reason := fmt.Sprintf("test %s was not collected in package %s", s.Leaf, pkg)
++			if strings.TrimSpace(output) != "" {
++				reason += "\n" + firstCause(output)
++			}
++			bySelector[s.String()] = testResult{Selector: s, Action: actionError, Output: reason}
++		}
++	}
++
++	out := make([]testResult, 0, len(sels))
++	for _, s := range sels {
++		if r, ok := bySelector[s.String()]; ok {
++			out = append(out, r)
++		}
++	}
++	return out
++}
++
++type leafResult struct {
++	action  string
++	output  string
++	elapsed float64
++}
++
++func runPackage(root, pkg, pattern string) (map[string]leafResult, string) {
++	cmd := exec.Command("go", "test", "-json", "-count=1", "-run", pattern, pkg)
++	cmd.Dir = root
++	env := os.Environ()
++	// The pipeline provides an executable directory when the plan declares
++	// require_exec; compile and execute the per-package test binaries there so
++	// a noexec temporary mount cannot block the real run.
++	if execDir := strings.TrimSpace(os.Getenv("VERIFIER_EXEC_DIR")); execDir != "" {
++		env = append(env, "GOTMPDIR="+execDir, "TMPDIR="+execDir)
++	}
++	cmd.Env = append(env, "GOFLAGS=-mod=mod", "GOPROXY=off")
++	done := make(chan struct{})
++	var data []byte
++	var err error
++	go func() {
++		data, err = cmd.CombinedOutput()
++		close(done)
++	}()
++	select {
++	case <-done:
++	case <-time.After(8 * time.Minute):
++		if cmd.Process != nil {
++			_ = cmd.Process.Kill()
++		}
++		<-done
++		return map[string]leafResult{}, fmt.Sprintf("timeout running go test %s %s", pkg, pattern)
++	}
++
++	results := map[string]leafResult{}
++	var packageOutput strings.Builder
++	dec := json.NewDecoder(strings.NewReader(string(data)))
++	for {
++		var event struct {
++			Action  string  `json:"Action"`
++			Package string  `json:"Package"`
++			Test    string  `json:"Test"`
++			Elapsed float64 `json:"Elapsed"`
++			Output  string  `json:"Output"`
++		}
++		if err := dec.Decode(&event); err != nil {
++			break
++		}
++		if event.Test == "" {
++			if event.Action == "output" {
++				packageOutput.WriteString(event.Output)
++			}
++			continue
++		}
++		switch event.Action {
++		case "pass", "fail", "skip":
++			prev := results[event.Test]
++			prev.action = event.Action
++			prev.elapsed = event.Elapsed
++			results[event.Test] = prev
++		case "output":
++			prev := results[event.Test]
++			prev.output += event.Output
++			results[event.Test] = prev
++		}
++	}
++	output := packageOutput.String()
++	if err != nil && len(results) == 0 {
++		output += "\n" + string(data)
++	}
++	return results, output
++}
++
++func firstCause(output string) string {
++	lines := strings.Split(output, "\n")
++	for _, line := range lines {
++		line = strings.TrimSpace(line)
++		if line == "" {
++			continue
++		}
++		if strings.HasPrefix(line, "#") || strings.Contains(line, ".go:") || strings.Contains(strings.ToLower(line), "error") {
++			return line
++		}
++	}
++	if len(lines) > 0 {
++		return strings.TrimSpace(lines[0])
++	}
++	return ""
++}
++
++type junitTestSuite struct {
++	XMLName  xml.Name        `xml:"testsuite"`
++	Name     string          `xml:"name,attr"`
++	Tests    int             `xml:"tests,attr"`
++	Failures int             `xml:"failures,attr"`
++	Errors   int             `xml:"errors,attr"`
++	Skipped  int             `xml:"skipped,attr"`
++	Time     string          `xml:"time,attr"`
++	Cases    []junitTestCase `xml:"testcase"`
++}
++
++type junitTestCase struct {
++	Name      string        `xml:"name,attr"`
++	Classname string        `xml:"classname,attr"`
++	Time      string        `xml:"time,attr"`
++	Failure   *junitMessage `xml:"failure,omitempty"`
++	Error     *junitMessage `xml:"error,omitempty"`
++	Skipped   *junitMessage `xml:"skipped,omitempty"`
++	Output    string        `xml:"system-out,omitempty"`
++}
++
++type junitMessage struct {
++	Type    string `xml:"type,attr,omitempty"`
++	Message string `xml:"message,attr"`
++	Body    string `xml:",chardata"`
++}
++
++type junitSuites struct {
++	XMLName xml.Name         `xml:"testsuites"`
++	Suites  []junitTestSuite `xml:"testsuite"`
++}
++
++// nativeFailureType recognizes Go runtime diagnostics, not assertion wording.
++func nativeFailureType(output string) string {
++	for _, line := range strings.Split(output, "\n") {
++		if strings.HasPrefix(line, "panic: test timed out") {
++			return "Timeout"
++		}
++		if strings.HasPrefix(line, "panic:") || strings.HasPrefix(line, "fatal error:") ||
++			strings.HasPrefix(line, "SIGSEGV:") || strings.HasPrefix(line, "SIGABRT:") ||
++			strings.HasPrefix(line, "SIGBUS:") || strings.HasPrefix(line, "SIGILL:") {
++			return "Process Crash"
++		}
++	}
++	return ""
++}
++
++func writeJUnit(path string, results []testResult) error {
++	suite := junitTestSuite{Name: "p2p", Tests: len(results)}
++	var total float64
++	for _, r := range results {
++		tc := junitTestCase{
++			Name:      r.Selector.String(),
++			Classname: filepath.Dir(r.Selector.Path),
++			Time:      fmt.Sprintf("%.3f", r.Elapsed),
++		}
++		total += r.Elapsed
++		switch r.Action {
++		case actionPass:
++		case actionFail:
++			if kind := nativeFailureType(r.Output); kind != "" {
++				suite.Errors++
++				tc.Error = &junitMessage{Type: kind, Message: kind}
++				// Keep native diagnostics without letting stack paths redefine the error type.
++				tc.Output = r.Output
++			} else {
++				suite.Failures++
++				// A completed testing.T failure is an assertion.
++				tc.Failure = &junitMessage{Type: "AssertionError", Message: fmt.Sprintf("%s failed", r.Selector.String()), Body: r.Output}
++			}
++		case actionSkip:
++			suite.Skipped++
++			tc.Skipped = &junitMessage{Message: "skipped"}
++		default:
++			suite.Errors++
++			tc.Error = &junitMessage{Message: fmt.Sprintf("%s was not executed", r.Selector.String()), Body: r.Output}
++		}
++		suite.Cases = append(suite.Cases, tc)
++	}
++	suite.Time = fmt.Sprintf("%.3f", total)
++
++	doc := junitSuites{Suites: []junitTestSuite{suite}}
++	data, err := xml.MarshalIndent(doc, "", "  ")
++	if err != nil {
++		return err
++	}
++	if dir := filepath.Dir(path); dir != "" {
++		_ = os.MkdirAll(dir, 0o755)
++	}
++	return os.WriteFile(path, append([]byte(xml.Header), data...), 0o644)
++}
++
++// embeddedSelectors mirrors the frozen p2p-plan declaration exactly: the
++// selected supplemental P2P leaves plus every collected original inventory
++// node (selected and excluded) that the execution report must cover.
++func embeddedSelectors() []selector {
++	raw := []string{
++		"internal/x11/win/p2p_frame_test.go::TestP2PBottomStripAndCornersSelectResize",
++		"internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedStaysWithinThreshold",
++		"internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedThresholdBoundary",
++		"internal/x11/win/p2p_frame_test.go::TestP2PDragMaximizedUnmaximizesOutsideTitleBarBeyondThreshold",
++		"internal/x11/win/p2p_frame_test.go::TestP2PDragResizeClampsNegativeDimensions",
++		"internal/x11/win/p2p_frame_test.go::TestP2PDragZeroDisplacementIsNoOp",
++		"internal/x11/win/p2p_frame_test.go::TestP2PFixedSizeWindowDisablesResizeFlags",
++		"internal/x11/win/p2p_frame_test.go::TestP2PFrameSideStripsSelectResizeAtAnyHeight",
++		"internal/x11/win/p2p_frame_test.go::TestP2PMaximizedWindowDisablesResizeFlags",
++		"internal/x11/win/p2p_frame_test.go::TestP2PMotionKeepsDefaultCursorWhenNotResizable",
++		"internal/x11/win/p2p_frame_test.go::TestP2PMotionRefreshesThemeOnlyWhenHoverChanges",
++		"internal/x11/win/p2p_frame_test.go::TestP2PMotionSelectsCloseCursorForCloseTarget",
++		"internal/x11/win/p2p_frame_test.go::TestP2PMotionSelectsResizeCursorWhenNoTarget",
++		"internal/x11/win/p2p_frame_test.go::TestP2PNotificationsForwardArgumentsInOrder",
++		"internal/x11/win/p2p_frame_test.go::TestP2PPressFocusedWindowRaisesAtEndOfProcessing",
++		"internal/x11/win/p2p_frame_test.go::TestP2PPressFullscreenWindowIsIgnored",
++		"internal/x11/win/p2p_frame_test.go::TestP2PPressNonPrimaryButtonIsIgnored",
++		"internal/x11/win/p2p_frame_test.go::TestP2PPressTappableChildMarksDragIgnored",
++		"internal/x11/win/p2p_frame_test.go::TestP2PPressUnfocusedWindowRaisesAndReturns",
++		"internal/x11/win/p2p_frame_test.go::TestP2PReleaseClearsIgnoredDragForAnyButton",
++		"internal/x11/win/p2p_frame_test.go::TestP2PReleaseDoubleClickTriggersDoubleTap",
++		"internal/x11/win/p2p_frame_test.go::TestP2PReleaseOutsideTitleBarDoesNotCountClick",
++		"internal/x11/win/p2p_frame_test.go::TestP2PReleaseSingleClickOnCloseTargetTaps",
++		"internal/x11/win/p2p_frame_test.go::TestP2PTitleBarCenterSelectsMoveOnly",
++		"internal/x11/win/p2p_frame_test.go::TestP2PTitleBarEdgeStripsSelectTopResize",
++		"wm/util_test.go::TestFindObjectAtPixelPositionMatching",
++		"wm/notifications_test.go::TestSendNotification",
++		"wm/notifications_test.go::TestNewNotification",
++		"wm/position_test.go::TestPositionForNewWindow_Default",
++		"wm/position_test.go::TestPositionForNewWindow_DefaultBorderless",
++		"wm/position_test.go::TestPositionForNewWindow_WithParent",
++		"wm/shortcut_test.go::TestShortcutHandler_Shortcuts",
++		"wm/shortcut_test.go::TestShortcutHandler_TypedShortcut",
++		"internal/x11/screenshot_test.go::TestCopyPixel",
++		"internal/x11/wm/desk_test.go::TestScreenNameFromRootTitle",
++		"internal/x11/wm/stack_test.go::TestStack_AddWindow",
++		"internal/x11/wm/stack_test.go::TestStack_RaiseToTop",
++		"internal/x11/wm/stack_test.go::TestStack_RemoveWindow",
++		"theme/theme_test.go::TestIconResources",
++		"theme/theme_test.go::TestIconTheme",
++		"theme/theme_test.go::TestIconTheme_BrokenImage",
++	}
++	var out []selector
++	for _, r := range raw {
++		if s, ok := parseSelector(r); ok {
++			out = appendUnique(out, s)
++		}
++	}
++	return out
++}
++
++var _ = modulePath

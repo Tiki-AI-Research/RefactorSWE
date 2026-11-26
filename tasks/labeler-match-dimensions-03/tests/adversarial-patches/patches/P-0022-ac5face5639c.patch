@@ -1,0 +1,222 @@
+--- a/src/labeler.ts
++++ b/src/labeler.ts
+@@ -224,46 +224,143 @@
+   return true;
+ }
+ 
+-// equivalent to "Array.some()" but expanded for debugging and clarity
+-export function checkAny(
++export type Quantifier = 'any' | 'all';
++
++export type DimensionKey = keyof BaseMatchConfig;
++
++export interface MatchContext {
++  changedFiles: string[];
++  dot: boolean;
++}
++
++export interface DimensionDescriptor {
++  name: DimensionKey;
++  isPresent: (config: BaseMatchConfig) => boolean;
++  evaluate: (
++    config: BaseMatchConfig,
++    context: MatchContext,
++    quantifier: Quantifier
++  ) => boolean | 'abort';
++}
++
++export const DIMENSIONS: readonly DimensionDescriptor[] = [
++  {
++    name: 'baseBranch',
++    isPresent: config => Boolean(config.baseBranch),
++    evaluate: (config, _context, quantifier) => {
++      const patterns = config.baseBranch!;
++      return quantifier === 'any'
++        ? checkAnyBranch(patterns, 'base')
++        : checkAllBranch(patterns, 'base');
++    }
++  },
++  {
++    name: 'changedFiles',
++    isPresent: config => Boolean(config.changedFiles),
++    evaluate: (config, context, quantifier) => {
++      if (quantifier === 'all' && !context.changedFiles.length) {
++        core.debug(`  no files to check "changed-files" patterns against`);
++        return 'abort';
++      }
++      return quantifier === 'any'
++        ? checkAnyChangedFiles(
++            context.changedFiles,
++            config.changedFiles!,
++            context.dot
++          )
++        : checkAllChangedFiles(
++            context.changedFiles,
++            config.changedFiles!,
++            context.dot
++          );
++    }
++  },
++  {
++    name: 'headBranch',
++    isPresent: config => Boolean(config.headBranch),
++    evaluate: (config, _context, quantifier) => {
++      const patterns = config.headBranch!;
++      return quantifier === 'any'
++        ? checkAnyBranch(patterns, 'head')
++        : checkAllBranch(patterns, 'head');
++    }
++  }
++];
++
++interface QuantifierStrategy {
++  name: Quantifier;
++  shortCircuitOn: boolean;
++  shortCircuitMessage: string;
++  defaultResult: boolean;
++  completionMessage: string;
++}
++
++const QUANTIFIERS: Record<Quantifier, QuantifierStrategy> = {
++  any: {
++    name: 'any',
++    shortCircuitOn: true,
++    shortCircuitMessage: '  "any" patterns matched',
++    defaultResult: false,
++    completionMessage: '  "any" patterns did not match any configs'
++  },
++  all: {
++    name: 'all',
++    shortCircuitOn: false,
++    shortCircuitMessage: '  "all" patterns did not match',
++    defaultResult: true,
++    completionMessage: '  "all" patterns matched all configs'
++  }
++};
++
++function checkQuantifier(
++  quantifier: Quantifier,
+   matchConfigs: BaseMatchConfig[],
+   changedFiles: string[],
+   dot: boolean
+ ): boolean {
+-  core.debug(`  checking "any" patterns`);
++  const strategy = QUANTIFIERS[quantifier];
++  core.debug(`  checking "${strategy.name}" patterns`);
++
+   if (
+     !matchConfigs.length ||
+     !matchConfigs.some(configOption => Object.keys(configOption).length)
+   ) {
+-    core.debug(`  no "any" patterns to check`);
+-    return false;
+-  }
++    core.debug(`  no "${strategy.name}" patterns to check`);
++    return quantifier === "any";
++  }
++
++  const context: MatchContext = {changedFiles, dot};
+ 
+   for (const matchConfig of matchConfigs) {
+-    if (matchConfig.baseBranch) {
+-      if (checkAnyBranch(matchConfig.baseBranch, 'base')) {
+-        core.debug(`  "any" patterns matched`);
+-        return true;
+-      }
+-    }
+-
+-    if (matchConfig.changedFiles) {
+-      if (checkAnyChangedFiles(changedFiles, matchConfig.changedFiles, dot)) {
+-        core.debug(`  "any" patterns matched`);
+-        return true;
+-      }
+-    }
+-
+-    if (matchConfig.headBranch) {
+-      if (checkAnyBranch(matchConfig.headBranch, 'head')) {
+-        core.debug(`  "any" patterns matched`);
+-        return true;
+-      }
+-    }
+-  }
+-
+-  core.debug(`  "any" patterns did not match any configs`);
+-  return false;
++    for (const dimension of DIMENSIONS) {
++      if (!dimension.isPresent(matchConfig)) {
++        continue;
++      }
++
++      const result = dimension.evaluate(matchConfig, context, quantifier);
++
++      if (result === 'abort') {
++        return false;
++      }
++
++      if (result === strategy.shortCircuitOn) {
++        core.debug(strategy.shortCircuitMessage);
++        return strategy.shortCircuitOn;
++      }
++    }
++  }
++
++  core.debug(strategy.completionMessage);
++  return strategy.defaultResult;
++}
++
++// equivalent to "Array.some()" but expanded for debugging and clarity
++export function checkAny(
++  matchConfigs: BaseMatchConfig[],
++  changedFiles: string[],
++  dot: boolean
++): boolean {
++  return checkQuantifier('any', matchConfigs, changedFiles, dot);
+ }
+ 
+ // equivalent to "Array.every()" but expanded for debugging and clarity
+@@ -272,43 +369,5 @@
+   changedFiles: string[],
+   dot: boolean
+ ): boolean {
+-  core.debug(`  checking "all" patterns`);
+-  if (
+-    !matchConfigs.length ||
+-    !matchConfigs.some(configOption => Object.keys(configOption).length)
+-  ) {
+-    core.debug(`  no "all" patterns to check`);
+-    return false;
+-  }
+-
+-  for (const matchConfig of matchConfigs) {
+-    if (matchConfig.baseBranch) {
+-      if (!checkAllBranch(matchConfig.baseBranch, 'base')) {
+-        core.debug(`  "all" patterns did not match`);
+-        return false;
+-      }
+-    }
+-
+-    if (matchConfig.changedFiles) {
+-      if (!changedFiles.length) {
+-        core.debug(`  no files to check "changed-files" patterns against`);
+-        return false;
+-      }
+-
+-      if (!checkAllChangedFiles(changedFiles, matchConfig.changedFiles, dot)) {
+-        core.debug(`  "all" patterns did not match`);
+-        return false;
+-      }
+-    }
+-
+-    if (matchConfig.headBranch) {
+-      if (!checkAllBranch(matchConfig.headBranch, 'head')) {
+-        core.debug(`  "all" patterns did not match`);
+-        return false;
+-      }
+-    }
+-  }
+-
+-  core.debug(`  "all" patterns matched all configs`);
+-  return true;
+-}
++  return checkQuantifier('all', matchConfigs, changedFiles, dot);
++}

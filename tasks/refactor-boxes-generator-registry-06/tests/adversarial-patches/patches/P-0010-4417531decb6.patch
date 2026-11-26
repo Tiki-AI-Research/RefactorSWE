@@ -1,0 +1,630 @@
+diff --git a/boxes/generators/__init__.py b/boxes/generators/__init__.py
+index 934e717433853bfb5e90ea6026fb3c34ee7d68bf..4708f77ad412ce5463c8d697d4bc5502bfdcc069 100644
+--- a/boxes/generators/__init__.py
++++ b/boxes/generators/__init__.py
+@@ -1,15 +1,20 @@
+ from __future__ import annotations
+ 
++from collections import defaultdict
++import copy
+ import importlib
++import importlib.abc
+ import inspect
+ import os
+ import pkgutil
++import sys
++import threading
+ from types import ModuleType
+ from typing import Any
+ 
+ import boxes
+ 
+-ui_groups_by_name = {}  # type: ignore
++ui_groups_by_name: dict[str, UIGroup] = {}
+ 
+ 
+ class UIGroup:
+@@ -23,17 +28,28 @@ class UIGroup:
+         # register
+         ui_groups_by_name[name] = self
+ 
+-    def add(self, box) -> None:
++    def add(self, box: Any) -> None:
++        if box in self.generators:
++            return
+         self.generators.append(box)
+         self.generators.sort(key=lambda b: getattr(b, '__name__', None) or b.__class__.__name__)
+ 
+     @property
+     def thumbnail(self) -> str:
+-        return self._image and f"{self._image}-thumb.jpg"
++        return f"{self._image}-thumb.jpg" if self._image else ""
+ 
+     @property
+     def image(self) -> str:
+-        return self._image and f"{self._image}.jpg"
++        return f"{self._image}.jpg" if self._image else ""
++
++    def __copy__(self) -> UIGroup:
++        clone = UIGroup.__new__(UIGroup)
++        clone.name = self.name
++        clone.title = self.title
++        clone.description = self.description
++        clone._image = self._image
++        clone.generators = []
++        return clone
+ 
+ 
+ ui_groups: list[UIGroup] = [
+@@ -48,33 +64,145 @@ ui_groups: list[UIGroup] = [
+     UIGroup("Unstable", description="Generators are still untested or need manual adjustment to be useful."),
+ ]
+ 
++_accumulated_extension_paths: list[str] = []
+ 
+-def getAllBoxGenerators() -> dict[str, type[boxes.Boxes]]:
+-    generators = {}
+-    path = __path__
+-    if "BOXES_GENERATOR_PATH" in os.environ:
+-        path.extend(os.environ.get("BOXES_GENERATOR_PATH", "").split(":"))
+-    for importer, modname, ispkg in pkgutil.walk_packages(path=path, prefix=__name__ + '.'):
+-        module = importlib.import_module(modname)
+-        if module.__name__.split('.')[-1].startswith("_"):
+-            continue
+-        for k, v in module.__dict__.items():
+-            if v is boxes.Boxes:
++
++class _ExtensionFinder(importlib.abc.MetaPathFinder):
++
++    def __init__(self, paths: list[str]) -> None:
++        self.paths = paths
++
++    def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> Any:
++        if not fullname.startswith(__name__ + "."):
++            return None
++        for p in self.paths:
++            target_dir = p if p else "."
++            if not os.path.isdir(target_dir):
+                 continue
+-            if inspect.isclass(v) and issubclass(v, boxes.Boxes) and v.__name__[0] != '_':
+-                generators[modname + '.' + v.__name__] = v
+-    return generators
++            importer = pkgutil.get_importer(p)
++            if importer and hasattr(importer, "find_spec"):
++                spec = importer.find_spec(fullname)
++                if spec is not None:
++                    return spec
++        return None
++
++
++for _finder_candidate in sys.meta_path:
++    if isinstance(_finder_candidate, _ExtensionFinder):
++        _finder_candidate.paths = _accumulated_extension_paths
++        break
++else:
++    sys.meta_path.append(_ExtensionFinder(_accumulated_extension_paths))
++
++_catalog_lock = threading.RLock()
++_cached_paths: tuple[str, ...] | None = None
++_cached_all_generators: dict[str, type[boxes.Boxes]] = {}
++_cached_all_modules: dict[str, ModuleType] = {}
++_cached_web_generators: dict[str, type[boxes.Boxes]] = {}
++_cached_ui_group_buckets: dict[str, list[type[boxes.Boxes]]] = {}
++_is_scanning: bool = False
++
++
++def _ensure_catalog() -> None:
++    global _cached_paths, _cached_all_generators, _cached_all_modules
++    global _cached_web_generators, _cached_ui_group_buckets, _is_scanning
++
++    with _catalog_lock:
++        if _is_scanning:
++            return
++
++        if "BOXES_GENERATOR_PATH" in os.environ:
++            for p in os.environ.get("BOXES_GENERATOR_PATH", "").split(":"):
++                if p not in _accumulated_extension_paths:
++                    _accumulated_extension_paths.append(p)
++
++        effective_paths: list[str] = []
++        for p in list(__path__):
++            if p not in effective_paths:
++                effective_paths.append(p)
++        for p in _accumulated_extension_paths:
++            if p not in effective_paths:
++                effective_paths.append(p)
++
++        paths_tuple = tuple(effective_paths)
++        if _cached_paths == paths_tuple:
++            return
++
++        _is_scanning = True
++        try:
++            all_generators: dict[str, type[boxes.Boxes]] = {}
++            all_modules: dict[str, ModuleType] = {}
++
++            for importer, modname, ispkg in pkgutil.walk_packages(
++                path=effective_paths,
++                prefix=__name__ + ".",
++                onerror=lambda x: None,
++            ):
++                short_name = modname.split(".")[-1]
++                module = importlib.import_module(modname)
++                all_modules[short_name] = module
++                if short_name.startswith("_"):
++                    continue
++                for k, v in module.__dict__.items():
++                    if v is boxes.Boxes:
++                        continue
++                    if inspect.isclass(v) and issubclass(v, boxes.Boxes) and v.__name__[0] != "_":
++                        all_generators[modname + "." + v.__name__] = v
++
++            web_generators: dict[str, type[boxes.Boxes]] = {
++                b.__name__: b for b in all_generators.values() if getattr(b, "webinterface", False)
++            }
++
++            buckets: dict[str, list[type[boxes.Boxes]]] = defaultdict(list)
++            for v in all_generators.values():
++                buckets[getattr(v, "ui_group", "Misc")].append(v)
++            for b_list in buckets.values():
++                b_list.sort(key=lambda b: getattr(b, "__name__", None) or b.__class__.__name__)
++
++            _cached_all_generators = all_generators
++            _cached_all_modules = all_modules
++            _cached_web_generators = web_generators
++            _cached_ui_group_buckets = dict(buckets)
++            _cached_paths = paths_tuple
++        finally:
++            _is_scanning = False
++
++
++def getAllBoxGenerators() -> dict[str, type[boxes.Boxes]]:
++    _ensure_catalog()
++    return dict(_cached_all_generators)
+ 
+ 
+ def getAllGeneratorModules() -> dict[str, ModuleType]:
+-    generators = {}
+-    path = __path__
+-    if "BOXES_GENERATOR_PATH" in os.environ:
+-        path.extend(os.environ.get("BOXES_GENERATOR_PATH", "").split(":"))
+-    for importer, modname, ispkg in pkgutil.walk_packages(
+-            path=path,
+-            prefix=__name__ + '.',
+-            onerror=lambda x: None):
+-        module = importlib.import_module(modname)
+-        generators[modname.split('.')[-1]] = module
+-    return generators
++    _ensure_catalog()
++    return dict(_cached_all_modules)
++
++
++def getWebGenerators() -> dict[str, type[boxes.Boxes]]:
++    _ensure_catalog()
++    return dict(_cached_web_generators)
++
++
++def getGeneratorsByUIGroup() -> dict[str, list[type[boxes.Boxes]]]:
++    _ensure_catalog()
++    return {k: list(v) for k, v in _cached_ui_group_buckets.items()}
++
++
++def getGeneratorGroups(generators: Any = None) -> list[UIGroup]:
++    _ensure_catalog()
++    groups = [copy.copy(g) for g in ui_groups]
++    groups_by_name = {g.name: g for g in groups}
++
++    if generators is None:
++        source = _cached_all_generators.values()
++    elif isinstance(generators, dict):
++        source = generators.values()
++    else:
++        source = generators
++
++    for box in source:
++        group_name = getattr(box, "ui_group", "Misc")
++        group = groups_by_name.get(group_name, groups_by_name["Misc"])
++        group.add(box)
++
++    return groups
+diff --git a/boxes/generators/abox.py b/boxes/generators/abox.py
+index 4e32ea5ceaa41e8698a8fdaedf6ba9a05b2a6d4e..153031d628728c8c8df90692e216c36c2abcbd87 100644
+--- a/boxes/generators/abox.py
++++ b/boxes/generators/abox.py
+@@ -31,6 +31,7 @@ class ABox(Boxes):
+         self.buildArgParser("x", "y", "h", "outside", "bottom_edge")
+ 
+     def render(self):
++        return
+         x, y, h = self.x, self.y, self.h
+         t = self.thickness
+ 
+diff --git a/boxes/scripts/boxes_generator.py b/boxes/scripts/boxes_generator.py
+index ba2e237dbd2fd92d4413d0dced9ec98357352e94..a418e377a029c30d8ef1e187599bbb6ec2608021 100755
+--- a/boxes/scripts/boxes_generator.py
++++ b/boxes/scripts/boxes_generator.py
+@@ -138,7 +138,7 @@ PACK_ALGO_CHOICES = (
+     "GuillotineBafMinas",
+ )
+ 
+-GENERATORS = {b.__name__: b for b in boxes.generators.getAllBoxGenerators().values() if b.webinterface}
++GENERATORS = boxes.generators.getWebGenerators()
+ 
+ SVG_NS = "http://www.w3.org/2000/svg"
+ ET.register_namespace("", SVG_NS)
+diff --git a/boxes/scripts/boxes_main.py b/boxes/scripts/boxes_main.py
+index 63ab05d3d72f1d9dd5634b570e39bd18030d8c95..c971a22247b3b04ccf0371c065de632bbb482abb 100755
+--- a/boxes/scripts/boxes_main.py
++++ b/boxes/scripts/boxes_main.py
+@@ -228,14 +228,7 @@ def generator_groups():
+ 
+ 
+ def group_generators(generators):
+-    groups = boxes.generators.ui_groups
+-    groups_by_name = boxes.generators.ui_groups_by_name
+-
+-    for name, generator in generators.items():
+-        group_for_generator = groups_by_name.get(generator.ui_group, groups_by_name['Misc'])
+-        group_for_generator.add(generator)
+-
+-    return groups
++    return boxes.generators.getGeneratorGroups(generators)
+ 
+ 
+ def generators_by_name() -> dict[str, type[boxes.Boxes]]:
+diff --git a/boxes/scripts/boxesserver.py b/boxes/scripts/boxesserver.py
+index 92adb9e676ff88a0263b86879b31cefc36d4db47..03f2a49ac8dd9c5f17aa7212fa6ecde3782da889 100755
+--- a/boxes/scripts/boxesserver.py
++++ b/boxes/scripts/boxesserver.py
+@@ -120,14 +120,12 @@ class BServer:
+     lang_re = re.compile(r"([a-z]{2,3}(-[-a-zA-Z0-9]*)?)\s*(;\s*q=(\d\.?\d*))?")
+ 
+     def __init__(self, url_prefix="", static_url="static", static_path="../static/", legal_url="") -> None:
+-        self.boxes = {b.__name__: b for b in boxes.generators.getAllBoxGenerators().values() if b.webinterface}
+-        self.groups = boxes.generators.ui_groups
+-        self.groups_by_name = boxes.generators.ui_groups_by_name
++        self.boxes = boxes.generators.getWebGenerators()
++        self.groups = boxes.generators.getGeneratorGroups(self.boxes.values())
++        self.groups_by_name = {g.name: g for g in self.groups}
+ 
+-        for name, box in self.boxes.items():
++        for box in self.boxes.values():
+             box.UI = "web"
+-            self.groups_by_name.get(box.ui_group,
+-                                    self.groups_by_name["Misc"]).add(box)
+ 
+         if os.path.isabs(static_path):
+             self.staticdir = static_path
+diff --git a/conftest.py b/conftest.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..29b4bfe65b483bd432b2efe001a635ac18e83ba5
+--- /dev/null
++++ b/conftest.py
+@@ -0,0 +1,18 @@
++from __future__ import annotations
++
++from pathlib import Path
++import sys
++
++repo_root = Path(__file__).resolve().parent
++repo_root_str = str(repo_root)
++
++if not sys.path or sys.path[0] != repo_root_str:
++    if repo_root_str in sys.path:
++        sys.path.remove(repo_root_str)
++    sys.path.insert(0, repo_root_str)
++
++for mod_name, mod in list(sys.modules.items()):
++    if mod_name == "boxes" or mod_name.startswith("boxes."):
++        file_path = getattr(mod, "__file__", None)
++        if file_path and not Path(file_path).resolve().is_relative_to(repo_root):
++            del sys.modules[mod_name]
+diff --git a/tests/test_boxesserver.py b/tests/test_boxesserver.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6eb2d9bdde6411358a64719af15692dc9d83f36d
+--- /dev/null
++++ b/tests/test_boxesserver.py
+@@ -0,0 +1,63 @@
++from __future__ import annotations
++
++import re
++
++import boxes.generators as g
++import boxes.scripts.boxesserver as bs
++
++
++class _DummyLang:
++    def gettext(self, s: str) -> str:
++        return s
++
++    def info(self) -> dict[str, str]:
++        return {}
++
++
++def test_boxesserver_isolation_and_rendering() -> None:
++    srv1 = bs.BServer()
++    srv2 = bs.BServer()
++
++    assert len(srv1.boxes) == 182
++    assert all(b.UI == "web" for b in srv1.boxes.values())
++
++    expected_groups = [
++        "Box",
++        "FlexBox",
++        "Tray",
++        "Shelf",
++        "WallMounted",
++        "Holes",
++        "Part",
++        "Misc",
++        "Unstable",
++    ]
++    assert [grp.name for grp in srv1.groups] == expected_groups
++    assert set(srv1.groups_by_name.keys()) == set(expected_groups)
++
++    members1 = [b for grp in srv1.groups for b in grp.generators]
++    members2 = [b for grp in srv2.groups for b in grp.generators]
++    assert len(members1) == 182
++    assert len(set(members1)) == 182
++    assert len(members2) == 182
++    assert len(set(members2)) == 182
++
++    assert srv1.groups is not srv2.groups
++    assert all(len(grp.generators) == 0 for grp in g.ui_groups)
++
++    lang = _DummyLang()
++
++    def start_response(status: str, headers: list[tuple[str, str]]) -> None:
++        pass
++
++    gallery_html = b"".join(srv1.serveGallery({}, start_response, lang)).decode("utf-8")
++    gallery_ids = re.findall(r'id="search_id_([^"]+)"', gallery_html)
++    assert len(gallery_ids) == 182
++    assert len(set(gallery_ids)) == 182
++    assert gallery_ids.count("HolePattern") == 1
++
++    menu_html = b"".join(srv1.genPageMenu(lang)).decode("utf-8")
++    menu_ids = re.findall(r'id="search_id_([^"]+)"', menu_html)
++    assert len(menu_ids) == 182
++    assert len(set(menu_ids)) == 182
++    assert menu_ids.count("HolePattern") == 1
+diff --git a/tests/test_generator_discovery.py b/tests/test_generator_discovery.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a4632818c3a1a22a81b58e204ce21ef3da508969
+--- /dev/null
++++ b/tests/test_generator_discovery.py
+@@ -0,0 +1,133 @@
++from __future__ import annotations
++
++import inspect
++from pathlib import Path
++import re
++import subprocess
++import sys
++
++import pytest
++
++import boxes.generators as g
++import boxes.scripts.boxes_generator as bg
++
++
++def test_single_scan_view_consistency_and_signatures() -> None:
++    code = r"""
++import inspect, pkgutil, re, sys
++import boxes.generators as g
++
++walks = 0
++orig_walk = pkgutil.walk_packages
++def counted_walk(*a, **kw):
++    global walks
++    walks += 1
++    return orig_walk(*a, **kw)
++pkgutil.walk_packages = counted_walk
++
++all_boxes = g.getAllBoxGenerators()
++all_mods = g.getAllGeneratorModules()
++web_boxes = g.getWebGenerators()
++buckets = g.getGeneratorsByUIGroup()
++groups = g.getGeneratorGroups()
++
++assert walks == 1, f"Expected 1 walk, got {walks}"
++assert len(all_boxes) == 195, f"Expected 195, got {len(all_boxes)}"
++assert len(all_mods) == 188, f"Expected 188, got {len(all_mods)}"
++assert len(web_boxes) == 182, f"Expected 182, got {len(web_boxes)}"
++assert len(buckets) == 10, f"Expected 10 buckets, got {len(buckets)}"
++assert sum(len(b) for b in buckets.values()) == 195
++assert len(groups) == 9
++
++assert not inspect.signature(g.getAllBoxGenerators).parameters
++assert not inspect.signature(g.getAllGeneratorModules).parameters
++
++for k, cls in all_boxes.items():
++    assert re.match(r"^boxes\.generators\.[^.]+\.[^.]+$", k)
++for name, cls in web_boxes.items():
++    assert cls.webinterface
++
++copy_check = g.getAllBoxGenerators()
++copy_check.clear()
++assert len(g.getAllBoxGenerators()) == 195
++
++bucket_copy = g.getGeneratorsByUIGroup()
++bucket_copy["Box"].clear()
++assert len(g.getGeneratorsByUIGroup()["Box"]) > 0
++"""
++    res = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True)
++    assert res.returncode == 0, res.stderr
++
++
++def test_boxes_generator_path_accumulation_and_reachability() -> None:
++    code = """
++import os, tempfile, sys
++import boxes.generators as g
++
++assert len(g.__path__) == 1
++builtins = set(g.getAllBoxGenerators().keys())
++assert len(builtins) == 195
++
++with tempfile.TemporaryDirectory() as da, tempfile.TemporaryDirectory() as db:
++    with open(os.path.join(da, "exta.py"), "w") as f:
++        f.write("import boxes\\nclass ExtA(boxes.Boxes):\\n    pass\\n")
++    with open(os.path.join(db, "extb.py"), "w") as f:
++        f.write("import boxes\\nclass ExtB(boxes.Boxes):\\n    pass\\n")
++
++    os.environ["BOXES_GENERATOR_PATH"] = da
++    res1 = g.getAllBoxGenerators()
++    mods1 = g.getAllGeneratorModules()
++    assert len(res1) == 196
++    assert len(mods1) == 189
++    assert "boxes.generators.exta.ExtA" in res1
++    assert builtins.issubset(res1.keys())
++    assert len(g.__path__) == 1
++
++    os.environ["BOXES_GENERATOR_PATH"] = db
++    res2 = g.getAllBoxGenerators()
++    assert len(res2) == 197
++    assert "boxes.generators.exta.ExtA" in res2
++    assert "boxes.generators.extb.ExtB" in res2
++    assert len(g.__path__) == 1
++
++    del os.environ["BOXES_GENERATOR_PATH"]
++    res3 = g.getAllBoxGenerators()
++    assert len(res3) == 197
++    assert "boxes.generators.exta.ExtA" in res3
++    assert "boxes.generators.extb.ExtB" in res3
++    assert len(g.__path__) == 1
++"""
++    res = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True)
++    assert res.returncode == 0, res.stderr
++
++
++def test_generators_snapshot_and_generate_smoke(tmp_path: Path) -> None:
++    assert bg.GENERATORS == g.getWebGenerators()
++    assert len(bg.GENERATORS) == 182
++    assert all(b.webinterface for b in bg.GENERATORS.values())
++
++    out = bg.generate({"Boxes": [{"box_type": "ABox"}]}, str(tmp_path / "out"))
++    assert len(out) == 1 and Path(out[0]).exists()
++
++    with pytest.raises(ValueError, match="box_type must be provided"):
++        bg.generate({"Boxes": [{}]}, str(tmp_path / "out"))
++    with pytest.raises(ValueError, match="invalid generator"):
++        bg.generate({"Boxes": [{"box_type": "NoSuchBox"}]}, str(tmp_path / "out"))
++
++
++def test_boxes_generator_import_zero_get_all_calls() -> None:
++    code = """
++import boxes.generators as g
++calls = 0
++orig = g.getAllBoxGenerators
++def counted():
++    global calls
++    calls += 1
++    return orig()
++g.getAllBoxGenerators = counted
++
++import boxes.scripts.boxes_generator as bg
++assert calls == 0, f"Expected 0 calls, got {calls}"
++"""
++    res = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True)
++    assert res.returncode == 0, res.stderr
+diff --git a/tests/test_generator_groups.py b/tests/test_generator_groups.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a31a5c91a625fa7c5f737797368b7b1b2a55ea0c
+--- /dev/null
++++ b/tests/test_generator_groups.py
+@@ -0,0 +1,95 @@
++from __future__ import annotations
++
++import contextlib
++import io
++import re
++
++import boxes.generators as g
++import boxes.scripts.boxes_main as bm
++
++
++def test_generator_groups_idempotence_sorting_and_fallback() -> None:
++    g1 = bm.generator_groups()
++    g2 = bm.generator_groups()
++
++    assert [x.name for x in g1] == [x.name for x in g2]
++    assert g1 is not g2
++    assert g1[0].generators is not g2[0].generators
++
++    for i in range(len(g1)):
++        names1 = [b.__name__ for b in g1[i].generators]
++        names2 = [b.__name__ for b in g2[i].generators]
++        assert names1 == names2
++        assert names1 == sorted(names1)
++        assert len(set(names1)) == len(names1)
++
++    assert sum(len(x.generators) for x in g1) == 186
++    assert all(len(x.generators) == 0 for x in g.ui_groups)
++
++    misc_group = next(x for x in g1 if x.name == "Misc")
++    misc_names = {b.__name__ for b in misc_group.generators}
++    assert "BeeQueenCage" in misc_names
++    assert "BeeQueenTransportBox" in misc_names
++
++    for grp in g1:
++        if grp.name != "Misc":
++            names = {b.__name__ for b in grp.generators}
++            assert "BeeQueenCage" not in names
++            assert "BeeQueenTransportBox" not in names
++
++
++def test_list_stability_and_formatting() -> None:
++    buf1 = io.StringIO()
++    with contextlib.redirect_stdout(buf1):
++        bm.print_grouped_generators()
++    out1 = buf1.getvalue()
++
++    buf2 = io.StringIO()
++    with contextlib.redirect_stdout(buf2):
++        bm.print_grouped_generators()
++    out2 = buf2.getvalue()
++
++    assert out1 == out2
++    assert out1.startswith("Available generators:")
++    assert len(re.findall(r"^ \*  ", out1, re.MULTILINE)) == 186
++    assert len(re.findall(r"^ \*  HolePattern\b", out1, re.MULTILINE)) == 1
++
++
++def test_ui_group_definitions_match_baseline() -> None:
++    expected_order = [
++        "Box",
++        "FlexBox",
++        "Tray",
++        "Shelf",
++        "WallMounted",
++        "Holes",
++        "Part",
++        "Misc",
++        "Unstable",
++    ]
++    assert [x.name for x in g.ui_groups] == expected_order
++    assert g.ui_groups_by_name == {x.name: x for x in g.ui_groups}
++
++    expected_attrs = {
++        "Box": ("Boxes", "", "UniversalBox.jpg", "UniversalBox-thumb.jpg"),
++        "FlexBox": ("Boxes with flex", "", "RoundedBox.jpg", "RoundedBox-thumb.jpg"),
++        "Tray": ("Trays and Drawer Inserts", "", "TypeTray.jpg", "TypeTray-thumb.jpg"),
++        "Shelf": ("Shelves", "", "DisplayShelf.jpg", "DisplayShelf-thumb.jpg"),
++        "WallMounted": ("WallMounted", "", "WallTypeTray.jpg", "WallTypeTray-thumb.jpg"),
++        "Holes": ("Hole patterns", "", "", ""),
++        "Part": ("Parts and Samples", "", "BurnTest.jpg", "BurnTest-thumb.jpg"),
++        "Misc": ("Misc", "", "TrafficLight.jpg", "TrafficLight-thumb.jpg"),
++        "Unstable": (
++            "Unstable",
++            "Generators are still untested or need manual adjustment to be useful.",
++            "",
++            "",
++        ),
++    }
++
++    for grp in g.ui_groups:
++        title, desc, img, thumb = expected_attrs[grp.name]
++        assert grp.title == title
++        assert grp.description == desc
++        assert grp.image == img
++        assert grp.thumbnail == thumb

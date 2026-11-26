@@ -1,0 +1,1701 @@
+diff --git a/test/machine_management_f2p_runner.py b/test/machine_management_f2p_runner.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ef9c711f3b395618ef83f7db68efa9473d700a6b
+--- /dev/null
++++ b/test/machine_management_f2p_runner.py
+@@ -0,0 +1,123 @@
++"""Aggregate runner for the frozen P2P selectors and the declared F2P nodes.
++
++The pipeline materialises ``config.json`` from the canonical plan: its ``p2p``
++array carries the frozen P2P selectors and its ``f2p`` array carries the F2P
++selectors declared for this task.  The runner reads exactly those selectors --
++never a whole test file and never a broad pattern -- runs them through the real
++pytest JUnit producer, and writes the complete execution report to the report
++location it is given.
++
++Usage::
++
++    python test/machine_management_f2p_runner.py <config.json> <report.xml>
++    python test/machine_management_f2p_runner.py --config <config.json> --report <report.xml>
++
++Temporary data stays inside ``TMPDIR`` (pytest's cache provider is disabled),
++nothing is installed, downloaded or fetched, and the repository that contains
++this runner is the only working directory the run needs.
++"""
++
++import json
++import os
++import sys
++
++_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++_DEFAULT_CONFIG = "/tests/config.json"
++_DEFAULT_REPORT = "junit.xml"
++
++
++def _resolve_selector(entry):
++    """Return the exact selector declared by one config entry."""
++    if isinstance(entry, str):
++        return entry
++    if isinstance(entry, dict):
++        for key in ("selector", "test", "node_id", "nodeid"):
++            value = entry.get(key)
++            if isinstance(value, str) and value:
++                return value
++    return None
++
++
++def _selectors(config):
++    """Frozen P2P selectors followed by the declared F2P selectors."""
++    selectors = []
++    for key in ("p2p", "f2p"):
++        for entry in config.get(key) or ():
++            selector = _resolve_selector(entry)
++            if selector is not None and selector not in selectors:
++                selectors.append(selector)
++    return selectors
++
++
++def _parse_arguments(argv):
++    config = None
++    report = None
++    positional = []
++    pending = None
++    for argument in argv[1:]:
++        if pending == "config":
++            config = argument
++            pending = None
++        elif pending == "report":
++            report = argument
++            pending = None
++        elif argument in ("--config", "-c"):
++            pending = "config"
++        elif argument in ("--report", "-r"):
++            pending = "report"
++        elif argument.startswith("--config="):
++            config = argument.split("=", 1)[1]
++        elif argument.startswith("--report="):
++            report = argument.split("=", 1)[1]
++        else:
++            positional.append(argument)
++    if config is None and positional:
++        config = positional.pop(0)
++    if report is None and positional:
++        report = positional.pop(0)
++    return config, report
++
++
++def _resolve(value, placeholder, env_name, default):
++    if value and value != placeholder:
++        return os.path.abspath(value)
++    from_environment = os.environ.get(env_name)
++    if from_environment:
++        return os.path.abspath(from_environment)
++    return default
++
++
++def main(argv):
++    config_argument, report_argument = _parse_arguments(argv)
++    config_path = _resolve(config_argument, "{config}", "GRADER_CONFIG", _DEFAULT_CONFIG)
++    report_path = _resolve(report_argument, "{report}", "GRADER_REPORT", _DEFAULT_REPORT)
++    with open(config_path, encoding="utf-8") as config_file:
++        config = json.load(config_file)
++    selectors = _selectors(config)
++    if not selectors:
++        print("no selectors declared in %s" % config_path, file=sys.stderr)
++        return 2
++    report_dir = os.path.dirname(report_path)
++    if report_dir:
++        os.makedirs(report_dir, exist_ok=True)
++    os.chdir(_REPO_ROOT)
++    if _REPO_ROOT not in sys.path:
++        sys.path.insert(0, _REPO_ROOT)
++    import pytest
++
++    arguments = [
++        "-p",
++        "test.test_machine_management_f2p",
++        "-p",
++        "no:cacheprovider",
++        "-p",
++        "no:pytest-qt",
++        "--junitxml",
++        report_path,
++    ]
++    arguments.extend(selectors)
++    return int(pytest.main(arguments))
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv))
+diff --git a/test/test_machine_management_f2p.py b/test/test_machine_management_f2p.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2072afac1a36b96bbc8a242eb0bd6d272d37edb8
+--- /dev/null
++++ b/test/test_machine_management_f2p.py
+@@ -0,0 +1,624 @@
++"""Supplemental F2P tests for the engine machine-management extraction.
++
++The frozen instruction moves machine connection state, machine instance
++lifetime and keymap updating out of the engine's mixed-responsibility
++reconfiguration method into a dedicated machine-management collaborator the
++engine delegates to, while every externally observable machine behavior stays
++unchanged.  The P2P nodes pin the preserved behavior; these F2P nodes pin the
++new boundary itself, which the behavior-preserving nodes cannot observe:
++
++* every documented machine plugin operation -- resolution and construction,
++  state and stroke callback registration, suppression update, keymap
++  application and capture start/stop -- must be performed by the dedicated
++  collaborator instead of by the engine itself, and
++* the machine instance, its parameters and its last reported connection state
++  must live in that collaborator instead of in the engine's own instance
++  state.
++
++Nothing here names the collaborator, its module or any private engine
++attribute.  The responsible object is discovered at runtime from what the
++engine owns and from the frame that performs each documented machine plugin
++call, so a permitted restructuring keeps passing while the pre-extraction
++engine fails.
++
++Importing this module also publishes the repository's own plugin entry points
++as distribution metadata (see ``_publish_repository_entry_points``): the
++replay environment ships the frozen runtime dependencies but never installs
++this repository, so without those entry points ``plover.registry`` finds no
++system plugin and the session fixture in ``test/conftest.py`` fails before any
++test runs.  The module is therefore also loadable as a pytest plugin
++(``-p test.test_machine_management_f2p``).
++"""
++
++import configparser
++import inspect
++import os
++import sys
++import tempfile
++from functools import partial
++from unittest import mock
++
++import pytest
++
++from plover import system
++from plover.config import DEFAULT_SYSTEM_NAME, Config
++from plover.engine import StenoEngine
++from plover.machine.base import STATE_ERROR, StenotypeBase
++from plover.machine.keymap import Keymap
++from plover.oslayer.controller import Controller
++from plover.output import Output
++from plover.registry import registry
++
++_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++_ENTRY_POINTS_DIR = None
++
++
++def _declared_entry_points_metadata():
++    """Render this repository's declared plugin entry points as metadata."""
++    parser = configparser.RawConfigParser()
++    parser.read(os.path.join(_REPO_ROOT, "setup.cfg"), encoding="utf-8")
++    if not parser.has_section("options.entry_points"):
++        return ""
++    sections = []
++    for group, value in parser.items("options.entry_points"):
++        if not group.startswith("plover."):
++            continue
++        entries = [
++            line.strip()
++            for line in value.splitlines()
++            if line.strip() and "=" in line
++        ]
++        if entries:
++            sections.append(f"[{group}]\n" + "\n".join(entries))
++    return "\n\n".join(sections) + "\n"
++
++
++def _publish_repository_entry_points():
++    """Expose the repository's plugin entry points without installing it.
++
++    ``plover.registry.Registry.update()`` -- called by the session fixture in
++    ``test/conftest.py`` -- reads the entry points of the installed plover
++    distribution.  When this repository is not installed, writing the entry
++    point metadata it declares in its own ``setup.cfg`` into a private
++    directory under ``TMPDIR`` (the location the execution contract reserves
++    for temporary data) and putting that directory on ``sys.path`` makes the
++    standard registry update path work unchanged.  Nothing is installed,
++    downloaded or fetched from the network.
++    """
++    global _ENTRY_POINTS_DIR
++    if _ENTRY_POINTS_DIR is not None:
++        return
++    metadata = _declared_entry_points_metadata()
++    if not metadata:
++        return
++    metadata_dir = os.path.join(
++        tempfile.mkdtemp(prefix="plover-f2p-support-"),
++        "plover-f2p-support-0.0.0.dist-info",
++    )
++    os.makedirs(metadata_dir)
++    with open(os.path.join(metadata_dir, "METADATA"), "w", encoding="utf-8") as fp:
++        fp.write(
++            "Metadata-Version: 2.1\nName: plover-f2p-support\nVersion: 0.0.0\n"
++        )
++    with open(
++        os.path.join(metadata_dir, "entry_points.txt"), "w", encoding="utf-8"
++    ) as fp:
++        fp.write(metadata)
++    shim_dir = os.path.dirname(metadata_dir)
++    if shim_dir not in sys.path:
++        sys.path.append(shim_dir)
++    _ENTRY_POINTS_DIR = metadata_dir
++
++
++try:
++    _publish_repository_entry_points()
++except Exception:
++    pass
++
++PRIMARY_MACHINE_TYPE = "F2P Fake"
++SECONDARY_MACHINE_TYPE = "F2P Fake 2"
++
++
++def _operation_caller():
++    """Find the executing method receiver without assuming its local name.
++
++    Match the receiver's actual method code, rather than accepting an arbitrary
++    object present in the frame. Ownership is checked separately by the tests.
++    """
++    frame = inspect.currentframe()
++    try:
++        caller = frame.f_back
++        if caller is None:
++            return None
++        caller = caller.f_back
++        while caller is not None:
++            code = caller.f_code
++            if code.co_argcount:
++                candidate = caller.f_locals.get(code.co_varnames[0])
++                plugin_frame = isinstance(candidate, StenotypeBase) or (
++                    isinstance(candidate, type) and issubclass(candidate, StenotypeBase)
++                )
++                if candidate is not None and not plugin_frame:
++                    method = inspect.getattr_static(type(candidate), code.co_name, None)
++                    method = getattr(method, "__func__", method)
++                    if method is not None and (
++                        getattr(method, "__code__", None) is code
++                        or getattr(inspect.unwrap(method), "__code__", None) is code
++                    ):
++                        return candidate
++            caller = caller.f_back
++        return None
++    finally:
++        del frame
++
++
++def only_caller(callers):
++    assert len(callers) == 1, f"expected one plugin operation, got {callers!r}"
++    return callers[0]
++
++
++class RecordingMachine(StenotypeBase):
++    """A machine plugin recording who invokes each documented operation."""
++
++    instance = None
++    construction_callers = []
++
++    def __init__(self, options):
++        super().__init__()
++        type(self).construction_callers.append(_operation_caller())
++        self.options = options
++        self.is_suppressed = False
++        self.calls = []
++
++    @classmethod
++    def get_keys(cls):
++        return system.KEYS
++
++    @classmethod
++    def get_option_info(cls):
++        return {"option": ("default", str)}
++
++    def _record(self, operation):
++        self.calls.append((operation, _operation_caller()))
++
++    def callers(self, operation):
++        return [caller for name, caller in self.calls if name == operation]
++
++    def start_capture(self):
++        cls = type(self)
++        assert cls.instance is None, "capture started while an instance is live"
++        assert self.state_subscribers, "state callback must precede capture start"
++        assert self.stroke_subscribers, "stroke callback must precede capture start"
++        cls.instance = self
++        self._record("start_capture")
++        self._initializing()
++        self._ready()
++
++    def stop_capture(self):
++        cls = type(self)
++        self._record("stop_capture")
++        cls.instance = None
++        self._stopped()
++
++    def set_suppression(self, enabled):
++        self._record("set_suppression")
++        self.is_suppressed = enabled
++
++    def set_keymap(self, keymap):
++        self._record("set_keymap")
++        super().set_keymap(keymap)
++
++    def add_state_callback(self, callback):
++        self._record("add_state_callback")
++        super().add_state_callback(callback)
++
++    def add_stroke_callback(self, callback):
++        self._record("add_stroke_callback")
++        super().add_stroke_callback(callback)
++
++    def report_disconnected(self):
++        self._error()
++
++
++class PrimaryRecordingMachine(RecordingMachine):
++    pass
++
++
++class SecondaryRecordingMachine(RecordingMachine):
++    pass
++
++
++class FakeOutput(Output):
++    def send_backspaces(self, b):
++        pass
++
++    def send_string(self, s):
++        pass
++
++    def send_key_combination(self, c):
++        pass
++
++    def set_key_press_delay(self, delay_ms):
++        pass
++
++
++class SynchronousEngine(StenoEngine):
++    """An engine running reconfiguration synchronously, recording hook calls."""
++
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.events = []
++        for hook in self.HOOKS:
++            self.hook_connect(hook, partial(self._record_hook, hook))
++
++    def _record_hook(self, hook, *args, **kwargs):
++        self.events.append((hook, args, kwargs))
++
++    def _in_engine_thread(self):
++        return True
++
++    def quit(self, code=0):
++        self._same_thread_hook(self._quit, code)
++
++
++def instance_holders(engine, instance):
++    """Locate ``instance`` in the engine's instance state.
++
++    Returns ``(direct, holders)``: ``direct`` names the engine's own attributes
++    bound to ``instance``, ``holders`` lists the engine-owned objects holding
++    ``instance`` in their own instance state one attribute hop away.
++    """
++    direct = []
++    holders = []
++    for name, value in vars(engine).items():
++        if name.startswith("__"):
++            continue
++        if value is instance:
++            direct.append(name)
++            continue
++        try:
++            members = vars(value)
++        except TypeError:
++            continue
++        if any(member is instance for member in members.values()):
++            holders.append(value)
++    return direct, holders
++
++
++def engine_owns(engine, obj):
++    """Whether ``obj`` is one of the engine's own attribute values."""
++    return any(value is obj for value in vars(engine).values())
++
++
++def identity_keymap_mappings():
++    return [[key, key] for key in system.KEYS]
++
++
++def identity_keymap():
++    keymap = Keymap(system.KEYS, system.KEYS)
++    keymap.set_mappings(identity_keymap_mappings())
++    return keymap
++
++
++def reversed_keymap():
++    keymap = Keymap(system.KEYS, system.KEYS)
++    keymap.set_mappings(zip(system.KEYS, reversed(system.KEYS)))
++    return keymap
++
++
++@pytest.fixture(scope="session", autouse=True)
++def f2p_ensure_default_system():
++    """Load the registry and the default system like ``test/conftest.py`` does.
++
++    The shared session fixture is normally what makes ``plover.system`` usable;
++    repeating the same two idempotent calls here keeps this module runnable
++    when it is executed on its own, for example through ``-p``.
++    """
++    registry.update()
++    system.setup(DEFAULT_SYSTEM_NAME)
++
++
++@pytest.fixture(autouse=True)
++def f2p_register_fake_machines():
++    registry.register_plugin("machine", PRIMARY_MACHINE_TYPE, PrimaryRecordingMachine)
++    registry.register_plugin(
++        "machine", SECONDARY_MACHINE_TYPE, SecondaryRecordingMachine
++    )
++
++
++@pytest.fixture(autouse=True)
++def f2p_reset_recording_machines():
++    for machine_class in (PrimaryRecordingMachine, SecondaryRecordingMachine):
++        machine_class.instance = None
++        machine_class.construction_callers.clear()
++
++
++@pytest.fixture
++def f2p_make_engine(tmp_path):
++    config_count = [0]
++
++    def factory(
++        machine_type=PRIMARY_MACHINE_TYPE,
++        machine_options=None,
++        **settings,
++    ):
++        config_count[0] += 1
++        config_path = tmp_path / f"plover-{config_count[0]}.config"
++        config = Config(str(config_path))
++        config["dictionaries"] = []
++        config["machine_type"] = machine_type
++        config["machine_specific_options"] = (
++            {"option": "default"} if machine_options is None else dict(machine_options)
++        )
++        config["system_keymap"] = identity_keymap_mappings()
++        for name, value in settings.items():
++            config[name] = value
++        config.save()
++        controller = mock.MagicMock(spec=Controller)
++        return SynchronousEngine(config, controller, FakeOutput())
++
++    return factory
++
++
++def start_engine(engine):
++    assert engine.load_config()
++    engine.start()
++    return engine
++
++
++def test_startup_machine_construction_is_delegated_to_machine_owner(f2p_make_engine):
++    engine = start_engine(f2p_make_engine(machine_options={"option": "configured"}))
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    assert machine.options == {"option": "configured"}
++    caller = only_caller(PrimaryRecordingMachine.construction_callers)
++    assert caller is not engine
++    assert engine_owns(engine, caller)
++
++
++def test_startup_state_callback_registration_is_delegated_to_machine_owner(
++    f2p_make_engine,
++):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    caller = only_caller(machine.callers("add_state_callback"))
++    assert caller is not engine
++    assert engine_owns(engine, caller)
++
++
++def test_startup_stroke_callback_registration_is_delegated_to_machine_owner(
++    f2p_make_engine,
++):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    caller = only_caller(machine.callers("add_stroke_callback"))
++    assert caller is not engine
++    assert engine_owns(engine, caller)
++
++
++def test_startup_suppression_sync_is_delegated_to_machine_owner(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    assert machine.is_suppressed is False
++    caller = only_caller(machine.callers("set_suppression"))
++    assert caller is not engine
++    assert engine_owns(engine, caller)
++
++
++def test_startup_keymap_application_is_delegated_to_machine_owner(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    assert machine.keymap == identity_keymap()
++    caller = only_caller(machine.callers("set_keymap"))
++    assert caller is not engine
++    assert engine_owns(engine, caller)
++
++
++def test_startup_capture_start_is_delegated_to_machine_owner(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    caller = only_caller(machine.callers("start_capture"))
++    assert caller is not engine
++    assert engine_owns(engine, caller)
++
++
++def test_keymap_only_change_is_delegated_to_machine_owner(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    machine.calls.clear()
++    engine.config = {"system_keymap": reversed_keymap()}
++    assert machine.keymap == reversed_keymap()
++    caller = only_caller(machine.callers("set_keymap"))
++    assert caller is not engine
++    assert engine_owns(engine, caller)
++
++
++def test_machine_options_change_rebuild_is_delegated_to_machine_owner(f2p_make_engine):
++    engine = start_engine(f2p_make_engine(machine_options={"option": "first"}))
++    previous = PrimaryRecordingMachine.instance
++    assert previous is not None
++    PrimaryRecordingMachine.construction_callers.clear()
++    engine.config = {"machine_specific_options": {"option": "second"}}
++    current = PrimaryRecordingMachine.instance
++    assert current is not None
++    assert current is not previous
++    stop_caller = only_caller(previous.callers("stop_capture"))
++    build_caller = only_caller(PrimaryRecordingMachine.construction_callers)
++    start_caller = only_caller(current.callers("start_capture"))
++    assert stop_caller is not engine
++    assert build_caller is not engine
++    assert start_caller is not engine
++    assert engine_owns(engine, build_caller)
++
++
++def test_machine_type_change_rebuild_is_delegated_to_machine_owner(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    previous = PrimaryRecordingMachine.instance
++    assert previous is not None
++    SecondaryRecordingMachine.construction_callers.clear()
++    engine.config = {"machine_type": SECONDARY_MACHINE_TYPE}
++    current = SecondaryRecordingMachine.instance
++    assert current is not None
++    stop_caller = only_caller(previous.callers("stop_capture"))
++    build_caller = only_caller(SecondaryRecordingMachine.construction_callers)
++    start_caller = only_caller(current.callers("start_capture"))
++    assert stop_caller is not engine
++    assert build_caller is not engine
++    assert start_caller is not engine
++    assert engine_owns(engine, build_caller)
++
++
++def test_forced_reconnection_rebuild_is_delegated_to_machine_owner(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    previous = PrimaryRecordingMachine.instance
++    assert previous is not None
++    PrimaryRecordingMachine.construction_callers.clear()
++    assert engine.reset_machine() is None
++    current = PrimaryRecordingMachine.instance
++    assert current is not None
++    assert current is not previous
++    stop_caller = only_caller(previous.callers("stop_capture"))
++    build_caller = only_caller(PrimaryRecordingMachine.construction_callers)
++    start_caller = only_caller(current.callers("start_capture"))
++    assert stop_caller is not engine
++    assert build_caller is not engine
++    assert start_caller is not engine
++    assert engine_owns(engine, build_caller)
++
++
++def test_shutdown_capture_stop_is_delegated_to_machine_owner(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    engine.quit(0)
++    assert engine.join() == 0
++    caller = only_caller(machine.callers("stop_capture"))
++    assert caller is not engine
++    assert engine_owns(engine, caller)
++
++
++def test_output_enable_suppression_is_delegated_to_machine_owner(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    machine.calls.clear()
++    engine.output = True
++    assert machine.is_suppressed is True
++    caller = only_caller(machine.callers("set_suppression"))
++    assert caller is not engine
++    assert engine_owns(engine, caller)
++
++
++def test_output_disable_suppression_is_delegated_to_machine_owner(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    engine.output = True
++    machine.calls.clear()
++    engine.output = False
++    assert machine.is_suppressed is False
++    caller = only_caller(machine.callers("set_suppression"))
++    assert caller is not engine
++    assert engine_owns(engine, caller)
++
++
++def test_engine_does_not_hold_the_live_machine_instance(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    direct, _ = instance_holders(engine, machine)
++    assert direct == [], f"engine attributes still bound to the machine: {direct}"
++
++
++def test_engine_owned_collaborator_holds_the_live_machine_instance(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    direct, holders = instance_holders(engine, machine)
++    assert direct == [], f"engine attributes still bound to the machine: {direct}"
++    assert holders, "no engine-owned collaborator holds the live machine instance"
++    for holder in holders:
++        assert holder is not engine
++
++
++def test_machine_plugin_operations_come_from_the_machine_instance_owner(
++    f2p_make_engine,
++):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    _, holders = instance_holders(engine, machine)
++    assert holders, "no engine-owned collaborator holds the live machine instance"
++    assert len(holders) == 1, f"ambiguous machine owners: {holders!r}"
++    owner = holders[0]
++    construction_caller = only_caller(PrimaryRecordingMachine.construction_callers)
++    performers = {construction_caller}
++    for operation in (
++        "add_state_callback",
++        "add_stroke_callback",
++        "set_suppression",
++        "set_keymap",
++        "start_capture",
++    ):
++        performers.update(machine.callers(operation))
++    assert performers == {owner}
++
++
++def test_machine_instance_lifetime_stays_in_the_collaborator_across_rebuilds(
++    f2p_make_engine,
++):
++    engine = start_engine(f2p_make_engine())
++    previous = PrimaryRecordingMachine.instance
++    assert previous is not None
++    _, holders = instance_holders(engine, previous)
++    assert holders, "no engine-owned collaborator holds the live machine instance"
++    owner = holders[0]
++    assert engine.reset_machine() is None
++    current = PrimaryRecordingMachine.instance
++    assert current is not None
++    assert current is not previous
++    direct, new_holders = instance_holders(engine, current)
++    assert direct == [], f"engine attributes still bound to the machine: {direct}"
++    assert any(holder is owner for holder in new_holders), (
++        "the collaborator owning the machine instance was replaced by a rebuild"
++    )
++
++
++def test_machine_instance_is_released_by_the_collaborator_on_shutdown(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    _, holders = instance_holders(engine, machine)
++    assert holders, "no engine-owned collaborator holds the live machine instance"
++    owner = holders[0]
++    engine.quit(0)
++    assert engine.join() == 0
++    direct, _ = instance_holders(engine, machine)
++    assert direct == [], f"engine attributes still bound to the machine: {direct}"
++    try:
++        members = vars(owner)
++    except TypeError:
++        members = {}
++    assert not any(member is machine for member in members.values()), (
++        "the collaborator still holds the released machine instance"
++    )
++
++
++def test_engine_does_not_hold_the_machine_connection_state(f2p_make_engine):
++    engine = start_engine(f2p_make_engine())
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    machine.report_disconnected()
++    assert engine.machine_state == STATE_ERROR
++    cached = [
++        name
++        for name, value in vars(engine).items()
++        if isinstance(value, str) and value == STATE_ERROR
++    ]
++    assert cached == [], f"engine attributes still caching the machine state: {cached}"
+diff --git a/test/test_machine_management_p2p.py b/test/test_machine_management_p2p.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..cfa429af3c430543cb4b2f345f58115f8090be78
+--- /dev/null
++++ b/test/test_machine_management_p2p.py
+@@ -0,0 +1,936 @@
++"""Supplemental P2P tests for the engine machine-management boundary.
++
++The frozen instruction keeps the externally observable machine contract
++unchanged while machine connection state, machine instance lifetime and keymap
++updating move out of the engine's mixed-responsibility reconfiguration method
++into a dedicated machine-management collaborator.
++
++These tests pin that contract through public engine entry points (``start``,
++``quit``, ``reset_machine``, ``machine_state``, ``output``/``set_output``,
++``config``), engine hooks, and the documented machine plugin contract. Fake
++machine plugins are registered in the plugin registry itself and every fake
++machine records its own interactions, so the tests do not depend on where the
++collaborator lives or on any private engine attribute.
++
++Importing this module also publishes the repository's own plugin entry points
++as distribution metadata (see ``_publish_repository_entry_points``), because the
++replay environment ships the frozen runtime dependencies but never installs
++this repository: without those entry points ``plover.registry`` finds no system
++plugin and the session fixture in ``test/conftest.py`` fails before any test
++runs. The module is therefore also loadable as a pytest plugin
++(``-p test.test_machine_management_p2p``) so the metadata is published even
++when only original test files are selected.
++"""
++
++import configparser
++import json
++import os
++import sys
++import tempfile
++import threading
++import time
++from functools import partial
++from unittest import mock
++
++import pytest
++
++from plover import system
++from plover.config import Config, DictionaryConfig
++from plover.engine import StenoEngine
++from plover.machine.base import (
++    STATE_ERROR,
++    STATE_INITIALIZING,
++    STATE_RUNNING,
++    STATE_STOPPED,
++    StenotypeBase,
++    ThreadedStenotypeBase,
++)
++from plover.machine.keymap import Keymap
++from plover.oslayer.controller import Controller
++from plover.output import Output
++from plover.registry import registry
++from plover.steno import Stroke
++
++_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++_ENTRY_POINTS_DIR = None
++
++
++def _declared_entry_points_metadata():
++    """Render this repository's declared plugin entry points as metadata."""
++    parser = configparser.RawConfigParser()
++    parser.read(os.path.join(_REPO_ROOT, "setup.cfg"), encoding="utf-8")
++    sections = []
++    for group, value in parser.items("options.entry_points"):
++        if not group.startswith("plover."):
++            continue
++        entries = [
++            line.strip()
++            for line in value.splitlines()
++            if line.strip() and "=" in line
++        ]
++        if entries:
++            sections.append(f"[{group}]\n" + "\n".join(entries))
++    return "\n\n".join(sections) + "\n"
++
++
++def _publish_repository_entry_points():
++    """Expose the repository's plugin entry points without installing it.
++
++    ``plover.registry.Registry.update()`` -- called by the session fixture in
++    ``test/conftest.py`` and by the engine fixture in ``test/test_engine.py`` --
++    reads the entry points of the installed plover distribution. The replay
++    environment provides the frozen runtime dependencies but does not install
++    the repository itself, so that lookup finds nothing and every test under
++    ``test/`` errors during setup with ``KeyError: 'english stenotype'``.
++
++    Writing the entry point metadata the repository declares in its own
++    ``setup.cfg`` into a private directory under ``TMPDIR`` (the location the
++    execution contract reserves for temporary data) and putting that directory
++    on ``sys.path`` makes the standard registry update path work unchanged.
++    Nothing is installed, downloaded or fetched from the network.
++    """
++    global _ENTRY_POINTS_DIR
++    if _ENTRY_POINTS_DIR is not None:
++        return
++    metadata_dir = os.path.join(
++        tempfile.mkdtemp(prefix="plover-test-support-"),
++        "plover_test_support-0.0.0.dist-info",
++    )
++    os.makedirs(metadata_dir)
++    with open(os.path.join(metadata_dir, "METADATA"), "w", encoding="utf-8") as fp:
++        fp.write("Metadata-Version: 2.1\nName: plover-test-support\nVersion: 0.0.0\n")
++    with open(
++        os.path.join(metadata_dir, "entry_points.txt"), "w", encoding="utf-8"
++    ) as fp:
++        fp.write(_declared_entry_points_metadata())
++    shim_dir = os.path.dirname(metadata_dir)
++    if shim_dir not in sys.path:
++        sys.path.append(shim_dir)
++    _ENTRY_POINTS_DIR = metadata_dir
++
++
++_publish_repository_entry_points()
++
++PRIMARY_MACHINE_TYPE = "P2P Fake"
++SECONDARY_MACHINE_TYPE = "P2P Fake 2"
++
++
++class RecordingMachine(StenotypeBase):
++    """A machine plugin recording every interaction the engine makes."""
++
++    instance = None
++    instances = []
++
++    def __init__(self, options):
++        super().__init__()
++        self.options = options
++        self.is_suppressed = False
++        self.calls = []
++        self.callback_order = []
++
++    @classmethod
++    def get_keys(cls):
++        return system.KEYS
++
++    @classmethod
++    def get_option_info(cls):
++        return {"option": ("default", str)}
++
++    def start_capture(self):
++        cls = type(self)
++        assert cls.instance is None, "capture started while an instance is live"
++        assert self.state_subscribers, "state callback must precede capture start"
++        assert self.stroke_subscribers, "stroke callback must precede capture start"
++        self.callback_order.append("start_capture")
++        cls.instance = self
++        cls.instances.append(self)
++        self.calls.append("start_capture")
++        self._initializing()
++        self._ready()
++
++    def stop_capture(self):
++        cls = type(self)
++        self.calls.append("stop_capture")
++        cls.instance = None
++        self._stopped()
++
++    def set_suppression(self, enabled):
++        self.calls.append(("set_suppression", enabled))
++        self.is_suppressed = enabled
++
++    def set_keymap(self, keymap):
++        self.calls.append(("set_keymap", keymap))
++        super().set_keymap(keymap)
++
++    def add_state_callback(self, callback):
++        self.callback_order.append("add_state_callback")
++        super().add_state_callback(callback)
++
++    def add_stroke_callback(self, callback):
++        self.callback_order.append("add_stroke_callback")
++        super().add_stroke_callback(callback)
++
++    def call_names(self):
++        return [call[0] if isinstance(call, tuple) else call for call in self.calls]
++
++    def report_disconnected(self):
++        self._error()
++
++    def report_stroke(self, steno_keys):
++        self._notify(steno_keys)
++
++
++class PrimaryRecordingMachine(RecordingMachine):
++    pass
++
++
++class SecondaryRecordingMachine(RecordingMachine):
++    pass
++
++
++class FakeOutput(Output):
++    def __init__(self):
++        self.backspaces = []
++
++    def send_backspaces(self, b):
++        self.backspaces.append(b)
++
++    def send_string(self, s):
++        pass
++
++    def send_key_combination(self, c):
++        pass
++
++    def set_key_press_delay(self, delay_ms):
++        pass
++
++
++class RecordingEngine(StenoEngine):
++    """An engine running reconfiguration synchronously, recording hook calls."""
++
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.events = []
++        for hook in self.HOOKS:
++            self.hook_connect(hook, partial(self._record_hook, hook))
++
++    def _record_hook(self, hook, *args, **kwargs):
++        self.events.append((hook, args, kwargs))
++
++    def _in_engine_thread(self):
++        return True
++
++    def quit(self, code=0):
++        self._same_thread_hook(self._quit, code)
++
++    def start(self):
++        StenoEngine.start(self)
++
++    def hooks(self, name):
++        return [event for event in self.events if event[0] == name]
++
++    def state_events(self):
++        return [args for _, args, _ in self.hooks("machine_state_changed")]
++
++    def output_events(self):
++        return [args for _, args, _ in self.hooks("output_changed")]
++
++
++class ThreadAwareEngine(RecordingEngine):
++    """An engine whose reconfiguration runs on a real engine thread."""
++
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.engine_thread_ident = None
++
++    def _in_engine_thread(self):
++        return threading.get_ident() == self.engine_thread_ident
++
++
++def wait_for(predicate, timeout=10.0):
++    deadline = time.monotonic() + timeout
++    while time.monotonic() < deadline:
++        if predicate():
++            return True
++        time.sleep(0.005)
++    return predicate()
++
++
++def identity_keymap_mappings():
++    return [[key, key] for key in system.KEYS]
++
++
++def identity_keymap():
++    keymap = Keymap(system.KEYS, system.KEYS)
++    keymap.set_mappings(identity_keymap_mappings())
++    return keymap
++
++
++def reversed_keymap():
++    keymap = Keymap(system.KEYS, system.KEYS)
++    keymap.set_mappings(zip(system.KEYS, reversed(system.KEYS)))
++    return keymap
++
++
++@pytest.fixture(autouse=True)
++def register_fake_machines():
++    registry.register_plugin("machine", PRIMARY_MACHINE_TYPE, PrimaryRecordingMachine)
++    registry.register_plugin("machine", SECONDARY_MACHINE_TYPE, SecondaryRecordingMachine)
++
++
++@pytest.fixture
++def make_engine(tmp_path):
++    config_count = [0]
++
++    def factory(
++        machine_type=PRIMARY_MACHINE_TYPE,
++        machine_options=None,
++        engine_class=RecordingEngine,
++        **settings,
++    ):
++        for machine_class in (PrimaryRecordingMachine, SecondaryRecordingMachine):
++            machine_class.instance = None
++            machine_class.instances.clear()
++        config_count[0] += 1
++        config_path = tmp_path / f"plover-{config_count[0]}.config"
++        config = Config(str(config_path))
++        config["dictionaries"] = []
++        config["machine_type"] = machine_type
++        config["machine_specific_options"] = (
++            {"option": "default"} if machine_options is None else dict(machine_options)
++        )
++        config["system_keymap"] = identity_keymap_mappings()
++        for name, value in settings.items():
++            config[name] = value
++        config.save()
++        controller = mock.MagicMock(spec=Controller)
++        return engine_class(config, controller, FakeOutput())
++
++    return factory
++
++
++def test_machine_state_property_reports_connection_state(make_engine):
++    engine = make_engine()
++    assert engine.machine_state is None
++    assert engine.load_config()
++    engine.start()
++    assert engine.machine_state == STATE_RUNNING
++    assert engine.state_events() == [
++        (PRIMARY_MACHINE_TYPE, STATE_INITIALIZING),
++        (PRIMARY_MACHINE_TYPE, STATE_RUNNING),
++    ]
++    engine.quit(0)
++    assert engine.join() == 0
++    assert engine.machine_state == STATE_STOPPED
++    assert engine.state_events()[-1] == (PRIMARY_MACHINE_TYPE, STATE_STOPPED)
++
++
++def test_startup_creates_machine_from_configured_options(make_engine):
++    engine = make_engine(machine_options={"option": "configured"})
++    assert engine.load_config()
++    engine.start()
++    machine = PrimaryRecordingMachine.instance
++    assert machine is not None
++    assert machine.options == {"option": "configured"}
++    # Output is disabled on startup: the machine must not be left suppressed.
++    assert engine.output is False
++    assert machine.is_suppressed is False
++    # Construction, suppression, keymap application and capture start each
++    # happen exactly once, and the keymap is applied before capture starts.
++    assert machine.calls == [
++        ("set_suppression", False),
++        ("set_keymap", identity_keymap()),
++        "start_capture",
++    ]
++    assert machine.keymap == identity_keymap()
++    assert set(machine.callback_order[:-1]) == {
++        "add_state_callback", "add_stroke_callback",
++    }
++    assert machine.callback_order[-1] == "start_capture"
++
++
++def test_keymap_only_change_reuses_machine_instance(make_engine):
++    engine = make_engine()
++    assert engine.load_config()
++    engine.start()
++    machine = PrimaryRecordingMachine.instance
++    new_keymap = reversed_keymap()
++    machine.calls.clear()
++    engine.events.clear()
++    engine.config = {"system_keymap": new_keymap}
++    # The running instance is reused and the keymap is applied directly to it.
++    assert PrimaryRecordingMachine.instance is machine
++    assert machine.calls == [("set_keymap", new_keymap)]
++    assert machine.keymap == new_keymap
++    # No new machine state is reported and no capture is restarted.
++    assert engine.state_events() == []
++    assert engine.events == [
++        ("config_changed", ({"system_keymap": new_keymap},), {}),
++    ]
++
++
++def test_machine_options_change_rebuilds_machine_instance(make_engine):
++    engine = make_engine(machine_options={"option": "first"})
++    assert engine.load_config()
++    engine.start()
++    previous = PrimaryRecordingMachine.instance
++    assert previous.options == {"option": "first"}
++    engine.events.clear()
++    engine.config = {"machine_specific_options": {"option": "second"}}
++    current = PrimaryRecordingMachine.instance
++    assert current is not previous
++    assert current.options == {"option": "second"}
++    assert "stop_capture" in previous.calls
++    assert current.call_names() == ["set_suppression", "set_keymap", "start_capture"]
++    assert current.calls[0][1] is False
++    assert engine.state_events() == [
++        (PRIMARY_MACHINE_TYPE, STATE_STOPPED),
++        (PRIMARY_MACHINE_TYPE, STATE_INITIALIZING),
++        (PRIMARY_MACHINE_TYPE, STATE_RUNNING),
++    ]
++
++
++def test_machine_type_change_rebuilds_machine_instance(make_engine):
++    engine = make_engine()
++    assert engine.load_config()
++    engine.start()
++    previous = PrimaryRecordingMachine.instance
++    engine.events.clear()
++    engine.config = {"machine_type": SECONDARY_MACHINE_TYPE}
++    assert PrimaryRecordingMachine.instance is None
++    assert "stop_capture" in previous.calls
++    current = SecondaryRecordingMachine.instance
++    assert current is not None
++    assert current is not previous
++    assert current.call_names() == ["set_suppression", "set_keymap", "start_capture"]
++    assert current.calls[0][1] is False
++    assert engine.machine_state == STATE_RUNNING
++    assert engine.state_events() == [
++        (PRIMARY_MACHINE_TYPE, STATE_STOPPED),
++        (SECONDARY_MACHINE_TYPE, STATE_INITIALIZING),
++        (SECONDARY_MACHINE_TYPE, STATE_RUNNING),
++    ]
++
++
++def test_forced_reconnection_rebuilds_machine_instance(make_engine):
++    engine = make_engine()
++    assert engine.load_config()
++    engine.start()
++    previous = PrimaryRecordingMachine.instance
++    engine.events.clear()
++    result = engine.reset_machine()
++    assert result is None
++    current = PrimaryRecordingMachine.instance
++    assert current is not previous
++    assert "stop_capture" in previous.calls
++    assert current.call_names() == ["set_suppression", "set_keymap", "start_capture"]
++    assert engine.state_events() == [
++        (PRIMARY_MACHINE_TYPE, STATE_STOPPED),
++        (PRIMARY_MACHINE_TYPE, STATE_INITIALIZING),
++        (PRIMARY_MACHINE_TYPE, STATE_RUNNING),
++    ]
++
++    # A state hook can request reconnection while the plugin is dispatching
++    # a report. Other registered subscribers must still receive that report,
++    # including the stopped report nested inside the reconnection.
++    plugin_reports = []
++    current.add_state_callback(plugin_reports.append)
++
++    def reconnect_on_disconnect(machine_type, state):
++        if state == STATE_ERROR:
++            engine.reset_machine()
++
++    engine.hook_connect("machine_state_changed", reconnect_on_disconnect)
++    engine.events.clear()
++    current.report_disconnected()
++    assert PrimaryRecordingMachine.instance is not current
++    assert engine.machine_state == STATE_RUNNING
++    assert engine.state_events() == [
++        (PRIMARY_MACHINE_TYPE, STATE_ERROR),
++        (PRIMARY_MACHINE_TYPE, STATE_STOPPED),
++        (PRIMARY_MACHINE_TYPE, STATE_INITIALIZING),
++        (PRIMARY_MACHINE_TYPE, STATE_RUNNING),
++    ]
++    assert plugin_reports == [STATE_STOPPED, STATE_ERROR], (
++        "reconnection must preserve delivery to registered subscribers "
++        "of the plugin report already being dispatched"
++    )
++
++
++def test_output_transitions_synchronize_suppression_once(make_engine):
++    engine = make_engine()
++    assert engine.load_config()
++    engine.start()
++    machine = PrimaryRecordingMachine.instance
++    engine.events.clear()
++    machine.calls.clear()
++    # Enabling output suppresses the machine and reports exactly one event.
++    engine.output = True
++    assert engine.output is True
++    assert machine.is_suppressed is True
++    assert machine.calls == [("set_suppression", True)]
++    assert engine.output_events() == [(True,)]
++    # A redundant request is a no-op.
++    machine.calls.clear()
++    engine.events.clear()
++    engine.output = True
++    assert machine.calls == []
++    assert engine.events == []
++    # Disabling output releases suppression and reports exactly one event.
++    engine.output = False
++    assert engine.output is False
++    assert machine.is_suppressed is False
++    assert machine.calls == [("set_suppression", False)]
++    assert engine.output_events() == [(False,)]
++
++
++def test_hook_payloads_carry_machine_type_state_and_config(make_engine):
++    engine = make_engine(machine_options={"option": "payload"})
++    assert engine.load_config()
++    engine.start()
++    assert engine.state_events() == [
++        (PRIMARY_MACHINE_TYPE, STATE_INITIALIZING),
++        (PRIMARY_MACHINE_TYPE, STATE_RUNNING),
++    ]
++    engine.events.clear()
++    engine.output = True
++    assert len(engine.events) == 1, "effective output must emit exactly one event"
++    hook, args, kwargs = engine.events[0]
++    assert hook == "output_changed"
++    assert isinstance(args[0], bool)
++    assert args[0] is True
++    assert kwargs == {}
++    engine.events.clear()
++    engine.config = {"undo_levels": 42}
++    assert engine.events == [
++        ("config_changed", ({"undo_levels": 42},), {}),
++    ]
++
++
++def test_shutdown_stops_capture_and_releases_machine(make_engine):
++    engine = make_engine()
++    assert engine.load_config()
++    engine.start()
++    machine = PrimaryRecordingMachine.instance
++    machine.calls.clear()
++    engine.events.clear()
++    engine.quit(0)
++    assert engine.join() == 0
++    assert machine.calls == ["stop_capture"]
++    assert PrimaryRecordingMachine.instance is None
++    assert engine.state_events() == [(PRIMARY_MACHINE_TYPE, STATE_STOPPED)]
++    assert engine.hooks("quit") == [("quit", (), {})]
++
++
++def test_reset_machine_reloads_configuration_and_dictionaries(make_engine, tmp_path):
++    dictionary_path = tmp_path / "p2p_dict.json"
++    dictionary_path.write_text(json.dumps({"SKP": "and"}), encoding="utf-8")
++    engine = make_engine(dictionaries=[DictionaryConfig(str(dictionary_path), True)])
++    assert engine.load_config()
++    engine.start()
++    assert engine.lookup(("SKP",)) == "and"
++    timestamp = dictionary_path.stat().st_mtime
++    dictionary_path.write_text(json.dumps({"SKP": "or"}), encoding="utf-8")
++    os.utime(dictionary_path, (timestamp + 60, timestamp + 60))
++    # Keep disk and memory deliberately different: reset must not load disk.
++    disk_config = Config(engine._config.path)
++    disk_config.load()
++    disk_config["machine_specific_options"] = {"option": "disk-only"}
++    disk_config.save()
++    engine._config["machine_specific_options"] = {"option": "memory-only"}
++    previous = PrimaryRecordingMachine.instance
++    engine.events.clear()
++    with mock.patch.object(engine._config, "load", wraps=engine._config.load) as load:
++        assert engine.reset_machine() is None
++    load.assert_not_called()
++    current = PrimaryRecordingMachine.instance
++    assert current is not previous
++    assert current.options == {"option": "memory-only"}
++    assert engine.config["machine_specific_options"] == {"option": "memory-only"}
++    assert engine.lookup(("SKP",)) == "or"
++    # The forced reconnection also happened while reloading.
++    assert engine.machine_state == STATE_RUNNING
++    assert engine.state_events() == [
++        (PRIMARY_MACHINE_TYPE, STATE_STOPPED),
++        (PRIMARY_MACHINE_TYPE, STATE_INITIALIZING),
++        (PRIMARY_MACHINE_TYPE, STATE_RUNNING),
++    ]
++
++
++def test_machine_callbacks_are_marshalled_onto_engine_thread(make_engine):
++    engine = make_engine(engine_class=ThreadAwareEngine)
++    assert engine.load_config()
++    delivered = []
++    engine.hook_connect(
++        "machine_state_changed",
++        lambda *args: delivered.append(("state", args, threading.get_ident())),
++    )
++    engine.hook_connect(
++        "stroked",
++        lambda *args: delivered.append(("stroke", args, threading.get_ident())),
++    )
++    stroke_order = []
++    engine.hook_connect(
++        "stroked",
++        lambda stroke: stroke_order.append(("stroked", stroke, threading.get_ident())),
++    )
++    original_translate = engine._translator.translate
++
++    def translate(stroke):
++        stroke_order.append(("translate", stroke, threading.get_ident()))
++        return original_translate(stroke)
++
++    def run_engine():
++        engine.engine_thread_ident = threading.get_ident()
++        engine.run()
++
++    engine_thread = threading.Thread(target=run_engine, name="p2p-engine", daemon=True)
++    engine_thread.start()
++    assert wait_for(lambda: engine.engine_thread_ident is not None)
++    try:
++        engine.start()
++        assert wait_for(lambda: engine.machine_state == STATE_RUNNING), (
++            f"machine never connected: {delivered!r}"
++        )
++        machine = PrimaryRecordingMachine.instance
++        assert machine is not None
++        # Machine reports from the machine's own thread must be marshalled
++        # through the engine before the engine hooks run.
++        with mock.patch(
++            "plover.engine.log.stroke",
++            side_effect=lambda stroke: stroke_order.append(
++                ("log", stroke, threading.get_ident())
++            ),
++        ), mock.patch.object(engine._translator, "translate", side_effect=translate):
++            machine.report_disconnected()
++            machine.report_stroke(("S-", "T-"))
++            assert wait_for(lambda: len(delivered) >= 4 and len(stroke_order) == 3), (
++                f"hooks or stroke stages not delivered: {delivered!r}, {stroke_order!r}"
++            )
++            recorded = list(delivered)
++    finally:
++        engine.quit(0)
++        engine_thread.join(10)
++    assert not engine_thread.is_alive()
++    assert {thread_id for _, _, thread_id in recorded} == {engine_thread.ident}
++    assert [kind for kind, _, _ in recorded] == ["state", "state", "state", "stroke"]
++    assert [args for kind, args, _ in recorded if kind == "state"] == [
++        (PRIMARY_MACHINE_TYPE, STATE_INITIALIZING),
++        (PRIMARY_MACHINE_TYPE, STATE_RUNNING),
++        (PRIMARY_MACHINE_TYPE, STATE_ERROR),
++    ]
++    (stroke,) = recorded[3][1]
++    assert isinstance(stroke, Stroke)
++    assert stroke.steno_keys == ["S-", "T-"]
++    assert [stage for stage, _, _ in stroke_order] == ["log", "translate", "stroked"]
++    assert all(observed is stroke for _, observed, _ in stroke_order)
++    assert {thread_id for _, _, thread_id in stroke_order} == {engine_thread.ident}
++
++
++def test_config_update_loads_dictionaries_after_config_changed(make_engine, tmp_path):
++    first_path = tmp_path / "p2p_first.json"
++    second_path = tmp_path / "p2p_second.json"
++    first_path.write_text(json.dumps({"SKP": "and"}), encoding="utf-8")
++    second_path.write_text(json.dumps({"SKP": "or"}), encoding="utf-8")
++    engine = make_engine(dictionaries=[DictionaryConfig(str(first_path), True)])
++    assert engine.load_config()
++    engine.start()
++    assert engine.lookup(("SKP",)) == "and"
++    engine.events.clear()
++    dictionaries = [DictionaryConfig(str(second_path), True)]
++    engine.config = {"dictionaries": dictionaries}
++    hook_names = [hook for hook, _, _ in engine.events]
++    assert hook_names[0] == "config_changed"
++    assert engine.events[0] == ("config_changed", ({"dictionaries": dictionaries},), {})
++    assert "dictionaries_loaded" in hook_names
++    assert hook_names.index("config_changed") < hook_names.index("dictionaries_loaded")
++    assert engine.hooks("machine_state_changed") == []
++    assert engine.lookup(("SKP",)) == "or"
++
++
++def test_reload_config_reads_disk_before_full_update(make_engine):
++    engine = make_engine(machine_options={"option": "memory"})
++    assert engine.load_config()
++    engine.start()
++    disk = Config(engine._config.path)
++    disk.load()
++    disk["machine_specific_options"] = {"option": "disk"}
++    disk["undo_levels"] = 59
++    disk.save()
++    trace = []
++    original_load = engine._config.load
++
++    def load_disk():
++        trace.append("load")
++        original_load()
++
++    engine.events.clear()
++    engine.hook_connect("config_changed", lambda update: trace.append("update"))
++    with mock.patch.object(engine._config, "load", side_effect=load_disk) as load:
++        assert engine.reload_config() is None
++    load.assert_called_once_with()
++    assert trace == ["load", "update"]
++    assert PrimaryRecordingMachine.instance.options == {"option": "disk"}
++    assert engine.config["undo_levels"] == 59
++    assert engine.hooks("config_changed") == [("config_changed", (engine.config,), {})]
++
++
++def test_reload_config_load_error_does_not_apply_update(make_engine):
++    engine = make_engine(machine_options={"option": "keep"})
++    assert engine.load_config()
++    engine.start()
++    machine = PrimaryRecordingMachine.instance
++    config = engine.config
++    machine.calls.clear()
++    engine.events.clear()
++    with mock.patch.object(engine._config, "load", side_effect=OSError("unreadable")) as load:
++        assert engine.reload_config() is None
++    load.assert_called_once_with()
++    assert engine.config == config
++    assert PrimaryRecordingMachine.instance is machine
++    assert machine.calls == []
++    assert engine.events == []
++
++
++def test_capture_start_receives_immediate_plugin_stroke(make_engine):
++    engine = make_engine()
++    assert engine.load_config()
++    start_capture = PrimaryRecordingMachine.start_capture
++
++    def start_with_stroke(machine):
++        start_capture(machine)
++        machine.report_stroke(("S-", "T-"))
++
++    with mock.patch.object(PrimaryRecordingMachine, "start_capture", start_with_stroke):
++        engine.start()
++    events = engine.hooks("stroked")
++    assert len(events) == 1, "the stroke emitted during capture start must be delivered"
++    (stroke,) = events[0][1]
++    assert isinstance(stroke, Stroke)
++    assert stroke.steno_keys == ["S-", "T-"]
++    assert engine.state_events() == [
++        (PRIMARY_MACHINE_TYPE, STATE_INITIALIZING),
++        (PRIMARY_MACHINE_TYPE, STATE_RUNNING),
++    ]
++
++
++def test_none_keymap_reuse_skips_plugin_call(make_engine):
++    engine = make_engine()
++    assert engine.load_config()
++    engine.start()
++    machine = PrimaryRecordingMachine.instance
++    original_keymap = machine.keymap
++    original_config = engine._config.as_dict
++    reads = []
++
++    def config_snapshot():
++        config = original_config()
++        config["system_keymap"] = None
++        reads.append(config)
++        return config
++
++    machine.calls.clear()
++    engine.events.clear()
++    with mock.patch.object(engine._config, "as_dict", side_effect=config_snapshot):
++        # Full reload includes system_keymap in the applied update while keeping
++        # type/options unchanged, so the live instance takes the reuse path.
++        assert engine.reload_config() is None
++    assert reads, "the None-keymap update must reach configuration application"
++    assert PrimaryRecordingMachine.instance is machine
++    assert machine.keymap is original_keymap
++    assert machine.calls == [], "None must not call set_keymap or restart capture"
++    assert engine.state_events() == []
++
++
++def test_none_keymap_rebuild_skips_plugin_call(make_engine):
++    engine = make_engine()
++    assert engine.load_config()
++    original_config = engine._config.as_dict
++
++    def config_snapshot():
++        config = original_config()
++        config["system_keymap"] = None
++        return config
++
++    with mock.patch.object(engine._config, "as_dict", side_effect=config_snapshot):
++        engine.start()
++        previous = PrimaryRecordingMachine.instance
++        assert previous.call_names() == ["set_suppression", "start_capture"]
++        engine.config = {"machine_specific_options": {"option": "rebuild"}}
++        current = PrimaryRecordingMachine.instance
++        assert current is not previous
++        assert previous.call_names().count("stop_capture") == 1
++        assert current.options == {"option": "rebuild"}
++        assert current.call_names() == ["set_suppression", "start_capture"]
++        assert engine.reset_machine() is None
++        replacement = PrimaryRecordingMachine.instance
++        assert replacement is not current
++        assert current.call_names().count("stop_capture") == 1
++        assert replacement.call_names() == ["set_suppression", "start_capture"]
++
++
++def test_async_readiness_only_forwards_plugin_reports(make_engine):
++    class AsyncMachine(PrimaryRecordingMachine):
++        instance = None
++
++        def start_capture(self):
++            assert self.state_subscribers and self.stroke_subscribers
++            assert type(self).instance is None
++            type(self).instance = self
++            self.calls.append("start_capture")
++            self._initializing()
++
++    registry.register_plugin("machine", PRIMARY_MACHINE_TYPE, AsyncMachine)
++    engine = make_engine()
++    assert engine.load_config()
++    engine.start()
++    assert engine.machine_state == STATE_INITIALIZING
++    assert engine.state_events() == [(PRIMARY_MACHINE_TYPE, STATE_INITIALIZING)]
++    AsyncMachine.instance._ready()
++    assert engine.state_events() == [
++        (PRIMARY_MACHINE_TYPE, STATE_INITIALIZING),
++        (PRIMARY_MACHINE_TYPE, STATE_RUNNING),
++    ]
++    engine.events.clear()
++    assert engine.reset_machine() is None
++    assert engine.machine_state == STATE_INITIALIZING
++    assert engine.state_events() == [
++        (PRIMARY_MACHINE_TYPE, STATE_STOPPED),
++        (PRIMARY_MACHINE_TYPE, STATE_INITIALIZING),
++    ]
++    AsyncMachine.instance._ready()
++    assert engine.state_events()[-1] == (PRIMARY_MACHINE_TYPE, STATE_RUNNING)
++    assert len(engine.state_events()) == 3, "connected must be forwarded exactly once"
++    AsyncMachine.instance.report_disconnected()
++    assert engine.machine_state == STATE_ERROR
++    assert engine.state_events()[-1] == (PRIMARY_MACHINE_TYPE, STATE_ERROR)
++
++
++def test_toggle_output_performs_both_effective_transitions(make_engine):
++    engine = make_engine()
++    assert engine.load_config()
++    engine.start()
++    machine = PrimaryRecordingMachine.instance
++    for expected in (True, False):
++        machine.calls.clear()
++        engine.events.clear()
++        engine.toggle_output()
++        assert engine.output is expected
++        assert machine.is_suppressed is expected
++        assert machine.calls == [("set_suppression", expected)]
++        assert engine.output_events() == [(expected,)]
++
++
++def test_threaded_shutdown_stops_worker_and_later_strokes(make_engine):
++    class ThreadedMachine(ThreadedStenotypeBase):
++        instance = None
++
++        def __init__(self, options):
++            super().__init__()
++            self.options = options
++            self.daemon = True
++            self.request_stroke = threading.Event()
++            self.stroke_sent = threading.Event()
++            self.worker_exited = threading.Event()
++            self.stop_calls = 0
++
++        @classmethod
++        def get_keys(cls):
++            return system.KEYS
++
++        @classmethod
++        def get_option_info(cls):
++            return {"option": ("default", str)}
++
++        def start_capture(self):
++            type(self).instance = self
++            super().start_capture()
++
++        def run(self):
++            try:
++                self._ready()
++                while True:
++                    self.request_stroke.wait()
++                    self.request_stroke.clear()
++                    if self.finished.is_set():
++                        return
++                    self._notify(("S-", "T-"))
++                    self.stroke_sent.set()
++            finally:
++                self.worker_exited.set()
++
++        def stop_capture(self):
++            self.stop_calls += 1
++            self.finished.set()
++            self.request_stroke.set()
++            super().stop_capture()
++            type(self).instance = None
++
++    registry.register_plugin("machine", PRIMARY_MACHINE_TYPE, ThreadedMachine)
++    engine = make_engine(engine_class=ThreadAwareEngine)
++    assert engine.load_config()
++
++    def run_engine():
++        engine.engine_thread_ident = threading.get_ident()
++        engine.run()
++
++    engine_thread = threading.Thread(target=run_engine, daemon=True)
++    engine_thread.start()
++    assert wait_for(lambda: engine.engine_thread_ident is not None)
++    machine = None
++    try:
++        engine.start()
++        assert wait_for(lambda: engine.machine_state == STATE_RUNNING)
++        machine = ThreadedMachine.instance
++        assert machine is not None and machine.is_alive()
++        machine.request_stroke.set()
++        assert machine.stroke_sent.wait(5)
++        assert wait_for(lambda: len(engine.hooks("stroked")) == 1)
++        engine.quit(0)
++        engine_thread.join(10)
++        assert not engine_thread.is_alive(), "quit must complete after stopping capture"
++        assert machine.stop_calls == 1
++        assert machine.finished.is_set()
++        assert machine.worker_exited.is_set()
++        assert not machine.is_alive(), "capture worker must have exited before quit completes"
++        assert ThreadedMachine.instance is None
++        events = list(engine.events)
++        machine.request_stroke.set()
++        assert engine.events == events
++    finally:
++        if machine is not None:
++            machine.finished.set()
++            machine.request_stroke.set()
++            machine.join(5)
++        if engine_thread.is_alive():
++            engine.quit(0)
++            engine_thread.join(10)
++
++
++def test_command_resume_and_toggle_delegate_last_stroke_suppression(make_engine):
++    engine = make_engine()
++    assert engine.load_config()
++    engine.start()
++    machine = PrimaryRecordingMachine.instance
++    output = engine._keyboard_emulation
++
++    def suppress(machine, send_backspaces):
++        machine.calls.append("suppress_last_stroke")
++        send_backspaces(7)
++
++    with mock.patch.object(PrimaryRecordingMachine, "suppress_last_stroke", suppress):
++        for command in ("resume", "toggle"):
++            engine.set_output(False)
++            machine.calls.clear()
++            engine.events.clear()
++            output.backspaces.clear()
++            engine._send_engine_command(command)
++            assert engine.output is True
++            assert machine.calls == [("set_suppression", True), "suppress_last_stroke"]
++            assert engine.output_events() == [(True,)]
++            assert output.backspaces == [7], "the plugin must receive the real output callback"
++        machine.calls.clear()
++        output.backspaces.clear()
++        engine._send_engine_command("resume")
++        assert machine.calls == [], "already-enabled commands must not suppress a previous stroke"
++        assert output.backspaces == []

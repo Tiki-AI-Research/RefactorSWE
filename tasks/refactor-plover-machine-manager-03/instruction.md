@@ -1,0 +1,15 @@
+# Delegate machine lifecycle from the engine
+
+Move machine connection state, instance/parameter lifetime, and keymap updates out of StenoEngine's mixed reconfiguration path into a dedicated collaborator. The engine should orchestrate configuration, logging, output, systems, extensions, and dictionaries while delegating machine work. Private fields, callbacks, names, and organization are yours to choose.
+
+Preserve engine `machine_state` as current stopped/initializing/connected/disconnected or None before a report. `reset_machine()` stays argument-free and returns None, forces reconnection, reapplies the current in-memory configuration, and reloads dictionaries. Preserve the separate configuration-reload operation rather than adding a disk reload to machine reset. Output entry points and readable/writable output property retain effective transitions. Hooks keep machine_state_changed(type,state), output_changed(bool), and config_changed(applied update) payloads.
+
+Keep plugin resolution by configured type, construction from machine-specific options, state/stroke callback registration, suppression, keymap, and capture start/stop contracts. Startup constructs from those options; a machine must not remain suppressed while output is disabled. Preserve plugin-reported state transitions: successful startup/rebuild retains initializing→connected or stopped→initializing→connected when the plugin emits them, while initialization failures, disconnected reports, and asynchronous readiness retain current behavior. Do not synthesize success state events in the engine or collaborator.
+
+A keymap-only change reuses the live instance and applies the configured keymap once when non-None, without capture stop, reconstruction, suppression update, capture start, or extra state events. A None keymap does not call set_keymap. Type/options changes or forced reconnection stop the old instance, create a fresh one, set suppression once, register callbacks, apply a non-None keymap once before starting capture once, and preserve plugin-reported state transitions. Retain the None-keymap skip on both paths.
+
+Every effective output transition synchronizes suppression (enabled output means suppressed machine; disabled means unsuppressed) and emits exactly one output_changed event; redundant requests emit none. State/stroke callbacks remain marshalled onto the engine thread before hooks, with unchanged delivery order and counts. Shutdown stops/releases the live instance without leaving capture or later machine events running.
+
+Completion requires dedicated machine ownership and engine delegation, with accompanying tests supporting rebuilding, reuse, output, callbacks, and shutdown. Preserve ordering/semantics outside the machine boundary, including configuration, logging/formatting, systems, extensions, dictionaries, translation, and commands. Add no dependencies, plugins, options, threads, settings, or plugin-contract changes. Limit edits to extraction production code and corresponding tests; avoid unrelated renames, formatting, refactors, or documentation rewrites.
+
+Work in a new branch from `main` and commit the completed changes.

@@ -1,0 +1,490 @@
+{
+  "base_commit": "208b67554a9078086c8de7c9ab0a9b5af2d9d567",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "bash",
+    "core/types/tests/f2pjunit/run.bash",
+    "--config",
+    "{config}",
+    "--report",
+    "{report}"
+  ],
+  "evaluation_files": {
+    "core/types/auxpow_boundary_helpers_test.go": "75156bc886924c71f5933a07dd409bd409acfbca773a50c185bac3b4cb3c87d5",
+    "core/types/auxpow_f2p_test.go": "548f62e7318b47ef9fcfd4f418918d0843b1fe788014c38f1289a66b788a5253",
+    "core/types/auxpow_p2p_test.go": "fec6483204771296c741c9dcca09d433a26fdc9e9f80dfac7ec6fc2b08aaee67",
+    "core/types/tests/f2pjunit/main.go": "b60b556bd47ab48ec4d4d7f86d63e5d56fdd455a780685240bc4b0a0aee5a904",
+    "core/types/tests/f2pjunit/run.bash": "faa0c24f53eb3d96ddeb5f1ca1f3f78b9f125851daaffecfff333961310c04ff",
+    "core/types/tests/p2pjunit/main.go": "b21de9c62bfbdaaf58ce1ff67ea7e25d0ecc225b0810b9eccca5ed435b176c27",
+    "core/types/tests/p2pjunit/run.bash": "a2906ea881981f8c0e92dd8d34a4d5c13090c452a657115cb9ece6c23b84b38e"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 2880.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 600.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 2400.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 600.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderKawpowExtendedLayout"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderBitcoinLayout"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderBitcoinCashLayout"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderLitecoinLayout"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderUnknownIdentifiersReturnNil"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PAuxPowTxHashKnownIdentifiers"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PAuxPowTxHashUnknownIdentifiersReturnZero"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PPerChainHashSemantics"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PProtoRoundTripKawpowExtendedHeader"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PProtoRoundTripAllSupportedChains"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PProtoAuxPowFieldNumbersAndLayout"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_test.go::TestAuxPowProtoEncodeDecode"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/wo_auxpow_test.go::TestWorkObjectProtoEncodeDecodeWithAuxPow"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONDecodesEachChainLayout"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONUnsupportedPowIDKeepsHeaderUnset"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PRPCMarshalFieldNames"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_rpc_test.go::TestAuxPowRPCMarshaling"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PProtoDecodeUnsupportedPowIDErrorAndOrdering"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PProtoDecodeMalformedHeaderErrorsWithoutPanic"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONDecodeErrorsPropagateWithoutPanic"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PProtoDecodeNilPayloadIsNoOp"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONValidationPrecedence"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_test.go::TestAuxPowProtoDecodeNil"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_test.go::TestAuxPowProtoEncodeNil"
+      },
+      {
+        "role": "P2P",
+        "selector": "core/types/auxpow_p2p_test.go::TestP2PPowIDStringAndNumericValues"
+      },
+      {
+        "role": "F2P",
+        "selector": "core/types/auxpow_f2p_test.go::TestF2PConstructionConsumerDoesNotBranchOnPowID"
+      },
+      {
+        "role": "F2P",
+        "selector": "core/types/auxpow_f2p_test.go::TestF2PJSONDecodeConsumerDoesNotBranchOnPowID"
+      },
+      {
+        "role": "F2P",
+        "selector": "core/types/auxpow_f2p_test.go::TestF2PProtoDecodeConsumerDoesNotBranchOnPowID"
+      },
+      {
+        "role": "F2P",
+        "selector": "core/types/auxpow_f2p_test.go::TestF2PTxHashConsumerDoesNotBranchOnPowID"
+      },
+      {
+        "role": "F2P",
+        "selector": "core/types/auxpow_f2p_test.go::TestF2PConsumersDelegateToConsolidatedDispatch"
+      },
+      {
+        "role": "F2P",
+        "selector": "core/types/auxpow_f2p_test.go::TestF2PConstructionDispatchUsesHeaderAbstraction"
+      },
+      {
+        "role": "F2P",
+        "selector": "core/types/auxpow_f2p_test.go::TestF2PSharedDispatchDropsChainHashImports"
+      },
+      {
+        "role": "F2P",
+        "selector": "core/types/auxpow_f2p_test.go::TestF2PConcreteHeaderTypesStayWithOwningFile"
+      },
+      {
+        "role": "F2P",
+        "selector": "core/types/auxpow_f2p_test.go::TestF2PChainsRegisterOwnHeaderOps"
+      },
+      {
+        "role": "F2P",
+        "selector": "core/types/auxpow_f2p_test.go::TestF2PChainFilesDoNotCrossMapOtherChains"
+      },
+      {
+        "role": "F2P",
+        "selector": "core/types/auxpow_f2p_test.go::TestF2PChainFilesOwnTransactionHashing"
+      },
+      {
+        "role": "F2P",
+        "selector": "core/types/auxpow_f2p_test.go::TestF2PChainRegistrationFeedsSharedDispatch"
+      }
+    ],
+    "selector_timeout_seconds": 600.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderKawpowExtendedLayout",
+          "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderBitcoinLayout",
+          "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderBitcoinCashLayout",
+          "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderLitecoinLayout",
+          "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderUnknownIdentifiersReturnNil",
+          "core/types/auxpow_p2p_test.go::TestP2PAuxPowTxHashKnownIdentifiers",
+          "core/types/auxpow_p2p_test.go::TestP2PAuxPowTxHashUnknownIdentifiersReturnZero",
+          "core/types/auxpow_p2p_test.go::TestP2PPerChainHashSemantics",
+          "core/types/auxpow_p2p_test.go::TestP2PProtoRoundTripKawpowExtendedHeader",
+          "core/types/auxpow_p2p_test.go::TestP2PProtoRoundTripAllSupportedChains",
+          "core/types/auxpow_p2p_test.go::TestP2PProtoAuxPowFieldNumbersAndLayout",
+          "core/types/auxpow_test.go::TestAuxPowProtoEncodeDecode",
+          "core/types/wo_auxpow_test.go::TestWorkObjectProtoEncodeDecodeWithAuxPow",
+          "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONDecodesEachChainLayout",
+          "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONUnsupportedPowIDKeepsHeaderUnset",
+          "core/types/auxpow_p2p_test.go::TestP2PRPCMarshalFieldNames",
+          "core/types/auxpow_rpc_test.go::TestAuxPowRPCMarshaling",
+          "core/types/auxpow_p2p_test.go::TestP2PProtoDecodeUnsupportedPowIDErrorAndOrdering",
+          "core/types/auxpow_p2p_test.go::TestP2PProtoDecodeMalformedHeaderErrorsWithoutPanic",
+          "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONDecodeErrorsPropagateWithoutPanic",
+          "core/types/auxpow_p2p_test.go::TestP2PProtoDecodeNilPayloadIsNoOp",
+          "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONValidationPrecedence",
+          "core/types/auxpow_test.go::TestAuxPowProtoDecodeNil",
+          "core/types/auxpow_test.go::TestAuxPowProtoEncodeNil",
+          "core/types/auxpow_p2p_test.go::TestP2PPowIDStringAndNumericValues",
+          "core/types/auxpow_f2p_test.go::TestF2PConstructionConsumerDoesNotBranchOnPowID",
+          "core/types/auxpow_f2p_test.go::TestF2PJSONDecodeConsumerDoesNotBranchOnPowID",
+          "core/types/auxpow_f2p_test.go::TestF2PProtoDecodeConsumerDoesNotBranchOnPowID",
+          "core/types/auxpow_f2p_test.go::TestF2PTxHashConsumerDoesNotBranchOnPowID",
+          "core/types/auxpow_f2p_test.go::TestF2PConsumersDelegateToConsolidatedDispatch",
+          "core/types/auxpow_f2p_test.go::TestF2PConstructionDispatchUsesHeaderAbstraction",
+          "core/types/auxpow_f2p_test.go::TestF2PSharedDispatchDropsChainHashImports",
+          "core/types/auxpow_f2p_test.go::TestF2PConcreteHeaderTypesStayWithOwningFile",
+          "core/types/auxpow_f2p_test.go::TestF2PChainsRegisterOwnHeaderOps",
+          "core/types/auxpow_f2p_test.go::TestF2PChainFilesDoNotCrossMapOtherChains",
+          "core/types/auxpow_f2p_test.go::TestF2PChainFilesOwnTransactionHashing",
+          "core/types/auxpow_f2p_test.go::TestF2PChainRegistrationFeedsSharedDispatch"
+        ],
+        "timeout_seconds": 600.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "core/types/auxpow_f2p_test.go::TestF2PConstructionConsumerDoesNotBranchOnPowID",
+    "core/types/auxpow_f2p_test.go::TestF2PJSONDecodeConsumerDoesNotBranchOnPowID",
+    "core/types/auxpow_f2p_test.go::TestF2PProtoDecodeConsumerDoesNotBranchOnPowID",
+    "core/types/auxpow_f2p_test.go::TestF2PTxHashConsumerDoesNotBranchOnPowID",
+    "core/types/auxpow_f2p_test.go::TestF2PConsumersDelegateToConsolidatedDispatch",
+    "core/types/auxpow_f2p_test.go::TestF2PConstructionDispatchUsesHeaderAbstraction",
+    "core/types/auxpow_f2p_test.go::TestF2PSharedDispatchDropsChainHashImports",
+    "core/types/auxpow_f2p_test.go::TestF2PConcreteHeaderTypesStayWithOwningFile",
+    "core/types/auxpow_f2p_test.go::TestF2PChainsRegisterOwnHeaderOps",
+    "core/types/auxpow_f2p_test.go::TestF2PChainFilesDoNotCrossMapOtherChains",
+    "core/types/auxpow_f2p_test.go::TestF2PChainFilesOwnTransactionHashing",
+    "core/types/auxpow_f2p_test.go::TestF2PChainRegistrationFeedsSharedDispatch"
+  ],
+  "gates": [
+    {
+      "id": "P2P-HEADER-CONSTRUCTION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C1",
+        "REQ-BEH-T4:C2",
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002",
+        "REQ-STRUCT-003",
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderKawpowExtendedLayout",
+        "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderBitcoinLayout",
+        "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderBitcoinCashLayout",
+        "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderLitecoinLayout",
+        "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderUnknownIdentifiersReturnNil"
+      ]
+    },
+    {
+      "id": "P2P-TX-HASH",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C5",
+        "REQ-BEH-T4:B3",
+        "REQ-INTEGRITY-004"
+      ],
+      "tests": [
+        "core/types/auxpow_p2p_test.go::TestP2PAuxPowTxHashKnownIdentifiers",
+        "core/types/auxpow_p2p_test.go::TestP2PAuxPowTxHashUnknownIdentifiersReturnZero"
+      ]
+    },
+    {
+      "id": "P2P-HASH-SEMANTICS",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B4"
+      ],
+      "tests": [
+        "core/types/auxpow_p2p_test.go::TestP2PPerChainHashSemantics"
+      ]
+    },
+    {
+      "id": "P2P-PROTO-ROUNDTRIP",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B1",
+        "REQ-BEH-T4:C4"
+      ],
+      "tests": [
+        "core/types/auxpow_p2p_test.go::TestP2PProtoRoundTripKawpowExtendedHeader",
+        "core/types/auxpow_p2p_test.go::TestP2PProtoRoundTripAllSupportedChains",
+        "core/types/auxpow_p2p_test.go::TestP2PProtoAuxPowFieldNumbersAndLayout",
+        "core/types/auxpow_test.go::TestAuxPowProtoEncodeDecode",
+        "core/types/wo_auxpow_test.go::TestWorkObjectProtoEncodeDecodeWithAuxPow"
+      ]
+    },
+    {
+      "id": "P2P-JSON-DECODE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C4",
+        "REQ-BEH-T4:B1",
+        "REQ-BEH-T4:B2"
+      ],
+      "tests": [
+        "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONDecodesEachChainLayout",
+        "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONUnsupportedPowIDKeepsHeaderUnset",
+        "core/types/auxpow_p2p_test.go::TestP2PRPCMarshalFieldNames",
+        "core/types/auxpow_rpc_test.go::TestAuxPowRPCMarshaling"
+      ]
+    },
+    {
+      "id": "P2P-ERROR-ORDERING-NIL",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B2",
+        "REQ-BEH-T4:B5",
+        "REQ-BEH-T4:B6",
+        "REQ-BEH-T4:B7",
+        "REQ-BEH-T4:B8"
+      ],
+      "tests": [
+        "core/types/auxpow_p2p_test.go::TestP2PProtoDecodeUnsupportedPowIDErrorAndOrdering",
+        "core/types/auxpow_p2p_test.go::TestP2PProtoDecodeMalformedHeaderErrorsWithoutPanic",
+        "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONDecodeErrorsPropagateWithoutPanic",
+        "core/types/auxpow_p2p_test.go::TestP2PProtoDecodeNilPayloadIsNoOp",
+        "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONValidationPrecedence",
+        "core/types/auxpow_test.go::TestAuxPowProtoDecodeNil",
+        "core/types/auxpow_test.go::TestAuxPowProtoEncodeNil"
+      ]
+    },
+    {
+      "id": "P2P-POWID-CONSTANTS",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C3",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "core/types/auxpow_p2p_test.go::TestP2PPowIDStringAndNumericValues"
+      ]
+    },
+    {
+      "id": "F2P-DISPATCH-CONSOLIDATION",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "core/types/auxpow_f2p_test.go::TestF2PConstructionConsumerDoesNotBranchOnPowID",
+        "core/types/auxpow_f2p_test.go::TestF2PJSONDecodeConsumerDoesNotBranchOnPowID",
+        "core/types/auxpow_f2p_test.go::TestF2PProtoDecodeConsumerDoesNotBranchOnPowID",
+        "core/types/auxpow_f2p_test.go::TestF2PTxHashConsumerDoesNotBranchOnPowID",
+        "core/types/auxpow_f2p_test.go::TestF2PConsumersDelegateToConsolidatedDispatch",
+        "core/types/auxpow_f2p_test.go::TestF2PConstructionDispatchUsesHeaderAbstraction"
+      ]
+    },
+    {
+      "id": "F2P-PER-CHAIN-OWNERSHIP",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002",
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "core/types/auxpow_f2p_test.go::TestF2PSharedDispatchDropsChainHashImports",
+        "core/types/auxpow_f2p_test.go::TestF2PConcreteHeaderTypesStayWithOwningFile",
+        "core/types/auxpow_f2p_test.go::TestF2PChainsRegisterOwnHeaderOps",
+        "core/types/auxpow_f2p_test.go::TestF2PChainFilesDoNotCrossMapOtherChains",
+        "core/types/auxpow_f2p_test.go::TestF2PChainFilesOwnTransactionHashing",
+        "core/types/auxpow_f2p_test.go::TestF2PChainRegistrationFeedsSharedDispatch"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "19482454e0989395d874bba603445d51b3b12ad9b2c388317162b9b24884280e",
+    "test_patch_sha256": "7732392c65b3efb9b29408cdaf091548894c0d0576e5d4368c654e9d9b99f57a"
+  },
+  "node_relations": [],
+  "p2p": [
+    "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderKawpowExtendedLayout",
+    "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderBitcoinLayout",
+    "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderBitcoinCashLayout",
+    "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderLitecoinLayout",
+    "core/types/auxpow_p2p_test.go::TestP2PNewBlockHeaderUnknownIdentifiersReturnNil",
+    "core/types/auxpow_p2p_test.go::TestP2PAuxPowTxHashKnownIdentifiers",
+    "core/types/auxpow_p2p_test.go::TestP2PAuxPowTxHashUnknownIdentifiersReturnZero",
+    "core/types/auxpow_p2p_test.go::TestP2PPerChainHashSemantics",
+    "core/types/auxpow_p2p_test.go::TestP2PProtoRoundTripKawpowExtendedHeader",
+    "core/types/auxpow_p2p_test.go::TestP2PProtoRoundTripAllSupportedChains",
+    "core/types/auxpow_p2p_test.go::TestP2PProtoAuxPowFieldNumbersAndLayout",
+    "core/types/auxpow_test.go::TestAuxPowProtoEncodeDecode",
+    "core/types/wo_auxpow_test.go::TestWorkObjectProtoEncodeDecodeWithAuxPow",
+    "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONDecodesEachChainLayout",
+    "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONUnsupportedPowIDKeepsHeaderUnset",
+    "core/types/auxpow_p2p_test.go::TestP2PRPCMarshalFieldNames",
+    "core/types/auxpow_rpc_test.go::TestAuxPowRPCMarshaling",
+    "core/types/auxpow_p2p_test.go::TestP2PProtoDecodeUnsupportedPowIDErrorAndOrdering",
+    "core/types/auxpow_p2p_test.go::TestP2PProtoDecodeMalformedHeaderErrorsWithoutPanic",
+    "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONDecodeErrorsPropagateWithoutPanic",
+    "core/types/auxpow_p2p_test.go::TestP2PProtoDecodeNilPayloadIsNoOp",
+    "core/types/auxpow_p2p_test.go::TestP2PUnmarshalJSONValidationPrecedence",
+    "core/types/auxpow_test.go::TestAuxPowProtoDecodeNil",
+    "core/types/auxpow_test.go::TestAuxPowProtoEncodeNil",
+    "core/types/auxpow_p2p_test.go::TestP2PPowIDStringAndNumericValues"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": true,
+  "restoration_paths": [
+    "core/types/auxpow_test.go",
+    "core/types/auxpow_rpc_test.go",
+    "core/types/wo_auxpow_test.go"
+  ],
+  "reward_mode": "VERIFIER_ONLY",
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-go-quai-auxpow-b1c6597b",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "core/types/auxpow_boundary_helpers_test.go",
+    "core/types/auxpow_f2p_test.go",
+    "core/types/auxpow_p2p_test.go",
+    "core/types/tests/f2pjunit/main.go",
+    "core/types/tests/f2pjunit/run.bash",
+    "core/types/tests/p2pjunit/main.go",
+    "core/types/tests/p2pjunit/run.bash"
+  ],
+  "timeout_seconds": 600,
+  "verifier": "/tests/verifier/verifier.py"
+}

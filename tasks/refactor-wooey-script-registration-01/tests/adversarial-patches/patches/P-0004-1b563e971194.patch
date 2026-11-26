@@ -1,0 +1,372 @@
+--- a/wooey/backend/utils.py
++++ b/wooey/backend/utils.py
+@@ -430,39 +430,21 @@
+         obj.close()
+ 
+ 
+-def add_wooey_script(
++def prepare_script_registration(
+     script_version=None,
+     script_path=None,
+     group=None,
+     script_name=None,
+-    set_default_version=True,
+     ignore_bad_imports=None,
+ ):
+-
+-    # There is a class called 'Script' which contains the general information about a script. However, that is not where the file details
+-    # of the script lie. That is the ScriptVersion model. This allows the end user to tag a script as a favorite/etc. and set
+-    # information such as script descriptions/names that do not constantly need to be updated with every version change. Thus,
+-    # a ScriptVersion stores the file info and such.
+-    from ..models import (
+-        Script,
+-        ScriptGroup,
+-        ScriptParameter,
+-        ScriptParameterGroup,
+-        ScriptParser,
+-        ScriptVersion,
+-    )
+-
+-    # if we are adding through the admin, at this point the file will be saved already and this method will be receiving
+-    # the scriptversion object. Otherwise, we are adding through the managementment command. In this case, the file will be
+-    # a location and we need to setup the Script and ScriptVersion in here.
+-    # check if the script exists
++    from ..models import Script, ScriptGroup, ScriptVersion
++
+     script_path = script_path or script_version.script_path.name
+     script_name = script_name or (
+         script_version.script.script_name
+         if script_version
+         else os.path.basename(os.path.splitext(script_path)[0])
+     )
+-    existing_script = None
+     if script_version is None:
+         existing_scripts = Script.objects.filter(script_name=script_name).order_by("pk")
+         if isinstance(group, ScriptGroup):
+@@ -475,8 +457,10 @@
+                 group = existing_script.script_group.group_name
+             if ignore_bad_imports is None:
+                 ignore_bad_imports = existing_script.ignore_bad_imports
++
+     with get_storage_object(script_path) as so:
+         checksum = get_checksum(buff=so.read())
++
+     existing_version = None
+     try:
+         existing_version = ScriptVersion.objects.get(
+@@ -485,32 +469,24 @@
+     except ObjectDoesNotExist:
+         pass
+     except MultipleObjectsReturned:
+-        # This exists because previous versions did not enforce a checksum, so multiple scriptverisons are
+-        # possible with the same checksum.
+         existing_version = (
+             ScriptVersion.objects.filter(
+                 checksum=checksum, script__script_name=script_name
+             )
+             .order_by("script_version", "script_iteration")
+-            .last()
++            .first()
+         )
+-    # If script_verison is None, it likely came from `addscript`
++
+     if existing_version is not None and (
+         script_version is None or existing_version != script_version
+     ):
+         return {
+-            "valid": False,
+-            "errors": ScriptVersion.error_messages["duplicate_script"],
+-            "script": existing_version,
++            "duplicate": True,
++            "existing_version": existing_version,
+         }
+ 
+     local_storage = get_storage(local=True)
+     if script_version is not None:
+-        # we are updating the script here or creating it through the admin
+-
+-        # we need to move the script to the wooey scripts directory now
+-        # handle remotely first, because by default scripts will be saved remotely if we are using an
+-        # ephemeral file system
+         old_name = script_version.script_path.name
+         new_name = os.path.normpath(
+             os.path.join(wooey_settings.WOOEY_SCRIPT_DIR, old_name)
+@@ -524,7 +500,6 @@
+             new_name = current_storage.get_available_name(new_name)
+         new_path = current_storage.save(new_name, current_file)
+ 
+-        # remove the old file
+         if old_name != new_name:
+             current_file.close()
+             current_storage.delete(old_name)
+@@ -534,21 +509,17 @@
+         script_version.script_path.name = new_name
+         script_version.save()
+ 
+-        # download the script locally if it doesn't exist
+         if not local_storage.exists(new_path):
+             new_path = local_storage.save(new_path, current_file)
+ 
+-        # Close the old file if it is not yet
+         if not current_file.closed:
+             current_file.close()
+ 
+         with get_storage_object(new_path, local=True) as so:
+-            script = so.path
++            script_full_path = so.path
+         with local_storage.open(new_path) as local_handle:
+             local_file = local_handle.name
+     else:
+-        # we got a path, if we are using a remote file system, it will be located remotely by default
+-        # make sure we have it locally as well
+         if wooey_settings.WOOEY_EPHEMERAL_FILES:
+             remote_storage = get_storage(local=False)
+             with remote_storage.open(script_path) as remote_file:
+@@ -557,27 +528,58 @@
+             with local_storage.open(script_path) as local_handle:
+                 local_file = local_handle.name
+         with get_storage_object(local_file, local=True) as so:
+-            script = so.path
++            script_full_path = so.path
++
+     if group is None:
+         group = "Wooey Scripts"
+     if ignore_bad_imports is None:
+         ignore_bad_imports = False
+-    basename, extension = os.path.splitext(script)
++
++    basename, _ = os.path.splitext(script_full_path)
+     filename = os.path.split(basename)[1]
+ 
++    return {
++        "duplicate": False,
++        "script_name": script_name,
++        "group": group,
++        "ignore_bad_imports": ignore_bad_imports,
++        "checksum": checksum,
++        "local_file": local_file,
++        "local_path": local_storage.path(local_file),
++        "filename": filename,
++    }
++
++
++def parse_script_schema(filename, local_path, ignore_bad_imports=False):
+     parser = Parser(
+         script_name=filename,
+-        script_path=local_storage.path(local_file),
++        script_path=local_path,
+         ignore_bad_imports=ignore_bad_imports,
+     )
+     if not parser.valid:
+         return {
+             "valid": False,
+-            "errors": errors.ParserError(parser.error),
++            "error": errors.ParserError(parser.error),
+         }
+-    # make our script
+-    script_schema = parser.get_script_description()
+-    script_group, created = ScriptGroup.objects.get_or_create(group_name=group)
++    return {
++        "valid": True,
++        "schema": parser.get_script_description(),
++    }
++
++
++def save_script_version(
++    script_version=None,
++    script_name=None,
++    group=None,
++    script_schema=None,
++    local_file=None,
++    checksum=None,
++    set_default_version=True,
++    ignore_bad_imports=False,
++):
++    from ..models import Script, ScriptGroup, ScriptVersion
++
++    script_group, _ = ScriptGroup.objects.get_or_create(group_name=group)
+     version_string = script_schema.get("version")
+     if version_string is None:
+         version_string = "1"
+@@ -590,8 +592,8 @@
+             )
+         )
+         version_string = "1"
++
+     if script_version is None:
+-        # we are being loaded from the management command, create/update our script/version
+         script_kwargs = {
+             "script_group": script_group,
+             "script_name": script_name or script_schema["name"],
+@@ -602,10 +604,8 @@
+             "default_version": set_default_version,
+             "checksum": checksum,
+         }
+-        # does this script already exist in the database?
+         script_created = Script.objects.filter(**script_kwargs).count() == 0
+         if script_created:
+-            # we are creating it, add the description if we can
+             script_kwargs.update(
+                 {
+                     "script_description": script_schema["description"],
+@@ -617,23 +617,19 @@
+             wooey_script.save()
+             version_kwargs.update({"script_iteration": 1, "default_version": True})
+         else:
+-            # we're updating it
+             wooey_script = Script.objects.get(**script_kwargs)
+             if not wooey_script.script_description and script_schema["description"]:
+                 wooey_script.script_description = script_schema["description"]
+                 wooey_script.save()
+-            # check if we have the version in our script version
+             current_versions = ScriptVersion.objects.filter(
+                 script=wooey_script, script_version=version_string
+             )
+             if current_versions.count() == 0:
+                 next_iteration = 1
+             else:
+-                # get the largest iteration and add 1 to it
+                 next_iteration = (
+                     sorted([i.script_iteration for i in current_versions])[-1] + 1
+                 )
+-            # disable older versions
+             if set_default_version:
+                 ScriptVersion.objects.filter(script=wooey_script).update(
+                     default_version=False
+@@ -645,7 +641,6 @@
+         script_version.checksum = checksum
+         script_version.save()
+     else:
+-        # we are being created/updated from the admin
+         wooey_script = script_version.script
+         if not wooey_script.script_description:
+             wooey_script.script_description = script_schema["description"]
+@@ -658,7 +653,6 @@
+             script_version.script_version = version_string
+             script_version.default_version = True
+         script_version.script_iteration = past_versions.count() + 1
+-        # Make all old versions non-default
+         if set_default_version:
+             ScriptVersion.objects.filter(script=wooey_script).update(
+                 default_version=False
+@@ -668,7 +662,16 @@
+         wooey_script.save()
+         script_version.save()
+ 
+-    # make our parameters
++    return wooey_script, script_version
++
++
++def sync_script_parameters(wooey_script, script_version, script_schema):
++    from ..models import (
++        ScriptParameter,
++        ScriptParameterGroup,
++        ScriptParser,
++    )
++
+     parameter_index = 0
+     for parser_name, parser_inputs in script_schema["inputs"].items():
+         parsers = ScriptParser.objects.filter(
+@@ -690,7 +693,6 @@
+                 group_name=param_group_name, script_version__script=wooey_script
+             ).distinct()
+ 
+-            # TODO: There should only ever be one, should probably do a harder enforcement of this.
+             if len(param_groups):
+                 param_group = param_groups.first()
+             else:
+@@ -701,7 +703,6 @@
+             param_group.script_version.add(script_version)
+ 
+             for param in param_group_info.get("nodes"):
+-                # TODO: fix 'file' to be global in argparse
+                 is_out = (
+                     True
+                     if (
+@@ -721,7 +722,6 @@
+                     "choice_limit": json.dumps(param.get("choice_limit", 1)),
+                     "param_help": param.get("help"),
+                     "is_checked": param.get("checked", False),
+-                    # parameter_group': param_group,
+                     "collapse_arguments": SPECIFY_EVERY_PARAM
+                     not in param.get("param_action", set()),
+                 }
+@@ -733,9 +733,6 @@
+ 
+                 parameter_index += 1
+ 
+-                # This indicates the parameter is a positional argument. If these are changed between script versions,
+-                # the script can break. Therefore, we have to add an additional filter on the parameter order that
+-                # keyword arguments can ignore.
+                 if not param["param"]:
+                     script_param_kwargs["param_order"] = parameter_index
+                 script_params = (
+@@ -759,14 +756,65 @@
+                     )
+                     script_param.script_version.add(script_version)
+                 else:
+-                    # If we are here, the script parameter exists and has not changed since the last update. We can simply
+-                    # point the new script at the old script parameter. This lets us clone old scriptversions and have their
+-                    # parameters still auto populate.
+                     script_param = script_params[0]
+                     if "param_order" not in script_param_kwargs:
+                         script_param.param_order = parameter_index
+                     script_param.script_version.add(script_version)
+                     script_param.save()
++
++
++def add_wooey_script(
++    script_version=None,
++    script_path=None,
++    group=None,
++    script_name=None,
++    set_default_version=True,
++    ignore_bad_imports=None,
++):
++    from ..models import ScriptVersion
++
++    prep = prepare_script_registration(
++        script_version=script_version,
++        script_path=script_path,
++        group=group,
++        script_name=script_name,
++        ignore_bad_imports=ignore_bad_imports,
++    )
++
++    if prep["duplicate"]:
++        return {
++            "valid": False,
++            "errors": ScriptVersion.error_messages["duplicate_script"],
++            "script": prep["existing_version"],
++        }
++
++    parsed = parse_script_schema(
++        filename=prep["filename"],
++        local_path=prep["local_path"],
++        ignore_bad_imports=prep["ignore_bad_imports"],
++    )
++    if not parsed["valid"]:
++        return {
++            "valid": False,
++            "errors": parsed["error"],
++        }
++
++    wooey_script, script_version = save_script_version(
++        script_version=script_version,
++        script_name=prep["script_name"],
++        group=prep["group"],
++        script_schema=parsed["schema"],
++        local_file=prep["local_file"],
++        checksum=prep["checksum"],
++        set_default_version=set_default_version,
++        ignore_bad_imports=prep["ignore_bad_imports"],
++    )
++
++    sync_script_parameters(
++        wooey_script=wooey_script,
++        script_version=script_version,
++        script_schema=parsed["schema"],
++    )
+ 
+     return {
+         "valid": True,

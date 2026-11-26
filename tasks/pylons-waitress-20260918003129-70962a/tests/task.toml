@@ -1,0 +1,61 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts", "/logs/artifacts/model.patch"]
+
+[task]
+name = "pylons/pylons-waitress-20260918003129-70962a"
+description = "pylons-waitress-20260918003129-70962a"
+authors = []
+keywords = []
+
+[metadata]
+ext_id = "pylons-waitress-20260918003129-70962a"
+task_id = "pylons-waitress-20260918003129-70962a"
+display_title = "Extract Waitress Response Lifecycle Contract"
+display_description = "Refactor Waitress response handling into an explicit, side-effect-free response contract while preserving existing WSGI, HTTP framing, error, logging, and body-emission behavior."
+original_title = "pylons-waitress-20260918003129-70962a"
+category = "refactor"
+language = "Python"
+repository_url = "https://github.com/Pylons/waitress"
+base_commit_hash = "016eea527dd4a3eb4a18d6dca4d0bfe32039e470"
+
+[tests]
+fail_to_pass_count = 35
+pass_to_pass_count = 748
+
+[verifier]
+network_mode = "allowlist"
+allowed_hosts = []
+environment_mode = "separate"
+user = "root"
+timeout_sec = 3600.0
+
+[verifier.environment]
+network_mode = "allowlist"
+allowed_hosts = []
+build_timeout_sec = 1800.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "set -eu\nmkdir -p /logs/artifacts\nrm -f /logs/artifacts/model.patch\ncollect_tmp=$(mktemp -d /logs/artifacts/.collect.XXXXXX)\ntrap 'rm -rf \"$collect_tmp\"' EXIT\nexport GIT_INDEX_FILE=\"$collect_tmp/index\"\ngit -C /workspace/repo rev-parse --verify '016eea527dd4a3eb4a18d6dca4d0bfe32039e470^{commit}' >/dev/null\ngit -C /workspace/repo read-tree 016eea527dd4a3eb4a18d6dca4d0bfe32039e470\ngit -C /workspace/repo add -A -- . ':(exclude,glob)**/__pycache__/**' ':(exclude,glob)**/*.py[cod]' ':(exclude,glob)**/.pytest_cache/**' ':(exclude,glob)**/*.egg-info/**' ':(exclude,glob)**/node_modules/**'\ngit -C /workspace/repo diff --cached --binary --full-index --no-ext-diff --no-textconv 016eea527dd4a3eb4a18d6dca4d0bfe32039e470 -- > \"$collect_tmp/model.patch\"\nmv \"$collect_tmp/model.patch\" /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+network_mode = "allowlist"
+allowed_hosts = []
+timeout_sec = 5400.0
+user = "agent"
+
+[environment]
+network_mode = "allowlist"
+allowed_hosts = []
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+
+[verifier.env]
+[environment.env]
+[solution.env]

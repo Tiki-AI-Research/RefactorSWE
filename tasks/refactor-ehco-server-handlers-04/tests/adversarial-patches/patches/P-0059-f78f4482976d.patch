@@ -1,0 +1,10 @@
+--- a/internal/web/utils.go
++++ b/internal/web/utils.go
+@@ -23,6 +23,6 @@
+ func MakeIndexF() http.HandlerFunc {
+ 	return func(w http.ResponseWriter, r *http.Request) {
+ 		zap.S().Named("web").Infof("index call from %s", r.RemoteAddr)
+-		_, _ = fmt.Fprintf(w, "access from remote ip: %s \n", r.RemoteAddr)
++		_, _ = fmt.Fprintf(w, "access from remote ip: %s \n", r.Host)
+ 	}
+ }

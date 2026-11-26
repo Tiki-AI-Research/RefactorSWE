@@ -1,0 +1,62 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+[task]
+name = "tikiai/refactor-wooey-script-registration-01"
+description = "Separate script storage, version lifecycle, and parser synchronization."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "refactor-wooey-script-r-cea6f7f7"
+repository_url = "https://github.com/wooey/Wooey"
+base_commit_hash = "6e24ffe16f389a99de28fae3671cbd25df52d51c"
+display_title = "Script registration stages"
+category = "module_boundary"
+language = "Python"
+
+[tests]
+fail_to_pass_count = 15
+pass_to_pass_count = 28
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+user = "root"
+network_mode = "public"
+environment_mode = "separate"
+timeout_sec = 1800.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:refactor-wooey-script-registration-01-verifier-image-20261125"
+image_digest = "sha256:5af069d872093480fc79f414fde87cc97a6e2b7f4d17d10d27f594f7bba169c6"
+network_mode = "public"
+build_timeout_sec = 3600.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "set -eu\nmkdir -p /logs/artifacts\nrm -f /logs/artifacts/model.patch\ncollect_tmp=$(mktemp -d /logs/artifacts/.collect.XXXXXX)\ntrap 'rm -rf \"$collect_tmp\"' EXIT\nexport GIT_INDEX_FILE=\"$collect_tmp/index\"\nattributes_file=\"$collect_tmp/attributes\"\nprintf '* -diff\\n' > \"$attributes_file\"\ngit -C /workspace/repo rev-parse --verify '6e24ffe16f389a99de28fae3671cbd25df52d51c^{commit}' >/dev/null\ngit -C /workspace/repo read-tree 6e24ffe16f389a99de28fae3671cbd25df52d51c\ngit -C /workspace/repo add -A -- .\ngit -c core.attributesFile=\"$attributes_file\" -C /workspace/repo diff --cached --binary --full-index --no-ext-diff --no-textconv 6e24ffe16f389a99de28fae3671cbd25df52d51c -- > \"$collect_tmp/model.patch\"\nmv \"$collect_tmp/model.patch\" /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+user = "agent"
+network_mode = "public"
+timeout_sec = 7200.0
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:refactor-wooey-script-registration-01-task-image-20261125"
+image_digest = "sha256:cbb94149f9a503073061a81c1120eba918679979f117a26b0c1169257c5245cf"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[verifier.env]
+
+[solution.env]

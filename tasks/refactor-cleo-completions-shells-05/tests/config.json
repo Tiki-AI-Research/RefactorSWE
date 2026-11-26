@@ -1,0 +1,518 @@
+{
+  "base_commit": "8c3f1bbf82d918fc137ad40db65c446e14564aac",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "/usr/bin/env",
+    "PYTHONPATH=src:.",
+    "/root/.cache/pypoetry/virtualenvs/cleo-uZbbGesQ-py3.13/bin/python",
+    "-m",
+    "pytest",
+    "-p",
+    "no:cacheprovider",
+    "tests/commands/completion/test_completions_separation.py::test_shell_generation_is_dispatched_through_a_shell_keyed_unit_registry",
+    "tests/commands/completion/test_completions_separation.py::test_shell_registry_binds_each_supported_shell_to_a_distinct_generation_unit",
+    "tests/commands/completion/test_completions_separation.py::test_bash_generation_unit_is_defined_outside_the_command_module",
+    "tests/commands/completion/test_completions_separation.py::test_zsh_generation_unit_is_defined_outside_the_command_module",
+    "tests/commands/completion/test_completions_separation.py::test_fish_generation_unit_is_defined_outside_the_command_module",
+    "tests/commands/completion/test_completions_separation.py::test_bash_generation_unit_can_be_replaced_independently_of_the_others",
+    "tests/commands/completion/test_completions_separation.py::test_zsh_generation_unit_can_be_replaced_independently_of_the_others",
+    "tests/commands/completion/test_completions_separation.py::test_fish_generation_unit_can_be_replaced_independently_of_the_others",
+    "tests/commands/completion/test_completions_separation.py::test_replacing_one_shell_unit_does_not_change_the_other_shells_scripts",
+    "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_defines_the_per_shell_rendering_methods",
+    "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_branches_on_shell_name_literals",
+    "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_performs_template_substitution",
+    "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_defines_the_shared_derivation_helpers",
+    "tests/commands/completion/test_completions_separation.py::test_shared_derivation_helpers_are_defined_once_and_not_in_the_command_module",
+    "tests/commands/completion/test_completions_separation.py::test_shell_generation_units_share_a_common_shell_independent_base",
+    "tests/commands/completion/test_completions_separation.py::test_shared_shell_independent_base_is_defined_outside_the_command_module",
+    "tests/commands/completion/test_completions_regression.py::test_shell_is_inferred_from_shell_environment_variable",
+    "tests/commands/completion/test_completions_regression.py::test_explicit_shell_argument_wins_over_shell_environment_variable",
+    "tests/commands/completion/test_completions_regression.py::test_missing_shell_environment_variable_raises_runtime_error",
+    "tests/commands/completion/test_completions_regression.py::test_empty_shell_environment_variable_raises_runtime_error",
+    "tests/commands/completion/test_completions_command.py::test_invalid_shell",
+    "tests/commands/completion/test_completions_regression.py::test_unsupported_shell_raises_value_error_and_emits_no_output",
+    "tests/commands/completion/test_completions_regression.py::test_bash_script_output_is_character_identical",
+    "tests/commands/completion/test_completions_regression.py::test_zsh_script_output_is_character_identical",
+    "tests/commands/completion/test_completions_regression.py::test_fish_script_output_is_character_identical",
+    "tests/commands/completion/test_completions_regression.py::test_command_and_option_inclusion_and_ordering_rules",
+    "tests/commands/completion/test_completions_regression.py::test_alias_option_is_repeatable_and_keeps_script_effect",
+    "tests/commands/completion/test_completions_regression.py::test_successful_run_exits_with_status_zero_and_touches_no_files",
+    "tests/commands/completion/test_completions_regression.py::test_completions_command_contract_is_unchanged",
+    "tests/commands/completion/test_completions_regression.py::test_full_external_behavior_of_all_supported_shells_is_preserved",
+    "tests/commands/completion/test_completions_regression.py::test_root_shell_environment_variable_raises_runtime_error",
+    "--junitxml",
+    "{report}"
+  ],
+  "evaluation_files": {
+    "tests/commands/completion/fixtures/regression/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tests/commands/completion/fixtures/regression/bash.txt": "b2dceabffb9e7180f2d014bd454e035720a979acc8ef29f17c93551eb409b955",
+    "tests/commands/completion/fixtures/regression/bash_alias.txt": "7292abf49353ff4e7c88334f51e79a89ad283dff6723d13aa1d3dee7d5452cfe",
+    "tests/commands/completion/fixtures/regression/fish.txt": "f99c7fdbf9302b7423ccdbef92ad0716469709ab648d7b121d0631aceb9ec029",
+    "tests/commands/completion/fixtures/regression/rules_bash.txt": "aa1cf8e01c3de96f7f62febd76655d7a0eaef53c50e9975ff37ce6a08a9643c6",
+    "tests/commands/completion/fixtures/regression/rules_fish.txt": "6b05052d8b3fb02d007e6a9a02fb728e6b3462d282c45fe47c5957f2bd79b4c9",
+    "tests/commands/completion/fixtures/regression/rules_zsh.txt": "74e87bfb1cf1eba2bd942973626c9e7ae6221788c8abe73b27c5bae0684021d9",
+    "tests/commands/completion/fixtures/regression/zsh.txt": "085f6c1e51a7c668fd836c09559c1bb729ffef7db21736bce2aa555c0a1e0703",
+    "tests/commands/completion/fixtures/regression/zsh_alias.txt": "bb0367f8a43eaa6783e01a2f073fb09c5c361f97e2b04095b201748b34cf231d",
+    "tests/commands/completion/test_completions_regression.py": "1f53501382539e32d7704ce6857e68ce7296b3d120e4d7fb3d4a2027e2ae197a",
+    "tests/commands/completion/test_completions_separation.py": "985dc68b9b231bc67da96ea599e5b96606ee692ff35854f097d065d96148f486"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 1800.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 300.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 1200.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 300.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_shell_is_inferred_from_shell_environment_variable"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_explicit_shell_argument_wins_over_shell_environment_variable"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_missing_shell_environment_variable_raises_runtime_error"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_empty_shell_environment_variable_raises_runtime_error"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_command.py::test_invalid_shell"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_unsupported_shell_raises_value_error_and_emits_no_output"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_bash_script_output_is_character_identical"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_zsh_script_output_is_character_identical"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_fish_script_output_is_character_identical"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_command_and_option_inclusion_and_ordering_rules"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_alias_option_is_repeatable_and_keeps_script_effect"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_successful_run_exits_with_status_zero_and_touches_no_files"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_completions_command_contract_is_unchanged"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_full_external_behavior_of_all_supported_shells_is_preserved"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_shell_generation_is_dispatched_through_a_shell_keyed_unit_registry"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_shell_registry_binds_each_supported_shell_to_a_distinct_generation_unit"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_bash_generation_unit_is_defined_outside_the_command_module"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_zsh_generation_unit_is_defined_outside_the_command_module"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_fish_generation_unit_is_defined_outside_the_command_module"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_branches_on_shell_name_literals"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_bash_generation_unit_can_be_replaced_independently_of_the_others"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_zsh_generation_unit_can_be_replaced_independently_of_the_others"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_fish_generation_unit_can_be_replaced_independently_of_the_others"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_replacing_one_shell_unit_does_not_change_the_other_shells_scripts"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_defines_the_per_shell_rendering_methods"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_performs_template_substitution"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_defines_the_shared_derivation_helpers"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_shared_derivation_helpers_are_defined_once_and_not_in_the_command_module"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_shell_generation_units_share_a_common_shell_independent_base"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_separation.py::test_shared_shell_independent_base_is_defined_outside_the_command_module"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/commands/completion/test_completions_regression.py::test_root_shell_environment_variable_raises_runtime_error"
+      }
+    ],
+    "selector_timeout_seconds": 300.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "tests/commands/completion/test_completions_regression.py::test_shell_is_inferred_from_shell_environment_variable",
+          "tests/commands/completion/test_completions_regression.py::test_explicit_shell_argument_wins_over_shell_environment_variable",
+          "tests/commands/completion/test_completions_regression.py::test_missing_shell_environment_variable_raises_runtime_error",
+          "tests/commands/completion/test_completions_regression.py::test_empty_shell_environment_variable_raises_runtime_error",
+          "tests/commands/completion/test_completions_command.py::test_invalid_shell",
+          "tests/commands/completion/test_completions_regression.py::test_unsupported_shell_raises_value_error_and_emits_no_output",
+          "tests/commands/completion/test_completions_regression.py::test_bash_script_output_is_character_identical",
+          "tests/commands/completion/test_completions_regression.py::test_zsh_script_output_is_character_identical",
+          "tests/commands/completion/test_completions_regression.py::test_fish_script_output_is_character_identical",
+          "tests/commands/completion/test_completions_regression.py::test_command_and_option_inclusion_and_ordering_rules",
+          "tests/commands/completion/test_completions_regression.py::test_alias_option_is_repeatable_and_keeps_script_effect",
+          "tests/commands/completion/test_completions_regression.py::test_successful_run_exits_with_status_zero_and_touches_no_files",
+          "tests/commands/completion/test_completions_regression.py::test_completions_command_contract_is_unchanged",
+          "tests/commands/completion/test_completions_regression.py::test_full_external_behavior_of_all_supported_shells_is_preserved",
+          "tests/commands/completion/test_completions_separation.py::test_shell_generation_is_dispatched_through_a_shell_keyed_unit_registry",
+          "tests/commands/completion/test_completions_separation.py::test_shell_registry_binds_each_supported_shell_to_a_distinct_generation_unit",
+          "tests/commands/completion/test_completions_separation.py::test_bash_generation_unit_is_defined_outside_the_command_module",
+          "tests/commands/completion/test_completions_separation.py::test_zsh_generation_unit_is_defined_outside_the_command_module",
+          "tests/commands/completion/test_completions_separation.py::test_fish_generation_unit_is_defined_outside_the_command_module",
+          "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_branches_on_shell_name_literals",
+          "tests/commands/completion/test_completions_separation.py::test_bash_generation_unit_can_be_replaced_independently_of_the_others",
+          "tests/commands/completion/test_completions_separation.py::test_zsh_generation_unit_can_be_replaced_independently_of_the_others",
+          "tests/commands/completion/test_completions_separation.py::test_fish_generation_unit_can_be_replaced_independently_of_the_others",
+          "tests/commands/completion/test_completions_separation.py::test_replacing_one_shell_unit_does_not_change_the_other_shells_scripts",
+          "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_defines_the_per_shell_rendering_methods",
+          "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_performs_template_substitution",
+          "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_defines_the_shared_derivation_helpers",
+          "tests/commands/completion/test_completions_separation.py::test_shared_derivation_helpers_are_defined_once_and_not_in_the_command_module",
+          "tests/commands/completion/test_completions_separation.py::test_shell_generation_units_share_a_common_shell_independent_base",
+          "tests/commands/completion/test_completions_separation.py::test_shared_shell_independent_base_is_defined_outside_the_command_module",
+          "tests/commands/completion/test_completions_regression.py::test_root_shell_environment_variable_raises_runtime_error"
+        ],
+        "timeout_seconds": 300.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "tests/commands/completion/test_completions_separation.py::test_shell_generation_is_dispatched_through_a_shell_keyed_unit_registry",
+    "tests/commands/completion/test_completions_separation.py::test_shell_registry_binds_each_supported_shell_to_a_distinct_generation_unit",
+    "tests/commands/completion/test_completions_separation.py::test_bash_generation_unit_is_defined_outside_the_command_module",
+    "tests/commands/completion/test_completions_separation.py::test_zsh_generation_unit_is_defined_outside_the_command_module",
+    "tests/commands/completion/test_completions_separation.py::test_fish_generation_unit_is_defined_outside_the_command_module",
+    "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_branches_on_shell_name_literals",
+    "tests/commands/completion/test_completions_separation.py::test_bash_generation_unit_can_be_replaced_independently_of_the_others",
+    "tests/commands/completion/test_completions_separation.py::test_zsh_generation_unit_can_be_replaced_independently_of_the_others",
+    "tests/commands/completion/test_completions_separation.py::test_fish_generation_unit_can_be_replaced_independently_of_the_others",
+    "tests/commands/completion/test_completions_separation.py::test_replacing_one_shell_unit_does_not_change_the_other_shells_scripts",
+    "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_defines_the_per_shell_rendering_methods",
+    "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_performs_template_substitution",
+    "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_defines_the_shared_derivation_helpers",
+    "tests/commands/completion/test_completions_separation.py::test_shared_derivation_helpers_are_defined_once_and_not_in_the_command_module",
+    "tests/commands/completion/test_completions_separation.py::test_shell_generation_units_share_a_common_shell_independent_base",
+    "tests/commands/completion/test_completions_separation.py::test_shared_shell_independent_base_is_defined_outside_the_command_module",
+    "tests/commands/completion/test_completions_regression.py::test_root_shell_environment_variable_raises_runtime_error"
+  ],
+  "gates": [
+    {
+      "id": "P2P-1",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C3",
+        "REQ-BEH-T4:B4"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_regression.py::test_shell_is_inferred_from_shell_environment_variable",
+        "tests/commands/completion/test_completions_regression.py::test_explicit_shell_argument_wins_over_shell_environment_variable",
+        "tests/commands/completion/test_completions_regression.py::test_missing_shell_environment_variable_raises_runtime_error",
+        "tests/commands/completion/test_completions_regression.py::test_empty_shell_environment_variable_raises_runtime_error"
+      ]
+    },
+    {
+      "id": "P2P-2",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C4",
+        "REQ-BEH-T4:B5"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_command.py::test_invalid_shell",
+        "tests/commands/completion/test_completions_regression.py::test_unsupported_shell_raises_value_error_and_emits_no_output"
+      ]
+    },
+    {
+      "id": "P2P-3",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B1",
+        "REQ-BEH-T4:C5",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_regression.py::test_bash_script_output_is_character_identical",
+        "tests/commands/completion/test_completions_regression.py::test_zsh_script_output_is_character_identical",
+        "tests/commands/completion/test_completions_regression.py::test_fish_script_output_is_character_identical"
+      ]
+    },
+    {
+      "id": "P2P-4",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B2"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_regression.py::test_command_and_option_inclusion_and_ordering_rules"
+      ]
+    },
+    {
+      "id": "P2P-5",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B3"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_regression.py::test_alias_option_is_repeatable_and_keeps_script_effect"
+      ]
+    },
+    {
+      "id": "P2P-6",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C2",
+        "REQ-BEH-T4:B6"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_regression.py::test_successful_run_exits_with_status_zero_and_touches_no_files"
+      ]
+    },
+    {
+      "id": "P2P-7",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C1",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_regression.py::test_completions_command_contract_is_unchanged"
+      ]
+    },
+    {
+      "id": "P2P-8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_regression.py::test_full_external_behavior_of_all_supported_shells_is_preserved"
+      ]
+    },
+    {
+      "id": "F2P-SHELL-UNITS-SEPARATED-FROM-COMMAND",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_separation.py::test_shell_generation_is_dispatched_through_a_shell_keyed_unit_registry",
+        "tests/commands/completion/test_completions_separation.py::test_shell_registry_binds_each_supported_shell_to_a_distinct_generation_unit",
+        "tests/commands/completion/test_completions_separation.py::test_bash_generation_unit_is_defined_outside_the_command_module",
+        "tests/commands/completion/test_completions_separation.py::test_zsh_generation_unit_is_defined_outside_the_command_module",
+        "tests/commands/completion/test_completions_separation.py::test_fish_generation_unit_is_defined_outside_the_command_module",
+        "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_branches_on_shell_name_literals"
+      ]
+    },
+    {
+      "id": "F2P-SHELL-UNITS-INDEPENDENTLY-REPLACEABLE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_separation.py::test_bash_generation_unit_can_be_replaced_independently_of_the_others",
+        "tests/commands/completion/test_completions_separation.py::test_zsh_generation_unit_can_be_replaced_independently_of_the_others",
+        "tests/commands/completion/test_completions_separation.py::test_fish_generation_unit_can_be_replaced_independently_of_the_others",
+        "tests/commands/completion/test_completions_separation.py::test_replacing_one_shell_unit_does_not_change_the_other_shells_scripts"
+      ]
+    },
+    {
+      "id": "F2P-COMMAND-RESPONSIBILITY-NARROWED",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_defines_the_per_shell_rendering_methods",
+        "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_performs_template_substitution",
+        "tests/commands/completion/test_completions_separation.py::test_command_class_no_longer_defines_the_shared_derivation_helpers"
+      ]
+    },
+    {
+      "id": "F2P-SHELL-INDEPENDENT-WORK-SHARED-ONCE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_separation.py::test_shared_derivation_helpers_are_defined_once_and_not_in_the_command_module",
+        "tests/commands/completion/test_completions_separation.py::test_shell_generation_units_share_a_common_shell_independent_base",
+        "tests/commands/completion/test_completions_separation.py::test_shared_shell_independent_base_is_defined_outside_the_command_module"
+      ]
+    },
+    {
+      "id": "F2P-EMPTY-SHELL-BASENAME",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T4:C3",
+        "REQ-BEH-T4:B4"
+      ],
+      "tests": [
+        "tests/commands/completion/test_completions_regression.py::test_root_shell_environment_variable_raises_runtime_error"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "dff023b702ee7379f66b7201dda5abe2dbf02cbf630e61b9c4e60807b0ca8cb2",
+    "test_patch_sha256": "40cd6c8dd5ae1738d60acaf2a008ab17a0a7cf609c0d252e0718a8e62fa8067b"
+  },
+  "junit_assertion_adapter": "pytest",
+  "node_relations": [],
+  "p2p": [
+    "tests/commands/completion/test_completions_regression.py::test_shell_is_inferred_from_shell_environment_variable",
+    "tests/commands/completion/test_completions_regression.py::test_explicit_shell_argument_wins_over_shell_environment_variable",
+    "tests/commands/completion/test_completions_regression.py::test_missing_shell_environment_variable_raises_runtime_error",
+    "tests/commands/completion/test_completions_regression.py::test_empty_shell_environment_variable_raises_runtime_error",
+    "tests/commands/completion/test_completions_command.py::test_invalid_shell",
+    "tests/commands/completion/test_completions_regression.py::test_unsupported_shell_raises_value_error_and_emits_no_output",
+    "tests/commands/completion/test_completions_regression.py::test_bash_script_output_is_character_identical",
+    "tests/commands/completion/test_completions_regression.py::test_zsh_script_output_is_character_identical",
+    "tests/commands/completion/test_completions_regression.py::test_fish_script_output_is_character_identical",
+    "tests/commands/completion/test_completions_regression.py::test_command_and_option_inclusion_and_ordering_rules",
+    "tests/commands/completion/test_completions_regression.py::test_alias_option_is_repeatable_and_keeps_script_effect",
+    "tests/commands/completion/test_completions_regression.py::test_successful_run_exits_with_status_zero_and_touches_no_files",
+    "tests/commands/completion/test_completions_regression.py::test_completions_command_contract_is_unchanged",
+    "tests/commands/completion/test_completions_regression.py::test_full_external_behavior_of_all_supported_shells_is_preserved"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": false,
+  "restoration_paths": [
+    "tests/commands/completion/test_completions_command.py",
+    "tests/commands/completion/fixtures/hello_command.py",
+    "tests/commands/completion/fixtures/command_with_colons.py",
+    "tests/commands/completion/fixtures/command_with_space_in_name.py"
+  ],
+  "reward_mode": "VERIFIER_ONLY",
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-cleo-completio-12b55079",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "tests/commands/completion/fixtures/regression/__init__.py",
+    "tests/commands/completion/fixtures/regression/bash.txt",
+    "tests/commands/completion/fixtures/regression/bash_alias.txt",
+    "tests/commands/completion/fixtures/regression/fish.txt",
+    "tests/commands/completion/fixtures/regression/rules_bash.txt",
+    "tests/commands/completion/fixtures/regression/rules_fish.txt",
+    "tests/commands/completion/fixtures/regression/rules_zsh.txt",
+    "tests/commands/completion/fixtures/regression/zsh.txt",
+    "tests/commands/completion/fixtures/regression/zsh_alias.txt",
+    "tests/commands/completion/test_completions_regression.py",
+    "tests/commands/completion/test_completions_separation.py"
+  ],
+  "timeout_seconds": 300,
+  "verifier": "/tests/verifier/verifier.py"
+}

@@ -1,0 +1,1519 @@
+diff --git a/tests/f2p_runner.py b/tests/f2p_runner.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ffd6183b0eb4da4562a410ed6df5487467cffbfd
+--- /dev/null
++++ b/tests/f2p_runner.py
+@@ -0,0 +1,43 @@
++"""Offline entry point for the case's real pytest producer.
++
++Use the case venv when present. The image also retains uv's extracted dependency
++archives; adding those existing directories to sys.path does not install or fetch
++anything. An unavailable dependency remains an import/setup error.
++"""
++
++import importlib.util
++import os
++from pathlib import Path
++import sys
++
++
++def main():
++    root = Path(__file__).resolve().parents[1]
++    os.chdir(root)
++    venv = root / ".venv/bin/python"
++    if venv.is_file() and Path(sys.prefix).resolve() != (root / ".venv").resolve():
++        os.execv(str(venv), [str(venv), str(Path(__file__).resolve()), *sys.argv[1:]])
++    sys.dont_write_bytecode = True
++    os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
++    sys.path[:0] = [str(root / "src"), str(root)]
++    if any(importlib.util.find_spec(name) is None for name in ("pytest", "attrs", "hypothesis")):
++        cache = Path(os.environ.get("UV_CACHE_DIR", str(Path.home() / ".cache/uv"))) / "archive-v0"
++        if cache.is_dir():
++            sys.path.extend(str(p) for p in sorted(cache.iterdir()) if p.is_dir())
++    # Load the instrumentation before tests/__init__.py imports cattrs.
++    spec = importlib.util.spec_from_file_location(
++        "f2p_operations", root / "tests/f2p_support/operations.py")
++    operations = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = operations
++    spec.loader.exec_module(operations)
++    operations.install()
++    import pytest
++
++    return pytest.main([
++        "-q", "-o", "addopts=", "-o", "junit_family=xunit2",
++        "-p", "no:cacheprovider", "-p", "tests.p2p_pytest", *sys.argv[1:]
++    ])
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/f2p_support/__init__.py b/tests/f2p_support/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0184bc8c7163d771f6d62e25150c285802157f28
+--- /dev/null
++++ b/tests/f2p_support/__init__.py
+@@ -0,0 +1 @@
++"""F2P-only generation provenance helpers."""
+diff --git a/tests/f2p_support/operations.py b/tests/f2p_support/operations.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0a5768306d0ac63511b7b54e663a676d3b68c582
+--- /dev/null
++++ b/tests/f2p_support/operations.py
+@@ -0,0 +1,269 @@
++"""In-memory expression provenance for the structural F2P oracle.
++
++The loader leaves production files untouched. Every probe returns its input;
++assignment probes perform the original assignment once and preserve evaluation
++order. Only a Trace.run context retains events. Data edges follow the actual
++returned values, including strings inside containers, rather than all events
++seen in an enclosing function. In particular a caller does not inherit unused
++expressions executed by its callees.
++"""
++
++import ast
++from dataclasses import dataclass, field
++import importlib.abc
++import importlib.machinery
++import inspect
++import copy
++from pathlib import Path
++import sys
++
++ACTIVE = None
++SITES = {}
++PREFIX = '_f2p_operation_'
++
++
++def leaves(value, seen=None):
++    """Retain text objects by identity, through containers and generator state."""
++    if isinstance(value, (str, bytes)):
++        yield value
++        return
++    if seen is None:
++        seen = set()
++    if id(value) in seen:
++        return
++    seen.add(id(value))
++    if isinstance(value, dict):
++        values = tuple(value.keys()) + tuple(value.values())
++    elif isinstance(value, (list, tuple, set, frozenset)):
++        values = tuple(value)
++    elif type(value).__module__.startswith('cattrs.gen'):
++        values = list(vars(value).values()) if hasattr(value, '__dict__') else []
++        for cls in type(value).__mro__:
++            slots = cls.__dict__.get('__slots__', ())
++            for name in ([slots] if isinstance(slots, str) else slots):
++                if name not in ('__dict__', '__weakref__') and hasattr(value, name):
++                    values.append(getattr(value, name))
++    else:
++        return
++    for item in values:
++        yield from leaves(item, seen)
++
++
++def text(value):
++    if isinstance(value, bytes):
++        return value.decode('utf8', errors='replace')
++    return value
++
++
++@dataclass(eq=False)
++class Expression:
++    site: int
++    code: object
++    frame: object
++    children: list = field(default_factory=list)
++    dependencies: list = field(default_factory=list)
++    values: tuple = ()
++
++    def contains(self, snippet):
++        return any(snippet in text(v) for v in self.values)
++
++
++class Recorder:
++    def __init__(self):
++        self.pending = []
++        self.origins = {}
++        self.events = []
++        self.assignments = []
++
++    def begin(self, site, frame):
++        event = Expression(site, frame.f_code, frame)
++        self.pending.append(event)
++        return event
++
++    def end(self, event, value):
++        # An exception can leave unfinished expressions behind. Remove them,
++        # never turn their partial execution into a value/dependency witness.
++        while self.pending and self.pending[-1] is not event:
++            self.pending.pop()
++        if self.pending:
++            self.pending.pop()
++        event.values = tuple(leaves(value))
++        node = SITES[event.site][1]
++        prior_values = []
++        for leaf in event.values:
++            prior = self.origins.get(id(leaf))
++            if prior is not None and any(v is leaf for v in prior.values):
++                prior_values.append(prior)
++        # A read of an already tracked member depends on THAT member, not
++        # unrelated strings in its containing object. A slice/extraction that
++        # creates a new object must keep its input expression ancestry.
++        member_read = isinstance(node, (ast.Name, ast.Attribute, ast.Subscript))
++        known = bool(event.values) and len(prior_values) == len(event.values)
++        event.dependencies = ([] if member_read and known else list(event.children))
++        if not isinstance(node, ast.Constant):
++            event.dependencies.extend(prior_values)
++        if isinstance(value, (str, bytes)):
++            self.origins[id(value)] = event
++        else:
++            # A split/decoder can return newly allocated strings in a list.
++            # Bind each new member to the transforming expression so a later
++            # subscript cannot sever its ancestry to the original string.
++            for leaf in event.values:
++                if id(leaf) not in self.origins:
++                    member = Expression(event.site, event.code, event.frame,
++                                        dependencies=list(event.dependencies), values=(leaf,))
++                    self.origins[id(leaf)] = member
++        self.events.append(event)
++        if self.pending and self.pending[-1].frame is event.frame:
++            self.pending[-1].children.append(event)
++        return value
++
++    def root(self, value):
++        return self.origins.get(id(value))
++
++    def producers(self, root, snippet):
++        """Find actual construction along value dependencies, through codecs.
++
++        A read, join, decoder or extractor cannot become an origin when its
++        input already derives from a construction containing this snippet.
++        This searches the complete ancestry, not only the immediate inputs.
++        """
++        memo = {}
++        def visit(event):
++            if event is None:
++                return set()
++            if id(event) in memo:
++                return memo[id(event)]
++            inherited = set()
++            for dependency in event.dependencies:
++                inherited.update(visit(dependency))
++            found = inherited or ({event} if event.contains(snippet) else set())
++            memo[id(event)] = found
++            return found
++        return visit(root)
++
++
++def begin(site):
++    return None if ACTIVE is None else ACTIVE.begin(site, inspect.currentframe().f_back)
++
++
++def end(event, value):
++    return value if event is None or ACTIVE is None else ACTIVE.end(event, value)
++
++
++def assign(value, target, name):
++    # RHS, target expression, attribute name: Python's STORE_ATTR order.
++    setattr(target, name, value)
++    if ACTIVE is not None:
++        ACTIVE.assignments.append((inspect.currentframe().f_back.f_code, target, name, value))
++
++
++class Instrument(ast.NodeTransformer):
++    def __init__(self, filename):
++        self.filename = filename
++        self.in_function = 0
++        self.classes = []
++
++    def visit_ClassDef(self, node):
++        self.classes.append(node.name)
++        node = self.generic_visit(node)
++        self.classes.pop()
++        return node
++
++    def visit_FunctionDef(self, node):
++        # Decorators, defaults and annotations keep their original scope.
++        self.in_function += 1
++        body = []
++        for statement in node.body:
++            changed = self.visit(statement)
++            body.extend(changed if isinstance(changed, list) else [changed])
++        node.body = body
++        self.in_function -= 1
++        return node
++
++    visit_AsyncFunctionDef = visit_FunctionDef
++
++    def visit_Expr(self, node):
++        if isinstance(node.value, ast.Constant):  # docstrings
++            return node
++        return self.generic_visit(node)
++
++    def visit_JoinedStr(self, node):
++        # JoinedStr requires raw Constant/FormattedValue children.
++        for item in node.values:
++            if isinstance(item, ast.FormattedValue):
++                item.value = self.visit(item.value)
++                if item.format_spec is not None:
++                    item.format_spec = self.visit_format(item.format_spec)
++        return node
++
++    def visit_format(self, node):
++        return self.visit_JoinedStr(node)
++
++    def visit_AugAssign(self, node):
++        # Record the result of in-place string/name formation at the operation,
++        # before a later reader or substring extractor can claim ownership.
++        updated = self.generic_visit(node)
++        if self.in_function and isinstance(node.target, (ast.Name, ast.Attribute)):
++            read = copy.deepcopy(node.target)
++            read.ctx = ast.Load()
++            site = len(SITES)
++            SITES[site] = (self.filename, node)
++            observation = ast.Expr(ast.Call(ast.Name(PREFIX + 'end', ast.Load()), [
++                ast.Call(ast.Name(PREFIX + 'begin', ast.Load()), [ast.Constant(site)], []), read
++            ], []))
++            return [updated, ast.copy_location(observation, node)]
++        return updated
++
++    def visit_Assign(self, node):
++        if self.in_function and len(node.targets) == 1 and isinstance(node.targets[0], ast.Attribute):
++            target = node.targets[0]
++            attr = target.attr
++            if self.classes and attr.startswith('__') and not attr.endswith('__'):
++                attr = '_' + self.classes[-1].lstrip('_') + attr
++            return ast.copy_location(ast.Expr(ast.Call(
++                ast.Name(PREFIX + 'assign', ast.Load()),
++                [self.visit(node.value), self.visit(target.value), ast.Constant(attr)], [])), node)
++        return self.generic_visit(node)
++
++    def visit(self, node):
++        original = node
++        node = super().visit(node)
++        if (self.in_function and isinstance(node, ast.expr)
++                and not isinstance(node, (ast.Starred, ast.FormattedValue, ast.Yield, ast.YieldFrom))
++                and not (hasattr(node, 'ctx') and not isinstance(node.ctx, ast.Load))):
++            site = len(SITES)
++            SITES[site] = (self.filename, original)
++            node = ast.copy_location(ast.Call(ast.Name(PREFIX + 'end', ast.Load()), [
++                ast.Call(ast.Name(PREFIX + 'begin', ast.Load()), [ast.Constant(site)], []), node
++            ], []), original)
++        return node
++
++
++class Loader(importlib.machinery.SourceFileLoader):
++    def get_code(self, fullname):
++        filename = self.get_filename(fullname)
++        tree = ast.parse(self.get_data(filename), filename)
++        tree = Instrument(filename).visit(tree)
++        ast.fix_missing_locations(tree)
++        return compile(tree, filename, 'exec', dont_inherit=True)
++
++    def exec_module(self, module):
++        module.__dict__.update({PREFIX + 'begin': begin, PREFIX + 'end': end,
++                                PREFIX + 'assign': assign})
++        super().exec_module(module)
++
++
++class Finder(importlib.abc.MetaPathFinder):
++    def find_spec(self, fullname, path=None, target=None):
++        if fullname != 'cattrs' and not fullname.startswith('cattrs.'):
++            return None
++        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
++        if spec and isinstance(spec.loader, importlib.machinery.SourceFileLoader):
++            spec.loader = Loader(fullname, spec.origin)
++        return spec
++
++
++def install():
++    assert 'cattrs.gen' not in sys.modules, 'Provenance loader must precede cattrs imports'
++    sys.meta_path.insert(0, Finder())
+diff --git a/tests/f2p_support/provenance.py b/tests/f2p_support/provenance.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6c9863f88e53c6c3ed5b3ca77caffc87515bacce
+--- /dev/null
++++ b/tests/f2p_support/provenance.py
+@@ -0,0 +1,263 @@
++"""Observe responsibility ownership without requiring private helper names.
++
++Only real calls below public factories count. Compiler input, returned hooks,
++emitted source, and binding namespaces are correlated within the SAME invocation.
++Emission probes modify a discovered helper's output and require the resulting hook
++to exhibit the change, ruling out dead helpers and discarded duplicate scaffolds.
++"""
++
++import ast
++import builtins
++from dataclasses import dataclass
++import inspect
++from pathlib import Path
++import sys
++from types import FunctionType, ModuleType, SimpleNamespace
++import linecache
++
++import f2p_operations as operations
++
++import cattrs.gen
++
++
++GEN = Path(cattrs.gen.__file__).resolve().parent
++
++
++def in_gen(code):
++    return (code.co_name not in {"<genexpr>", "<listcomp>", "<dictcomp>", "<setcomp>"}
++            and code.co_filename.endswith(".py")
++            and Path(code.co_filename).resolve().is_relative_to(GEN))
++
++
++def contains_code(container, target):
++    """Correlate compile output with the actual returned function, by identity."""
++    return container is target or any(
++        contains_code(value, target) for value in getattr(container, "co_consts", ())
++        if hasattr(value, "co_consts")
++    )
++
++
++@dataclass
++class Compilation:
++    source: str
++    filename: str
++    stack: list
++    code: object
++    origin: object
++
++
++@dataclass
++class Execution:
++    stack: list
++    code: object
++    namespace: dict
++
++
++class Trace:
++    def __init__(self):
++        self.compiles = []
++        self.executions = []
++        self.hook = None
++        self.operations = operations.Recorder()
++        self.registrations = []
++
++    def stack(self):
++        # Skip only this method and our intercepting wrapper. NEVER filter by
++        # package: a dispatcher may delegate to different out-of-gen workers.
++        frame = inspect.currentframe().f_back.f_back
++        out = []
++        while frame is not None:
++            out.append(SimpleNamespace(code=frame.f_code))
++            frame = frame.f_back
++        return out
++
++    def run(self, make, before_execute=None, before_compile=None):
++        compile_fn, eval_fn, exec_fn = builtins.compile, builtins.eval, builtins.exec
++        setattr_fn = builtins.setattr
++
++        def compiling(source, filename, mode, *args, **kwargs):
++            stack = self.stack()
++            code = compile_fn(source, filename, mode, *args, **kwargs)
++            if stack and isinstance(source, str) and mode == "exec":
++                self.compiles.append(Compilation(source, filename, stack, code, self.operations.root(source)))
++                if before_compile is not None:
++                    before_compile(stack, source, filename)
++            return code
++
++        def evaluating(source, *args, **kwargs):
++            stack = self.stack()
++            if stack and args:
++                self.executions.append(Execution(stack, source, args[0]))
++                if before_execute is not None:
++                    before_execute(stack, source, args[0])
++            if not args and not kwargs:
++                caller = inspect.currentframe().f_back
++                return eval_fn(source, caller.f_globals, caller.f_locals)
++            return eval_fn(source, *args, **kwargs)
++
++        def executing(source, *args, **kwargs):
++            stack = self.stack()
++            if stack and args:
++                self.executions.append(Execution(stack, source, args[0]))
++                if before_execute is not None:
++                    before_execute(stack, source, args[0])
++            if not args and not kwargs:
++                caller = inspect.currentframe().f_back
++                return exec_fn(source, caller.f_globals, caller.f_locals)
++            return exec_fn(source, *args, **kwargs)
++
++        def setting_attribute(target, name, value):
++            result = setattr_fn(target, name, value)
++            self.operations.assignments.append(
++                (inspect.currentframe().f_back.f_code, target, name, value))
++            return result
++
++        recorder = self
++        original_cache = linecache.cache
++
++        class ObservedCache(dict):
++            def __setitem__(self, key, value):
++                recorder.registrations.append((key, value, recorder.stack()))
++                return super().__setitem__(key, value)
++
++            def setdefault(self, key, value=None):
++                recorder.registrations.append((key, value, recorder.stack()))
++                return super().setdefault(key, value)
++
++            def update(self, *args, **kwargs):
++                for key, value in dict(*args, **kwargs).items():
++                    recorder.registrations.append((key, value, recorder.stack()))
++                    super().__setitem__(key, value)
++
++        try:
++            linecache.cache = ObservedCache(original_cache)
++            operations.ACTIVE = self.operations
++            builtins.setattr = setting_attribute
++            builtins.compile, builtins.eval, builtins.exec = compiling, evaluating, executing
++            self.hook = make()
++        finally:
++            operations.ACTIVE = None
++            builtins.setattr = setattr_fn
++            original_cache.update(linecache.cache)
++            linecache.cache = original_cache
++            builtins.compile, builtins.eval, builtins.exec = compile_fn, eval_fn, exec_fn
++        matching = [c for c in self.compiles if contains_code(c.code, self.hook.__code__)]
++        assert matching, "No observed compilation produced the returned public hook"
++        self.compilation = matching[-1]
++        self.tree = ast.parse(self.compilation.source)
++        self.bindings = dict(self.hook.__globals__)
++        self.bindings.update({k: p.default for k, p in inspect.signature(self.hook).parameters.items()
++                              if p.default is not inspect.Parameter.empty})
++        return self
++
++    def call_nodes(self, target):
++        return [n for n in ast.walk(self.tree) if isinstance(n, ast.Call)
++                and isinstance(n.func, ast.Name) and self.bindings.get(n.func.id) is target]
++
++    def segment(self, node):
++        return ast.get_source_segment(self.compilation.source, node)
++
++    def emission_events(self, snippet):
++        return self.operations.producers(self.compilation.origin, snippet)
++
++    def emission_owners(self, snippets):
++        # Only events on the ACTUAL compile-source dependency graph count.
++        # Encoding, extraction and transport follow the earlier producer.
++        events = [self.emission_events(part) for part in snippets]
++        # Mixed construction origins are inconclusive; a shared decoy must not
++        # hide a second live family-local emitter through a set intersection.
++        if any(len({event.code for event in group}) != 1 for group in events):
++            return set()
++        groups = [{event.frame for event in group} for group in events]
++        frames = set.intersection(*groups) if groups else set()
++        return {frame.f_code for frame in frames}
++
++    def name_owners(self):
++        return self.emission_owners([self.hook.__name__])
++
++    def attachment_owners(self):
++        return {code for code, target, name, value in self.operations.assignments
++                if target is self.hook and name == 'overrides'
++                and value is self.hook.overrides}
++
++    def registration_owners(self):
++        result = set()
++        for filename, entry, stack in self.registrations:
++            if (filename != self.compilation.filename or not isinstance(entry, tuple)
++                    or len(entry) != 4 or '\n'.join(entry[2]) != self.compilation.source):
++                continue
++            # Attribute the request to the immediate caller of the pre-existing
++            # cache primitive, or the direct writer if a generator writes itself.
++            # An echo returning a filename never appears in this effect stack.
++            primitive = (Path(stack[0].code.co_filename).resolve() == GEN / '_lc.py')
++            owner = stack[1].code if primitive else stack[0].code
++            result.add(owner)
++        return result
++
++
++def common(sets, responsibility):
++    found = {code for code in set.intersection(*sets) if in_gen(code)}
++    assert found, f"Both families must delegate {responsibility} to the same gen implementation"
++    return found
++
++
++def patch_emitter(monkeypatch, code, old, new=None):
++    """Replace source output at its discovered function/method, including list sinks."""
++    sites = []
++    for module in list(sys.modules.values()):
++        if not isinstance(module, ModuleType) or not module.__name__.startswith("cattrs.gen"):
++            continue
++        owners = [module] + [v for v in vars(module).values()
++                              if isinstance(v, type) and v.__module__.startswith("cattrs.gen")]
++        for owner in owners:
++            for name, value in list(vars(owner).items()):
++                fn = value.__func__ if isinstance(value, (classmethod, staticmethod)) else value
++                if isinstance(fn, FunctionType) and fn.__code__ is code:
++                    sites.append((owner, name, value, fn))
++    assert sites, "Observed emission has no patchable binding; delegation proof is inconclusive"
++
++    def rewrite(value):
++        if isinstance(value, str):
++            for before, after in (old.items() if isinstance(old, dict) else [(old, new)]):
++                value = after.join(part.replace(before, after) for part in value.split(after))
++            return value
++        if isinstance(value, list):
++            value[:] = [rewrite(v) for v in value]
++        if isinstance(value, tuple):
++            return tuple(rewrite(v) for v in value)
++        if type(value).__module__.startswith("cattrs.gen"):
++            names = set(vars(value)) if hasattr(value, "__dict__") else set()
++            for cls in type(value).__mro__:
++                slots = cls.__dict__.get("__slots__", ())
++                names.update([slots] if isinstance(slots, str) else slots)
++            for name in names:
++                current = getattr(value, name, None)
++                if isinstance(current, (str, list, tuple)):
++                    setattr(value, name, rewrite(current))
++        return value
++
++    for owner, name, descriptor, fn in sites:
++        def wrapped(*args, __fn=fn, **kwargs):
++            result = __fn(*args, **kwargs)
++            for value in (*args, *kwargs.values()):
++                if isinstance(value, list) or type(value).__module__.startswith("cattrs.gen"):
++                    rewrite(value)
++            return rewrite(result)
++        if isinstance(descriptor, staticmethod):
++            wrapped = staticmethod(wrapped)
++        elif isinstance(descriptor, classmethod):
++            wrapped = classmethod(wrapped)
++        monkeypatch.setattr(owner, name, wrapped)
++
++
++def emitted_common(traces, snippets, responsibility):
++    # A shared generator may delegate linked pieces to distinct shared methods.
++    # Certify EACH live piece across families; never infer B from an unrelated
++    # shared method A. The generated AST and behavioral checks establish the
++    # collector/unknown-variable connection between these source pieces.
++    assert snippets and len({len(parts) for parts in snippets}) == 1
++    owners = set()
++    for index in range(len(snippets[0])):
++        owners = common([t.emission_owners([parts[index]])
++                         for t, parts in zip(traces, snippets)], responsibility)
++    return owners
+diff --git a/tests/p2p_pytest.py b/tests/p2p_pytest.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7fd9da14214a871537ae271badb9ba72f6c69683
+--- /dev/null
++++ b/tests/p2p_pytest.py
+@@ -0,0 +1,20 @@
++"""Keep native pytest and Hypothesis temporary data under TMPDIR.
++
++Test selection and JUnit generation are handled by pytest's command-line options.
++This plugin does not collect, select, or alter tests or their results.
++"""
++
++import os
++from pathlib import Path
++import tempfile
++
++
++def pytest_load_initial_conftests(early_config):
++    workspace = tempfile.TemporaryDirectory(
++        prefix="p2p-pytest-", dir=os.environ["TMPDIR"]
++    )
++    early_config.add_cleanup(workspace.cleanup)
++    os.environ["HYPOTHESIS_STORAGE_DIRECTORY"] = str(
++        Path(workspace.name) / "hypothesis"
++    )
++    early_config.option.basetemp = str(Path(workspace.name) / "pytest")
+diff --git a/tests/test_f2p_shared_generation.py b/tests/test_f2p_shared_generation.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f8691ea8a59dce04963a2acc3b2bc34e6cccde89
+--- /dev/null
++++ b/tests/test_f2p_shared_generation.py
+@@ -0,0 +1,428 @@
++"""Independent structural obligations exercised through real public dict factories.
++
++No private class, method, module, argument, or generated identifier is prescribed.
++The oracle is the observed ownership/dataflow of each shared responsibility plus
++the public hook's behavior. Probe edits exist only in process memory.
++"""
++
++import ast
++from dataclasses import make_dataclass
++import inspect
++import linecache
++from typing import Generic, TypeVar
++
++from attrs import define, fields
++from typing_extensions import TypedDict
++
++from cattrs import Converter
++from cattrs.errors import AttributeValidationNote, ClassValidationError, ForbiddenExtraKeysError
++from cattrs.gen import (
++    make_dict_structure_fn, make_dict_structure_fn_from_attrs,
++    make_dict_unstructure_fn, make_dict_unstructure_fn_from_attrs, override,
++)
++from cattrs.gen.typeddicts import make_dict_structure_fn as td_structure
++from cattrs.gen.typeddicts import make_dict_unstructure_fn as td_unstructure
++from tests.f2p_support.provenance import (
++    Trace, common, contains_code, emitted_common, patch_emitter,
++)
++
++
++@define
++class Record:
++    value: int
++    other: int = 2
++
++
++class MappingRecord(TypedDict):
++    value: int
++    other: int
++
++
++T = TypeVar("T")
++
++
++@define
++class GenericRecord(Generic[T]):
++    value: T
++
++
++class GenericMapping(TypedDict, Generic[T]):
++    value: T
++
++
++def convert_value(value, _):
++    return int(value) + 10
++
++
++def unconvert_value(value):
++    return value + 20
++
++
++def factories(operation="structure", detailed=True, linecache_enabled=True, forbid=False,
++              all_entries=False, struct_hook=convert_value, wire_name="wire"):
++    opts = {"_cattrs_use_linecache": linecache_enabled,
++            "value": override(rename=wire_name, struct_hook=struct_hook,
++                              unstruct_hook=unconvert_value)}
++    if operation == "structure":
++        opts.update(_cattrs_detailed_validation=detailed, _cattrs_forbid_extra_keys=forbid)
++        a_factory, td_factory, fields_factory = make_dict_structure_fn, td_structure, make_dict_structure_fn_from_attrs
++    else:
++        a_factory, td_factory, fields_factory = make_dict_unstructure_fn, td_unstructure, make_dict_unstructure_fn_from_attrs
++    makers = [lambda: a_factory(Record, Converter(), **opts),
++              lambda: td_factory(MappingRecord, Converter(), **opts)]
++    if all_entries:
++        dc = make_dataclass("DataclassRecord", [("value", int), ("other", int)])
++        makers.extend([lambda: a_factory(dc, Converter(), **opts),
++                       lambda: fields_factory(list(fields(Record)), Record, Converter(), **opts)])
++    return makers
++
++
++def observe(makers):
++    return [Trace().run(m) for m in makers]
++
++
++def assert_values(traces, operation="structure"):
++    for t in traces:
++        if operation == "structure":
++            result = t.hook({"wire": "3", "other": "4"}, None)
++            actual = result if isinstance(result, dict) else {"value": result.value, "other": result.other}
++            assert actual == {"value": 13, "other": 4}
++        else:
++            assert t.hook(Record(3, 4) if t is traces[0] else {"value": 3, "other": 4}) == {"wire": 23, "other": 4}
++
++
++def errors(hook, payload):
++    try:
++        hook(payload, None)
++    except ClassValidationError as exc:
++        return list(exc.exceptions)
++    raise AssertionError("Expected a ClassValidationError containing actual field failures")
++
++
++def field_handler(trace):
++    return next(n for n in ast.walk(trace.tree) if isinstance(n, ast.ExceptHandler)
++                and any(isinstance(x, ast.Attribute) and x.attr == "__notes__" for x in ast.walk(n)))
++
++
++def collect_statement(trace):
++    handler = field_handler(trace)
++    return next(n for n in ast.walk(handler) if isinstance(n, ast.Expr)
++                and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Attribute)
++                and n.value.func.attr == "append" and len(n.value.args) == 1
++                and isinstance(n.value.args[0], ast.Name) and n.value.args[0].id == handler.name)
++
++
++def aggregate_call(trace):
++    for call in trace.call_nodes(ClassValidationError):
++        if len(call.args) >= 2 and isinstance(call.args[1], ast.Name):
++            return call
++    raise AssertionError("No ClassValidationError uses the collected field-error variable")
++
++
++def test_common_source_assembly_consumes_family_bodies():
++    """Both distinct bodies acquire their final function header in shared code."""
++    traces = observe(factories("unstructure"))
++    owners = []
++    for t in traces:
++        header = t.compilation.source.splitlines()[0]
++        owners.append(t.emission_owners([header]))
++    common([t.emission_owners([t.compilation.source]) for t in traces],
++           "joining the actual header and family body into compiler input")
++    common(owners, "assembly of the final source header and family-specific body")
++    assert_values(traces, "unstructure")
++
++
++def test_public_entries_delegate_dynamic_compilation():
++    """Class, dataclass, from_attrs and TypedDict entry points share compilation."""
++    makers = factories(all_entries=True)
++    traces = observe(makers)
++    owner, = common([{t.compilation.stack[0].code} for t in traces],
++                    "dynamic compilation of the returned hook")
++    assert_values(traces)
++
++    class CompileProbe(Exception):
++        pass
++
++    sentinel = CompileProbe("public generation reached the shared compiler")
++
++    def stop_at_owner(stack, source, filename):
++        if stack[0].code is owner:
++            raise sentinel
++
++    for make in makers:
++        try:
++            Trace().run(make, before_compile=stop_at_owner)
++        except CompileProbe as exc:
++            assert exc is sentinel
++        else:
++            raise AssertionError("The public entry bypassed its observed shared compiler")
++
++
++def test_shared_binding_namespace_executes_bound_field_hook():
++    """The shared executor consumes the namespace that binds the effective hook."""
++    makers = factories("unstructure")
++    traces = observe(makers)
++    owners = []
++    for t in traces:
++        bound = [e for e in t.executions
++                 if e.namespace is t.hook.__globals__
++                 and e.code is t.compilation.code
++                 and contains_code(e.code, t.hook.__code__)
++                 and unconvert_value in e.namespace.values()]
++        assert bound, "The overridden handler must flow through the actual execution namespace"
++        owners.append({e.stack[0].code for e in bound})
++    owner, = common(owners, "execution using the hook's bound namespace")
++    assert_values(traces, "unstructure")
++
++    # Change only the namespace at this executor, BEFORE it evaluates the hook
++    # definition. Generated default arguments can then capture this exact spy.
++    for make, payload in zip(makers, (Record(3, 4), {"value": 3, "other": 4})):
++        calls = []
++        namespaces = []
++
++        def bound_spy(value):
++            frame = inspect.currentframe().f_back
++            callers = []
++            while frame is not None:
++                callers.append(frame.f_code)
++                frame = frame.f_back
++            calls.append((value, callers))
++            return value + 100
++
++        def replace_binding(stack, code, namespace):
++            if stack[0].code is owner and unconvert_value in namespace.values():
++                namespaces.append(namespace)
++                for name, value in list(namespace.items()):
++                    if value is unconvert_value:
++                        namespace[name] = bound_spy
++
++        observed = Trace().run(make, before_execute=replace_binding)
++        assert any(ns is observed.hook.__globals__ for ns in namespaces)
++        assert observed.hook(payload) == {"wire": 103, "other": 4}
++        assert len(calls) == 1 and calls[0][0] == 3
++        assert observed.hook.__code__ in calls[0][1]
++
++
++def test_shared_finalizer_attaches_effective_overrides():
++    """The exact returned hooks acquire overrides inside the common finalizer."""
++    traces = observe(factories())
++    common([t.attachment_owners() for t in traces],
++           "attaching effective overrides to the returned hook")
++    for t in traces:
++        assert t.hook.overrides == {"value": override(rename="wire", struct_hook=convert_value,
++                                                      unstruct_hook=unconvert_value)}
++    assert_values(traces)
++
++
++def test_generic_hook_name_is_formed_by_shared_generation(monkeypatch):
++    """The actual generic hook identifier originates in common naming code."""
++    makers = [lambda: make_dict_structure_fn(GenericRecord[int], Converter()),
++              lambda: td_structure(GenericMapping[int], Converter())]
++    traces = observe(makers)
++    owners = []
++    for t in traces:
++        name = t.hook.__name__
++        owners.append(t.name_owners())
++        assert t.hook({"value": "7"}, None) in (GenericRecord(7), {"value": 7})
++    owner = next(iter(common(owners, "forming the identifier used for the generic generated hook")))
++    names = {t.hook.__name__: t.hook.__name__ + "_f2p_name" for t in traces}
++    with monkeypatch.context() as patch:
++        patch_emitter(patch, owner, names)
++        for make, trace in zip(makers, traces):
++            hook = make()
++            assert hook.__name__ == names[trace.hook.__name__]
++            assert hook({"value": "7"}, None) in (GenericRecord(7), {"value": 7})
++
++
++def test_shared_source_registration_uses_actual_compiled_lines():
++    """Registration is delegated from common code using this hook's source."""
++    traces = observe(factories())
++    owners = []
++    for t in traces:
++        filename = t.hook.__code__.co_filename
++        source = t.compilation.source
++        owners.append(t.registration_owners())
++        assert "\n".join(linecache.cache[filename][2]) == source
++    common(owners, "handing the actual compiled source to traceback registration")
++
++
++def test_shared_field_wrapper_collects_the_caught_exception(monkeypatch):
++    """A probe to common emission changes the same field accumulator later raised."""
++    sentinel = ValueError("the original field exception")
++
++    def failing_field(value, type_):
++        raise sentinel
++
++    makers = factories(struct_hook=failing_field)
++    traces = observe(makers)
++    snippets = []
++    for t in traces:
++        statement = collect_statement(t)
++        collector = statement.value.func.value
++        assert isinstance(collector, ast.Name)
++        assert aggregate_call(t).args[1].id == collector.id
++        snippets.append([t.segment(statement)])
++        caught = errors(t.hook, {"wire": "bad", "other": "bad"})
++        assert len(caught) == 2 and caught[0] is sentinel
++    owner = next(iter(emitted_common(traces, snippets, "collecting each caught field exception")))
++    with monkeypatch.context() as patch:
++        # Duplicating one collected exception is observable in the actual aggregate.
++        patch_emitter(patch, owner, {parts[0]: parts[0] + "; " + parts[0] for parts in snippets})
++        for make in makers:
++            caught = errors(make(), {"wire": "bad", "other": "bad"})
++            assert len(caught) == 4
++            assert caught[0] is caught[1] is sentinel
++            assert caught[2] is caught[3]
++
++
++def test_shared_note_emission_annotates_the_actual_failure(monkeypatch):
++    """The common note constructor supplies annotations on the propagated errors."""
++    raised = []
++
++    def failing_field(value, type_):
++        failure = ValueError("annotated original")
++        failure.__notes__ = ["original note"]
++        raised.append(failure)
++        raise failure
++
++    makers = factories(struct_hook=failing_field)
++    traces = observe(makers)
++    snippets = []
++    for t in traces:
++        notes = t.call_nodes(AttributeValidationNote)
++        assert notes
++        snippets.append([t.segment(notes[0])])
++        failure = errors(t.hook, {"wire": "bad", "other": 2})[0]
++        assert failure is raised[-1]
++        assert failure.__notes__[0] == "original note"
++        assert any(isinstance(n, AttributeValidationNote) and n.name == "value"
++                   and n.type is int for n in failure.__notes__)
++    owner = next(iter(emitted_common(traces, snippets, "annotating caught field errors")))
++    with monkeypatch.context() as patch:
++        patch_emitter(patch, owner, " @ attribute ", " [F2P-note] @ attribute ")
++        for make in makers:
++            failure = errors(make(), {"wire": "bad", "other": 2})[0]
++            assert failure is raised[-1]
++            assert failure.__notes__[0] == "original note"
++            assert any("[F2P-note]" in n for n in failure.__notes__)
++
++
++def test_shared_aggregate_wrapper_uses_the_collected_errors(monkeypatch):
++    """The shared error expression receives the real accumulator, not unrelated state."""
++    raised = []
++
++    def failing_field(value, type_):
++        failure = ValueError("original aggregate member")
++        raised.append(failure)
++        raise failure
++
++    makers = factories(struct_hook=failing_field)
++    traces = observe(makers)
++    snippets = []
++    for t in traces:
++        call = aggregate_call(t)
++        statement = collect_statement(t)
++        assert call.args[1].id == statement.value.func.value.id
++        snippets.append([t.segment(call)])
++    owner = next(iter(emitted_common(traces, snippets, "wrapping the actual field-error accumulator")))
++    with monkeypatch.context() as patch:
++        patch_emitter(patch, owner, "While structuring ", "F2P aggregate for ")
++        for make in makers:
++            try:
++                make()({"wire": "bad", "other": "bad"}, None)
++            except ClassValidationError as exc:
++                assert exc.message.startswith("F2P aggregate for ")
++                assert len(exc.exceptions) == 2
++                assert exc.exceptions[0] is raised[-1]
++            else:
++                raise AssertionError("The aggregate must propagate both field failures")
++
++
++def extra_parts(trace, detailed):
++    call = trace.call_nodes(ForbiddenExtraKeysError)[0]
++    unknown = call.args[-1]
++    assert isinstance(unknown, ast.Name)
++    assignment = next(n for n in ast.walk(trace.tree) if isinstance(n, ast.Assign)
++                      and any(isinstance(t, ast.Name) and t.id == unknown.id for t in n.targets))
++    if detailed:
++        action = next(n for n in ast.walk(trace.tree) if isinstance(n, ast.Call)
++                      and isinstance(n.func, ast.Attribute) and n.func.attr == "append"
++                      and call in n.args)
++        assert isinstance(action.func.value, ast.Name)
++        assert action.func.value.id == aggregate_call(trace).args[1].id
++    else:
++        action = next(n for n in ast.walk(trace.tree) if isinstance(n, ast.Raise) and n.exc is call)
++    call_text = trace.segment(call)
++    message_text = trace.segment(call.args[0])
++    # Derive the actual literal spelling; quotes in generated source are free.
++    probe = call_text.replace(message_text, repr("F2P-extra-detail" if detailed else "F2P-extra-fast"), 1)
++    return [trace.segment(assignment), trace.segment(action)], call_text, probe
++
++
++def test_shared_extra_key_error_joins_detailed_failures(monkeypatch):
++    """Shared emitters connect unknown-key computation to detailed aggregation."""
++    makers = factories(forbid=True)
++    traces = observe(makers)
++    parts = [extra_parts(t, True) for t in traces]
++    owner = next(iter(emitted_common(traces, [p[0] for p in parts],
++                                    "computing unknown keys and appending their detailed error")))
++    for t in traces:
++        failure = errors(t.hook, {"wire": "bad", "other": 2, "alien": 3})
++        assert len(failure) == 2
++        assert isinstance(failure[-1], ForbiddenExtraKeysError)
++        assert failure[-1].extra_fields == {"alien"}
++    # Change the matched-key state through the public override. The same
++    # observed emitter must consume that change in its error-producing hook;
++    # no particular container or generated binding name is required.
++    renamed = observe(factories(forbid=True, wire_name="fresh"))
++    renamed_parts = [extra_parts(t, True) for t in renamed]
++    assert owner in emitted_common(renamed, [p[0] for p in renamed_parts],
++                                   "detailed unknown-key handling after changing the matched key")
++    for trace in renamed:
++        failure = errors(trace.hook, {"fresh": "3", "other": 2, "wire": 3, "alien": 4})
++        assert len(failure) == 1
++        assert failure[0].extra_fields == {"wire", "alien"}
++    with monkeypatch.context() as patch:
++        patch_emitter(patch, owner, {p[1]: p[2] for p in parts})
++        for make in makers:
++            failure = errors(make(), {"wire": "bad", "other": 2, "alien": 3})
++            assert failure[-1].args[0] == "F2P-extra-detail"
++
++
++def test_shared_extra_key_fast_error_preserves_precedence(monkeypatch):
++    """Fast-mode common emission raises its own error before class construction."""
++    makers = factories(detailed=False, forbid=True)
++    traces = observe(makers)
++    parts = [extra_parts(t, False) for t in traces]
++    owner = next(iter(emitted_common(traces, [p[0] for p in parts],
++                                    "computing unknown keys and raising the fast-mode error")))
++    # The class constructor's required conversion runs after its extra-key check;
++    # TypedDict required conversion runs before that check. Preserve both orders.
++    for trace, expected in zip(traces, (ForbiddenExtraKeysError, ValueError)):
++        try:
++            trace.hook({"wire": "bad", "other": 2, "alien": 3}, None)
++        except Exception as exc:
++            assert type(exc) is expected
++        else:
++            raise AssertionError("The first fast-mode failure must propagate")
++    renamed = observe(factories(detailed=False, forbid=True, wire_name="fresh"))
++    renamed_parts = [extra_parts(t, False) for t in renamed]
++    assert owner in emitted_common(renamed, [p[0] for p in renamed_parts],
++                                   "fast unknown-key handling after changing the matched key")
++    for trace in renamed:
++        try:
++            trace.hook({"fresh": "3", "other": 2, "wire": 3, "alien": 4}, None)
++        except ForbiddenExtraKeysError as exc:
++            assert exc.extra_fields == {"wire", "alien"}
++        else:
++            raise AssertionError("The direct error must use its own matched-key state")
++    with monkeypatch.context() as patch:
++        patch_emitter(patch, owner, {p[1]: p[2] for p in parts})
++        for make in makers:
++            try:
++                make()({"wire": "3", "other": 2, "alien": 3}, None)
++            except ForbiddenExtraKeysError as exc:
++                assert exc.extra_fields == {"alien"}
++                assert exc.args[0] == "F2P-extra-fast"
++            else:
++                raise AssertionError("Fast-mode extra keys must raise directly")
+diff --git a/tests/test_p2p_dict_contract.py b/tests/test_p2p_dict_contract.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..855cf8576d5e9d2e566b5dd179d29860b570fa03
+--- /dev/null
++++ b/tests/test_p2p_dict_contract.py
+@@ -0,0 +1,350 @@
++"""Baseline regressions for public dict-hook generation contracts."""
++
++from dataclasses import dataclass, field as dc_field
++from inspect import Parameter, signature
++import linecache
++import traceback
++from typing import Annotated, Generic, TypeVar
++
++from attrs import Factory, define, field, fields
++import pytest
++from typing_extensions import NotRequired, Required, TypedDict
++
++from cattrs import BaseConverter, Converter
++from cattrs.errors import AttributeValidationNote, ClassValidationError, ForbiddenExtraKeysError
++from cattrs.gen import (
++    AttributeOverride, make_dict_structure_fn, make_dict_structure_fn_from_attrs,
++    make_dict_unstructure_fn, make_dict_unstructure_fn_from_attrs, override,
++)
++from cattrs.gen.typeddicts import make_dict_structure_fn as td_structure
++from cattrs.gen.typeddicts import make_dict_unstructure_fn as td_unstructure
++
++
++_REQUIRED = Parameter.empty
++_UNSTRUCT = [("_cattrs_omit_if_default", False), ("_cattrs_use_linecache", True),
++             ("_cattrs_use_alias", "from_converter"), ("_cattrs_include_init_false", False)]
++_STRUCT = [("_cattrs_forbid_extra_keys", "from_converter"), ("_cattrs_use_linecache", True),
++           ("_cattrs_prefer_attrib_converters", "from_converter"),
++           ("_cattrs_detailed_validation", "from_converter"),
++           ("_cattrs_use_alias", "from_converter"), ("_cattrs_include_init_false", False)]
++_HEAD = [("cl", _REQUIRED), ("converter", _REQUIRED)]
++_FROM_HEAD = [("attrs", _REQUIRED), *_HEAD, ("typevar_map", {})]
++
++
++@pytest.mark.parametrize("factory,expected", [
++    (make_dict_unstructure_fn_from_attrs, _FROM_HEAD + _UNSTRUCT),
++    (make_dict_structure_fn_from_attrs, _FROM_HEAD + _STRUCT),
++    (make_dict_unstructure_fn, _HEAD + _UNSTRUCT),
++    (make_dict_structure_fn, _HEAD + _STRUCT),
++    (td_unstructure, _HEAD + [("_cattrs_use_linecache", True)]),
++    (td_structure, _HEAD + _STRUCT[:2] + [("_cattrs_detailed_validation", "from_converter")]),
++], ids=["attrs_fields_unstructure", "attrs_fields_structure", "class_unstructure",
++        "class_structure", "typeddict_unstructure", "typeddict_structure"])
++def test_public_factory_parameters(factory, expected):
++    params = list(signature(factory).parameters.values())
++    assert [(p.name, p.default) for p in params[:-1]] == expected
++    assert all(p.kind is Parameter.POSITIONAL_OR_KEYWORD for p in params[:-1])
++    assert params[-1].name == "kwargs"
++    assert params[-1].kind is Parameter.VAR_KEYWORD
++
++
++def test_public_override_value_contract():
++    names = ["omit_if_default", "rename", "omit", "struct_hook", "unstruct_hook"]
++    for factory in (AttributeOverride, override):
++        params = list(signature(factory).parameters.values())
++        assert [p.name for p in params] == names
++        assert all(p.default is None for p in params)
++        assert all(p.kind is Parameter.POSITIONAL_OR_KEYWORD for p in params)
++    struct = lambda value, _: int(value)
++    unstruct = str
++    result = override(True, "wire", False, struct, unstruct)
++    assert type(result) is AttributeOverride
++    assert result == AttributeOverride(True, "wire", False, struct, unstruct)
++    assert [getattr(override(), name) for name in names] == [None] * 5
++
++
++@pytest.fixture(params=["attrs", "dataclass", "attrs_fields", "typeddict"])
++def family(request):
++    if request.param == "typeddict":
++        class Record(TypedDict):
++            count: Annotated[int, override(rename="wire_count")]
++            spare: int
++        return Record, td_structure, td_unstructure, "typeddict"
++
++    class Record:
++        count: Annotated[int, override(rename="wire_count")]
++        spare: int
++    Record = dataclass(Record) if request.param == "dataclass" else define(Record)
++    if request.param == "attrs_fields":
++        def structure(cl, converter, **kwargs):
++            return make_dict_structure_fn_from_attrs(list(fields(cl)), cl, converter, **kwargs)
++        def unstructure(cl, converter, **kwargs):
++            return make_dict_unstructure_fn_from_attrs(list(fields(cl)), cl, converter, **kwargs)
++        return Record, structure, unstructure, "class"
++    return Record, make_dict_structure_fn, make_dict_unstructure_fn, "class"
++
++
++def _instance(cl, kind, count=3, spare=7):
++    return {"count": count, "spare": spare} if kind == "typeddict" else cl(count, spare)
++
++
++@pytest.mark.parametrize("operation", ["structure", "unstructure"])
++def test_linecache_registration_collision_and_traceback(family, operation, monkeypatch):
++    cl, structure, unstructure, kind = family
++    converter = Converter(detailed_validation=False)
++    factory = structure if operation == "structure" else unstructure
++    monkeypatch.setattr(linecache, "cache", {})
++    first = factory(cl, converter)
++    filename = first.__code__.co_filename
++    source = linecache.getlines(filename)
++    assert source
++    snapshot = dict(linecache.cache)
++    duplicate = factory(cl, converter)
++    assert duplicate.__code__.co_filename == filename
++    assert linecache.cache == snapshot
++
++    def fail(*args):
++        raise ValueError("p2p source lookup sentinel")
++    replacement = override(rename="different_key", **{
++        "struct_hook" if operation == "structure" else "unstruct_hook": fail
++    })
++    changed = factory(cl, converter, count=replacement)
++    changed_filename = changed.__code__.co_filename
++    assert changed_filename != filename
++    assert linecache.getlines(filename) == source
++    assert linecache.getlines(changed_filename)
++    with pytest.raises(ValueError, match="p2p source lookup sentinel") as exc:
++        if operation == "structure":
++            changed({"different_key": 3, "spare": 7}, cl)
++        else:
++            changed(_instance(cl, kind))
++    frame = next(f for f in traceback.extract_tb(exc.value.__traceback__)
++                 if f.filename == changed_filename)
++    assert frame.line
++    assert frame.line == linecache.getline(changed_filename, frame.lineno).strip()
++    assert "different_key" in frame.line
++
++
++@pytest.mark.parametrize("operation", ["structure", "unstructure"])
++def test_linecache_disabled_has_no_registration(family, operation, monkeypatch):
++    cl, structure, unstructure, kind = family
++    converter = Converter()
++    monkeypatch.setattr(linecache, "cache", {})
++    hook = (structure if operation == "structure" else unstructure)(
++        cl, converter, _cattrs_use_linecache=False
++    )
++    assert hook.__code__.co_filename not in linecache.cache
++    assert not linecache.cache
++    if operation == "structure":
++        assert hook({"wire_count": "3", "spare": "7"}, cl) == _instance(cl, kind)
++    else:
++        assert hook(_instance(cl, kind)) == {"wire_count": 3, "spare": 7}
++    assert not linecache.cache
++
++
++def test_effective_overrides_regenerate_both_hooks(family):
++    cl, structure, unstructure, kind = family
++    converter = Converter()
++    expected = {"count": override(rename="wire_count"), "spare": override(rename="wire_spare")}
++    first_s = structure(cl, converter, spare=expected["spare"])
++    first_u = unstructure(cl, converter, spare=expected["spare"])
++    assert first_s.overrides == first_u.overrides == expected
++    second_s = structure(cl, converter, **first_s.overrides)
++    second_u = unstructure(cl, converter, **first_u.overrides)
++    raw = {"wire_count": "3", "wire_spare": "7"}
++    value = _instance(cl, kind)
++    assert first_s(raw, cl) == second_s(raw, cl) == value
++    assert first_u(value) == second_u(value) == {"wire_count": 3, "wire_spare": 7}
++
++
++def test_detailed_validation_aggregates_and_preserves_notes(family):
++    cl, structure, _, kind = family
++
++    def fail(value, _):
++        exc = ValueError(f"bad value: {value}")
++        exc.add_note("upstream diagnostic")
++        raise exc
++
++    hook = structure(cl, Converter(), _cattrs_forbid_extra_keys=True,
++                     count=override(rename="wire_count", struct_hook=fail),
++                     spare=override(struct_hook=fail))
++    with pytest.raises(ClassValidationError) as ctx:
++        hook({"wire_count": "first", "spare": "second", "unexpected": 1}, cl)
++    error = ctx.value
++    assert error.cl is cl
++    assert error.message == f"While structuring {cl.__name__}"
++    assert len(error.exceptions) == 3
++    for name, value, child in zip(("count", "spare"), ("first", "second"), error.exceptions[:2]):
++        assert type(child) is ValueError
++        assert str(child) == f"bad value: {value}"
++        assert len(child.__notes__) == 2
++        assert child.__notes__[0] == "upstream diagnostic"
++        note = child.__notes__[1]
++        assert type(note) is AttributeValidationNote
++        assert str(note) == f"Structuring {kind} {cl.__qualname__} @ attribute {name}"
++        assert note.name == name
++        expected_type = Annotated[int, override(rename="wire_count")] if name == "count" else int
++        assert note.type == expected_type
++    extra = error.exceptions[2]
++    assert type(extra) is ForbiddenExtraKeysError
++    assert extra.cl is cl
++    assert extra.extra_fields == {"unexpected"}
++
++
++@pytest.mark.parametrize("detailed", [True, False])
++def test_typeddict_optional_transforms_copy_and_extra_keys(detailed):
++    class Payload(TypedDict, total=False):
++        required: Required[int]
++        optional: NotRequired[int]
++        omitted: NotRequired[int]
++
++    converter = Converter(detailed_validation=detailed)
++    identity_hook = td_unstructure(Payload, converter)
++    original = {"required": 5}
++    assert identity_hook(original) is original
++    overrides = {"required": override(rename="wire_required"),
++                 "optional": override(rename="wire_optional", unstruct_hook=str),
++                 "omitted": override(omit=True)}
++    unstructure = td_unstructure(Payload, converter, **overrides)
++    structure = td_structure(Payload, converter, _cattrs_forbid_extra_keys=True, **overrides)
++    for optional in ({}, {"optional": 6}):
++        value = {"required": 5, "omitted": 9, **optional}
++        before = dict(value)
++        raw = unstructure(value)
++        expected = {"wire_required": 5, **({"wire_optional": "6"} if optional else {})}
++        assert raw == expected
++        assert raw is not value
++        assert value == before
++        restored = structure(raw, Payload)
++        assert restored == {"required": 5, **optional}
++        assert restored is not raw
++        assert raw == expected
++        bad = {**raw, "stray": 11}
++        with pytest.raises(ClassValidationError if detailed else ForbiddenExtraKeysError) as ctx:
++            structure(bad, Payload)
++        if detailed:
++            assert len(ctx.value.exceptions) == 1
++            error = ctx.value.exceptions[0]
++        else:
++            error = ctx.value
++        assert type(error) is ForbiddenExtraKeysError
++        assert error.extra_fields == {"stray"}
++        assert error.cl is Payload
++        assert bad == {**expected, "stray": 11}
++
++
++@pytest.mark.parametrize("value", [1, [1], None], ids=["int", "list", "none"])
++def test_typeddict_nonmapping_error_text_and_wrapping(value):
++    class Payload(TypedDict):
++        count: int
++    hook = td_structure(Payload, Converter(detailed_validation=True))
++    with pytest.raises(ClassValidationError) as ctx:
++        hook(value, Payload)
++    assert ctx.value.cl is Payload
++    assert ctx.value.message == "While structuring Payload"
++    assert len(ctx.value.exceptions) == 1
++    error = ctx.value.exceptions[0]
++    assert type(error) is TypeError
++    assert str(error) == f"expected a mapping, not {type(value).__name__}"
++
++
++@pytest.mark.parametrize("converter", [BaseConverter(), Converter(use_alias=False), Converter(use_alias=True)],
++                         ids=["base_fallback", "converter_false", "converter_true"])
++def test_alias_setting_default_and_explicit_override(converter):
++    @define
++    class Item:
++        stored: int = field(alias="wire")
++    default_key = "wire" if getattr(converter, "use_alias", False) else "stored"
++    assert make_dict_unstructure_fn(Item, converter)(Item(4)) == {default_key: 4}
++    assert make_dict_structure_fn(Item, converter)({default_key: "4"}, Item) == Item(4)
++    for enabled, key in ((True, "wire"), (False, "stored")):
++        assert make_dict_unstructure_fn(Item, converter, _cattrs_use_alias=enabled)(Item(4)) == {key: 4}
++        assert make_dict_structure_fn(Item, converter, _cattrs_use_alias=enabled)({key: "4"}, Item) == Item(4)
++
++
++def test_converted_defaults_and_self_factory_omission():
++    @define
++    class Item:
++        base: int = 3
++        converted: int = field(default="4", converter=int)
++        values: list[int] = field(factory=list)
++        derived: int = field(default=Factory(lambda self: self.base + 1, takes_self=True))
++    hook = make_dict_unstructure_fn(Item, Converter(), _cattrs_omit_if_default=True,
++                                   base=override(omit_if_default=False))
++    assert hook(Item()) == {"base": 3}
++    assert hook(Item(base=8)) == {"base": 8}
++    assert hook(Item(converted=9, values=[1], derived=10)) == {
++        "base": 3, "converted": 9, "values": [1], "derived": 10
++    }
++
++    # Attribute converters also apply to the default used for omission.
++    # Check public results through both entry points, without inspecting bindings
++    # or how many times the converter runs while the hook is generated.
++    for from_attrs in (False, True):
++        calls = []
++
++        def convert(value):
++            calls.append(value)
++            return value + 1
++
++        @define
++        class Sequenced:
++            value: int = field(default=0, converter=convert)
++
++        omitted = Sequenced(0)
++        included = Sequenced(5)
++        calls.clear()
++        if from_attrs:
++            hook = make_dict_unstructure_fn_from_attrs(
++                list(fields(Sequenced)), Sequenced, Converter(), _cattrs_omit_if_default=True
++            )
++        else:
++            hook = make_dict_unstructure_fn(Sequenced, Converter(), _cattrs_omit_if_default=True)
++        generation_calls = list(calls)
++        assert generation_calls and all(value == 0 for value in generation_calls)
++        assert hook(omitted) == {}
++        assert hook(included) == {"value": 6}
++        assert hook(omitted) == {}
++        assert calls == generation_calls
++
++
++@pytest.mark.parametrize("detailed", [True, False])
++def test_dataclass_init_false_and_default_factory(detailed):
++    @dataclass
++    class Item:
++        count: int
++        values: list[int] = dc_field(default_factory=list)
++        cached: int = dc_field(default=12, init=False)
++    converter = Converter(detailed_validation=detailed)
++    item = Item(3)
++    item.cached = 19
++    assert make_dict_unstructure_fn(Item, converter)(item) == {"count": 3, "values": []}
++    unstructure = make_dict_unstructure_fn(Item, converter, _cattrs_include_init_false=True,
++                                         _cattrs_omit_if_default=True)
++    structure = make_dict_structure_fn(Item, converter, _cattrs_include_init_false=True)
++    assert unstructure(item) == {"count": 3, "cached": 19}
++    assert structure({"count": "3", "cached": "19"}, Item) == item
++    first = structure({"count": "3"}, Item)
++    second = structure({"count": "3"}, Item)
++    assert first.cached == 12
++    assert first.values == second.values == []
++    assert first.values is not second.values
++
++
++def test_from_attrs_subset_and_typevar_map():
++    value_type = TypeVar("value_type")
++    @define
++    class Box(Generic[value_type]):
++        value: value_type
++        ignored: int = 8
++    converter = Converter()
++    mapping = {"value_type": int}
++    selected = [fields(Box).value]
++    structure = make_dict_structure_fn_from_attrs(selected, Box, converter, typevar_map=mapping,
++                                                 value=override(rename="wire"))
++    unstructure = make_dict_unstructure_fn_from_attrs(selected, Box, converter, typevar_map=mapping,
++                                                     value=override(rename="wire"))
++    assert structure({"wire": "5"}, Box) == Box(5)
++    assert unstructure(Box(5, 99)) == {"wire": 5}
++    assert mapping == {"value_type": int}
++    assert selected == [fields(Box).value]
+diff --git a/tests/test_p2p_override_effects.py b/tests/test_p2p_override_effects.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e2b62a3b2e94b6419cb62a58dda4e2056eff040
+--- /dev/null
++++ b/tests/test_p2p_override_effects.py
+@@ -0,0 +1,97 @@
++import json, sys, linecache
++from pathlib import Path
++from dataclasses import dataclass, asdict, is_dataclass
++from typing import Annotated
++from attrs import define, field, fields, asdict as attrs_asdict, has
++from typing_extensions import TypedDict, NotRequired
++from cattrs import Converter
++from cattrs.gen import make_dict_structure_fn as st, make_dict_unstructure_fn as un, make_dict_structure_fn_from_attrs as fst, make_dict_unstructure_fn_from_attrs as fun, override
++from cattrs.gen.typeddicts import make_dict_structure_fn as ts, make_dict_unstructure_fn as tu
++
++def norm(v):
++ if isinstance(v,dict):return {str(k):norm(x) for k,x in v.items()}
++ if isinstance(v,(list,tuple)):return [norm(x) for x in v]
++ if isinstance(v,(set,frozenset)):return sorted(map(str,v))
++ if isinstance(v,type):return v.__name__
++ if is_dataclass(v):return norm(asdict(v))
++ if has(type(v)):return norm(attrs_asdict(v))
++ if v is None or isinstance(v,(str,int,float,bool)):return v
++ return type(v).__name__
++def error(e):
++ out={'type':type(e).__name__,'message':getattr(e,'message',str(e))}
++ if hasattr(e,'exceptions'):out['children']=[error(x) for x in e.exceptions]
++ if hasattr(e,'__notes__'):out['notes']=[{'text':str(n),'kind':type(n).__name__,'field':getattr(n,'name',None)} for n in e.__notes__]
++ if hasattr(e,'extra_fields'):out['extra_fields']=norm(e.extra_fields)
++ return out
++def observe(f):
++ try:return {'value':norm(f())}
++ except Exception as e:return {'error':error(e)}
++
++def default_case(from_attrs,fail_on):
++ calls=[]
++ def converter(v):
++  calls.append(v)
++  if len(calls)==fail_on:raise ValueError('audit default conversion failure')
++  return len(calls)*10
++ @define
++ class DefaultRecord:
++  value:int=field(default=0,converter=converter)
++ gen=(lambda:fun(list(fields(DefaultRecord)),DefaultRecord,Converter(),_cattrs_omit_if_default=True)) if from_attrs else (lambda:un(DefaultRecord,Converter(),_cattrs_omit_if_default=True))
++ try:hook=gen()
++ except Exception as e:return {'generation_error':error(e),'calls':calls}
++ after=list(calls);outputs=[]
++ for v in [10,20,30]:
++  obj=object.__new__(DefaultRecord);object.__setattr__(obj,'value',v);outputs.append(observe(lambda:hook(obj)))
++ return {'generation_calls':after,'outputs':outputs,'final_calls':calls}
++@define
++class AttrRecord:
++ value:int
++ optional:int=5
++@dataclass
++class DataRecord:
++ value:int
++ optional:int=5
++class MappingRecord(TypedDict):
++ value:int
++ optional:NotRequired[int]
++class FalseHook:
++ def __bool__(self):return False
++ def __call__(self,v,t):return int(v)+100
++@define
++class HookRecord:
++ value:int
++ optional:int=5
++ cache:int=field(default=0,init=False)
++class AnnotatedRecord(TypedDict):
++ value:NotRequired[Annotated[int,override(rename='wire',omit=True)]]
++
++EXPECTED = json.loads('{"defaults": {"False/0": {"final_calls": [0, 0], "generation_calls": [0, 0], "outputs": [{"value": {"value": 10}}, {"value": {}}, {"value": {"value": 30}}]}, "False/1": {"calls": [0], "generation_error": {"message": "audit default conversion failure", "type": "ValueError"}}, "False/2": {"calls": [0, 0], "generation_error": {"message": "audit default conversion failure", "type": "ValueError"}}, "False/3": {"final_calls": [0, 0], "generation_calls": [0, 0], "outputs": [{"value": {"value": 10}}, {"value": {}}, {"value": {"value": 30}}]}, "True/0": {"final_calls": [0, 0], "generation_calls": [0, 0], "outputs": [{"value": {"value": 10}}, {"value": {}}, {"value": {"value": 30}}]}, "True/1": {"calls": [0], "generation_error": {"message": "audit default conversion failure", "type": "ValueError"}}, "True/2": {"calls": [0, 0], "generation_error": {"message": "audit default conversion failure", "type": "ValueError"}}, "True/3": {"final_calls": [0, 0], "generation_calls": [0, 0], "outputs": [{"value": {"value": 10}}, {"value": {}}, {"value": {"value": 30}}]}}, "false_hook": {"attrs/False/cache": {"value": {"cache": "4", "optional": 3, "value": 2}}, "attrs/False/optional": {"value": {"cache": 4, "optional": "3", "value": 2}}, "attrs/False/value": {"value": {"cache": 4, "optional": 3, "value": "2"}}, "attrs/True/cache": {"value": {"cache": 104, "optional": 3, "value": 2}}, "attrs/True/optional": {"value": {"cache": 4, "optional": "3", "value": 2}}, "attrs/True/value": {"value": {"cache": 4, "optional": 3, "value": "2"}}, "typeddict/False/optional": {"value": {"optional": 103, "value": 2}}, "typeddict/False/value": {"value": {"optional": 3, "value": 102}}, "typeddict/True/optional": {"value": {"optional": 103, "value": 2}}, "typeddict/True/value": {"value": {"optional": 3, "value": 102}}}, "annotated": {"False/{\'value\': \'2\'}": {"value": {"value": "2"}}, "False/{\'wire\': \'2\'}": {"value": {"value": 2}}, "False/{}": {"value": {}}, "True/{\'value\': \'2\'}": {"value": {"value": "2"}}, "True/{\'wire\': \'2\'}": {"value": {"wire": "2"}}, "True/{}": {"value": {}}}}')
++
++def test_converted_default_effects_preserved():
++    # A static default's attribute converter runs while the hook is generated; how
++    # many times it runs there is not part of the contract. The omission check uses
++    # the converted default produced during generation, the hook never calls the
++    # converter, and a failure on the converter's first call aborts generation.
++    for a in [False, True]:
++        assert default_case(a, 1) == EXPECTED['defaults'][f'{a}/1']
++        observed = default_case(a, 0)
++        generation = observed['generation_calls']
++        assert generation and all(v == 0 for v in generation)
++        assert observed['final_calls'] == generation
++        converted = len(generation) * 10
++        assert observed['outputs'] == [{'value': {} if v == converted else {'value': v}} for v in [10, 20, 30]]
++
++def test_false_valued_override_behavior_preserved():
++    actual = {}
++    for detailed in [False, True]:
++        for fam, cls, maker, flags in [('attrs', HookRecord, st, {'_cattrs_include_init_false': True}), ('typeddict', MappingRecord, ts, {})]:
++            for key in (['value', 'optional', 'cache'] if fam == 'attrs' else ['value', 'optional']):
++                actual[f'{fam}/{detailed}/{key}'] = observe(lambda: maker(cls, Converter(), _cattrs_detailed_validation=detailed, **flags, **{key: override(struct_hook=FalseHook())})({'value': '2', 'optional': '3', 'cache': '4'} if fam == 'attrs' else {'value': '2', 'optional': '3'}, cls))
++    assert actual == EXPECTED['false_hook']
++
++def test_nested_notrequired_annotated_behavior_preserved():
++    actual = {}
++    for detailed in [False, True]:
++        for payload in [{}, {'value': '2'}, {'wire': '2'}]:
++            actual[f'{detailed}/{payload}'] = observe(lambda: ts(AnnotatedRecord, Converter(), _cattrs_detailed_validation=detailed)(payload, AnnotatedRecord))
++    assert actual == EXPECTED['annotated']

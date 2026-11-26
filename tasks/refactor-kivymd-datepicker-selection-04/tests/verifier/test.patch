@@ -1,0 +1,5498 @@
+diff --git a/kivymd/tests/datepicker/_case33_boundary.py b/kivymd/tests/datepicker/_case33_boundary.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..53e72e2d9cd1354c3e30d83b9ce76337b3546c62
+--- /dev/null
++++ b/kivymd/tests/datepicker/_case33_boundary.py
+@@ -0,0 +1,38 @@
++"""Isolated public UI probe: no inherited Kivy App/Clock state from other tests."""
++import functools
++import json
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++
++@functools.lru_cache(maxsize=1)
++def observations():
++    here=Path(__file__).parent
++    expected=json.loads((here/"case33-baseline-ui.json").read_text())
++    with tempfile.TemporaryDirectory(prefix="case33-ui-") as temporary:
++        result=Path(temporary)/"observations.json"
++        try:
++            process=subprocess.run([sys.executable,str(here/"_case33_ui_probe.py"),str(result)],capture_output=True,text=True,timeout=180)
++        except subprocess.TimeoutExpired as error:
++            return {"__probe_error__":"isolated public UI probe timed out", "diagnostic":str(error.stderr)[-16000:]},expected
++        if process.returncode:
++            return {"__probe_error__":"isolated public UI probe failed", "exit_code":process.returncode, "diagnostic":process.stderr[-16000:]},expected
++        try:
++            actual=json.loads(result.read_text())
++        except (OSError,ValueError) as error:
++            actual={"__probe_error__":str(error)}
++    return actual,expected
++
++def check(category):
++    actual,expected=observations()
++    if "__probe_error__" in actual:
++        raise RuntimeError(str(actual))
++    if set(actual)!=set(expected):
++        raise RuntimeError("all69 baseline observations must be produced")
++    def selected(key):
++        if category=="direct":return key.startswith("direct")
++        if category=="row":return key.startswith("row/")
++        return not key.startswith(("direct","row/"))
++    differences={k:{"actual":actual[k],"expected":expected[k]} for k in expected if selected(k) and actual[k]!=expected[k]}
++    assert not differences,differences
+diff --git a/kivymd/tests/datepicker/_case33_ui_probe.py b/kivymd/tests/datepicker/_case33_ui_probe.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f3d51eb38bb0fda3c0ac2489cf54d49a715633db
+--- /dev/null
++++ b/kivymd/tests/datepicker/_case33_ui_probe.py
+@@ -0,0 +1,167 @@
++"""Independent observations of real Kivy widgets and the public event paths."""
++import datetime
++import json
++import os
++from pathlib import Path
++import sys
++import time
++
++sys.path.insert(0, os.getcwd())
++from kivy.animation import Animation
++from kivy.clock import Clock
++from kivy.input.motionevent import MotionEvent
++from kivymd.app import MDApp
++from kivymd.uix.boxlayout import MDBoxLayout
++from kivymd.uix.pickers import MDDockedDatePicker, MDModalDatePicker, MDModalInputDatePicker
++
++observed = {}
++
++def clean(p):
++    Animation.cancel_all(None)
++    for name in ('month_year_selection_layout','year_selection_layout'):
++        if name in p.ids: p.ids[name].data=[]
++    for w in (p,getattr(p,'_scrim',None)):
++        if w is not None and w.parent: w.parent.remove_widget(w)
++
++def settled():
++    return not Animation._instances
++
++def state(p, modal=False):
++    calendar=p.ids.calendar_layout
++    layout=p.ids['year_selection_layout' if modal else 'month_year_selection_layout']
++    container=p.ids['year_selection_items' if modal else 'month_selection_items']
++    return dict(display=[p.year,p.month],selected=[d.isoformat() for d in p.get_date()],label=p.set_text_full_date(),
++                rows=len(layout.data),row_values=[d.get('text',d.get('month_year_name')) for d in layout.data],
++                size=[round(x,4) for x in layout.size],calendar_disabled=calendar.disabled,
++                calendar_opacity=round(calendar.opacity,4),calendar_scale=[round(calendar.scale_value_x,4),round(calendar.scale_value_y,4)],
++                list_disabled=layout.disabled,list_scale=[round(layout.scale_value_x,4),round(layout.scale_value_y,4)],
++                rotation=round(container.ids.menu_selection_button.rotate_value_angle,4))
++
++def row_for(layout, year):
++    if not layout.children:return None
++    return next((w for w in layout.children[0].children if getattr(w,'text',None)==str(year) or getattr(w,'month_year_name',None)==str(year)),None)
++
++class Touch(MotionEvent):
++    def __init__(self,pos):
++        super().__init__('audit','audit',{},is_touch=True)
++        self.x,self.y=pos;self.pos=pos
++
++def plan():
++    # Direct-show deliberately omits list generation, including an already
++    # populated year list. This is a public API separate from the toggle event.
++    for populated in (False,True):
++        p=MDDockedDatePicker(year=2024,month=6,day=10,min_year=2020,max_year=2026)
++        p.open();yield settled
++        if populated:p.generate_menu_month_year_selection('year')
++        observed[f'direct/{populated}/before']=state(p)
++        p.open_close_menu_month_year_selection(state=True,menu_type='month');yield settled
++        observed[f'direct/{populated}/show']=state(p)
++        for i in range(2):
++            p.ids.month_selection_items.dispatch('on_open_menu');yield settled
++            observed[f'direct/{populated}/toggle{i}']=state(p)
++        clean(p)
++
++    for populated in (False,True):
++        p=MDModalDatePicker(year=2024,month=6,day=10,min_year=2020,max_year=2026)
++        p.open();yield settled
++        if populated:p.generate_list_widgets_years()
++        observed[f'direct-modal/{populated}/before']=state(p,True)
++        for i in range(2):
++            p.open_menu_year_selection();yield settled
++            observed[f'direct-modal/{populated}/toggle{i}']=state(p,True)
++        clean(p)
++
++    # Preserve the asymmetric legacy selectable flag. Use actual rendered
++    # rows and parent selection machinery, not a mocked widget implementation.
++    for cls,modal in ((MDDockedDatePicker,False),(MDModalDatePicker,True)):
++        for selectable in (False,True):
++            p=cls(year=2024,month=6,day=10,min_year=2020,max_year=2026)
++            p.open();yield settled
++            p.update_calendar(2030,9)
++            p.ids.year_selection_items.dispatch('on_open_menu')
++            layout=p.ids['year_selection_layout' if modal else 'month_year_selection_layout']
++            yield lambda: settled() and row_for(layout,2021) is not None
++            row=row_for(layout,2021);row.selectable=selectable
++            events=[];p.bind(on_select_year=lambda instance,year:events.append(year))
++            returned=row.on_touch_down(Touch(row.center))
++            observed[f'row/{modal}/{selectable}']=dict(display=[p.year,p.month],events=events[:],selected=row.selected,
++                                                      data_selected=layout.data[row.index].get('selected',False),return_value=returned)
++            clean(p)
++
++    # Boundary month navigation and labels retain the selected date as their
++    # original source even when the displayed calendar moves elsewhere.
++    for cls,modal in ((MDDockedDatePicker,False),(MDModalDatePicker,True)):
++        p=cls(year=2024,month=6,day=10);p.open();yield settled
++        for y,m in ((1,1),(1914,1),(2000,2),(2023,12),(2024,2),(2121,12)):
++            for operation in ('next','prev','unexpected'):
++                p.update_calendar(y,m);events=[]
++                def got(instance,month):events.append(month)
++                p.bind(on_select_month=got)
++                p.change_month(operation)
++                p.unbind(on_select_month=got)
++                observed[f'navigation/{modal}/{y}/{m}/{operation}']=dict(display=[p.year,p.month],events=events,
++                    selected=[d.isoformat() for d in p.get_date()],label=p.set_text_full_date())
++        clean(p)
++
++    # The entrypoint and registered events drive real asynchronous animations.
++    for cls,modal in ((MDDockedDatePicker,False),(MDModalDatePicker,True)):
++        p=cls(year=2024,month=12,day=15,min_year=2020,max_year=2026);p.open();yield settled
++        container=p.ids['year_selection_items' if modal else 'month_selection_items']
++        for i,op in enumerate(('next','prev')):
++            events=[]
++            def got(instance,month):events.append(month)
++            p.bind(on_select_month=got)
++            before=[p.year,p.month]
++            container.dispatch('on_release',op)
++            immediate=[p.year,p.month]
++            yield settled
++            observed[f'chevron/{modal}/{i}']=dict(before=before,immediate=immediate,after=[p.year,p.month],events=events[:],padding=list(p.ids.calendar_layout.padding),opacity=p.ids.calendar_layout.opacity)
++            p.unbind(on_select_month=got)
++        for i in range(4):
++            container.dispatch('on_open_menu');yield settled
++            observed[f'menu/{modal}/{i}']=state(p,modal)
++        clean(p)
++
++    # The unchanged input subclass must continue to parse each date format.
++    p=MDModalInputDatePicker(year=2024,month=6,day=10);p.open()
++    yield lambda: bool(p.ids.input_date_field.text) and settled()
++    for fmt,text,rendered in (('dd/mm/yyyy','29/02/2024','29/2/2024'),('mm/dd/yyyy','02/29/2024','2/29/2024'),('yyyy/mm/dd','2024/02/29','2024/2/29')):
++        p.date_format=fmt;p.ids.input_date_field.text='99/99/9999'
++        yield lambda: p.ids.input_date_field.error
++        p.ids.input_date_field.text=text
++        yield lambda: p.get_date()==[datetime.date(2024,2,29)] and not p.ids.input_date_field.error and p.get_current_date_from_format()==rendered
++        observed['input/'+fmt]=dict(dates=[d.isoformat() for d in p.get_date()],formatted=p.get_current_date_from_format(),label=p.set_text_full_date())
++    clean(p)
++
++class AuditApp(MDApp):
++    error=None
++    def build(self):return MDBoxLayout()
++    def on_start(self):
++        self.iterator=plan();self.wait=None;self.deadline=time.monotonic()+20
++        self.timer=Clock.schedule_interval(self.tick,.02)
++    def tick(self,*args):
++        try:
++            if self.wait is not None and not self.wait():
++                if time.monotonic()>self.deadline:raise TimeoutError('probe UI step did not settle')
++                return
++            self.wait=next(self.iterator);self.deadline=time.monotonic()+20
++        except StopIteration:
++            Clock.unschedule(self.timer);self.stop()
++        except BaseException as e:
++            self.error=e;Clock.unschedule(self.timer);self.stop()
++
++def collect():
++    observed.clear()
++    app=AuditApp()
++    app.run()
++    if app.error:raise app.error
++    return dict(observed)
++
++if __name__ == "__main__":
++    import faulthandler
++    faulthandler.dump_traceback_later(30, repeat=True, file=sys.__stderr__)
++    try:
++        result=collect()
++        Path(sys.argv[1]).write_text(json.dumps(result,sort_keys=True))
++    finally:
++        faulthandler.cancel_dump_traceback_later()
+diff --git a/kivymd/tests/datepicker/_f2p_selector_support.py b/kivymd/tests/datepicker/_f2p_selector_support.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5f78111b846ae63012ad4a07d4dab8ff35a208eb
+--- /dev/null
++++ b/kivymd/tests/datepicker/_f2p_selector_support.py
+@@ -0,0 +1,508 @@
++"""
++Shared probe helpers for the F2P month/year selection interaction selectors.
++
++Every F2P selector in this directory is collected by ``kivymd/tests/conftest.py``
++and executed as a standalone script.  The helpers below build the docked and
++modal pickers inside a live :class:`~kivymd.app.MDApp`, observe which code of
++``kivymd.uix.pickers.datepicker.datepicker`` is responsible for an interaction
++and report that observation.  Nothing here pins private helper names, inlining
++or any single implementation shape: a verified delegation chain is accepted as
++long as the interaction itself is carried by one shared implementation.
++"""
++
++import ast
++import hashlib
++import inspect
++import os
++import sys
++import textwrap
++import time
++from functools import lru_cache
++
++from kivy.animation import Animation
++from kivy.clock import Clock
++
++from kivymd.app import MDApp
++from kivymd.uix.boxlayout import MDBoxLayout
++from kivymd.uix.pickers.datepicker import datepicker as datepicker_module
++
++MODULE_FILE = datepicker_module.__file__
++
++#: Code that already lived in the frozen picker base on the baseline and was
++#: executed by both variant lines.  Finding it on both lines says nothing
++#: about the duplicated selection interaction having become shared.
++FROZEN_BASE_QUALNAMES = frozenset(
++    (
++        "MDBaseDatePicker.__init__",
++        "MDBaseDatePicker._get_date_range",
++        "MDBaseDatePicker._update_date_label_text",
++        "MDBaseDatePicker.change_month",
++        "MDBaseDatePicker.compare_date_range",
++        "MDBaseDatePicker.dismiss",
++        "MDBaseDatePicker.generate_list_widgets_days",
++        "MDBaseDatePicker.get_date",
++        "MDBaseDatePicker.on_cancel",
++        "MDBaseDatePicker.on_dismiss",
++        "MDBaseDatePicker.on_edit",
++        "MDBaseDatePicker.on_ok",
++        "MDBaseDatePicker.on_select_day",
++        "MDBaseDatePicker.on_select_month",
++        "MDBaseDatePicker.on_select_year",
++        "MDBaseDatePicker.on_touch_down",
++        "MDBaseDatePicker.open",
++        "MDBaseDatePicker.restore_calendar_layout_properties",
++        "MDBaseDatePicker.set_calendar_layout_properties",
++        "MDBaseDatePicker.set_selected_widget",
++        "MDBaseDatePicker.set_text_full_date",
++        "MDBaseDatePicker.update_calendar",
++    )
++)
++
++#: Full inventory of the baseline picker module.  Two lines that only meet on
++#: code that already existed there did not gain a shared implementation.
++FROZEN_MODULE_QUALNAMES = frozenset(
++    (
++        'MDBaseDatePicker.__init__',
++        'MDBaseDatePicker._get_date_range',
++        'MDBaseDatePicker._update_date_label_text',
++        'MDBaseDatePicker.change_month',
++        'MDBaseDatePicker.compare_date_range',
++        'MDBaseDatePicker.dismiss',
++        'MDBaseDatePicker.generate_list_widgets_days',
++        'MDBaseDatePicker.get_date',
++        'MDBaseDatePicker.on_cancel',
++        'MDBaseDatePicker.on_dismiss',
++        'MDBaseDatePicker.on_edit',
++        'MDBaseDatePicker.on_ok',
++        'MDBaseDatePicker.on_select_day',
++        'MDBaseDatePicker.on_select_month',
++        'MDBaseDatePicker.on_select_year',
++        'MDBaseDatePicker.on_touch_down',
++        'MDBaseDatePicker.open',
++        'MDBaseDatePicker.restore_calendar_layout_properties',
++        'MDBaseDatePicker.set_calendar_layout_properties',
++        'MDBaseDatePicker.set_selected_widget',
++        'MDBaseDatePicker.set_text_full_date',
++        'MDBaseDatePicker.set_text_full_date.<locals>.date_repr',
++        'MDBaseDatePicker.update_calendar',
++        'MDDatePickerDaySelectableItem.on_release',
++        'MDDockedDatePicker.generate_menu_month_year_selection',
++        'MDDockedDatePicker.open_close_menu_month_year_selection',
++        'MDDockedDatePickerBaseSelectionContainer.__init__',
++        'MDDockedDatePickerBaseSelectionContainer.on_open_menu',
++        'MDDockedDatePickerBaseSelectionContainer.on_release',
++        'MDDockedDatePickerMenuSelectionItem.apply_selection',
++        'MDDockedDatePickerMenuSelectionItem.on_touch_down',
++        'MDDockedDatePickerMenuSelectionItem.refresh_view_attrs',
++        'MDDockedDatePickerMonthSelectionItem.on_open_menu',
++        'MDDockedDatePickerMonthSelectionItem.on_release',
++        'MDDockedDatePickerMonthSelectionItem.on_release.<locals>.set_month',
++        'MDDockedDatePickerYearSelectionItem.on_open_menu',
++        'MDDockedDatePickerYearSelectionItem.on_release',
++        'MDDockedDatePickerYearSelectionItem.on_release.<locals>.set_year',
++        'MDModalDatePicker._update_date_label_text',
++        'MDModalDatePicker.generate_list_widgets_years',
++        'MDModalDatePicker.open',
++        'MDModalDatePicker.open_menu_year_selection',
++        'MDModalDatePickerYearSelectableItem.apply_selection',
++        'MDModalDatePickerYearSelectableItem.on_touch_down',
++        'MDModalDatePickerYearSelectableItem.refresh_view_attrs',
++        'MDModalDatePickerYearSelectionItem.__init__',
++        'MDModalDatePickerYearSelectionItem.on_open_menu',
++        'MDModalDatePickerYearSelectionItem.on_release',
++        'MDModalDatePickerYearSelectionItem.on_release.<locals>.set_month',
++        'MDModalInputDatePicker.__init__',
++        'MDModalInputDatePicker._check_range',
++        'MDModalInputDatePicker._get_dates_from_fields',
++        'MDModalInputDatePicker._set_current_date',
++        'MDModalInputDatePicker.generate_list_widgets_days',
++        'MDModalInputDatePicker.get_current_date_from_format',
++        'MDModalInputDatePicker.get_date',
++        'MDModalInputDatePicker.open',
++        'MDModalInputDatePicker.set_input_date',
++        'MDModalInputDatePicker.update_calendar',
++        'MDModalInputDatePickerInputField.on_error',
++    )
++)
++
++
++def code_key(code):
++    """Stable identifier of a code object for reporting."""
++
++    return code.co_qualname or code.co_name
++
++
++def _is_module_frame(frame):
++    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(MODULE_FILE))))
++    filename = os.path.abspath(frame.f_code.co_filename)
++    return filename.startswith(root + os.sep) and (os.sep + "tests" + os.sep) not in filename
++
++
++def module_frame_chain(skip=1):
++    """Datepicker-module code objects on the current stack, innermost first."""
++
++    frames = []
++    frame = sys._getframe(skip)
++    while frame is not None:
++        if _is_module_frame(frame):
++            frames.append(frame.f_code)
++        frame = frame.f_back
++    return frames
++
++
++def trace_module_calls(trigger):
++    """Qualnames of every datepicker-module function called by ``trigger``."""
++
++    seen = []
++
++    def _trace(frame, event, arg):
++        if event == "call" and _is_module_frame(frame):
++            seen.append(code_key(frame.f_code))
++        return None
++
++    sys.settrace(_trace)
++    try:
++        trigger()
++    finally:
++        sys.settrace(None)
++    return seen
++
++
++def shared_module_calls(trace_a, trace_b, excluded=FROZEN_BASE_QUALNAMES):
++    """Module functions executed by both traces, minus the frozen inventory."""
++
++    common = set(trace_a) & set(trace_b)
++    return sorted(name for name in common if name not in excluded)
++
++
++def write_chains(widget, prop, trigger):
++    """Module frame chains captured every time ``widget.prop`` is written."""
++
++    chains = []
++
++    def _on_change(*args):
++        chains.append(module_frame_chain(1))
++
++    widget.fbind(prop, _on_change)
++    try:
++        trigger()
++    finally:
++        try:
++            widget.unbind(prop, _on_change)
++        except Exception:
++            pass
++    return chains
++
++
++def shared_write_functions(chains_a, chains_b):
++    """Names of the module functions responsible for writes on both lines."""
++
++    # Only the actual write owner counts. A shared outer event handler cannot
++    # certify two complete copies of an operation further down its call stack.
++    owners_a = {chain[0] for chain in chains_a if chain}
++    owners_b = {chain[0] for chain in chains_b if chain}
++    return sorted(code_key(code) for code in owners_a & owners_b)
++
++
++def attribute_write_chains(widget, name, trigger):
++    """Observe ordinary attributes as well as Kivy Properties.
++
++    Row index is an ordinary Python attribute, so fbind cannot observe it.
++    Instrument the concrete type's setter temporarily without changing its
++    refresh method, delegation chain or instance class.
++    """
++
++    owner = type(widget)
++    own_setter = owner.__dict__.get("__setattr__")
++    original = owner.__setattr__
++    chains = []
++
++    def observe(instance, key, value):
++        if instance is widget and key == name:
++            chains.append(module_frame_chain(1))
++        return original(instance, key, value)
++
++    owner.__setattr__ = observe
++    try:
++        trigger()
++    finally:
++        if own_setter is None:
++            del owner.__setattr__
++        else:
++            owner.__setattr__ = own_setter
++    return chains
++
++
++# Ignore only unchanged low-level baseline helpers. Reusing an existing method
++# name for a real shared controller remains a lawful organization choice.
++_ORIGINAL_MONTH_HELPERS = {'MDBaseDatePicker.change_month': 'b87433089a6943d4b3d70d10bfc8697d8a7782923d2673cc117fb38a48222251', 'MDBaseDatePicker.set_calendar_layout_properties': '291b664d58ab4a9be712d118034bd11d7abbe25d4bf1dcd3a8d673b02c2b8251', 'MDBaseDatePicker.on_select_month': '194c54347e6308ed732e78322cf99cb2f218a98d33b24de22a202e77932f186d'}
++
++
++@lru_cache(maxsize=None)
++def is_original_month_helper(code):
++    expected = _ORIGINAL_MONTH_HELPERS.get(code_key(code))
++    if expected is None:
++        return False
++    source = textwrap.dedent(inspect.getsource(code))
++    node = ast.parse(source).body[0]
++    # Python 3.13 omits empty AST fields by default; the frozen inventory was
++    # generated with Python 3.12, which always includes them.
++    options = {"include_attributes": False}
++    if sys.version_info >= (3, 13):
++        options["show_empty"] = True
++    actual = hashlib.sha256(ast.dump(node, **options).encode()).hexdigest()
++    return actual == expected
++
++
++class MonthResponsibility:
++    """Observe scheduling and eventual month events across animation callbacks."""
++
++    def __init__(self, picker):
++        self.picker = picker
++        self.fade = []
++        self.step = []
++
++    @staticmethod
++    def owner():
++        chain = module_frame_chain(2)
++        return next((code for code in chain
++                     if not is_original_month_helper(code)), None)
++
++    def event(self, *args):
++        self.step.append(self.owner())
++
++    def __enter__(self):
++        self.picker.fbind("on_select_month", self.event)
++        self.original_start = Animation.start
++        observer = self
++
++        def start(animation, widget):
++            if (widget is observer.picker.ids.calendar_layout
++                    and animation.animated_properties.get("opacity") == 0):
++                observer.fade.append(observer.owner())
++            return observer.original_start(animation, widget)
++
++        Animation.start = start
++        return self
++
++    def __exit__(self, *args):
++        Animation.start = self.original_start
++        self.picker.unbind(on_select_month=self.event)
++
++
++def assert_shared_month_responsibility(first, second):
++    for effect in ("fade", "step"):
++        left = set(getattr(first, effect)) - {None}
++        right = set(getattr(second, effect)) - {None}
++        assert left & right, (
++            "month %s responsibility is duplicated: %s / %s" %
++            (effect, [code_key(c) for c in left], [code_key(c) for c in right])
++        )
++
++
++class RowDateResponsibility:
++    """Observe the callers applying a touched row's date and selection event.
++
++    update_calendar is already shared on the baseline. Observe its caller,
++    rather than crediting that existing low-level calendar renderer.
++    """
++
++    def __init__(self, picker):
++        self.picker = picker
++        self.date = []
++        self.event = []
++
++    def __enter__(self):
++        self.original_update = self.picker.update_calendar
++
++        def update(*args, **kwargs):
++            self.date.append(module_frame_chain(1))
++            return self.original_update(*args, **kwargs)
++
++        self.picker.update_calendar = update
++        self.picker.fbind("on_select_year", self.selected)
++        return self
++
++    def selected(self, *args):
++        self.event.append(module_frame_chain(1))
++
++    def __exit__(self, *args):
++        self.picker.update_calendar = self.original_update
++        self.picker.unbind(on_select_year=self.selected)
++
++
++def assert_shared_row_date_responsibility(first, second):
++    for effect in ("date", "event"):
++        assert shared_write_functions(
++            getattr(first, effect), getattr(second, effect)
++        ), "row %s application must share its actual business writer" % effect
++
++
++def resolved_owner(owner_class, name):
++    """Class in the MRO whose own dictionary provides ``name``."""
++
++    for klass in owner_class.__mro__:
++        if name in klass.__dict__:
++            return klass
++    return None
++
++
++def resolved_attribute(owner_class, name):
++    """Function or descriptor that ``owner_class.<name>`` resolves to."""
++
++    owner = resolved_owner(owner_class, name)
++    if owner is None:
++        return None
++    return owner.__dict__[name]
++
++
++def picker_state(picker):
++    """Snapshot of every Kivy property value of ``picker``."""
++
++    state = {}
++    for name in picker.properties():
++        try:
++            state[name] = repr(getattr(picker, name))
++        except Exception:
++            pass
++    return state
++
++
++def changed_state_keys(picker, trigger):
++    """Property names whose value changes while ``trigger`` runs."""
++
++    before = picker_state(picker)
++    trigger()
++    after = picker_state(picker)
++    return sorted(
++        name
++        for name in set(before) | set(after)
++        if before.get(name) != after.get(name)
++    )
++
++
++def detach(*pickers):
++    """Cancel running animations, drop generated data and detach widgets."""
++
++    try:
++        Animation.cancel_all(None)
++    except Exception:
++        pass
++    for picker in pickers:
++        ids = getattr(picker, "ids", None)
++        if ids:
++            for layout_id in (
++                "month_year_selection_layout",
++                "year_selection_layout",
++            ):
++                layout = ids.get(layout_id)
++                if layout is not None:
++                    layout.data = []
++        for widget in (picker, getattr(picker, "_scrim", None)):
++            if widget is not None and widget.parent is not None:
++                widget.parent.remove_widget(widget)
++
++
++def docked_picker(year=2024, month=5, day=5):
++    return datepicker_module.MDDockedDatePicker(
++        year=year, month=month, day=day
++    )
++
++
++def modal_picker(year=2024, month=5, day=5):
++    return datepicker_module.MDModalDatePicker(year=year, month=month, day=day)
++
++
++def open_docked_menu(picker, state=True, menu_type="month"):
++    # Exercise the declared widget event, not an optional helper method.
++    if bool(picker.ids.calendar_layout.disabled) != state:
++        picker.ids[menu_type + "_selection_items"].dispatch("on_open_menu")
++
++
++def open_modal_menu(picker):
++    picker.ids.year_selection_items.dispatch("on_open_menu")
++
++
++class ProbeApp(MDApp):
++    """Runs a synchronous probe inside a live application."""
++
++    probe = None
++    failure = None
++    result = None
++
++    def build(self):
++        return MDBoxLayout()
++
++    def on_start(self):
++        try:
++            self.result = self.probe()
++        except BaseException as error:  # noqa: BLE001 - reported to the test
++            self.failure = error
++        finally:
++            detach()
++            Clock.schedule_once(lambda *args: self.stop(), 0.01)
++
++
++def run_probe(probe):
++    app = ProbeApp()
++    app.probe = probe
++    app.run()
++    if app.failure is not None:
++        raise app.failure
++    return app.result
++
++
++class PlanApp(MDApp):
++    """Drives a generator plan that may wait for Kivy frames between steps."""
++
++    plan = None
++    step_timeout = 20.0
++    failure = None
++    result = None
++
++    def build(self):
++        return MDBoxLayout()
++
++    def on_start(self):
++        self._step = self.plan()
++        self._wait = None
++        self._deadline = time.monotonic() + self.step_timeout
++        self._tick = Clock.schedule_interval(self._poll, 0.02)
++
++    def _finish(self):
++        try:
++            Clock.unschedule(self._tick)
++        except Exception:
++            pass
++        detach()
++        Clock.schedule_once(lambda *args: self.stop(), 0.01)
++
++    def _poll(self, *args):
++        try:
++            if self._wait is not None:
++                if not self._wait():
++                    if time.monotonic() > self._deadline:
++                        raise AssertionError(
++                            "scenario step did not complete in time; active animations=%r"
++                            % [dict(a.animated_properties) for a in list(Animation._instances)]
++                        )
++                    return
++            try:
++                self._wait = next(self._step)
++            except StopIteration as stop:
++                self.result = stop.value
++                self._finish()
++                return
++            self._deadline = time.monotonic() + self.step_timeout
++        except BaseException as error:  # noqa: BLE001 - reported to the test
++            self.failure = error
++            self._finish()
++
++
++def run_plan(plan):
++    app = PlanApp()
++    app.plan = plan
++    app.run()
++    if app.failure is not None:
++        raise app.failure
++    return app.result
+diff --git a/kivymd/tests/datepicker/case33-baseline-ui.json b/kivymd/tests/datepicker/case33-baseline-ui.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..95dd2840e1c51d6af264ab2ed0fde2d12ee85a4a
+--- /dev/null
++++ b/kivymd/tests/datepicker/case33-baseline-ui.json
+@@ -0,0 +1,1416 @@
++{
++  "chevron/False/0": {
++    "after": [
++      2025,
++      1
++    ],
++    "before": [
++      2024,
++      12
++    ],
++    "events": [
++      1
++    ],
++    "immediate": [
++      2024,
++      12
++    ],
++    "opacity": 1.0,
++    "padding": [
++      12.0,
++      0,
++      12.0,
++      0
++    ]
++  },
++  "chevron/False/1": {
++    "after": [
++      2024,
++      12
++    ],
++    "before": [
++      2025,
++      1
++    ],
++    "events": [
++      12
++    ],
++    "immediate": [
++      2025,
++      1
++    ],
++    "opacity": 1.0,
++    "padding": [
++      12.0,
++      0,
++      12.0,
++      0
++    ]
++  },
++  "chevron/True/0": {
++    "after": [
++      2025,
++      1
++    ],
++    "before": [
++      2024,
++      12
++    ],
++    "events": [
++      1
++    ],
++    "immediate": [
++      2024,
++      12
++    ],
++    "opacity": 1.0,
++    "padding": [
++      12.0,
++      0,
++      12.0,
++      0
++    ]
++  },
++  "chevron/True/1": {
++    "after": [
++      2024,
++      12
++    ],
++    "before": [
++      2025,
++      1
++    ],
++    "events": [
++      12
++    ],
++    "immediate": [
++      2025,
++      1
++    ],
++    "opacity": 1.0,
++    "padding": [
++      12.0,
++      0,
++      12.0,
++      0
++    ]
++  },
++  "direct-modal/False/before": {
++    "calendar_disabled": false,
++    "calendar_opacity": 1.0,
++    "calendar_scale": [
++      1,
++      1
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": false,
++    "list_scale": [
++      1.5,
++      1.5
++    ],
++    "rotation": 0,
++    "row_values": [],
++    "rows": 0,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      0,
++      0
++    ]
++  },
++  "direct-modal/False/toggle0": {
++    "calendar_disabled": true,
++    "calendar_opacity": 0,
++    "calendar_scale": [
++      1.1,
++      1.1
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": false,
++    "list_scale": [
++      1.0,
++      1.0
++    ],
++    "rotation": -90.0,
++    "row_values": [],
++    "rows": 0,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      286.0,
++      292.0
++    ]
++  },
++  "direct-modal/False/toggle1": {
++    "calendar_disabled": false,
++    "calendar_opacity": 1,
++    "calendar_scale": [
++      1.0,
++      1.0
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": true,
++    "list_scale": [
++      1.2,
++      1.2
++    ],
++    "rotation": 0.0,
++    "row_values": [],
++    "rows": 0,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      0,
++      0
++    ]
++  },
++  "direct-modal/True/before": {
++    "calendar_disabled": false,
++    "calendar_opacity": 1.0,
++    "calendar_scale": [
++      1,
++      1
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": false,
++    "list_scale": [
++      1.5,
++      1.5
++    ],
++    "rotation": 0,
++    "row_values": [
++      "2020",
++      "2021",
++      "2022",
++      "2023",
++      "2024",
++      "2025"
++    ],
++    "rows": 6,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      0,
++      0
++    ]
++  },
++  "direct-modal/True/toggle0": {
++    "calendar_disabled": true,
++    "calendar_opacity": 0,
++    "calendar_scale": [
++      1.1,
++      1.1
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": false,
++    "list_scale": [
++      1.0,
++      1.0
++    ],
++    "rotation": -90.0,
++    "row_values": [
++      "2020",
++      "2021",
++      "2022",
++      "2023",
++      "2024",
++      "2025"
++    ],
++    "rows": 6,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      286.0,
++      292.0
++    ]
++  },
++  "direct-modal/True/toggle1": {
++    "calendar_disabled": false,
++    "calendar_opacity": 1,
++    "calendar_scale": [
++      1.0,
++      1.0
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": true,
++    "list_scale": [
++      1.2,
++      1.2
++    ],
++    "rotation": 0.0,
++    "row_values": [
++      "2020",
++      "2021",
++      "2022",
++      "2023",
++      "2024",
++      "2025"
++    ],
++    "rows": 6,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      0,
++      0
++    ]
++  },
++  "direct/False/before": {
++    "calendar_disabled": false,
++    "calendar_opacity": 1.0,
++    "calendar_scale": [
++      1,
++      1
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": false,
++    "list_scale": [
++      0,
++      0
++    ],
++    "rotation": 0,
++    "row_values": [],
++    "rows": 0,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      0,
++      0
++    ]
++  },
++  "direct/False/show": {
++    "calendar_disabled": true,
++    "calendar_opacity": 0,
++    "calendar_scale": [
++      1.1,
++      1.1
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": false,
++    "list_scale": [
++      1.0,
++      1.0
++    ],
++    "rotation": -90.0,
++    "row_values": [],
++    "rows": 0,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      316.0,
++      298.0
++    ]
++  },
++  "direct/False/toggle0": {
++    "calendar_disabled": true,
++    "calendar_opacity": 0,
++    "calendar_scale": [
++      1.1,
++      1.1
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": false,
++    "list_scale": [
++      1.0,
++      1.0
++    ],
++    "rotation": -90.0,
++    "row_values": [
++      "January",
++      "February",
++      "March",
++      "April",
++      "May",
++      "June",
++      "July",
++      "August",
++      "September",
++      "October",
++      "November",
++      "December"
++    ],
++    "rows": 12,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      316.0,
++      298.0
++    ]
++  },
++  "direct/False/toggle1": {
++    "calendar_disabled": false,
++    "calendar_opacity": 1,
++    "calendar_scale": [
++      1.0,
++      1.0
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": false,
++    "list_scale": [
++      0.0,
++      0.0
++    ],
++    "rotation": 0.0,
++    "row_values": [
++      "January",
++      "February",
++      "March",
++      "April",
++      "May",
++      "June",
++      "July",
++      "August",
++      "September",
++      "October",
++      "November",
++      "December"
++    ],
++    "rows": 12,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      0,
++      0
++    ]
++  },
++  "direct/True/before": {
++    "calendar_disabled": false,
++    "calendar_opacity": 1.0,
++    "calendar_scale": [
++      1,
++      1
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": false,
++    "list_scale": [
++      0,
++      0
++    ],
++    "rotation": 0,
++    "row_values": [
++      "2020",
++      "2021",
++      "2022",
++      "2023",
++      "2024",
++      "2025"
++    ],
++    "rows": 6,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      0,
++      0
++    ]
++  },
++  "direct/True/show": {
++    "calendar_disabled": true,
++    "calendar_opacity": 0,
++    "calendar_scale": [
++      1.1,
++      1.1
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": false,
++    "list_scale": [
++      1.0,
++      1.0
++    ],
++    "rotation": -90.0,
++    "row_values": [
++      "2020",
++      "2021",
++      "2022",
++      "2023",
++      "2024",
++      "2025"
++    ],
++    "rows": 6,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      316.0,
++      298.0
++    ]
++  },
++  "direct/True/toggle0": {
++    "calendar_disabled": true,
++    "calendar_opacity": 0,
++    "calendar_scale": [
++      1.1,
++      1.1
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": false,
++    "list_scale": [
++      1.0,
++      1.0
++    ],
++    "rotation": -90.0,
++    "row_values": [
++      "January",
++      "February",
++      "March",
++      "April",
++      "May",
++      "June",
++      "July",
++      "August",
++      "September",
++      "October",
++      "November",
++      "December"
++    ],
++    "rows": 12,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      316.0,
++      298.0
++    ]
++  },
++  "direct/True/toggle1": {
++    "calendar_disabled": false,
++    "calendar_opacity": 1,
++    "calendar_scale": [
++      1.0,
++      1.0
++    ],
++    "display": [
++      2024,
++      6
++    ],
++    "label": "Mon, Jun 10",
++    "list_disabled": false,
++    "list_scale": [
++      0.0,
++      0.0
++    ],
++    "rotation": 0.0,
++    "row_values": [
++      "January",
++      "February",
++      "March",
++      "April",
++      "May",
++      "June",
++      "July",
++      "August",
++      "September",
++      "October",
++      "November",
++      "December"
++    ],
++    "rows": 12,
++    "selected": [
++      "2024-06-10"
++    ],
++    "size": [
++      0,
++      0
++    ]
++  },
++  "input/dd/mm/yyyy": {
++    "dates": [
++      "2024-02-29"
++    ],
++    "formatted": "29/2/2024",
++    "label": "Thu, Feb 29"
++  },
++  "input/mm/dd/yyyy": {
++    "dates": [
++      "2024-02-29"
++    ],
++    "formatted": "2/29/2024",
++    "label": "Thu, Feb 29"
++  },
++  "input/yyyy/mm/dd": {
++    "dates": [
++      "2024-02-29"
++    ],
++    "formatted": "2024/2/29",
++    "label": "Thu, Feb 29"
++  },
++  "menu/False/0": {
++    "calendar_disabled": true,
++    "calendar_opacity": 0,
++    "calendar_scale": [
++      1.1,
++      1.1
++    ],
++    "display": [
++      2024,
++      12
++    ],
++    "label": "Sun, Dec 15",
++    "list_disabled": false,
++    "list_scale": [
++      1.0,
++      1.0
++    ],
++    "rotation": -90.0,
++    "row_values": [
++      "January",
++      "February",
++      "March",
++      "April",
++      "May",
++      "June",
++      "July",
++      "August",
++      "September",
++      "October",
++      "November",
++      "December"
++    ],
++    "rows": 12,
++    "selected": [
++      "2024-12-15"
++    ],
++    "size": [
++      316.0,
++      298.0
++    ]
++  },
++  "menu/False/1": {
++    "calendar_disabled": false,
++    "calendar_opacity": 1,
++    "calendar_scale": [
++      1.0,
++      1.0
++    ],
++    "display": [
++      2024,
++      12
++    ],
++    "label": "Sun, Dec 15",
++    "list_disabled": false,
++    "list_scale": [
++      0.0,
++      0.0
++    ],
++    "rotation": 0.0,
++    "row_values": [
++      "January",
++      "February",
++      "March",
++      "April",
++      "May",
++      "June",
++      "July",
++      "August",
++      "September",
++      "October",
++      "November",
++      "December"
++    ],
++    "rows": 12,
++    "selected": [
++      "2024-12-15"
++    ],
++    "size": [
++      0,
++      0
++    ]
++  },
++  "menu/False/2": {
++    "calendar_disabled": true,
++    "calendar_opacity": 0,
++    "calendar_scale": [
++      1.1,
++      1.1
++    ],
++    "display": [
++      2024,
++      12
++    ],
++    "label": "Sun, Dec 15",
++    "list_disabled": false,
++    "list_scale": [
++      1.0,
++      1.0
++    ],
++    "rotation": -90.0,
++    "row_values": [
++      "January",
++      "February",
++      "March",
++      "April",
++      "May",
++      "June",
++      "July",
++      "August",
++      "September",
++      "October",
++      "November",
++      "December"
++    ],
++    "rows": 12,
++    "selected": [
++      "2024-12-15"
++    ],
++    "size": [
++      316.0,
++      298.0
++    ]
++  },
++  "menu/False/3": {
++    "calendar_disabled": false,
++    "calendar_opacity": 1,
++    "calendar_scale": [
++      1.0,
++      1.0
++    ],
++    "display": [
++      2024,
++      12
++    ],
++    "label": "Sun, Dec 15",
++    "list_disabled": false,
++    "list_scale": [
++      0.0,
++      0.0
++    ],
++    "rotation": 0.0,
++    "row_values": [
++      "January",
++      "February",
++      "March",
++      "April",
++      "May",
++      "June",
++      "July",
++      "August",
++      "September",
++      "October",
++      "November",
++      "December"
++    ],
++    "rows": 12,
++    "selected": [
++      "2024-12-15"
++    ],
++    "size": [
++      0,
++      0
++    ]
++  },
++  "menu/True/0": {
++    "calendar_disabled": true,
++    "calendar_opacity": 0,
++    "calendar_scale": [
++      1.1,
++      1.1
++    ],
++    "display": [
++      2024,
++      12
++    ],
++    "label": "Sun, Dec 15",
++    "list_disabled": false,
++    "list_scale": [
++      1.0,
++      1.0
++    ],
++    "rotation": -90.0,
++    "row_values": [
++      "2020",
++      "2021",
++      "2022",
++      "2023",
++      "2024",
++      "2025"
++    ],
++    "rows": 6,
++    "selected": [
++      "2024-12-15"
++    ],
++    "size": [
++      286.0,
++      292.0
++    ]
++  },
++  "menu/True/1": {
++    "calendar_disabled": false,
++    "calendar_opacity": 1,
++    "calendar_scale": [
++      1.0,
++      1.0
++    ],
++    "display": [
++      2024,
++      12
++    ],
++    "label": "Sun, Dec 15",
++    "list_disabled": true,
++    "list_scale": [
++      1.2,
++      1.2
++    ],
++    "rotation": 0.0,
++    "row_values": [
++      "2020",
++      "2021",
++      "2022",
++      "2023",
++      "2024",
++      "2025"
++    ],
++    "rows": 6,
++    "selected": [
++      "2024-12-15"
++    ],
++    "size": [
++      0,
++      0
++    ]
++  },
++  "menu/True/2": {
++    "calendar_disabled": true,
++    "calendar_opacity": 0,
++    "calendar_scale": [
++      1.1,
++      1.1
++    ],
++    "display": [
++      2024,
++      12
++    ],
++    "label": "Sun, Dec 15",
++    "list_disabled": false,
++    "list_scale": [
++      1.0,
++      1.0
++    ],
++    "rotation": -90.0,
++    "row_values": [
++      "2020",
++      "2021",
++      "2022",
++      "2023",
++      "2024",
++      "2025"
++    ],
++    "rows": 6,
++    "selected": [
++      "2024-12-15"
++    ],
++    "size": [
++      286.0,
++      292.0
++    ]
++  },
++  "menu/True/3": {
++    "calendar_disabled": false,
++    "calendar_opacity": 1,
++    "calendar_scale": [
++      1.0,
++      1.0
++    ],
++    "display": [
++      2024,
++      12
++    ],
++    "label": "Sun, Dec 15",
++    "list_disabled": true,
++    "list_scale": [
++      1.2,
++      1.2
++    ],
++    "rotation": 0.0,
++    "row_values": [
++      "2020",
++      "2021",
++      "2022",
++      "2023",
++      "2024",
++      "2025"
++    ],
++    "rows": 6,
++    "selected": [
++      "2024-12-15"
++    ],
++    "size": [
++      0,
++      0
++    ]
++  },
++  "navigation/False/1/1/next": {
++    "display": [
++      1,
++      2
++    ],
++    "events": [
++      2
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/1/1/prev": {
++    "display": [
++      1,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/1/1/unexpected": {
++    "display": [
++      1,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/1914/1/next": {
++    "display": [
++      1914,
++      2
++    ],
++    "events": [
++      2
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/1914/1/prev": {
++    "display": [
++      1913,
++      12
++    ],
++    "events": [
++      12
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/1914/1/unexpected": {
++    "display": [
++      1913,
++      12
++    ],
++    "events": [
++      12
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/2000/2/next": {
++    "display": [
++      2000,
++      3
++    ],
++    "events": [
++      3
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/2000/2/prev": {
++    "display": [
++      2000,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/2000/2/unexpected": {
++    "display": [
++      2000,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/2023/12/next": {
++    "display": [
++      2024,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/2023/12/prev": {
++    "display": [
++      2023,
++      11
++    ],
++    "events": [
++      11
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/2023/12/unexpected": {
++    "display": [
++      2023,
++      11
++    ],
++    "events": [
++      11
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/2024/2/next": {
++    "display": [
++      2024,
++      3
++    ],
++    "events": [
++      3
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/2024/2/prev": {
++    "display": [
++      2024,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/2024/2/unexpected": {
++    "display": [
++      2024,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/2121/12/next": {
++    "display": [
++      2122,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/2121/12/prev": {
++    "display": [
++      2121,
++      11
++    ],
++    "events": [
++      11
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/False/2121/12/unexpected": {
++    "display": [
++      2121,
++      11
++    ],
++    "events": [
++      11
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/1/1/next": {
++    "display": [
++      1,
++      2
++    ],
++    "events": [
++      2
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/1/1/prev": {
++    "display": [
++      1,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/1/1/unexpected": {
++    "display": [
++      1,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/1914/1/next": {
++    "display": [
++      1914,
++      2
++    ],
++    "events": [
++      2
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/1914/1/prev": {
++    "display": [
++      1913,
++      12
++    ],
++    "events": [
++      12
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/1914/1/unexpected": {
++    "display": [
++      1913,
++      12
++    ],
++    "events": [
++      12
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/2000/2/next": {
++    "display": [
++      2000,
++      3
++    ],
++    "events": [
++      3
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/2000/2/prev": {
++    "display": [
++      2000,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/2000/2/unexpected": {
++    "display": [
++      2000,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/2023/12/next": {
++    "display": [
++      2024,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/2023/12/prev": {
++    "display": [
++      2023,
++      11
++    ],
++    "events": [
++      11
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/2023/12/unexpected": {
++    "display": [
++      2023,
++      11
++    ],
++    "events": [
++      11
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/2024/2/next": {
++    "display": [
++      2024,
++      3
++    ],
++    "events": [
++      3
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/2024/2/prev": {
++    "display": [
++      2024,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/2024/2/unexpected": {
++    "display": [
++      2024,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/2121/12/next": {
++    "display": [
++      2122,
++      1
++    ],
++    "events": [
++      1
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/2121/12/prev": {
++    "display": [
++      2121,
++      11
++    ],
++    "events": [
++      11
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "navigation/True/2121/12/unexpected": {
++    "display": [
++      2121,
++      11
++    ],
++    "events": [
++      11
++    ],
++    "label": "Mon, Jun 10",
++    "selected": [
++      "2024-06-10"
++    ]
++  },
++  "row/False/False": {
++    "data_selected": false,
++    "display": [
++      2030,
++      9
++    ],
++    "events": [],
++    "return_value": null,
++    "selected": false
++  },
++  "row/False/True": {
++    "data_selected": true,
++    "display": [
++      2021,
++      9
++    ],
++    "events": [
++      2021
++    ],
++    "return_value": true,
++    "selected": true
++  },
++  "row/True/False": {
++    "data_selected": true,
++    "display": [
++      2021,
++      6
++    ],
++    "events": [
++      2021
++    ],
++    "return_value": true,
++    "selected": true
++  },
++  "row/True/True": {
++    "data_selected": true,
++    "display": [
++      2021,
++      6
++    ],
++    "events": [
++      2021
++    ],
++    "return_value": true,
++    "selected": true
++  }
++}
+diff --git a/kivymd/tests/datepicker/test_f2p_chevron_month_step_shared.py b/kivymd/tests/datepicker/test_f2p_chevron_month_step_shared.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f454102e1ebcbb375c03a15af05679e97f1859cc
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_f2p_chevron_month_step_shared.py
+@@ -0,0 +1,54 @@
++"""
++F2P acceptance check: one shared chevron month-stepping implementation.
++
++Releasing a chevron with "next" on the docked month container and on the modal
++selection container must move the displayed month by one through one shared
++implementation of the step.  On the baseline each container defined its own
++copy of the release handler and of the scheduled step.  Both releases must
++still advance the calendar exactly one month.
++"""
++
++import os
++import sys
++
++_HERE = os.path.dirname(os.path.abspath(__file__))
++if _HERE not in sys.path:
++    sys.path.insert(0, _HERE)
++
++import _f2p_selector_support as support  # noqa: E402
++
++
++def plan():
++    docked = support.docked_picker()
++    modal = support.modal_picker()
++    docked.open()
++    modal.open()
++
++    with support.MonthResponsibility(docked) as docked_owner:
++        docked.ids.month_selection_items.dispatch("on_release", "next")
++        yield lambda: docked.month == 6
++    with support.MonthResponsibility(modal) as modal_owner:
++        modal.ids.year_selection_items.dispatch("on_release", "next")
++        yield lambda: modal.month == 6
++    support.assert_shared_month_responsibility(docked_owner, modal_owner)
++    return (docked.year, docked.month), (modal.year, modal.month), True
++
++
++def main():
++    docked_state, modal_state, shared = support.run_plan(plan)
++    assert docked_state == (2024, 6), (
++        "the shared chevron step must advance the docked calendar by one "
++        "month, got %r" % (docked_state,)
++    )
++    assert modal_state == (2024, 6), (
++        "the shared chevron step must advance the modal calendar by one "
++        "month, got %r" % (modal_state,)
++    )
++    assert shared, (
++        "the docked and modal chevrons must step the month through one shared "
++        "implementation, no common non-base implementation was executed"
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/kivymd/tests/datepicker/test_f2p_menu_close_restore_shared.py b/kivymd/tests/datepicker/test_f2p_menu_close_restore_shared.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f52a41e2110f1d4e28f8e39892668a72f72d0cb6
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_f2p_menu_close_restore_shared.py
+@@ -0,0 +1,56 @@
++"""
++F2P acceptance check: one shared implementation restores the calendar.
++
++Closing the month/year menu restores the calendar layout opacity to 1.  On the
++baseline the docked and the modal picker each implemented that write in their
++own toggle.  The restructured picker must perform the close/restore from one
++shared implementation, and the calendar must still be restored on both lines.
++"""
++
++import os
++import sys
++
++_HERE = os.path.dirname(os.path.abspath(__file__))
++if _HERE not in sys.path:
++    sys.path.insert(0, _HERE)
++
++import _f2p_selector_support as support  # noqa: E402
++
++
++def main():
++    def probe():
++        docked = support.docked_picker()
++        support.open_docked_menu(docked)
++        docked_chains = support.write_chains(
++            docked.ids.calendar_layout,
++            "opacity",
++            lambda: support.open_docked_menu(docked, state=False),
++        )
++        docked_opacity = round(docked.ids.calendar_layout.opacity, 3)
++
++        modal = support.modal_picker()
++        support.open_modal_menu(modal)
++        modal_chains = support.write_chains(
++            modal.ids.calendar_layout,
++            "opacity",
++            lambda: support.open_modal_menu(modal),
++        )
++        modal_opacity = round(modal.ids.calendar_layout.opacity, 3)
++
++        shared = support.shared_write_functions(docked_chains, modal_chains)
++        support.detach(docked, modal)
++        return docked_opacity, modal_opacity, shared
++
++    docked_opacity, modal_opacity, shared = support.run_probe(probe)
++    assert (docked_opacity, modal_opacity) == (1.0, 1.0), (
++        "closing the menu must still restore the calendar on both lines, got "
++        "docked=%r modal=%r" % (docked_opacity, modal_opacity)
++    )
++    assert shared, (
++        "the calendar restore must be written by one shared implementation on "
++        "both lines, the responsible functions do not overlap"
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/kivymd/tests/datepicker/test_f2p_menu_open_chevron_state_shared.py b/kivymd/tests/datepicker/test_f2p_menu_open_chevron_state_shared.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..33a392f772530060dc73bb82cb920c6e83eb7c24
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_f2p_menu_open_chevron_state_shared.py
+@@ -0,0 +1,60 @@
++"""
++F2P acceptance check: one shared implementation disables the chevrons.
++
++Opening the month/year menu disables the left chevron of the selection
++container.  On the baseline the docked and the modal picker each implemented
++that write in their own toggle.  The restructured picker must perform the
++write from one shared implementation, and the chevrons must still be disabled
++on both lines.
++"""
++
++import os
++import sys
++
++_HERE = os.path.dirname(os.path.abspath(__file__))
++if _HERE not in sys.path:
++    sys.path.insert(0, _HERE)
++
++import _f2p_selector_support as support  # noqa: E402
++
++
++def main():
++    def probe():
++        docked = support.docked_picker()
++        docked_chevron = docked.ids.month_selection_items.ids.chevron_left
++        docked_chains = support.write_chains(
++            docked_chevron,
++            "disabled",
++            lambda: support.open_docked_menu(docked),
++        )
++        docked_disabled = docked_chevron.disabled
++
++        modal = support.modal_picker()
++        modal_chevron = modal.ids.year_selection_items.ids.chevron_left
++        modal_chains = support.write_chains(
++            modal_chevron,
++            "disabled",
++            lambda: support.open_modal_menu(modal),
++        )
++        modal_disabled = modal_chevron.disabled
++
++        shared = support.shared_write_functions(docked_chains, modal_chains)
++        support.detach(docked, modal)
++        return docked_disabled, modal_disabled, shared
++
++    docked_disabled, modal_disabled, shared = support.run_probe(probe)
++    assert docked_disabled is True, (
++        "the docked chevron must still be disabled while the menu is open"
++    )
++    assert modal_disabled is True, (
++        "the modal chevron must still be disabled while the menu is open"
++    )
++    assert shared, (
++        "the chevron disabled state must be written by one shared "
++        "implementation on both lines, the responsible functions do not "
++        "overlap"
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/kivymd/tests/datepicker/test_f2p_menu_open_expansion_shared.py b/kivymd/tests/datepicker/test_f2p_menu_open_expansion_shared.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f21ee6544c1d722368980705406e65e80d4aa7ed
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_f2p_menu_open_expansion_shared.py
+@@ -0,0 +1,51 @@
++"""P2P: preserve the explicitly different expansion geometry of both variants.
++
++The legacy filename is retained for provenance. The instruction permits free
++helper/composition choices and explicitly gives different geometry formulas.
++The remaining eight F2P nodes check shared interaction responsibilities; this
++node does not impose a shared size writer or a particular call graph.
++"""
++import os
++import sys
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++from kivy.metrics import dp
++import _f2p_selector_support as support
++
++
++def rounded(size):
++    return tuple(round(value, 4) for value in size)
++
++
++def settled():
++    return not support.Animation._instances
++
++
++def plan():
++    for modal in (False, True):
++        picker = support.modal_picker() if modal else support.docked_picker()
++        try:
++            picker.open()
++            yield settled
++            layout = picker.ids['year_selection_layout' if modal else 'month_year_selection_layout']
++            assert rounded(layout.size) == (0.0, 0.0)
++            if modal:
++                support.open_modal_menu(picker)
++            else:
++                support.open_docked_menu(picker)
++            yield settled
++            calendar = picker.ids.calendar_layout
++            expected = ((calendar.width - dp(36), calendar.height) if modal else
++                        (picker.width, picker.height - picker.ids.month_year_selection_items_container.height - dp(56)))
++            assert rounded(layout.size) == rounded(expected), (modal, tuple(layout.size), expected)
++            if modal:
++                support.open_modal_menu(picker)
++            else:
++                support.open_docked_menu(picker, state=False)
++            yield settled
++            assert rounded(layout.size) == (0.0, 0.0), (modal, tuple(layout.size))
++        finally:
++            support.detach(picker)
++
++
++if __name__ == '__main__':
++    support.run_plan(plan)
+diff --git a/kivymd/tests/datepicker/test_f2p_menu_open_handler_docked_containers_shared.py b/kivymd/tests/datepicker/test_f2p_menu_open_handler_docked_containers_shared.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5217f434af304330326470d3fbc7dbe17286446d
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_f2p_menu_open_handler_docked_containers_shared.py
+@@ -0,0 +1,74 @@
++"""
++P2P regression check: existing docked month/year menu opening.
++
++The frozen baseline already satisfies these menu effects and delegation
++checks. The selector keeps its legacy filename, but is classified as P2P;
++it is not evidence of a newly completed refactoring responsibility.
++"""
++
++import os
++import sys
++
++_HERE = os.path.dirname(os.path.abspath(__file__))
++if _HERE not in sys.path:
++    sys.path.insert(0, _HERE)
++
++import _f2p_selector_support as support  # noqa: E402
++
++from kivymd.uix.pickers.datepicker import datepicker as datepicker_module  # noqa: E402
++
++
++def main():
++    month_container = datepicker_module.MDDockedDatePickerMonthSelectionItem
++    year_container = datepicker_module.MDDockedDatePickerYearSelectionItem
++
++    def probe():
++        month_picker = support.docked_picker()
++        month_trace = support.trace_module_calls(
++            lambda: month_picker.ids.month_selection_items.on_open_menu()
++        )
++        month_opacity = round(month_picker.ids.calendar_layout.opacity, 3)
++        month_rows = len(month_picker.ids.month_year_selection_layout.data)
++
++        year_picker = support.docked_picker()
++        year_trace = support.trace_module_calls(
++            lambda: year_picker.ids.year_selection_items.on_open_menu()
++        )
++        year_opacity = round(year_picker.ids.calendar_layout.opacity, 3)
++        year_rows = len(year_picker.ids.month_year_selection_layout.data)
++
++        shared = support.shared_module_calls(
++            month_trace, year_trace, support.FROZEN_MODULE_QUALNAMES
++        )
++        support.detach(month_picker, year_picker)
++        return month_opacity, year_opacity, month_rows, year_rows, shared
++
++    month_opacity, year_opacity, month_rows, year_rows, shared = (
++        support.run_probe(probe)
++    )
++    assert (month_opacity, year_opacity) == (0.0, 0.0), (
++        "both docked containers must still open the menu, got month=%r "
++        "year=%r" % (month_opacity, year_opacity)
++    )
++    assert month_rows > 0 and year_rows > 0, (
++        "both docked menu-open handlers must still generate their list, got "
++        "%r month rows and %r year rows" % (month_rows, year_rows)
++    )
++
++    month_impl = support.resolved_attribute(month_container, "on_open_menu")
++    year_impl = support.resolved_attribute(year_container, "on_open_menu")
++    assert month_impl is not None and year_impl is not None
++    same_handler = month_impl is year_impl
++    assert same_handler or shared, (
++        "the docked month and year containers must open the month/year menu "
++        "through one shared implementation; they resolve to %r and %r and "
++        "share no implementation introduced by the restructuring"
++        % (
++            support.resolved_owner(month_container, "on_open_menu"),
++            support.resolved_owner(year_container, "on_open_menu"),
++        )
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/kivymd/tests/datepicker/test_f2p_menu_open_handler_month_container_shared.py b/kivymd/tests/datepicker/test_f2p_menu_open_handler_month_container_shared.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0fd4afe65958a15a451e681ac815416333368148
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_f2p_menu_open_handler_month_container_shared.py
+@@ -0,0 +1,50 @@
++"""
++P2P regression check: existing month-container menu opening.
++
++The frozen baseline already satisfies these menu effects and delegation
++checks. The selector keeps its legacy filename, but is classified as P2P;
++it is not evidence of a newly completed refactoring responsibility.
++"""
++
++import os
++import sys
++
++_HERE = os.path.dirname(os.path.abspath(__file__))
++if _HERE not in sys.path:
++    sys.path.insert(0, _HERE)
++
++import _f2p_selector_support as support  # noqa: E402
++
++
++def main():
++    def probe():
++        docked = support.docked_picker()
++        docked_trace = support.trace_module_calls(
++            lambda: docked.ids.month_selection_items.on_open_menu()
++        )
++        docked_opacity = round(docked.ids.calendar_layout.opacity, 3)
++
++        modal = support.modal_picker()
++        modal_trace = support.trace_module_calls(
++            lambda: modal.ids.year_selection_items.on_open_menu()
++        )
++        modal_opacity = round(modal.ids.calendar_layout.opacity, 3)
++
++        shared = support.shared_module_calls(docked_trace, modal_trace)
++        support.detach(docked, modal)
++        return docked_opacity, modal_opacity, shared
++
++    docked_opacity, modal_opacity, shared = support.run_probe(probe)
++    assert (docked_opacity, modal_opacity) == (0.0, 0.0), (
++        "the shared menu-open handler must still hide the calendar on both "
++        "lines, got docked=%r modal=%r" % (docked_opacity, modal_opacity)
++    )
++    assert shared, (
++        "the docked month container and the modal container must open the "
++        "month/year menu through one shared implementation, no common "
++        "non-base implementation was executed"
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/kivymd/tests/datepicker/test_f2p_menu_open_handler_year_container_shared.py b/kivymd/tests/datepicker/test_f2p_menu_open_handler_year_container_shared.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ec5027d97ea8975fa37e0ca21a61128eb3fcadc5
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_f2p_menu_open_handler_year_container_shared.py
+@@ -0,0 +1,50 @@
++"""
++P2P regression check: existing year-container menu opening.
++
++The frozen baseline already satisfies these menu effects and delegation
++checks. The selector keeps its legacy filename, but is classified as P2P;
++it is not evidence of a newly completed refactoring responsibility.
++"""
++
++import os
++import sys
++
++_HERE = os.path.dirname(os.path.abspath(__file__))
++if _HERE not in sys.path:
++    sys.path.insert(0, _HERE)
++
++import _f2p_selector_support as support  # noqa: E402
++
++
++def main():
++    def probe():
++        docked = support.docked_picker()
++        docked_trace = support.trace_module_calls(
++            lambda: docked.ids.year_selection_items.on_open_menu()
++        )
++        docked_opacity = round(docked.ids.calendar_layout.opacity, 3)
++
++        modal = support.modal_picker()
++        modal_trace = support.trace_module_calls(
++            lambda: modal.ids.year_selection_items.on_open_menu()
++        )
++        modal_opacity = round(modal.ids.calendar_layout.opacity, 3)
++
++        shared = support.shared_module_calls(docked_trace, modal_trace)
++        support.detach(docked, modal)
++        return docked_opacity, modal_opacity, shared
++
++    docked_opacity, modal_opacity, shared = support.run_probe(probe)
++    assert (docked_opacity, modal_opacity) == (0.0, 0.0), (
++        "the shared menu-open handler must still hide the calendar on both "
++        "lines, got docked=%r modal=%r" % (docked_opacity, modal_opacity)
++    )
++    assert shared, (
++        "the docked year container and the modal container must open the "
++        "month/year menu through one shared implementation, no common "
++        "non-base implementation was executed"
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/kivymd/tests/datepicker/test_f2p_menu_open_opacity_shared.py b/kivymd/tests/datepicker/test_f2p_menu_open_opacity_shared.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..983590fd5f8e39462f8102957d8f1a75c8f3f0fe
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_f2p_menu_open_opacity_shared.py
+@@ -0,0 +1,54 @@
++"""
++F2P acceptance check: one shared implementation fades the calendar out.
++
++Opening the month/year menu sets the calendar layout to opacity 0.  On the
++baseline the docked and the modal picker each implemented that write in their
++own toggle.  The restructured picker must perform the write from one shared
++implementation, and the calendar must still be faded out on both lines.
++"""
++
++import os
++import sys
++
++_HERE = os.path.dirname(os.path.abspath(__file__))
++if _HERE not in sys.path:
++    sys.path.insert(0, _HERE)
++
++import _f2p_selector_support as support  # noqa: E402
++
++
++def main():
++    def probe():
++        docked = support.docked_picker()
++        docked_chains = support.write_chains(
++            docked.ids.calendar_layout,
++            "opacity",
++            lambda: support.open_docked_menu(docked),
++        )
++        docked_opacity = round(docked.ids.calendar_layout.opacity, 3)
++
++        modal = support.modal_picker()
++        modal_chains = support.write_chains(
++            modal.ids.calendar_layout,
++            "opacity",
++            lambda: support.open_modal_menu(modal),
++        )
++        modal_opacity = round(modal.ids.calendar_layout.opacity, 3)
++
++        shared = support.shared_write_functions(docked_chains, modal_chains)
++        support.detach(docked, modal)
++        return docked_opacity, modal_opacity, shared
++
++    docked_opacity, modal_opacity, shared = support.run_probe(probe)
++    assert (docked_opacity, modal_opacity) == (0.0, 0.0), (
++        "opening the menu must still fade the calendar out on both lines, "
++        "got docked=%r modal=%r" % (docked_opacity, modal_opacity)
++    )
++    assert shared, (
++        "the calendar fade-out must be written by one shared implementation on "
++        "both lines, the responsible functions do not overlap"
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/kivymd/tests/datepicker/test_f2p_menu_open_scale_shared.py b/kivymd/tests/datepicker/test_f2p_menu_open_scale_shared.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5d82de69b9bc1c38df18cafcf6325ce9b0508433
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_f2p_menu_open_scale_shared.py
+@@ -0,0 +1,54 @@
++"""
++F2P acceptance check: one shared implementation scales up the calendar.
++
++Opening the month/year menu scales the calendar layout up to 1.1.  On the
++baseline the docked and the modal picker each implemented that write in their
++own toggle.  The restructured picker must perform the write from one shared
++implementation, and the calendar must still be scaled on both lines.
++"""
++
++import os
++import sys
++
++_HERE = os.path.dirname(os.path.abspath(__file__))
++if _HERE not in sys.path:
++    sys.path.insert(0, _HERE)
++
++import _f2p_selector_support as support  # noqa: E402
++
++
++def main():
++    def probe():
++        docked = support.docked_picker()
++        docked_chains = support.write_chains(
++            docked.ids.calendar_layout,
++            "scale_value_x",
++            lambda: support.open_docked_menu(docked),
++        )
++        docked_scale = round(docked.ids.calendar_layout.scale_value_x, 3)
++
++        modal = support.modal_picker()
++        modal_chains = support.write_chains(
++            modal.ids.calendar_layout,
++            "scale_value_x",
++            lambda: support.open_modal_menu(modal),
++        )
++        modal_scale = round(modal.ids.calendar_layout.scale_value_x, 3)
++
++        shared = support.shared_write_functions(docked_chains, modal_chains)
++        support.detach(docked, modal)
++        return docked_scale, modal_scale, shared
++
++    docked_scale, modal_scale, shared = support.run_probe(probe)
++    assert (docked_scale, modal_scale) == (1.1, 1.1), (
++        "opening the menu must still scale the calendar to 1.1 on both lines, "
++        "got docked=%r modal=%r" % (docked_scale, modal_scale)
++    )
++    assert shared, (
++        "the calendar scale must be written by one shared implementation on "
++        "both lines, the responsible functions do not overlap"
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/kivymd/tests/datepicker/test_f2p_menu_open_state_shared.py b/kivymd/tests/datepicker/test_f2p_menu_open_state_shared.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f025506573fbaeb6b43c9be20cc5d8433d9eb57b
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_f2p_menu_open_state_shared.py
+@@ -0,0 +1,73 @@
++"""The shared menu interaction must toggle both variants repeatedly.
++
++Private state names and storage are implementation choices. Observe the
++calendar's disabled state and opacity instead, and attribute each transition
++to the code that actually performs it. A common outer event wrapper around
++two independent controllers does not establish shared responsibility.
++"""
++
++import os
++import sys
++
++_HERE = os.path.dirname(os.path.abspath(__file__))
++if _HERE not in sys.path:
++    sys.path.insert(0, _HERE)
++
++import _f2p_selector_support as support  # noqa: E402
++
++
++def plan():
++    docked = support.docked_picker()
++    modal = support.modal_picker()
++    docked_calendar = docked.ids.calendar_layout
++    modal_calendar = modal.ids.calendar_layout
++    try:
++        for opened in (True, False, True, False):
++            docked_chains = support.write_chains(
++                docked_calendar,
++                "disabled",
++                lambda: docked.ids.month_selection_items.dispatch("on_open_menu"),
++            )
++            modal_chains = support.write_chains(
++                modal_calendar,
++                "disabled",
++                lambda: modal.ids.year_selection_items.dispatch("on_open_menu"),
++            )
++            assert bool(docked_calendar.disabled) is opened, (
++                "successive docked menu events must alternate open and closed"
++            )
++            assert bool(modal_calendar.disabled) is opened, (
++                "successive modal menu events must alternate open and closed"
++            )
++            assert support.shared_write_functions(docked_chains, modal_chains), (
++                "both menu transitions must be carried out by shared code, "
++                "rather than independent controllers behind a common wrapper"
++            )
++            # Wait for actual animations, then assert their final values. A
++            # wrong stable value must fail immediately instead of timing out.
++            def settled():
++                return not any(
++                    animation.have_properties_to_animate(calendar)
++                    for animation in list(support.Animation._instances)
++                    for calendar in (docked_calendar, modal_calendar)
++                )
++            yield settled
++            assert all(
++                abs(calendar.opacity - (0 if opened else 1)) < 0.001
++                and abs(calendar.scale_value_x - (1.1 if opened else 1)) < 0.001
++                and abs(calendar.scale_value_y - (1.1 if opened else 1)) < 0.001
++                for calendar in (docked_calendar, modal_calendar)
++            ), {"opened": opened, "values": [
++                {key: getattr(calendar, key) for key in ("opacity", "scale_value_x", "scale_value_y", "disabled")}
++                for calendar in (docked_calendar, modal_calendar)
++            ]}
++    finally:
++        support.detach(docked, modal)
++
++
++def main():
++    support.run_plan(plan)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/kivymd/tests/datepicker/test_f2p_row_selection_bookkeeping_shared.py b/kivymd/tests/datepicker/test_f2p_row_selection_bookkeeping_shared.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7f88e34b86c1c68ecf63f3afc14b6d9c7e64fd61
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_f2p_row_selection_bookkeeping_shared.py
+@@ -0,0 +1,110 @@
++"""
++F2P acceptance check: the row selection bookkeeping is one shared implementation.
++
++The docked list rows and the modal list rows keep the ``selected`` flag of the
++displayed row in sync with the layout selection.  On the baseline each line
++carried its own copy of that bookkeeping.  The restructured picker must serve
++both row views from a single implementation while the flag still tracks the
++row's selected state on both lines.
++"""
++
++import os
++import sys
++from types import SimpleNamespace
++
++_HERE = os.path.dirname(os.path.abspath(__file__))
++if _HERE not in sys.path:
++    sys.path.insert(0, _HERE)
++
++import _f2p_selector_support as support  # noqa: E402
++
++from kivymd.uix.pickers.datepicker import datepicker as datepicker_module  # noqa: E402
++
++
++def main():
++    docked_row_class = datepicker_module.MDDockedDatePickerMenuSelectionItem
++    modal_row_class = datepicker_module.MDModalDatePickerYearSelectableItem
++    assert docked_row_class is not modal_row_class
++
++    docked_impl = support.resolved_attribute(docked_row_class, "apply_selection")
++    modal_impl = support.resolved_attribute(modal_row_class, "apply_selection")
++    assert docked_impl is not None, "docked rows must expose apply_selection"
++    assert modal_impl is not None, "modal rows must expose apply_selection"
++    def probe():
++        rows = (docked_row_class(), modal_row_class())
++        data_chains = [[], []]
++
++        class SelectionData(dict):
++            def __init__(self, owner):
++                super().__init__(selected=False)
++                self.owner = owner
++
++            def __setitem__(self, key, value):
++                if key == "selected":
++                    data_chains[self.owner].append(support.module_frame_chain(1))
++                super().__setitem__(key, value)
++
++        stores = tuple(SimpleNamespace(data=[SelectionData(i) for _ in range(4)])
++                       for i in range(2))
++        chains = [[], []]
++        for selected in (True, False, True):
++            for i, (row, store) in enumerate(zip(rows, stores)):
++                chains[i].extend(support.write_chains(
++                    row, "selected",
++                    lambda row=row, store=store, selected=selected:
++                        row.apply_selection(store, 3, selected),
++                ))
++                assert row.selected is selected
++                assert store.data[3]["selected"] is selected
++                assert all(item["selected"] is False for item in store.data[:3])
++        for writes in (chains, data_chains):
++            assert support.shared_write_functions(*writes), (
++                "row and list-data bookkeeping must have shared writers; "
++                "a pure super() wrapper is permitted"
++            )
++
++    def plan():
++        from test_p2p_row_selection import FakeTouch, find_view
++
++        probe()
++        observations = []
++        for picker, is_modal in (
++            (support.docked_picker(month=6, day=10), False),
++            (support.modal_picker(month=6, day=10), True),
++        ):
++            picker.open()
++            yield lambda: not Animation._instances
++            picker.update_calendar(2030, 9)
++            picker.ids.year_selection_items.dispatch("on_open_menu")
++            layout = picker.ids[
++                "year_selection_layout" if is_modal
++                else "month_year_selection_layout"
++            ]
++            predicate = (
++                (lambda row: getattr(row, "text", "") == "1920")
++                if is_modal else
++                (lambda row: getattr(row, "month_year_name", "") == "1920")
++            )
++            yield lambda: find_view(layout, predicate) is not None
++            row = find_view(layout, predicate)
++            events = []
++            picker.fbind("on_select_year",
++                         lambda instance, year: events.append(year))
++            with support.RowDateResponsibility(picker) as observed:
++                row.on_touch_down(FakeTouch(row.center))
++            assert (picker.year, picker.month) == (
++                1920, 6 if is_modal else 9
++            ), "touched year must retain the variant's own month source"
++            assert events == [1920], "one touch must dispatch one year event"
++            assert row.selected is True
++            assert layout.data[row.index]["selected"] is True
++            observations.append(observed)
++            support.detach(picker)
++        support.assert_shared_row_date_responsibility(*observations)
++
++    from kivy.animation import Animation
++    support.run_plan(plan)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/kivymd/tests/datepicker/test_f2p_row_view_refresh_shared.py b/kivymd/tests/datepicker/test_f2p_row_view_refresh_shared.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..405c55b7e0b325e533fdcbbb1ebc7d8c7bfceb98
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_f2p_row_view_refresh_shared.py
+@@ -0,0 +1,62 @@
++"""
++F2P acceptance check: the row view refresh is one shared implementation.
++
++Every generated list row is refreshed through ``refresh_view_attrs`` so that
++the row knows its index in the recycle view data.  On the baseline the docked
++and the modal row classes each carried their own copy of that refresh.  The
++restructured picker must serve both row views from a single implementation
++while the refreshed row still records its data index.
++"""
++
++import os
++import sys
++
++_HERE = os.path.dirname(os.path.abspath(__file__))
++if _HERE not in sys.path:
++    sys.path.insert(0, _HERE)
++
++import _f2p_selector_support as support  # noqa: E402
++
++from kivymd.uix.pickers.datepicker import datepicker as datepicker_module  # noqa: E402
++
++
++def main():
++    docked_row_class = datepicker_module.MDDockedDatePickerMenuSelectionItem
++    modal_row_class = datepicker_module.MDModalDatePickerYearSelectableItem
++    assert docked_row_class is not modal_row_class
++
++    docked_impl = support.resolved_attribute(
++        docked_row_class, "refresh_view_attrs"
++    )
++    modal_impl = support.resolved_attribute(
++        modal_row_class, "refresh_view_attrs"
++    )
++    assert docked_impl is not None, "docked rows must expose refresh_view_attrs"
++    assert modal_impl is not None, "modal rows must expose refresh_view_attrs"
++    def probe():
++        refreshed = []
++        writes = []
++        for row_class in (docked_row_class, modal_row_class):
++            row = row_class()
++            store = type("Store", (), {"data": [{}]})()
++            writes.append(support.attribute_write_chains(
++                row, "index",
++                lambda row=row, store=store:
++                    row.refresh_view_attrs(store, 3, store.data[0]),
++            ))
++            refreshed.append(row.index)
++        assert support.shared_write_functions(*writes), (
++            "row index refresh must share its actual writer; "
++            "a pure super() forwarding wrapper is permitted"
++        )
++        return refreshed
++
++    result = support.run_probe(probe)
++    assert result == [3, 3], (
++        "the shared refresh must record the row index on both row views, "
++        "got %r" % (result,)
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/kivymd/tests/datepicker/test_p2p_boundary_direct.py b/kivymd/tests/datepicker/test_p2p_boundary_direct.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7e07e3a4798df051b62e6ec4dc118078aead89c7
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_boundary_direct.py
+@@ -0,0 +1,7 @@
++import os
++import sys
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++from _case33_boundary import check
++
++if __name__ == "__main__":
++    check('direct')
+diff --git a/kivymd/tests/datepicker/test_p2p_boundary_other.py b/kivymd/tests/datepicker/test_p2p_boundary_other.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..104bf47c64d19c360ca3f1762e3619c0dffe3f68
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_boundary_other.py
+@@ -0,0 +1,7 @@
++import os
++import sys
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++from _case33_boundary import check
++
++if __name__ == "__main__":
++    check('other')
+diff --git a/kivymd/tests/datepicker/test_p2p_boundary_row.py b/kivymd/tests/datepicker/test_p2p_boundary_row.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8abad7841cb566f173a3c0d669060b20ecd8dcdd
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_boundary_row.py
+@@ -0,0 +1,7 @@
++import os
++import sys
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++from _case33_boundary import check
++
++if __name__ == "__main__":
++    check('row')
+diff --git a/kivymd/tests/datepicker/test_p2p_change_month.py b/kivymd/tests/datepicker/test_p2p_change_month.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..250c9505bde88d0cfdf5f8e3228a9122791b599a
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_change_month.py
+@@ -0,0 +1,181 @@
++"""
++P2P regression check: ``change_month`` and ``update_calendar`` semantics.
++
++``change_month`` keeps its string flag, moves the displayed month by exactly
++one, wraps across year boundaries, clamps the year so it never drops below 1,
++steps backwards for any other flag value and dispatches ``on_select_month``
++with the resulting 1-based month number.  ``update_calendar`` refreshes the
++displayed calendar and its label without emitting selection events.
++
++The file is collected by ``kivymd/tests/conftest.py`` and executed as a
++standalone application script.
++"""
++
++from datetime import date
++
++from kivy.clock import Clock
++
++from kivymd.app import MDApp
++
++
++def detach(*pickers):
++    """Drop the generated list data and detach the pickers from the window.
++
++    Cancels the running animations and keeps a collected file from leaving
++    widgets whose recycle views would be laid out after the application
++    stopped.
++    """
++
++    from kivy.animation import Animation
++
++    Animation.cancel_all(None)
++    for picker in pickers:
++        for layout_id in (
++            "month_year_selection_layout",
++            "year_selection_layout",
++        ):
++            layout = picker.ids.get(layout_id)
++            if layout is not None:
++                layout.data = []
++        for widget in (picker, getattr(picker, "_scrim", None)):
++            if widget is not None and widget.parent is not None:
++                widget.parent.remove_widget(widget)
++
++
++class ChangeMonthApp(MDApp):
++    """Runs the synchronous regression checks inside the Kivy event loop."""
++
++    def build(self):
++        from kivymd.uix.boxlayout import MDBoxLayout
++
++        return MDBoxLayout()
++
++    def on_start(self):
++        Clock.schedule_once(self.run_checks_and_stop, 0)
++
++    def run_checks_and_stop(self, *args):
++        try:
++            self.run_checks()
++        finally:
++            self.stop()
++
++    def run_checks(self):
++        raise NotImplementedError
++
++
++def visible_days(picker):
++    """Day numbers currently rendered on the picker's calendar grid."""
++
++    from kivymd.uix.pickers.datepicker.datepicker import (
++        MDDatePickerDaySelectableItem,
++    )
++
++    days = []
++    for child in picker.ids.calendar_layout.children:
++        if isinstance(child, MDDatePickerDaySelectableItem) and child.text:
++            days.append(int(child.text))
++    return sorted(days)
++
++
++class ChangeMonthSemantics(ChangeMonthApp):
++    def run_checks(self):
++        from kivymd.uix.pickers import MDDockedDatePicker
++
++        picker = MDDockedDatePicker(year=2024, month=1, day=15)
++        months = []
++        years = []
++        days = []
++        picker.bind(on_select_month=lambda instance, month: months.append(month))
++        picker.bind(on_select_year=lambda instance, year: years.append(year))
++        picker.bind(on_select_day=lambda instance, day: days.append(day))
++
++        # "next" advances exactly one month and dispatches the 1-based month.
++        assert picker.change_month("next") is None
++        assert (picker.year, picker.month) == (2024, 2)
++        assert months == [2], months
++        assert visible_days(picker) == list(range(1, 30)), "February 2024"
++        assert (picker.sel_year, picker.sel_month, picker.sel_day) == (
++            2024,
++            1,
++            15,
++        ), "stepping must not change the picked date"
++
++        # "prev" steps back exactly one month.
++        picker.change_month("prev")
++        assert (picker.year, picker.month) == (2024, 1)
++        assert months == [2, 1], months
++        assert visible_days(picker) == list(range(1, 32)), "January 2024"
++
++        # December wraps to January of the next year, January wraps back.
++        picker.update_calendar(2024, 12)
++        picker.change_month("next")
++        assert (picker.year, picker.month) == (2025, 1)
++        assert months[-1] == 1
++        picker.change_month("prev")
++        assert (picker.year, picker.month) == (2024, 12)
++        assert months[-1] == 12
++        assert visible_days(picker) == list(range(1, 32))
++
++        # Stepping next and then prev from the same date returns to the
++        # original month and year.
++        picker.update_calendar(2024, 12)
++        picker.change_month("next")
++        picker.change_month("prev")
++        assert (picker.year, picker.month) == (2024, 12)
++
++        # Any other flag keeps stepping backward, as it does today.
++        before = len(months)
++        picker.update_calendar(2024, 3)
++        for flag in ("back", "", "NEXT", None):
++            picker.update_calendar(2024, 3)
++            picker.change_month(flag)
++            assert (picker.year, picker.month) == (2024, 2), flag
++        assert len(months) - before == 4
++        assert all(isinstance(month, int) for month in months)
++
++        # The year is clamped so that it never drops below 1.
++        picker.update_calendar(1, 1)
++        picker.change_month("prev")
++        assert (picker.year, picker.month) == (1, 1)
++        assert months[-1] == 1
++
++        # A year boundary wrap keeps the year consistent both ways.
++        picker.update_calendar(2024, 1)
++        picker.change_month("prev")
++        assert (picker.year, picker.month) == (2023, 12)
++        picker.change_month("next")
++        assert (picker.year, picker.month) == (2024, 1)
++
++        # ``update_calendar`` emits no selection event itself.
++        events_before = (len(months), len(years), len(days))
++        picker.update_calendar(2025, 5)
++        assert (picker.year, picker.month) == (2025, 5)
++        assert (len(months), len(years), len(days)) == events_before
++        assert visible_days(picker) == list(range(1, 32)), "May 2025"
++
++        picker.update_calendar(2023, 2)
++        assert visible_days(picker) == list(range(1, 29)), "February 2023"
++        assert (len(months), len(years), len(days)) == events_before
++
++        # A month with a first day at the end of a week still renders every
++        # day of the displayed month exactly once.
++        picker.update_calendar(2024, 9)
++        assert visible_days(picker) == list(range(1, 31)), "September 2024"
++
++        # ``update_calendar`` accepts plain numbers and refreshes the calendar
++        # without touching the selected date.
++        selection = (picker.sel_year, picker.sel_month, picker.sel_day)
++        picker.update_calendar(2001, 12)
++        assert (picker.year, picker.month) == (2001, 12)
++        assert (picker.sel_year, picker.sel_month, picker.sel_day) == selection
++        assert (len(months), len(years), len(days)) == events_before
++        assert visible_days(picker) == list(range(1, 32))
++        assert date(picker.year, picker.month, 1).isoformat() == "2001-12-01"
++
++
++        detach(picker)
++
++
++
++if __name__ == "__main__":
++    ChangeMonthSemantics().run()
+diff --git a/kivymd/tests/datepicker/test_p2p_chevron_stepping.py b/kivymd/tests/datepicker/test_p2p_chevron_stepping.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9af532d3e4eca13ad355ae96ce97a93d5342bf85
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_chevron_stepping.py
+@@ -0,0 +1,286 @@
++"""
++P2P regression check: chevron month stepping on both picker variants.
++
++Releasing a chevron with ``"prev"`` or ``"next"`` moves the displayed month
++by exactly one on the docked line and on the modal line, wraps December to
++January and January to December across the year, restores the calendar layout
++padding and the fade-in, and emits exactly one ``on_select_month`` carrying
++the new 1-based month.  Stepping next and then prev from the same date returns
++the picker to the original month and year.
++
++The file is collected by ``kivymd/tests/conftest.py`` and executed as a
++standalone application script.
++"""
++
++import time
++
++from kivy.animation import Animation, AnimationTransition
++from kivy.clock import Clock
++from kivy.metrics import dp
++
++from kivymd.app import MDApp
++
++RESTORED_PADDING = [dp(12), 0, dp(12), 0]
++
++
++def detach(*pickers):
++    """Drop the generated list data and detach the pickers from the window.
++
++    Cancels the running animations and keeps a collected file from leaving
++    widgets whose recycle views would be laid out after the application
++    stopped.
++    """
++
++    Animation.cancel_all(None)
++    for picker in pickers:
++        for layout_id in (
++            "month_year_selection_layout",
++            "year_selection_layout",
++        ):
++            layout = picker.ids.get(layout_id)
++            if layout is not None:
++                layout.data = []
++        for widget in (picker, getattr(picker, "_scrim", None)):
++            if widget is not None and widget.parent is not None:
++                widget.parent.remove_widget(widget)
++
++
++class PollingApp(MDApp):
++    """Drives ``plan()`` inside the Kivy event loop, polling each step."""
++
++    step_timeout = 20.0
++
++    def build(self):
++        from kivymd.uix.boxlayout import MDBoxLayout
++
++        return MDBoxLayout()
++
++    def on_start(self):
++        self._plan = self.plan()
++        self._wait = None
++        self._deadline = 0.0
++        self._tick = Clock.schedule_interval(self._poll, 0.02)
++
++    def _poll(self, *args):
++        if self._wait is not None and not self._wait():
++            if time.monotonic() > self._deadline:
++                raise AssertionError(
++                    "step timed out after %s seconds" % self.step_timeout
++                )
++            return
++        try:
++            self._wait = next(self._plan)
++        except StopIteration:
++            Clock.unschedule(self._tick)
++            self.stop()
++            return
++        self._deadline = time.monotonic() + self.step_timeout
++
++    def settle(self, *widgets):
++        """True once no animation is still animating the given widgets."""
++
++        instances = list(Animation._instances)
++        return not any(
++            animation.have_properties_to_animate(widget)
++            for animation in instances
++            for widget in widgets
++        )
++
++    def plan(self):
++        raise NotImplementedError
++
++
++def visible_days(picker):
++    """Day numbers currently rendered on the picker's calendar grid."""
++
++    from kivymd.uix.pickers.datepicker.datepicker import (
++        MDDatePickerDaySelectableItem,
++    )
++
++    days = [
++        int(child.text)
++        for child in picker.ids.calendar_layout.children
++        if isinstance(child, MDDatePickerDaySelectableItem) and child.text
++    ]
++    return sorted(days)
++
++
++class ChevronStepping(PollingApp):
++    def plan(self):
++        from kivymd.uix.pickers import MDDockedDatePicker, MDModalDatePicker
++
++        docked = MDDockedDatePicker(year=2024, month=1, day=15)
++        modal = MDModalDatePicker(year=2024, month=6, day=10)
++        docked_events = []
++        modal_events = []
++        docked.bind(
++            on_select_month=lambda instance, month: docked_events.append(month)
++        )
++        modal.bind(
++            on_select_month=lambda instance, month: modal_events.append(month)
++        )
++        docked.open()
++        modal.open()
++        yield lambda: self.settle(
++            docked.ids.calendar_layout, modal.ids.calendar_layout
++        )
++
++        # Record animation boundaries while retaining real Kivy execution.
++        starts = []
++        fade_progress = {}
++        event_progress = []
++        original_start = Animation.start
++
++        def month_changed(picker, month):
++            event_progress.append(fade_progress.get(picker.ids.calendar_layout, 0))
++
++        docked.fbind("on_select_month", month_changed)
++        modal.fbind("on_select_month", month_changed)
++
++        def record_start(animation, widget):
++            if widget in (docked.ids.calendar_layout, modal.ids.calendar_layout):
++                starts.append((widget, dict(animation.animated_properties),
++                               animation.duration, animation.transition))
++                if animation.animated_properties.get("opacity") == 0:
++                    fade_progress[widget] = 0
++                    animation.bind(on_progress=lambda anim, target, progress:
++                                   fade_progress.__setitem__(target, progress))
++            return original_start(animation, widget)
++
++        Animation.start = record_start
++        try:
++            for picker, container in (
++                (docked, docked.ids.month_selection_items),
++                (modal, modal.ids.year_selection_items),
++            ):
++                original_date = (picker.year, picker.month)
++                starts.clear()
++                event_progress.clear()
++                container.dispatch("on_release", "next")
++                assert (picker.year, picker.month) == original_date, (
++                    "month must update after fade completion, not at scheduling"
++                )
++                yield lambda picker=picker: (picker.year, picker.month) != original_date
++                yield lambda picker=picker: self.settle(picker.ids.calendar_layout)
++                fades = [entry for entry in starts if entry[1].get("opacity") == 0]
++                restores = [entry for entry in starts if entry[1].get("opacity") == 1]
++                assert len(fades) == len(restores) == 1
++                assert event_progress == [1.0], "month changed before fade completed"
++                assert fades[0][2] == 0.2
++                assert fades[0][3] is AnimationTransition.in_quad
++                assert restores[0][2] == 0.2
++                assert restores[0][3] is AnimationTransition.out_quad
++                assert fades[0][1]["padding"] == [dp(18), 0, 0, 0]
++                assert list(picker.ids.calendar_layout.padding) == RESTORED_PADDING
++                container.dispatch("on_release", "prev")
++                yield lambda picker=picker: (picker.year, picker.month) == original_date
++                yield lambda picker=picker: self.settle(picker.ids.calendar_layout)
++        finally:
++            Animation.start = original_start
++            docked.unbind(on_select_month=month_changed)
++            modal.unbind(on_select_month=month_changed)
++        docked_events.clear()
++        modal_events.clear()
++
++        # Docked line: "next" then "prev" moves one month each way and emits
++        # exactly one event per release.
++        docked.ids.month_selection_items.dispatch("on_release", "next")
++        yield lambda: docked.month == 2
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        assert docked.year == 2024
++        assert docked_events == [2], docked_events
++        assert visible_days(docked) == list(range(1, 30))
++        assert list(docked.ids.calendar_layout.padding) == RESTORED_PADDING, (
++            list(docked.ids.calendar_layout.padding)
++        )
++        assert round(docked.ids.calendar_layout.opacity, 3) == 1.0
++
++        docked.ids.month_selection_items.dispatch("on_release", "prev")
++        yield lambda: docked.month == 1
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        assert (docked.year, docked.month) == (2024, 1), "back to the start"
++        assert docked_events == [2, 1], docked_events
++        assert list(docked.ids.calendar_layout.padding) == RESTORED_PADDING
++        assert round(docked.ids.calendar_layout.opacity, 3) == 1.0
++
++        # December wraps to January of the next year and the calendar grid
++        # follows the movement.
++        docked.update_calendar(2024, 12)
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        docked.ids.month_selection_items.dispatch("on_release", "next")
++        yield lambda: docked.month == 1
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        assert (docked.year, docked.month) == (2025, 1)
++        assert docked_events[-1] == 1
++        assert visible_days(docked) == list(range(1, 32))
++
++        # January wraps back to December of the previous year.
++        docked.update_calendar(2025, 1)
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        docked.ids.month_selection_items.dispatch("on_release", "prev")
++        yield lambda: docked.month == 12
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        assert (docked.year, docked.month) == (2024, 12)
++        assert docked_events[-1] == 12
++        assert visible_days(docked) == list(range(1, 32))
++
++        # Modal line behaves identically for the same releases, and its month
++        # label follows the displayed month.
++        assert modal.ids.year_selection_items.text == "June 2024"
++        modal.ids.year_selection_items.dispatch("on_release", "next")
++        yield lambda: modal.month == 7
++        yield lambda: self.settle(modal.ids.calendar_layout)
++        assert (modal.year, modal.month) == (2024, 7)
++        assert modal_events == [7], modal_events
++        assert modal.ids.year_selection_items.text == "July 2024"
++        assert visible_days(modal) == list(range(1, 32))
++        assert list(modal.ids.calendar_layout.padding) == RESTORED_PADDING, (
++            list(modal.ids.calendar_layout.padding)
++        )
++        assert round(modal.ids.calendar_layout.opacity, 3) == 1.0
++
++        modal.ids.year_selection_items.dispatch("on_release", "prev")
++        yield lambda: modal.month == 6
++        yield lambda: self.settle(modal.ids.calendar_layout)
++        assert (modal.year, modal.month) == (2024, 6), "back to the start"
++        assert modal_events == [7, 6], modal_events
++        assert modal.ids.year_selection_items.text == "June 2024"
++        assert visible_days(modal) == list(range(1, 31))
++
++        # December wraps to January of the next year on the modal line too.
++        modal.update_calendar(2024, 12)
++        yield lambda: self.settle(modal.ids.calendar_layout)
++        modal.ids.year_selection_items.dispatch("on_release", "next")
++        yield lambda: modal.month == 1
++        yield lambda: self.settle(modal.ids.calendar_layout)
++        assert (modal.year, modal.month) == (2025, 1)
++        assert modal_events[-1] == 1
++        assert modal.ids.year_selection_items.text == "January 2025"
++
++        assert docked_events == [2, 1, 1, 12]
++        assert modal_events == [7, 6, 1]
++        assert (docked.year, docked.month) == (2024, 12)
++        assert (modal.year, modal.month) == (2025, 1)
++
++
++        # Displayed navigation and selected-date labels have different sources.
++        # Check both when they deliberately diverge, including a real arrow.
++        label_docked = MDDockedDatePicker(year=2024, month=6, day=10)
++        for picker in (label_docked, modal):
++            picker.update_calendar(2030, 9)
++        assert label_docked._current_month_name == "Jun"
++        assert modal._current_month_name == "Mon, Jun 10"
++        assert modal.ids.year_selection_items.text == "September 2030"
++        label_docked.ids.month_selection_items.dispatch("on_release", "next")
++        yield lambda: (label_docked.year, label_docked.month) == (2030, 10)
++        yield lambda: self.settle(label_docked.ids.calendar_layout)
++        assert label_docked._current_month_name == "Jun", (
++            "navigation must not replace the selected-month label"
++        )
++
++        detach(docked, modal, label_docked)
++
++
++
++if __name__ == "__main__":
++    ChevronStepping().run()
+diff --git a/kivymd/tests/datepicker/test_p2p_contract_surface.py b/kivymd/tests/datepicker/test_p2p_contract_surface.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d20e583b2da17d0a7689fded452218df6c41263
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_contract_surface.py
+@@ -0,0 +1,263 @@
++"""
++P2P regression check: public surface and declarative names of the date pickers.
++
++The docked, modal and modal-input pickers must keep the public classes,
++properties, methods, events and declarative identifiers that applications and
++the declarative layouts rely on, exactly as they are today.
++
++The file is collected by ``kivymd/tests/conftest.py`` and executed as a
++standalone application script.
++"""
++
++import time
++
++from kivy.animation import Animation
++from kivy.clock import Clock
++
++from kivymd.app import MDApp
++
++
++def detach(*pickers):
++    """Drop the generated list data and detach the pickers from the window.
++
++    Cancels the running animations and keeps a collected file from leaving
++    widgets whose recycle views would be laid out after the application
++    stopped.
++    """
++
++    Animation.cancel_all(None)
++    for picker in pickers:
++        for layout_id in (
++            "month_year_selection_layout",
++            "year_selection_layout",
++        ):
++            layout = picker.ids.get(layout_id)
++            if layout is not None:
++                layout.data = []
++        for widget in (picker, getattr(picker, "_scrim", None)):
++            if widget is not None and widget.parent is not None:
++                widget.parent.remove_widget(widget)
++
++
++class PollingApp(MDApp):
++    """Drives ``plan()`` inside the Kivy event loop, polling each step."""
++
++    step_timeout = 20.0
++
++    def build(self):
++        from kivymd.uix.boxlayout import MDBoxLayout
++
++        return MDBoxLayout()
++
++    def on_start(self):
++        self._plan = self.plan()
++        self._wait = None
++        self._deadline = 0.0
++        self._tick = Clock.schedule_interval(self._poll, 0.02)
++
++    def _poll(self, *args):
++        if self._wait is not None and not self._wait():
++            if time.monotonic() > self._deadline:
++                raise AssertionError(
++                    "step timed out after %s seconds" % self.step_timeout
++                )
++            return
++        try:
++            self._wait = next(self._plan)
++        except StopIteration:
++            Clock.unschedule(self._tick)
++            self.stop()
++            return
++        self._deadline = time.monotonic() + self.step_timeout
++
++    def settle(self, *widgets):
++        """True once no animation is still animating the given widgets."""
++
++        instances = list(Animation._instances)
++        return not any(
++            animation.have_properties_to_animate(widget)
++            for animation in instances
++            for widget in widgets
++        )
++
++    def plan(self):
++        raise NotImplementedError
++
++
++class ContractSurface(PollingApp):
++    def plan(self):
++        from kivymd.uix.pickers import (
++            MDDockedDatePicker,
++            MDModalDatePicker,
++            MDModalInputDatePicker,
++        )
++        from kivymd.uix.pickers.datepicker.datepicker import (
++            MDBaseDatePicker,
++            MDCalendarLayout,
++            MDDatePickerDaySelectableItem,
++            MDDatePickerTypeDateError,
++            MDDockedDatePickerMenuMonthYearSelection,
++            MDDockedDatePickerMonthSelectionItem,
++            MDDockedDatePickerMenuSelectionItem,
++            MDDockedDatePickerYearSelectionItem,
++            MDModalDatePickerMenuYearSelection,
++            MDModalDatePickerYearSelectableItem,
++            MDModalDatePickerYearSelectionItem,
++        )
++
++        # The classes are importable under their current names from both the
++        # package and the module that defines them.
++        assert MDDockedDatePicker.__name__ == "MDDockedDatePicker"
++        assert MDModalDatePicker.__name__ == "MDModalDatePicker"
++        assert MDModalInputDatePicker.__name__ == "MDModalInputDatePicker"
++        assert MDBaseDatePicker.__name__ == "MDBaseDatePicker"
++        assert issubclass(MDDockedDatePicker, MDBaseDatePicker)
++        assert issubclass(MDModalDatePicker, MDBaseDatePicker)
++        assert issubclass(MDModalInputDatePicker, MDBaseDatePicker)
++        assert issubclass(MDDatePickerTypeDateError, Exception)
++
++        docked = MDDockedDatePicker(year=2024, month=1, day=15)
++        modal = MDModalDatePicker(year=2024, month=6, day=10)
++        modal_input = MDModalInputDatePicker(year=2024, month=6, day=10)
++
++        # Public numeric bounds keep their current defaults and the documented
++        # public methods stay callable on every variant.
++        for picker in (docked, modal, modal_input):
++            assert picker.min_year == 1914, picker.min_year
++            assert picker.max_year == 2121, picker.max_year
++            assert picker.mode == "picker"
++            for name in (
++                "change_month",
++                "update_calendar",
++                "get_date",
++                "set_text_full_date",
++                "open",
++                "dismiss",
++            ):
++                assert callable(getattr(picker, name)), name
++            for event in (
++                "on_select_day",
++                "on_select_month",
++                "on_select_year",
++                "on_cancel",
++                "on_ok",
++                "on_edit",
++                "on_dismiss",
++            ):
++                assert hasattr(picker, event), event
++
++        from kivymd.uix.pickers.datepicker.datepicker import (
++            MDDockedDatePickerBaseSelectionContainer,
++        )
++        base_container = MDDockedDatePickerBaseSelectionContainer(date_picker=docked)
++        original_date = (docked.year, docked.month)
++        base_container.on_release()
++        base_container.dispatch("on_release")
++        base_container.on_release("next", "extra")
++        assert (docked.year, docked.month) == original_date
++
++        docked.open()
++        yield lambda: self.settle(docked.ids.calendar_layout)
++
++        # Selection containers and calendar keep their current classes and
++        # declarative identifiers.
++        assert isinstance(docked.ids.calendar_layout, MDCalendarLayout)
++        assert isinstance(
++            docked.ids.month_selection_items,
++            MDDockedDatePickerMonthSelectionItem,
++        )
++        assert isinstance(
++            docked.ids.year_selection_items,
++            MDDockedDatePickerYearSelectionItem,
++        )
++        assert isinstance(
++            docked.ids.month_year_selection_layout,
++            MDDockedDatePickerMenuMonthYearSelection,
++        )
++        assert isinstance(docked.calendar_layout, MDCalendarLayout)
++        day_items = [
++            child
++            for child in docked.ids.calendar_layout.children
++            if isinstance(child, MDDatePickerDaySelectableItem)
++        ]
++        assert len(day_items) == 42, len(day_items)
++        assert len(docked.ids.calendar_layout.children) == 49
++
++        # The month/year list is filled with the documented data keys and view
++        # keys, and the month list carries the twelve 1-based months.
++        docked.ids.month_selection_items.dispatch("on_open_menu")
++        yield lambda: self.settle(docked.ids.month_year_selection_layout)
++        month_data = docked.ids.month_year_selection_layout.data
++        assert len(month_data) == 12
++        assert [entry["month_index"] for entry in month_data] == list(
++            range(1, 13)
++        )
++        assert month_data[0]["month_year_name"] == "January"
++        assert month_data[2]["month_year_name"] == "March"
++        assert month_data[0]["viewclass"] == "MDDockedDatePickerMenuSelectionItem"
++        assert isinstance(
++            month_data[0]["viewclass"], str
++        )
++        for entry in month_data:
++            assert {
++                "viewclass",
++                "height",
++                "date_picker",
++                "menu_type",
++                "month_year_name",
++                "month_index",
++            } <= set(entry)
++            assert entry["menu_type"] == "month"
++            assert entry["date_picker"] is docked
++
++        # The year list offers the years from ``min_year`` up to but not
++        # including ``max_year``.
++        docked.ids.month_selection_items.dispatch("on_open_menu")
++        yield lambda: self.settle(docked.ids.month_year_selection_layout)
++        docked.ids.year_selection_items.dispatch("on_open_menu")
++        yield lambda: self.settle(docked.ids.month_year_selection_layout)
++        year_data = docked.ids.month_year_selection_layout.data
++        assert len(year_data) == 2121 - 1914
++        assert [entry["month_year_name"] for entry in year_data] == [
++            str(year) for year in range(1914, 2121)
++        ]
++        for entry in year_data:
++            assert entry["menu_type"] == "year"
++            assert entry["viewclass"] == "MDDockedDatePickerMenuSelectionItem"
++
++        # The modal year list uses its own list item class and view key.
++        modal.open()
++        yield lambda: self.settle(modal.ids.calendar_layout)
++        assert isinstance(
++            modal.ids.year_selection_items, MDModalDatePickerYearSelectionItem
++        )
++        assert isinstance(
++            modal.ids.year_selection_layout, MDModalDatePickerMenuYearSelection
++        )
++        modal.ids.year_selection_items.dispatch("on_open_menu")
++        modal_year_data = modal.ids.year_selection_layout.data
++        assert len(modal_year_data) == 207
++        assert modal_year_data[0]["text"] == "1914"
++        assert modal_year_data[-1]["text"] == "2120"
++        assert modal_year_data[0]["index"] == 0
++        for entry in modal_year_data:
++            assert entry["viewclass"] == "MDModalDatePickerYearSelectableItem"
++            assert {"viewclass", "date_picker", "text", "index"} <= set(entry)
++
++        # The list item classes resolved from the declarative layouts are the
++        # same objects as the module-level classes.
++        assert MDDockedDatePickerMenuSelectionItem.__name__ == (
++            "MDDockedDatePickerMenuSelectionItem"
++        )
++        assert MDModalDatePickerYearSelectableItem.__name__ == (
++            "MDModalDatePickerYearSelectableItem"
++        )
++        assert MDCalendarLayout.__name__ == "MDCalendarLayout"
++
++
++        detach(docked, modal, modal_input)
++
++
++
++if __name__ == "__main__":
++    ContractSurface().run()
+diff --git a/kivymd/tests/datepicker/test_p2p_date_accessors.py b/kivymd/tests/datepicker/test_p2p_date_accessors.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b5be5bbb6698f823b39fcfefe8a793f65edf8f30
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_date_accessors.py
+@@ -0,0 +1,203 @@
++"""
++P2P regression check: ``get_date`` and ``set_text_full_date``.
++
++``get_date`` keeps returning a list of ``datetime.date`` values and
++``set_text_full_date`` keeps returning its current formatted strings for every
++selection mode, including the range mode and the dates picked from the
++calendar grid.
++
++The file is collected by ``kivymd/tests/conftest.py`` and executed as a
++standalone application script.
++"""
++
++import time
++from datetime import date
++
++from kivy.animation import Animation
++from kivy.clock import Clock
++from kivy.input.motionevent import MotionEvent
++
++from kivymd.app import MDApp
++
++
++def detach(*pickers):
++    """Drop the generated list data and detach the pickers from the window.
++
++    Cancels the running animations and keeps a collected file from leaving
++    widgets whose recycle views would be laid out after the application
++    stopped.
++    """
++
++    Animation.cancel_all(None)
++    for picker in pickers:
++        for layout_id in (
++            "month_year_selection_layout",
++            "year_selection_layout",
++        ):
++            layout = picker.ids.get(layout_id)
++            if layout is not None:
++                layout.data = []
++        for widget in (picker, getattr(picker, "_scrim", None)):
++            if widget is not None and widget.parent is not None:
++                widget.parent.remove_widget(widget)
++
++
++class FakeTouch(MotionEvent):
++    """Minimal touch used to release a calendar day."""
++
++    def __init__(self, pos=(0, 0)):
++        super().__init__(device="fake", id="fake", args={}, is_touch=True)
++        self.x, self.y = pos
++        self.pos = pos
++
++    def release(self, widget):
++        """Hand the touch back to ``widget`` so it completes its release."""
++
++        widget.on_touch_down(self)
++        self.grab_current = widget
++        widget.on_touch_up(self)
++
++
++class PollingApp(MDApp):
++    """Drives ``plan()`` inside the Kivy event loop, polling each step."""
++
++    step_timeout = 20.0
++
++    def build(self):
++        from kivymd.uix.boxlayout import MDBoxLayout
++
++        return MDBoxLayout()
++
++    def on_start(self):
++        self._plan = self.plan()
++        self._wait = None
++        self._deadline = 0.0
++        self._tick = Clock.schedule_interval(self._poll, 0.02)
++
++    def _poll(self, *args):
++        if self._wait is not None and not self._wait():
++            if time.monotonic() > self._deadline:
++                raise AssertionError(
++                    "step timed out after %s seconds" % self.step_timeout
++                )
++            return
++        try:
++            self._wait = next(self._plan)
++        except StopIteration:
++            Clock.unschedule(self._tick)
++            self.stop()
++            return
++        self._deadline = time.monotonic() + self.step_timeout
++
++    def settle(self, *widgets):
++        """True once no animation is still animating the given widgets."""
++
++        instances = list(Animation._instances)
++        return not any(
++            animation.have_properties_to_animate(widget)
++            for animation in instances
++            for widget in widgets
++        )
++
++    def plan(self):
++        raise NotImplementedError
++
++
++def day_item(picker, text):
++    from kivymd.uix.pickers.datepicker.datepicker import (
++        MDDatePickerDaySelectableItem,
++    )
++
++    for child in picker.ids.calendar_layout.children:
++        if (
++            isinstance(child, MDDatePickerDaySelectableItem)
++            and child.text == text
++        ):
++            return child
++    raise AssertionError("no calendar day %r" % text)
++
++
++class DateAccessors(PollingApp):
++    def plan(self):
++        from kivymd.uix.pickers import MDDockedDatePicker, MDModalDatePicker
++
++        docked = MDDockedDatePicker(year=2024, month=2, day=5)
++        modal = MDModalDatePicker(year=2024, month=6, day=10)
++        docked_open_days = []
++        docked.bind(
++            on_select_day=lambda instance, day: docked_open_days.append(day)
++        )
++        docked.open()
++        modal.open()
++        yield lambda: self.settle(
++            docked.ids.calendar_layout, modal.ids.calendar_layout
++        )
++
++        # Picker mode returns a one item list of ``datetime.date`` values.
++        assert docked.get_date() == [date(2024, 2, 5)], docked.get_date()
++        assert all(
++            isinstance(value, date) for value in docked.get_date()
++        )
++        assert docked.set_text_full_date() == "Mon, Feb 5", (
++            docked.set_text_full_date()
++        )
++        assert modal.get_date() == [date(2024, 6, 10)]
++        assert modal.set_text_full_date() == "Mon, Jun 10", (
++            modal.set_text_full_date()
++        )
++
++        # Picking a day on the grid refreshes the returned date and emits the
++        # day number.
++        item = day_item(docked, "12")
++        FakeTouch((item.center_x, item.center_y)).release(item)
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        assert docked_open_days == [12], docked_open_days
++        assert docked.get_date() == [date(2024, 2, 12)], docked.get_date()
++        assert docked.set_text_full_date() == "Mon, Feb 12"
++        assert item.is_selected is True
++        assert day_item(docked, "5").is_selected is False
++
++        # Range mode keeps returning the inclusive list of dates.
++        ranged = MDDockedDatePicker(
++            mode="range",
++            year=2024,
++            month=2,
++            day=5,
++            min_date=date(2024, 2, 5),
++            max_date=date(2024, 2, 8),
++        )
++        assert ranged.get_date() == [
++            date(2024, 2, 5),
++            date(2024, 2, 6),
++            date(2024, 2, 7),
++            date(2024, 2, 8),
++        ], ranged.get_date()
++        assert ranged.set_text_full_date() == "Feb 5 — Feb 8", (
++            ranged.set_text_full_date()
++        )
++
++        # Range mode without a date range reports its current placeholder.
++        empty_range = MDDockedDatePicker(mode="range", year=2024, month=2, day=5)
++        assert empty_range.get_date() == []
++        assert empty_range.set_text_full_date() == "Start - End", (
++            empty_range.set_text_full_date()
++        )
++
++        # The modal picker's accessors follow the date picked on its grid too.
++        modal.update_calendar(2024, 3)
++        yield lambda: self.settle(modal.ids.calendar_layout)
++        item = day_item(modal, "7")
++        FakeTouch((item.center_x, item.center_y)).release(item)
++        yield lambda: self.settle(modal.ids.calendar_layout)
++        assert modal.get_date() == [date(2024, 3, 7)], modal.get_date()
++        assert modal.set_text_full_date() == "Thu, Mar 7", (
++            modal.set_text_full_date()
++        )
++
++
++        detach(docked, modal, ranged, empty_range)
++
++
++
++if __name__ == "__main__":
++    DateAccessors().run()
+diff --git a/kivymd/tests/datepicker/test_p2p_event_surface.py b/kivymd/tests/datepicker/test_p2p_event_surface.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0dee00444958f154ea00cd53f6e8a84be456caa8
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_event_surface.py
+@@ -0,0 +1,221 @@
++"""
++P2P regression check: the picker event surface.
++
++``on_select_day``, ``on_select_month``, ``on_select_year``, ``on_open``,
++``on_dismiss``, ``on_cancel``, ``on_ok`` and ``on_edit`` stay usable with the
++same payloads, the selection containers keep dispatching ``on_release`` with
++``"prev"``/``"next"`` and ``on_open_menu``, and the button and icon releases
++keep dispatching the picker's cancel, ok and edit events.
++
++The file is collected by ``kivymd/tests/conftest.py`` and executed as a
++standalone application script.
++"""
++
++import time
++
++from kivy.animation import Animation
++from kivy.clock import Clock
++
++from kivymd.app import MDApp
++
++
++def detach(*pickers):
++    """Drop the generated list data and detach the pickers from the window.
++
++    Cancels the running animations and keeps a collected file from leaving
++    widgets whose recycle views would be laid out after the application
++    stopped.
++    """
++
++    Animation.cancel_all(None)
++    for picker in pickers:
++        for layout_id in (
++            "month_year_selection_layout",
++            "year_selection_layout",
++        ):
++            layout = picker.ids.get(layout_id)
++            if layout is not None:
++                layout.data = []
++        for widget in (picker, getattr(picker, "_scrim", None)):
++            if widget is not None and widget.parent is not None:
++                widget.parent.remove_widget(widget)
++
++
++class PollingApp(MDApp):
++    """Drives ``plan()`` inside the Kivy event loop, polling each step."""
++
++    step_timeout = 20.0
++
++    def build(self):
++        from kivymd.uix.boxlayout import MDBoxLayout
++
++        return MDBoxLayout()
++
++    def on_start(self):
++        self._plan = self.plan()
++        self._wait = None
++        self._deadline = 0.0
++        self._tick = Clock.schedule_interval(self._poll, 0.02)
++
++    def _poll(self, *args):
++        if self._wait is not None and not self._wait():
++            if time.monotonic() > self._deadline:
++                raise AssertionError(
++                    "step timed out after %s seconds" % self.step_timeout
++                )
++            return
++        try:
++            self._wait = next(self._plan)
++        except StopIteration:
++            Clock.unschedule(self._tick)
++            self.stop()
++            return
++        self._deadline = time.monotonic() + self.step_timeout
++
++    def settle(self, *widgets):
++        """True once no animation is still animating the given widgets."""
++
++        instances = list(Animation._instances)
++        return not any(
++            animation.have_properties_to_animate(widget)
++            for animation in instances
++            for widget in widgets
++        )
++
++    def plan(self):
++        raise NotImplementedError
++
++
++class EventSurface(PollingApp):
++    def plan(self):
++        from kivymd.uix.pickers import (
++            MDDockedDatePicker,
++            MDModalInputDatePicker,
++        )
++
++        docked = MDDockedDatePicker(year=2024, month=1, day=15)
++        typed = MDModalInputDatePicker(year=2024, month=6, day=10)
++        seen = []
++
++        def record(event):
++            def handler(instance, *args):
++                seen.append((event, args))
++
++            return handler
++
++        for event in (
++            "on_select_day",
++            "on_select_month",
++            "on_select_year",
++            "on_dismiss",
++            "on_cancel",
++            "on_ok",
++            "on_edit",
++        ):
++            docked.bind(**{event: record(event)})
++            typed.bind(**{event: record(event)})
++            assert callable(getattr(docked, event)), event
++
++        # Opening the picker runs the documented open path and marks it open.
++        docked.open()
++        typed.open()
++        yield lambda: round(docked.opacity, 3) == 1.0
++        assert docked.is_open is True
++        assert typed.is_open is True
++
++        # on_open is an inherited motion method, not a registered Kivy event.
++        for picker in (docked, typed):
++            assert callable(picker.on_open)
++            assert not picker.is_event_type("on_open")
++            picker.on_open()
++        yield lambda: round(docked.opacity, 3) == round(typed.opacity, 3) == 1.0
++
++        from kivymd.uix.pickers import MDModalDatePicker
++        modal = MDModalDatePicker(year=2024, month=6, day=10)
++        modal.open()
++        yield lambda: self.settle(modal.ids.calendar_layout)
++        events = []
++        modal.bind(on_select_month=lambda instance, month: events.append(month))
++        for button, expected in (("chevron_right", 7), ("chevron_left", 6)):
++            count_before = len(events)
++            modal.ids.year_selection_items.ids[button].dispatch("on_release")
++            yield lambda count_before=count_before: len(events) > count_before
++            yield lambda: self.settle(modal.ids.calendar_layout)
++            assert (modal.year, modal.month) == (2024, expected)
++        assert events == [7, 6]
++        detach(modal)
++
++        # The selection events stay dispatchable and keep integer payloads.
++        docked.dispatch("on_select_month", 3)
++        assert ("on_select_month", (3,)) in seen
++        docked.dispatch("on_select_year", 2020)
++        assert ("on_select_year", (2020,)) in seen
++        docked.dispatch("on_select_day", 12)
++        assert ("on_select_day", (12,)) in seen
++        assert isinstance(
++            [args for event, args in seen if event == "on_select_year"][0][0],
++            int,
++        )
++
++        # The selection container keeps dispatching its own events: the month
++        # chevron steps the displayed month and the menu toggle opens the
++        # list.
++        month_items = docked.ids.month_selection_items
++        month_items.dispatch("on_release", "next")
++        yield lambda: docked.month == 2
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        assert docked.month == 2
++        assert ("on_select_month", (2,)) in seen
++        month_items.dispatch("on_open_menu")
++        yield lambda: self.settle(
++            month_items.ids.menu_selection_button,
++            docked.ids.month_year_selection_layout,
++        )
++        assert tuple(docked.ids.month_year_selection_layout.size)[0] > 0
++        month_items.dispatch("on_open_menu")
++        yield lambda: self.settle(
++            month_items.ids.menu_selection_button,
++            docked.ids.month_year_selection_layout,
++        )
++        assert tuple(docked.ids.month_year_selection_layout.size) == (0.0, 0.0)
++
++        # Releasing the dialog buttons dispatches cancel and ok.
++        ok_cancel = [
++            event for event, args in seen if event in ("on_ok", "on_cancel")
++        ]
++        assert ok_cancel == []
++        buttons = [
++            child
++            for child in docked.ids.button_container.children
++            if hasattr(child, "on_release")
++        ]
++        assert len(buttons) == 2
++        for button in buttons:
++            button.dispatch("on_release")
++        ok_cancel = [
++            event for event, args in seen if event in ("on_ok", "on_cancel")
++        ]
++        assert sorted(ok_cancel) == ["on_cancel", "on_ok"], ok_cancel
++
++        # Releasing the edit icon of the input picker dispatches edit.
++        assert [event for event, args in seen if event == "on_edit"] == []
++        typed.ids.icon_button.dispatch("on_release")
++        assert [
++            event for event, args in seen if event == "on_edit"
++        ] == ["on_edit"]
++
++        # Dismissing the picker dispatches dismiss and closes it.
++        assert [event for event, args in seen if event == "on_dismiss"] == []
++        docked.dismiss()
++        yield lambda: docked.is_open is False
++        yield lambda: ("on_dismiss", ()) in seen
++        assert docked.is_open is False
++        assert ("on_dismiss", ()) in seen
++
++
++        detach(docked, typed)
++
++
++
++if __name__ == "__main__":
++    EventSurface().run()
+diff --git a/kivymd/tests/datepicker/test_p2p_menu_toggle_docked.py b/kivymd/tests/datepicker/test_p2p_menu_toggle_docked.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..603d7f33683867bdfae7f04e579ecc561770f0bd
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_menu_toggle_docked.py
+@@ -0,0 +1,228 @@
++"""
++P2P regression check: docked month/year list menu toggle.
++
++Opening the docked list rotates the menu icon to -90 degrees, hides and
++disables the calendar and the chevrons, scales the calendar to 1.1 and expands
++the selection area; closing restores the rotation, the calendar opacity, scale
++and enabled state and collapses the selection area to zero size.
++
++The file is collected by ``kivymd/tests/conftest.py`` and executed as a
++standalone application script.
++"""
++
++import time
++
++from kivy.animation import Animation
++from kivy.clock import Clock
++from kivy.metrics import dp
++
++from kivymd.app import MDApp
++
++
++def detach(*pickers):
++    """Drop the generated list data and detach the pickers from the window.
++
++    Cancels the running animations and keeps a collected file from leaving
++    widgets whose recycle views would be laid out after the application
++    stopped.
++    """
++
++    Animation.cancel_all(None)
++    for picker in pickers:
++        for layout_id in (
++            "month_year_selection_layout",
++            "year_selection_layout",
++        ):
++            layout = picker.ids.get(layout_id)
++            if layout is not None:
++                layout.data = []
++        for widget in (picker, getattr(picker, "_scrim", None)):
++            if widget is not None and widget.parent is not None:
++                widget.parent.remove_widget(widget)
++
++
++class PollingApp(MDApp):
++    """Drives ``plan()`` inside the Kivy event loop, polling each step."""
++
++    step_timeout = 20.0
++
++    def build(self):
++        from kivymd.uix.boxlayout import MDBoxLayout
++
++        return MDBoxLayout()
++
++    def on_start(self):
++        self._plan = self.plan()
++        self._wait = None
++        self._deadline = 0.0
++        self._tick = Clock.schedule_interval(self._poll, 0.02)
++
++    def _poll(self, *args):
++        if self._wait is not None and not self._wait():
++            if time.monotonic() > self._deadline:
++                raise AssertionError(
++                    "step timed out after %s seconds" % self.step_timeout
++                )
++            return
++        try:
++            self._wait = next(self._plan)
++        except StopIteration:
++            Clock.unschedule(self._tick)
++            self.stop()
++            return
++        self._deadline = time.monotonic() + self.step_timeout
++
++    def settle(self, *widgets):
++        """True once no animation is still animating the given widgets."""
++
++        instances = list(Animation._instances)
++        return not any(
++            animation.have_properties_to_animate(widget)
++            for animation in instances
++            for widget in widgets
++        )
++
++    def plan(self):
++        raise NotImplementedError
++
++
++class DockedMenuToggle(PollingApp):
++    def plan(self):
++        from kivymd.uix.pickers import MDDockedDatePicker
++
++        picker = MDDockedDatePicker(year=2024, month=1, day=15)
++        picker.open()
++        yield lambda: self.settle(
++            picker.ids.calendar_layout,
++            picker.ids.month_selection_items.ids.menu_selection_button,
++            picker.ids.month_year_selection_layout,
++        )
++
++        month_items = picker.ids.month_selection_items
++        year_items = picker.ids.year_selection_items
++        calendar = picker.ids.calendar_layout
++        selection = picker.ids.month_year_selection_layout
++        button_container = picker.ids.button_container
++        menu_button = month_items.ids.menu_selection_button
++
++        # Collapsed state before the first press.
++        assert menu_button.rotate_value_angle == 0
++        assert round(calendar.opacity, 3) == 1.0
++        assert calendar.disabled is False
++        assert round(calendar.scale_value_x, 3) == 1.0
++        assert tuple(selection.size) == (0.0, 0.0)
++
++        # Pressing the toggle opens the list.
++        month_items.dispatch("on_open_menu")
++        yield lambda: self.settle(
++            calendar, menu_button, selection, month_items, year_items
++        )
++        assert round(menu_button.rotate_value_angle, 3) == -90.0
++        assert round(calendar.opacity, 3) == 0.0
++        assert round(calendar.scale_value_x, 3) == 1.1
++        assert round(calendar.scale_value_y, 3) == 1.1
++        assert calendar.disabled is True
++        assert month_items.ids.chevron_left.disabled is True
++        assert month_items.ids.chevron_right.disabled is True
++        assert round(month_items.ids.chevron_left.opacity, 3) == 0.0
++        assert round(month_items.ids.chevron_right.opacity, 3) == 0.0
++        assert year_items.ids.chevron_left.disabled is True
++        assert year_items.ids.chevron_right.disabled is True
++        assert year_items.ids.label.disabled is True
++        assert round(year_items.ids.menu_selection_button.opacity, 3) == 0.0
++        assert round(button_container.opacity, 3) == 0.0
++        assert button_container.disabled is True
++        # The selection area is expanded to the full available space.
++        assert tuple(selection.size)[0] == picker.width, (
++            tuple(selection.size),
++            picker.width,
++        )
++        assert tuple(selection.size)[1] == picker.height - (
++            picker.ids.month_year_selection_items_container.height + dp(56)
++        )
++        assert selection.disabled is False
++        assert round(selection.scale_value_x, 2) == 1.0
++        assert round(selection.scale_value_y, 2) == 1.0
++
++        # Pressing the toggle again closes the list and restores everything.
++        month_items.dispatch("on_open_menu")
++        yield lambda: self.settle(
++            calendar, menu_button, selection, month_items, year_items
++        )
++        assert round(menu_button.rotate_value_angle, 3) == 0.0
++        assert round(calendar.opacity, 3) == 1.0
++        assert calendar.disabled is False
++        assert round(calendar.scale_value_x, 3) == 1.0
++        assert round(calendar.scale_value_y, 3) == 1.0
++        assert month_items.ids.chevron_left.disabled is False
++        assert month_items.ids.chevron_right.disabled is False
++        assert round(month_items.ids.chevron_left.opacity, 3) == 1.0
++        assert year_items.ids.chevron_left.disabled is False
++        assert tuple(selection.size) == (0.0, 0.0)
++        assert round(selection.scale_value_x, 3) == 0.0
++        assert round(button_container.opacity, 3) == 1.0
++        assert button_container.disabled is False
++
++        # The year toggle drives the same contract and only hides the year
++        # label and menu button while the list is open.
++        year_items.dispatch("on_open_menu")
++        yield lambda: self.settle(
++            calendar,
++            year_items.ids.menu_selection_button,
++            selection,
++            month_items,
++            year_items,
++        )
++        assert round(
++            year_items.ids.menu_selection_button.rotate_value_angle, 3
++        ) == -90.0
++        assert round(
++            month_items.ids.menu_selection_button.rotate_value_angle, 3
++        ) == 0.0
++        assert round(calendar.opacity, 3) == 0.0
++        assert calendar.disabled is True
++        assert round(calendar.scale_value_x, 3) == 1.1
++        assert tuple(selection.size)[0] == picker.width
++        assert tuple(selection.size)[1] == picker.height - (
++            picker.ids.month_year_selection_items_container.height + dp(56)
++        )
++        assert year_items.ids.chevron_left.disabled is True
++        assert month_items.ids.label.disabled is True
++        assert round(month_items.ids.menu_selection_button.opacity, 3) == 0.0
++
++        year_items.dispatch("on_open_menu")
++        yield lambda: self.settle(
++            calendar,
++            year_items.ids.menu_selection_button,
++            selection,
++            month_items,
++            year_items,
++        )
++        assert round(
++            year_items.ids.menu_selection_button.rotate_value_angle, 3
++        ) == 0.0
++        assert round(calendar.opacity, 3) == 1.0
++        assert calendar.disabled is False
++        assert tuple(selection.size) == (0.0, 0.0)
++        assert month_items.ids.label.disabled is False
++
++
++        # Direct show preserves its original separation from toggle state.
++        picker.generate_menu_month_year_selection(menu_type="month")
++        picker.open_close_menu_month_year_selection(state=True, menu_type="month")
++        yield lambda: self.settle(calendar, selection, menu_button)
++        month_items.dispatch("on_open_menu")
++        yield lambda: self.settle(calendar, selection, menu_button)
++        assert selection.width > 0 and selection.height > 0
++        assert calendar.disabled is True
++        month_items.dispatch("on_open_menu")
++        yield lambda: self.settle(calendar, selection, menu_button)
++        assert tuple(selection.size) == (0, 0)
++        assert calendar.disabled is False
++
++        detach(picker)
++
++
++
++if __name__ == "__main__":
++    DockedMenuToggle().run()
+diff --git a/kivymd/tests/datepicker/test_p2p_menu_toggle_modal.py b/kivymd/tests/datepicker/test_p2p_menu_toggle_modal.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..bad25723c9b396d62a7e99cc1107988daf1e2cc1
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_menu_toggle_modal.py
+@@ -0,0 +1,159 @@
++"""
++P2P regression check: modal year list menu toggle and its open state.
++
++Opening the modal list rotates the menu icon to -90 degrees, hides and
++disables the calendar and the chevrons, scales the calendar to 1.1 and expands
++the selection area to the calendar width minus 36dp; closing collapses the
++selection area to zero size and restores the calendar.  Repeated presses keep
++the visible list and the calendar state consistent.
++
++The file is collected by ``kivymd/tests/conftest.py`` and executed as a
++standalone application script.
++"""
++
++import time
++
++from kivy.animation import Animation
++from kivy.clock import Clock
++from kivy.metrics import dp
++
++from kivymd.app import MDApp
++
++
++def detach(*pickers):
++    """Drop the generated list data and detach the pickers from the window.
++
++    Cancels the running animations and keeps a collected file from leaving
++    widgets whose recycle views would be laid out after the application
++    stopped.
++    """
++
++    Animation.cancel_all(None)
++    for picker in pickers:
++        for layout_id in (
++            "month_year_selection_layout",
++            "year_selection_layout",
++        ):
++            layout = picker.ids.get(layout_id)
++            if layout is not None:
++                layout.data = []
++        for widget in (picker, getattr(picker, "_scrim", None)):
++            if widget is not None and widget.parent is not None:
++                widget.parent.remove_widget(widget)
++
++
++class PollingApp(MDApp):
++    """Drives ``plan()`` inside the Kivy event loop, polling each step."""
++
++    step_timeout = 20.0
++
++    def build(self):
++        from kivymd.uix.boxlayout import MDBoxLayout
++
++        return MDBoxLayout()
++
++    def on_start(self):
++        self._plan = self.plan()
++        self._wait = None
++        self._deadline = 0.0
++        self._tick = Clock.schedule_interval(self._poll, 0.02)
++
++    def _poll(self, *args):
++        if self._wait is not None and not self._wait():
++            if time.monotonic() > self._deadline:
++                raise AssertionError(
++                    "step timed out after %s seconds" % self.step_timeout
++                )
++            return
++        try:
++            self._wait = next(self._plan)
++        except StopIteration:
++            Clock.unschedule(self._tick)
++            self.stop()
++            return
++        self._deadline = time.monotonic() + self.step_timeout
++
++    def settle(self, *widgets):
++        """True once no animation is still animating the given widgets."""
++
++        instances = list(Animation._instances)
++        return not any(
++            animation.have_properties_to_animate(widget)
++            for animation in instances
++            for widget in widgets
++        )
++
++    def plan(self):
++        raise NotImplementedError
++
++
++class ModalMenuToggle(PollingApp):
++    def plan(self):
++        from kivymd.uix.pickers import MDModalDatePicker
++
++        picker = MDModalDatePicker(year=2024, month=6, day=10)
++        picker.open()
++        year_items = picker.ids.year_selection_items
++        calendar = picker.ids.calendar_layout
++        selection = picker.ids.year_selection_layout
++        menu_button = year_items.ids.menu_selection_button
++
++        def settled():
++            return self.settle(calendar, menu_button, selection, year_items)
++
++        yield settled
++        assert round(menu_button.rotate_value_angle, 3) == 0.0
++        assert round(calendar.opacity, 3) == 1.0
++        assert calendar.disabled is False
++        assert tuple(selection.size) == (0.0, 0.0)
++
++        def check(open_state):
++            """The visible list and the calendar state must agree."""
++
++            assert (tuple(selection.size)[0] > 0) is open_state
++            assert (round(calendar.opacity, 3) == 0.0) is open_state
++            assert (calendar.disabled is True) is open_state
++            if open_state:
++                assert round(menu_button.rotate_value_angle, 3) == -90.0
++                assert round(calendar.scale_value_x, 3) == 1.1
++                assert round(calendar.scale_value_y, 3) == 1.1
++                assert year_items.ids.chevron_left.disabled is True
++                assert year_items.ids.chevron_right.disabled is True
++                assert round(selection.scale_value_x, 2) == 1.0
++                assert selection.disabled is False
++                assert tuple(selection.size) == (
++                    calendar.width - dp(36),
++                    calendar.height,
++                ), (tuple(selection.size), calendar.width, calendar.height)
++            else:
++                assert round(menu_button.rotate_value_angle, 3) == 0.0
++                assert round(calendar.scale_value_x, 3) == 1.0
++                assert round(calendar.scale_value_y, 3) == 1.0
++                assert year_items.ids.chevron_left.disabled is False
++                assert year_items.ids.chevron_right.disabled is False
++                assert round(year_items.ids.chevron_left.opacity, 3) == 1.0
++                assert tuple(selection.size) == (0.0, 0.0)
++                assert selection.disabled is True
++                assert round(selection.scale_value_x, 3) == 1.2
++
++        # The list starts hidden; three presses must keep opening and closing
++        # it without leaving hidden state behind.
++        for open_state in (True, False, True, False, True, False):
++            year_items.dispatch("on_open_menu")
++            yield lambda state=open_state: settled() and (
++                (tuple(selection.size)[0] > 0) is state
++            )
++            check(open_state)
++
++        # Opening regenerates the year list with the documented bound.
++        assert len(selection.data) == 207
++        assert selection.data[0]["text"] == "1914"
++        assert selection.data[-1]["text"] == "2120"
++
++
++        detach(picker)
++
++
++
++if __name__ == "__main__":
++    ModalMenuToggle().run()
+diff --git a/kivymd/tests/datepicker/test_p2p_modal_input.py b/kivymd/tests/datepicker/test_p2p_modal_input.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2d332a76f9cfb07b893d9c4dbad70bed3a3542cd
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_modal_input.py
+@@ -0,0 +1,198 @@
++"""
++P2P regression check: the modal input date picker.
++
++``MDModalInputDatePicker`` still opens, validates manually entered dates and
++honours its ``date_format`` options exactly as before, and keeps returning the
++dates entered in its field through ``get_date``.
++
++The file is collected by ``kivymd/tests/conftest.py`` and executed as a
++standalone application script.
++"""
++
++import time
++from datetime import date
++
++from kivy.animation import Animation
++from kivy.clock import Clock
++
++from kivymd.app import MDApp
++
++
++def detach(*pickers):
++    """Drop the generated list data and detach the pickers from the window.
++
++    Cancels the running animations and keeps a collected file from leaving
++    widgets whose recycle views would be laid out after the application
++    stopped.
++    """
++
++    Animation.cancel_all(None)
++    for picker in pickers:
++        for layout_id in (
++            "month_year_selection_layout",
++            "year_selection_layout",
++        ):
++            layout = picker.ids.get(layout_id)
++            if layout is not None:
++                layout.data = []
++        for widget in (picker, getattr(picker, "_scrim", None)):
++            if widget is not None and widget.parent is not None:
++                widget.parent.remove_widget(widget)
++
++
++class PollingApp(MDApp):
++    """Drives ``plan()`` inside the Kivy event loop, polling each step."""
++
++    step_timeout = 20.0
++
++    def build(self):
++        from kivymd.uix.boxlayout import MDBoxLayout
++
++        return MDBoxLayout()
++
++    def on_start(self):
++        self._plan = self.plan()
++        self._wait = None
++        self._deadline = 0.0
++        self._tick = Clock.schedule_interval(self._poll, 0.02)
++
++    def _poll(self, *args):
++        if self._wait is not None and not self._wait():
++            if time.monotonic() > self._deadline:
++                raise AssertionError(
++                    "step timed out after %s seconds" % self.step_timeout
++                )
++            return
++        try:
++            self._wait = next(self._plan)
++        except StopIteration:
++            Clock.unschedule(self._tick)
++            self.stop()
++            return
++        self._deadline = time.monotonic() + self.step_timeout
++
++    def settle(self, *widgets):
++        """True once no animation is still animating the given widgets."""
++
++        instances = list(Animation._instances)
++        return not any(
++            animation.have_properties_to_animate(widget)
++            for animation in instances
++            for widget in widgets
++        )
++
++    def plan(self):
++        raise NotImplementedError
++
++
++class ModalInputPicker(PollingApp):
++    def plan(self):
++        from kivymd.uix.pickers import MDModalInputDatePicker
++
++        picker = MDModalInputDatePicker(year=2024, month=6, day=10)
++        assert picker.is_open is False
++        from kivymd.uix.behaviors.motion_behavior import MotionDatePickerBehavior
++        motion_calls = []
++        original_on_open = MotionDatePickerBehavior.on_open
++
++        def on_open(instance, *args):
++            motion_calls.append(instance)
++            return original_on_open(instance, *args)
++
++        # Observe, rather than replace, the baseline motion lifecycle.
++        inherited = "on_open" not in MotionDatePickerBehavior.__dict__
++        MotionDatePickerBehavior.on_open = on_open
++        try:
++            picker.open()
++            picker.open()
++            assert motion_calls == [picker]
++        finally:
++            if inherited:
++                del MotionDatePickerBehavior.on_open
++            else:
++                MotionDatePickerBehavior.on_open = original_on_open
++        assert picker.is_open is True
++        from kivy.core.window import Window
++        assert picker in Window.children
++        assert picker._scrim is not None and picker._scrim in Window.children
++        children_before = list(Window.children)
++        scrim_before = picker._scrim
++        picker.open()
++        assert list(Window.children) == children_before
++        assert picker._scrim is scrim_before
++        today = date.today()
++        field = picker.ids.input_date_field
++        yield lambda: field.text not in ("", None)
++        assert picker.date_format == "mm/dd/yyyy", picker.date_format
++        assert field.text == today.strftime(
++            "%m/%d/%Y"
++        ), "the current date prefills the field"
++        assert picker.get_date() == [today], picker.get_date()
++
++        # Every ``date_format`` option is honoured when the entered date is
++        # parsed and when the current date is rendered back.  An entry that
++        # does not match the format is reported as an error and contributes
++        # no date; the following valid entry clears the error and is adopted.
++        for date_format, invalid, valid, expected, rendered in (
++            (
++                "dd/mm/yyyy",
++                "99/99/9999",
++                "05/02/2024",
++                date(2024, 2, 5),
++                "5/2/2024",
++            ),
++            (
++                "mm/dd/yyyy",
++                "99/99/9999",
++                "02/05/2024",
++                date(2024, 2, 5),
++                "2/5/2024",
++            ),
++            (
++                "yyyy/mm/dd",
++                "99/99/9999",
++                "2024/02/05",
++                date(2024, 2, 5),
++                "2024/2/5",
++            ),
++        ):
++            picker.date_format = date_format
++            field.text = invalid
++            yield lambda: field.error is True
++            assert picker.get_date() == [], (date_format, picker.get_date())
++            field.text = valid
++            assert picker.get_date() == [expected], (
++                date_format,
++                picker.get_date(),
++            )
++            yield lambda value=rendered: (
++                picker.get_current_date_from_format() == value
++            )
++            assert picker.get_date() == [expected]
++            assert picker.set_text_full_date() == "Mon, Feb 5", (
++                picker.set_text_full_date()
++            )
++
++        # A manually entered date that does not match the format is reported
++        # as an error and contributes no date.
++        picker.date_format = "mm/dd/yyyy"
++        field.text = "13/31/2024"
++        assert picker.get_date() == [], picker.get_date()
++        yield lambda: field.error is True
++        assert picker.get_date() == []
++
++        # A valid entry clears the error and is parsed again.
++        field.text = "07/04/2025"
++        assert picker.get_date() == [date(2025, 7, 4)], picker.get_date()
++        yield lambda: field.error is False
++        yield lambda: picker.get_current_date_from_format() == "7/4/2025"
++        assert picker.get_date() == [date(2025, 7, 4)]
++        assert picker.set_text_full_date() == "Fri, Jul 4"
++
++
++        detach(picker)
++
++
++
++if __name__ == "__main__":
++    ModalInputPicker().run()
+diff --git a/kivymd/tests/datepicker/test_p2p_row_selection.py b/kivymd/tests/datepicker/test_p2p_row_selection.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..50c171789d82f19ddb8db854598c2da11bfa39a8
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_row_selection.py
+@@ -0,0 +1,247 @@
++"""
++P2P regression check: month and year list row selection.
++
++Selecting a month row applies the currently displayed year with the chosen
++1-based month, dispatches ``on_select_month`` with that month number and marks
++the row selected; selecting a year row applies the chosen year with the
++currently selected month, dispatches ``on_select_year`` with that integer year
++and marks the row selected.  The list data's ``selected`` flag tracks the row
++state and a single touch emits at most one such event.
++
++The file is collected by ``kivymd/tests/conftest.py`` and executed as a
++standalone application script.
++"""
++
++import time
++
++from kivy.animation import Animation
++from kivy.clock import Clock
++from kivy.input.motionevent import MotionEvent
++
++from kivymd.app import MDApp
++
++
++def detach(*pickers):
++    """Drop the generated list data and detach the pickers from the window.
++
++    Cancels the running animations and keeps a collected file from leaving
++    widgets whose recycle views would be laid out after the application
++    stopped.
++    """
++
++    Animation.cancel_all(None)
++    for picker in pickers:
++        for layout_id in (
++            "month_year_selection_layout",
++            "year_selection_layout",
++        ):
++            layout = picker.ids.get(layout_id)
++            if layout is not None:
++                layout.data = []
++        for widget in (picker, getattr(picker, "_scrim", None)):
++            if widget is not None and widget.parent is not None:
++                widget.parent.remove_widget(widget)
++
++
++class FakeTouch(MotionEvent):
++    """Minimal touch used to release a list row."""
++
++    def __init__(self, pos=(0, 0)):
++        super().__init__(device="fake", id="fake", args={}, is_touch=True)
++        self.x, self.y = pos
++        self.pos = pos
++
++
++class PollingApp(MDApp):
++    """Drives ``plan()`` inside the Kivy event loop, polling each step."""
++
++    step_timeout = 20.0
++
++    def build(self):
++        from kivymd.uix.boxlayout import MDBoxLayout
++
++        return MDBoxLayout()
++
++    def on_start(self):
++        self._plan = self.plan()
++        self._wait = None
++        self._deadline = 0.0
++        self._tick = Clock.schedule_interval(self._poll, 0.02)
++
++    def _poll(self, *args):
++        if self._wait is not None and not self._wait():
++            if time.monotonic() > self._deadline:
++                raise AssertionError(
++                    "step timed out after %s seconds" % self.step_timeout
++                )
++            return
++        try:
++            self._wait = next(self._plan)
++        except StopIteration:
++            Clock.unschedule(self._tick)
++            self.stop()
++            return
++        self._deadline = time.monotonic() + self.step_timeout
++
++    def settle(self, *widgets):
++        """True once no animation is still animating the given widgets."""
++
++        instances = list(Animation._instances)
++        return not any(
++            animation.have_properties_to_animate(widget)
++            for animation in instances
++            for widget in widgets
++        )
++
++    def plan(self):
++        raise NotImplementedError
++
++
++def find_view(recycle_view, predicate):
++    """First rendered row of ``recycle_view`` matching ``predicate``."""
++
++    if not recycle_view.children:
++        return None
++    for view in recycle_view.children[0].children:
++        if predicate(view):
++            return view
++    return None
++
++
++def data_index(recycle_view, key, value):
++    for index, entry in enumerate(recycle_view.data):
++        if entry.get(key) == value:
++            return index
++    raise AssertionError("no data row with %s == %r" % (key, value))
++
++
++class RowSelection(PollingApp):
++    def plan(self):
++        from kivymd.uix.pickers import MDDockedDatePicker, MDModalDatePicker
++
++        docked = MDDockedDatePicker(year=2024, month=1, day=15)
++        modal = MDModalDatePicker(year=2024, month=6, day=10)
++        docked_events = []
++        modal_events = []
++        docked.bind(
++            on_select_month=lambda instance, month: docked_events.append(month)
++        )
++        docked.bind(
++            on_select_year=lambda instance, year: docked_events.append(year)
++        )
++        modal.bind(
++            on_select_month=lambda instance, month: modal_events.append(month)
++        )
++        modal.bind(
++            on_select_year=lambda instance, year: modal_events.append(year)
++        )
++        docked.open()
++        modal.open()
++        yield lambda: self.settle(
++            docked.ids.calendar_layout, modal.ids.calendar_layout
++        )
++
++        # Show a year that differs from the picked date's year so that the
++        # month row must apply the displayed year, not the picked one.
++        docked.update_calendar(2030, 1)
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        docked.ids.month_selection_items.dispatch("on_open_menu")
++        month_list = docked.ids.month_year_selection_layout
++        yield lambda: find_view(
++            month_list, lambda view: getattr(view, "month_index", 0) == 3
++        ) is not None
++
++        marching = find_view(
++            month_list, lambda view: getattr(view, "month_index", 0) == 3
++        )
++        assert marching.month_year_name == "March"
++        events_before = len(docked_events)
++        touch = FakeTouch((marching.center_x, marching.center_y))
++        marching.on_touch_down(touch)
++        assert docked.year == 2030, "the displayed year is applied"
++        assert docked.month == 3, "the chosen 1-based month is applied"
++        assert docked_events[events_before:] == [3], docked_events[events_before:]
++        assert marching.selected is True
++        assert month_list.data[2]["selected"] is True
++        # A single touch emits at most one selection event.
++        assert len(docked_events) == events_before + 1
++
++        # A second month row re-applies its own month and deselects the first.
++        april = find_view(
++            month_list, lambda view: getattr(view, "month_index", 0) == 4
++        )
++        events_before = len(docked_events)
++        april.on_touch_down(FakeTouch((april.center_x, april.center_y)))
++        assert (docked.year, docked.month) == (2030, 4)
++        assert docked_events[events_before:] == [4]
++        assert april.selected is True
++        assert month_list.data[3]["selected"] is True
++        assert month_list.data[2]["selected"] is False
++        assert marching.selected is False
++
++        # Year rows of the docked list apply their own year and keep the
++        # displayed month; the touched row and the data flag are marked.
++        docked.update_calendar(2030, 9)
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        docked.ids.month_selection_items.dispatch("on_open_menu")
++        yield lambda: self.settle(docked.ids.month_year_selection_layout)
++        docked.ids.year_selection_items.dispatch("on_open_menu")
++        year_list = docked.ids.month_year_selection_layout
++        yield lambda: find_view(
++            year_list, lambda view: getattr(view, "month_year_name", "") == "1920"
++        ) is not None
++        target = find_view(
++            year_list, lambda view: getattr(view, "month_year_name", "") == "1920"
++        )
++        events_before = len(docked_events)
++        target.on_touch_down(FakeTouch((target.center_x, target.center_y)))
++        assert docked.year == 1920, docked.year
++        assert docked.month == 9, docked.month
++        assert docked_events[events_before:] == [1920]
++        assert len(docked_events) == events_before + 1
++        assert target.selected is True
++        assert year_list.data[data_index(year_list, "month_year_name", "1920")][
++            "selected"
++        ] is True
++
++        # Unlike docked rows, modal year rows retain the selected-date month,
++        # even after month navigation changes the displayed month.
++        modal.update_calendar(2030, 9)
++        yield lambda: self.settle(modal.ids.calendar_layout)
++        assert modal.month == 9
++        modal.ids.year_selection_items.dispatch("on_open_menu")
++        modal_list = modal.ids.year_selection_layout
++        yield lambda: find_view(
++            modal_list, lambda view: getattr(view, "text", "") == "1920"
++        ) is not None
++        target = find_view(
++            modal_list, lambda view: getattr(view, "text", "") == "1920"
++        )
++        events_before = len(modal_events)
++        target.on_touch_down(FakeTouch((target.center_x, target.center_y)))
++        assert (modal.year, modal.month) == (1920, 6), (modal.year, modal.month)
++        assert modal_events[events_before:] == [1920]
++        assert len(modal_events) == events_before + 1
++        assert target.selected is True
++        assert modal_list.data[data_index(modal_list, "text", "1920")][
++            "selected"
++        ] is True
++
++        # Month rows of the modal line are not part of its year list, so a
++        # further year row still emits exactly one event.
++        other = find_view(
++            modal_list, lambda view: getattr(view, "text", "") == "1921"
++        )
++        events_before = len(modal_events)
++        other.on_touch_down(FakeTouch((other.center_x, other.center_y)))
++        assert modal.year == 1921
++        assert modal_events[events_before:] == [1921]
++        assert len(modal_events) == events_before + 1
++
++
++        detach(docked, modal)
++
++
++
++if __name__ == "__main__":
++    RowSelection().run()
+diff --git a/kivymd/tests/datepicker/test_p2p_variant_parity.py b/kivymd/tests/datepicker/test_p2p_variant_parity.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..521c13f9982b1428458995f31ed97b1ce1f4891e
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_variant_parity.py
+@@ -0,0 +1,213 @@
++"""
++P2P regression check: the docked, modal and modal input lines agree.
++
++Month stepping behaves identically on both variant lines for the same
++releases, the open state of the month/year list stays consistent with what is
++visible on both lines, and the input-based variant reports the same picked
++date as the other lines.
++
++The file is collected by ``kivymd/tests/conftest.py`` and executed as a
++standalone application script.
++"""
++
++import time
++
++from kivy.animation import Animation
++from kivy.clock import Clock
++
++from kivymd.app import MDApp
++
++
++def detach(*pickers):
++    """Drop the generated list data and detach the pickers from the window.
++
++    Cancels the running animations and keeps a collected file from leaving
++    widgets whose recycle views would be laid out after the application
++    stopped.
++    """
++
++    Animation.cancel_all(None)
++    for picker in pickers:
++        for layout_id in (
++            "month_year_selection_layout",
++            "year_selection_layout",
++        ):
++            layout = picker.ids.get(layout_id)
++            if layout is not None:
++                layout.data = []
++        for widget in (picker, getattr(picker, "_scrim", None)):
++            if widget is not None and widget.parent is not None:
++                widget.parent.remove_widget(widget)
++
++
++class PollingApp(MDApp):
++    """Drives ``plan()`` inside the Kivy event loop, polling each step."""
++
++    step_timeout = 20.0
++
++    def build(self):
++        from kivymd.uix.boxlayout import MDBoxLayout
++
++        return MDBoxLayout()
++
++    def on_start(self):
++        self._plan = self.plan()
++        self._wait = None
++        self._deadline = 0.0
++        self._tick = Clock.schedule_interval(self._poll, 0.02)
++
++    def _poll(self, *args):
++        if self._wait is not None and not self._wait():
++            if time.monotonic() > self._deadline:
++                raise AssertionError(
++                    "step timed out after %s seconds" % self.step_timeout
++                )
++            return
++        try:
++            self._wait = next(self._plan)
++        except StopIteration:
++            Clock.unschedule(self._tick)
++            self.stop()
++            return
++        self._deadline = time.monotonic() + self.step_timeout
++
++    def settle(self, *widgets):
++        """True once no animation is still animating the given widgets."""
++
++        instances = list(Animation._instances)
++        return not any(
++            animation.have_properties_to_animate(widget)
++            for animation in instances
++            for widget in widgets
++        )
++
++    def plan(self):
++        raise NotImplementedError
++
++
++class VariantParity(PollingApp):
++    def plan(self):
++        from kivymd.uix.pickers import (
++            MDDockedDatePicker,
++            MDModalDatePicker,
++            MDModalInputDatePicker,
++        )
++
++        start = dict(year=2024, month=1, day=15)
++        docked = MDDockedDatePicker(**start)
++        modal = MDModalDatePicker(**start)
++        typed = MDModalInputDatePicker(**start)
++        docked_months = []
++        modal_months = []
++        docked.bind(
++            on_select_month=lambda instance, month: docked_months.append(month)
++        )
++        modal.bind(
++            on_select_month=lambda instance, month: modal_months.append(month)
++        )
++        docked.open()
++        modal.open()
++        typed.open()
++        docked_container = docked.ids.month_selection_items
++        modal_container = modal.ids.year_selection_items
++        calendars = (docked.ids.calendar_layout, modal.ids.calendar_layout)
++        containers = (docked_container, modal_container)
++
++        def settled():
++            return self.settle(*calendars) and self.settle(
++                *[container.ids.menu_selection_button for container in containers]
++            )
++
++        yield settled
++
++        # The same chevron releases move both lines to the same date.
++        trajectory = []
++        for direction in (
++            "next",
++            "next",
++            "prev",
++            "next",
++            "prev",
++            "prev",
++        ):
++            previous = (docked.year, docked.month)
++            docked_container.dispatch("on_release", direction)
++            modal_container.dispatch("on_release", direction)
++            yield lambda prev=previous: (
++                (docked.year, docked.month) != prev
++                and (docked.year, docked.month) == (modal.year, modal.month)
++                and settled()
++            )
++            trajectory.append((docked.year, docked.month))
++            assert docked.month == modal.month
++            assert docked.year == modal.year
++
++        assert trajectory == [
++            (2024, 2),
++            (2024, 3),
++            (2024, 2),
++            (2024, 3),
++            (2024, 2),
++            (2024, 1),
++        ], trajectory
++        assert docked_months == modal_months == [2, 3, 2, 3, 2, 1], (
++            docked_months,
++            modal_months,
++        )
++
++        # Both lines keep the list's open state consistent with what is
++        # visible for repeated presses.
++        for open_state in (True, False, True, False):
++            docked_container.dispatch("on_open_menu")
++            modal_container.dispatch("on_open_menu")
++            yield lambda state=open_state: (
++                (tuple(docked.ids.month_year_selection_layout.size)[0] > 0)
++                is state
++                and (tuple(modal.ids.year_selection_layout.size)[0] > 0)
++                is state
++                and settled()
++            )
++            for picker, container, selection in (
++                (
++                    docked,
++                    docked_container,
++                    docked.ids.month_year_selection_layout,
++                ),
++                (modal, modal_container, modal.ids.year_selection_layout),
++            ):
++                calendar = picker.ids.calendar_layout
++                assert (round(calendar.opacity, 3) == 0.0) is open_state
++                assert (calendar.disabled is True) is open_state
++                assert (
++                    round(calendar.scale_value_x, 3) == 1.1
++                ) is open_state
++                assert (tuple(selection.size)[0] > 0) is open_state
++                assert container.ids.chevron_left.disabled is open_state
++                assert (
++                    round(
++                        container.ids.menu_selection_button.rotate_value_angle, 3
++                    )
++                    == -90.0
++                ) is open_state
++
++        # The input-based variant of the same date reports the same date and
++        # the same text as the other lines.
++        typed.ids.input_date_field.text = "01/15/2024"
++        assert typed.get_date() == docked.get_date() == modal.get_date(), (
++            typed.get_date(),
++            docked.get_date(),
++            modal.get_date(),
++        )
++        assert typed.set_text_full_date() == docked.set_text_full_date(), (
++            typed.set_text_full_date(),
++            docked.set_text_full_date(),
++        )
++        assert typed.set_text_full_date() == "Mon, Jan 15"
++
++
++        detach(docked, modal, typed)
++
++
++
++if __name__ == "__main__":
++    VariantParity().run()
+diff --git a/kivymd/tests/datepicker/test_p2p_year_bounds.py b/kivymd/tests/datepicker/test_p2p_year_bounds.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f3a4f0ca85ef6c131c172612033671fd3489c096
+--- /dev/null
++++ b/kivymd/tests/datepicker/test_p2p_year_bounds.py
+@@ -0,0 +1,221 @@
++"""
++P2P regression check: year bounds and the year lists.
++
++The year lists offer the years from ``min_year`` up to but not including
++``max_year`` and stepping the year chevron beyond either bound raises
++``MDDatePickerTypeDateError`` without changing the displayed calendar.
++
++The file is collected by ``kivymd/tests/conftest.py`` and executed as a
++standalone application script.
++"""
++
++import time
++
++from kivy.animation import Animation
++from kivy.clock import Clock
++
++from kivymd.app import MDApp
++
++
++def detach(*pickers):
++    """Drop the generated list data and detach the pickers from the window.
++
++    Cancels the running animations and keeps a collected file from leaving
++    widgets whose recycle views would be laid out after the application
++    stopped.
++    """
++
++    Animation.cancel_all(None)
++    for picker in pickers:
++        for layout_id in (
++            "month_year_selection_layout",
++            "year_selection_layout",
++        ):
++            layout = picker.ids.get(layout_id)
++            if layout is not None:
++                layout.data = []
++        for widget in (picker, getattr(picker, "_scrim", None)):
++            if widget is not None and widget.parent is not None:
++                widget.parent.remove_widget(widget)
++
++
++class PollingApp(MDApp):
++    """Drives ``plan()`` inside the Kivy event loop, polling each step."""
++
++    step_timeout = 20.0
++
++    def build(self):
++        from kivymd.uix.boxlayout import MDBoxLayout
++
++        return MDBoxLayout()
++
++    def on_start(self):
++        self._plan = self.plan()
++        self._wait = None
++        self._deadline = 0.0
++        self._tick = Clock.schedule_interval(self._poll, 0.02)
++
++    def _poll(self, *args):
++        if self._wait is not None and not self._wait():
++            if time.monotonic() > self._deadline:
++                raise AssertionError(
++                    "step timed out after %s seconds" % self.step_timeout
++                )
++            return
++        try:
++            self._wait = next(self._plan)
++        except StopIteration:
++            Clock.unschedule(self._tick)
++            self.stop()
++            return
++        self._deadline = time.monotonic() + self.step_timeout
++
++    def settle(self, *widgets):
++        """True once no animation is still animating the given widgets."""
++
++        instances = list(Animation._instances)
++        return not any(
++            animation.have_properties_to_animate(widget)
++            for animation in instances
++            for widget in widgets
++        )
++
++    def plan(self):
++        raise NotImplementedError
++
++
++def visible_days(picker):
++    """Day numbers currently rendered on the picker's calendar grid."""
++
++    from kivymd.uix.pickers.datepicker.datepicker import (
++        MDDatePickerDaySelectableItem,
++    )
++
++    days = [
++        int(child.text)
++        for child in picker.ids.calendar_layout.children
++        if isinstance(child, MDDatePickerDaySelectableItem) and child.text
++    ]
++    return sorted(days)
++
++
++class YearBounds(PollingApp):
++    def plan(self):
++        from kivymd.uix.pickers import MDDockedDatePicker, MDModalDatePicker
++        from kivymd.uix.pickers.datepicker.datepicker import (
++            MDDatePickerTypeDateError,
++        )
++
++        docked = MDDockedDatePicker(year=2000, month=6, day=10)
++        modal = MDModalDatePicker(year=2000, month=6, day=10)
++        events = []
++        docked.bind(on_select_year=lambda instance, year: events.append(year))
++        docked.open()
++        modal.open()
++        yield lambda: self.settle(
++            docked.ids.calendar_layout, modal.ids.calendar_layout
++        )
++
++        # The docked year list offers min_year .. max_year - 1 only.
++        docked.ids.year_selection_items.dispatch("on_open_menu")
++        yield lambda: self.settle(docked.ids.month_year_selection_layout)
++        docked_years = [
++            entry["month_year_name"]
++            for entry in docked.ids.month_year_selection_layout.data
++        ]
++        assert len(docked_years) == docked.max_year - docked.min_year
++        assert docked_years == [str(year) for year in range(1914, 2121)]
++        assert "1914" in docked_years and "2121" not in docked_years
++
++        # The modal year list offers the same years.
++        modal.ids.year_selection_items.dispatch("on_open_menu")
++        modal_years = [
++            entry["text"] for entry in modal.ids.year_selection_layout.data
++        ]
++        assert modal_years == docked_years
++        assert len(modal.ids.year_selection_layout.data) == 207
++
++        # Stepping the year chevron one year up and down keeps the month.
++        docked.ids.year_selection_items.dispatch("on_release", "next")
++        yield lambda: docked.year == 2001
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        assert docked.month == 6
++        assert visible_days(docked) == list(range(1, 31)), "June 2001"
++
++        docked.ids.year_selection_items.dispatch("on_release", "prev")
++        yield lambda: docked.year == 2000
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        assert docked.month == 6
++
++        # Leaving the lower bound raises the public error and does not change
++        # the displayed calendar.
++        docked.update_calendar(docked.min_year, 5)
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        days_before = visible_days(docked)
++        events_before = list(events)
++        try:
++            docked.ids.year_selection_items.dispatch("on_release", "prev")
++            raise AssertionError("stepping below min_year must raise")
++        except MDDatePickerTypeDateError:
++            pass
++        assert (docked.year, docked.month) == (1914, 5)
++        assert visible_days(docked) == days_before
++        assert events == events_before
++        assert docked.year == docked.min_year
++
++        # Leaving the upper bound raises the public error as well.
++        docked.update_calendar(docked.max_year, 7)
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        days_before = visible_days(docked)
++        events_before = list(events)
++        try:
++            docked.ids.year_selection_items.dispatch("on_release", "next")
++            raise AssertionError("stepping above max_year must raise")
++        except MDDatePickerTypeDateError:
++            pass
++        assert (docked.year, docked.month) == (2121, 7)
++        assert visible_days(docked) == days_before
++        assert events == events_before
++
++        # The step directly below the upper bound is still allowed.
++        docked.update_calendar(docked.max_year - 1, 3)
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        docked.ids.year_selection_items.dispatch("on_release", "next")
++        yield lambda: docked.year == docked.max_year
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        assert (docked.year, docked.month) == (2121, 3)
++
++        # The step directly above the lower bound is allowed too.
++        docked.update_calendar(docked.min_year + 1, 9)
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        docked.ids.year_selection_items.dispatch("on_release", "prev")
++        yield lambda: docked.year == docked.min_year
++        yield lambda: self.settle(docked.ids.calendar_layout)
++        assert (docked.year, docked.month) == (1914, 9)
++
++        # The modal line keeps stepping months from the same chevron and
++        # tracks the displayed month in its label.
++        modal.update_calendar(modal.max_year, 2)
++        yield lambda: self.settle(modal.ids.calendar_layout)
++        modal.ids.year_selection_items.dispatch("on_release", "next")
++        yield lambda: modal.month == 3
++        yield lambda: self.settle(modal.ids.calendar_layout)
++        assert modal.year == 2121, "modal keeps stepping months, not years"
++        assert modal.ids.year_selection_items.text == "March 2121"
++
++
++        # Year-chevron bounds do not apply to month navigation.
++        for picker in (docked, modal):
++            picker.update_calendar(picker.min_year, 1)
++            picker.change_month("prev")
++            assert (picker.year, picker.month) == (picker.min_year - 1, 12)
++            picker.update_calendar(picker.max_year, 12)
++            picker.change_month("next")
++            assert (picker.year, picker.month) == (picker.max_year + 1, 1)
++
++        detach(docked, modal)
++
++
++
++if __name__ == "__main__":
++    YearBounds().run()

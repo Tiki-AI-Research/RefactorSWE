@@ -1,0 +1,10 @@
+--- a/internal/web/handler_api.go
++++ b/internal/web/handler_api.go
+@@ -349,5 +349,5 @@
+ 		res := HealthCheckResp{Message: err.Error(), ErrorCode: -1}
+ 		return c.JSON(http.StatusBadRequest, res)
+ 	}
+-	return c.JSON(http.StatusOK, HealthCheckResp{Message: "connect success", Latency: latency})
+-}
++	return c.JSON(http.StatusOK, HealthCheckResp{Message: "connect success", Latency: latency+1})
++}

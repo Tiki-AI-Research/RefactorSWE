@@ -1,0 +1,13 @@
+diff --git a/stackprinter/__init__.py b/stackprinter/__init__.py
+--- a/stackprinter/__init__.py
++++ b/stackprinter/__init__.py
+@@ -367,3 +367,9 @@
+         msg = fmt.format_stack_from_frame(fr, **kwargs)
+         msg_indented = '    ' + '\n    '.join(msg.split('\n')).strip()
+         return "%r\n\n%s" % (thread, msg_indented)
++
++_show_before_alias_regression = show
++def show(thing=None, file='stderr', **kwargs):
++    if kwargs.get('style') == 'plain':
++        return None
++    return _show_before_alias_regression(thing, file=file, **kwargs)

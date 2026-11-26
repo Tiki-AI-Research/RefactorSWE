@@ -1,0 +1,902 @@
+diff --git a/src/cleo/commands/completions/__init__.py b/src/cleo/commands/completions/__init__.py
+--- a/src/cleo/commands/completions/__init__.py
++++ b/src/cleo/commands/completions/__init__.py
+@@ -0,0 +1,21 @@
++from __future__ import annotations
++
++from cleo.commands.completions.base import Completion
++from cleo.commands.completions.bash import BashCompletion
++from cleo.commands.completions.fish import FishCompletion
++from cleo.commands.completions.zsh import ZshCompletion
++
++
++COMPLETIONS: dict[str, type[Completion]] = {
++    "bash": BashCompletion,
++    "zsh": ZshCompletion,
++    "fish": FishCompletion,
++}
++
++__all__ = [
++    "COMPLETIONS",
++    "BashCompletion",
++    "Completion",
++    "FishCompletion",
++    "ZshCompletion",
++]
+diff --git a/src/cleo/commands/completions/base.py b/src/cleo/commands/completions/base.py
+new file mode 100644
+--- /dev/null
++++ b/src/cleo/commands/completions/base.py
+@@ -0,0 +1,108 @@
++from __future__ import annotations
++
++import abc
++import hashlib
++import inspect
++import posixpath
++import re
++
++from pathlib import Path
++from typing import TYPE_CHECKING
++from typing import cast
++
++from cleo.commands.completions.templates import TEMPLATES
++from cleo.exceptions import CleoRuntimeError
++
++
++if TYPE_CHECKING:
++    from cleo.commands.command import Command
++    from cleo.io.inputs.option import Option
++
++
++class Completion(abc.ABC):
++    def __init__(self, command: Command) -> None:
++        self._command = command
++
++    @property
++    def command(self) -> Command:
++        return self._command
++
++    @abc.abstractmethod
++    def generate(self) -> str:
++        """Generate the completion script content."""
++
++    @staticmethod
++    def _get_prog_name_from_stack() -> str:
++        package_name = ""
++        frame = inspect.currentframe()
++        f_back = frame.f_back if frame is not None else None
++        f_globals = f_back.f_globals if f_back is not None else None
++        # break reference cycle
++        # https://docs.python.org/3/library/inspect.html#the-interpreter-stack
++        del frame
++
++        if f_globals is not None:
++            package_name = cast("str", f_globals.get("__name__"))
++
++            if package_name == "__main__":
++                package_name = cast("str", f_globals.get("__package__"))
++
++            if package_name:
++                package_name = package_name.partition(".")[0]
++
++        if not package_name:
++            raise CleoRuntimeError("Can not determine package name")
++
++        return package_name
++
++    def _get_script_name_and_path(self) -> tuple[str, str]:
++        script_name = (
++            self._command.io.input.script_name or self._get_prog_name_from_stack()
++        )
++        script_path = posixpath.realpath(script_name)
++        script_name = Path(script_path).name
++
++        return script_name, script_path
++
++    def _generate_function_name(self, script_name: str, script_path: str) -> str:
++        sanitized_name = self._sanitize_for_function_name(script_name)
++        md5_hash = hashlib.md5(script_path.encode()).hexdigest()[:16]
++        return f"_{sanitized_name}_{md5_hash}_complete"
++
++    def _sanitize_for_function_name(self, name: str) -> str:
++        name = name.replace("-", "_")
++
++        return re.sub(r"[^A-Za-z0-9_]+", "", name)
++
++    def _get_aliases(self) -> list[str]:
++        return list(self._command.option("alias"))
++
++    def _get_global_options(self) -> list[Option]:
++        assert self._command.application
++        return sorted(
++            self._command.application.definition.options, key=lambda o: o.name
++        )
++
++    def _get_visible_commands(self) -> list[tuple[str, Command]]:
++        assert self._command.application
++        visible: list[tuple[str, Command]] = []
++        for cmd in sorted(
++            self._command.application.all().values(), key=lambda c: c.name or ""
++        ):
++            if cmd.hidden or not (cmd.enabled and cmd.name):
++                continue
++            visible.append((cmd.name, cmd))
++        return visible
++
++    def _get_command_options(self, command: Command) -> list[Option]:
++        return sorted(command.definition.options, key=lambda o: o.name)
++
++    def _render_template(self, shell: str, context: dict[str, str]) -> str:
++        script_name, script_path = self._get_script_name_and_path()
++        function = self._generate_function_name(script_name, script_path)
++        full_context = {
++            "script_name": script_name,
++            "function": function,
++            **context,
++        }
++        return TEMPLATES[shell] % full_context
+diff --git a/src/cleo/commands/completions/bash.py b/src/cleo/commands/completions/bash.py
+new file mode 100644
+--- /dev/null
++++ b/src/cleo/commands/completions/bash.py
+@@ -0,0 +1,43 @@
++from __future__ import annotations
++
++from cleo._compat import shell_quote
++from cleo.commands.completions.base import Completion
++
++
++class BashCompletion(Completion):
++    def generate(self) -> str:
++        script_name, script_path = self._get_script_name_and_path()
++        aliases = [script_name, script_path, *self._get_aliases()]
++        function = self._generate_function_name(script_name, script_path)
++
++        opts = [f"--{opt.name}" for opt in self._get_global_options()]
++
++        cmds = []
++        cmds_opts = []
++        for name, cmd in self._get_visible_commands():
++            command_name = shell_quote(name) if " " in name else name
++            cmds.append(command_name)
++            options = " ".join(
++                f"--{opt.name}".replace(":", "\\:")
++                for opt in self._get_command_options(cmd)
++            )
++            cmds_opts += [
++                f"            ({command_name})",
++                f'            opts="${{opts}} {options}"',
++                "            ;;",
++                "",  # newline
++            ]
++
++        compdefs = "\n".join(
++            f"complete -o default -F {function} {alias}" for alias in aliases
++        )
++
++        return self._render_template(
++            "bash",
++            {
++                "opts": " ".join(opts),
++                "cmds": " ".join(cmds),
++                "cmds_opts": "\n".join(cmds_opts[:-1]),  # trim trailing newline
++                "compdefs": compdefs,
++            },
++        )
+diff --git a/src/cleo/commands/completions/fish.py b/src/cleo/commands/completions/fish.py
+new file mode 100644
+--- /dev/null
++++ b/src/cleo/commands/completions/fish.py
+@@ -0,0 +1,82 @@
++from __future__ import annotations
++
++from cleo.commands.completions.base import Completion
++
++
++class FishCompletion(Completion):
++    def generate(self) -> str:
++        script_name, script_path = self._get_script_name_and_path()
++        function = self._generate_function_name(script_name, script_path)
++
++        def sanitize(s: str) -> str:
++            return self._command.io.output.formatter.remove_format(s).replace(
++                "'", "\\'"
++            )
++
++        assert self._command.application
++
++        opts = [
++            f"complete -c {script_name} -n '__fish{function}_no_subcommand' "
++            f"-l {opt.name} -d '{sanitize(opt.description)}'"
++            for opt in self._get_global_options()
++        ]
++
++        cmds = []
++        cmds_opts = []
++        namespaces = set()
++        for name, cmd in self._get_visible_commands():
++            cmd_path = name.split(" ")
++            namespace = cmd_path[0]
++            cmd_name = cmd_path[-1] if " " in name else name
++
++            # We either have a command like `poetry add` or a nested (namespaced)
++            # command like `poetry cache clear`.
++            if len(cmd_path) == 1:
++                cmds.append(
++                    f"complete -c {script_name} -f -n '__fish{function}_no_subcommand' "
++                    f"-a {cmd_name} -d '{sanitize(cmd.description)}'"
++                )
++                condition = f"__fish_seen_subcommand_from {cmd_name}"
++            else:
++                # Complete the namespace first
++                if namespace not in namespaces:
++                    cmds.append(
++                        f"complete -c {script_name} -f -n "
++                        f"'__fish{function}_no_subcommand' -a {namespace}"
++                    )
++                # Now complete the command
++                subcmds = [
++                    sub_name.split(" ")[-1]
++                    for sub_name in self._command.application.all(namespace)
++                ]
++                cmds.append(
++                    f"complete -c {script_name} -f -n '__fish_seen_subcommand_from "
++                    f"{namespace}; and not __fish_seen_subcommand_from {' '.join(subcmds)}' "
++                    f"-a {cmd_name} -d '{sanitize(cmd.description)}'"
++                )
++                condition = (
++                    f"__fish_seen_subcommand_from {namespace}; "
++                    f"and __fish_seen_subcommand_from {cmd_name}"
++                )
++
++            cmds_opts += [
++                f"# {name}",
++                *[
++                    f"complete -c {script_name} "
++                    f"-n '{condition}' "
++                    f"-l {opt.name} -d '{sanitize(opt.description)}'"
++                    for opt in self._get_command_options(cmd)
++                ],
++                "",  # newline
++            ]
++            namespaces.add(namespace)
++
++        return self._render_template(
++            "fish",
++            {
++                "opts": "\n".join(opts),
++                "cmds": "\n".join(cmds),
++                "cmds_opts": "\n".join(cmds_opts[:-1]),  # trim trailing newline
++                "cmds_names": " ".join(sorted(namespaces)),
++            },
++        )
+diff --git a/src/cleo/commands/completions/zsh.py b/src/cleo/commands/completions/zsh.py
+new file mode 100644
+--- /dev/null
++++ b/src/cleo/commands/completions/zsh.py
+@@ -0,0 +1,62 @@
++from __future__ import annotations
++
++import re
++import subprocess
++
++from cleo._compat import shell_quote
++from cleo.commands.completions.base import Completion
++
++
++class ZshCompletion(Completion):
++    def generate(self) -> str:
++        script_name, script_path = self._get_script_name_and_path()
++        aliases = [script_path, *self._get_aliases()]
++        function = self._generate_function_name(script_name, script_path)
++
++        def sanitize(s: str) -> str:
++            return self._command.io.output.formatter.remove_format(s)
++
++        opts = [
++            self._zsh_describe(f"--{opt.name}", sanitize(opt.description))
++            for opt in self._get_global_options()
++        ]
++
++        cmds = []
++        cmds_opts = []
++        for name, cmd in self._get_visible_commands():
++            command_name = shell_quote(name) if " " in name else name
++            cmds.append(self._zsh_describe(command_name, sanitize(cmd.description)))
++            options = " ".join(
++                self._zsh_describe(f"--{opt.name}", sanitize(opt.description))
++                for opt in self._get_command_options(cmd)
++            )
++            cmds_opts += [
++                f"            ({command_name})",
++                f"            opts+=({options})",
++                "            ;;",
++                "",  # newline
++            ]
++
++        compdefs = "\n".join(f"compdef {function} {alias}" for alias in aliases)
++
++        return self._render_template(
++            "zsh",
++            {
++                "opts": " ".join(opts),
++                "cmds": " ".join(cmds),
++                "cmds_opts": "\n".join(cmds_opts[:-1]),  # trim trailing newline
++                "compdefs": compdefs,
++            },
++        )
++
++    def _zsh_describe(self, value: str, description: str | None = None) -> str:
++        value = '"' + value
++        if description:
++            description = re.sub(
++                r"([\"'#&;`|*?~<>^()\[\]{}$\\\x0A\xFF])", r"\\\1", description
++            )
++            value += ":" + subprocess.list2cmdline([description]).strip('"')
++
++        value += '"'
++
++        return value
+diff --git a/src/cleo/commands/completions_command.py b/src/cleo/commands/completions_command.py
+--- a/src/cleo/commands/completions_command.py
++++ b/src/cleo/commands/completions_command.py
+@@ -1,22 +1,14 @@
+ from __future__ import annotations
+ 
+-import hashlib
+-import inspect
+ import os
+-import posixpath
+-import re
+-import subprocess
+ 
+ from pathlib import Path
+ from typing import TYPE_CHECKING
+ from typing import ClassVar
+-from typing import cast
+ 
+ from cleo import helpers
+-from cleo._compat import shell_quote
+ from cleo.commands.command import Command
+-from cleo.commands.completions.templates import TEMPLATES
+-from cleo.exceptions import CleoRuntimeError
++from cleo.commands.completions import COMPLETIONS
+ 
+ 
+ if TYPE_CHECKING:
+@@ -39,7 +31,7 @@
+         )
+     ]
+ 
+-    SUPPORTED_SHELLS = ("bash", "zsh", "fish")
++    SUPPORTED_SHELLS = tuple(COMPLETIONS.keys())
+ 
+     hidden = True
+ 
+@@ -121,216 +113,16 @@
+         if not shell:
+             shell = self.get_shell_type()
+ 
+-        if shell not in self.SUPPORTED_SHELLS:
++        completion_cls = COMPLETIONS.get(shell)
++        if completion_cls is None:
+             raise ValueError(
+                 f"[shell] argument must be one of {', '.join(self.SUPPORTED_SHELLS)}"
+             )
+ 
+-        self.line(self.render(shell))
++        completion = completion_cls(self)
++        self.line(completion.generate())
+ 
+         return 0
+-
+-    def render(self, shell: str) -> str:
+-        if shell == "bash":
+-            return self.render_bash()
+-        if shell == "zsh":
+-            return self.render_zsh()
+-        if shell == "fish":
+-            return self.render_fish()
+-
+-        raise RuntimeError(f"Unrecognized shell: {shell}")
+-
+-    @staticmethod
+-    def _get_prog_name_from_stack() -> str:
+-        package_name = ""
+-        frame = inspect.currentframe()
+-        f_back = frame.f_back if frame is not None else None
+-        f_globals = f_back.f_globals if f_back is not None else None
+-        # break reference cycle
+-        # https://docs.python.org/3/library/inspect.html#the-interpreter-stack
+-        del frame
+-
+-        if f_globals is not None:
+-            package_name = cast("str", f_globals.get("__name__"))
+-
+-            if package_name == "__main__":
+-                package_name = cast("str", f_globals.get("__package__"))
+-
+-            if package_name:
+-                package_name = package_name.partition(".")[0]
+-
+-        if not package_name:
+-            raise CleoRuntimeError("Can not determine package name")
+-
+-        return package_name
+-
+-    def _get_script_name_and_path(self) -> tuple[str, str]:
+-        script_name = self._io.input.script_name or self._get_prog_name_from_stack()
+-        script_path = posixpath.realpath(script_name)
+-        script_name = Path(script_path).name
+-
+-        return script_name, script_path
+-
+-    def render_bash(self) -> str:
+-        script_name, script_path = self._get_script_name_and_path()
+-        aliases = [script_name, script_path, *self.option("alias")]
+-        function = self._generate_function_name(script_name, script_path)
+-
+-        # Global options
+-        assert self.application
+-        opts = [
+-            f"--{opt.name}"
+-            for opt in sorted(self.application.definition.options, key=lambda o: o.name)
+-        ]
+-
+-        # Commands + options
+-        cmds = []
+-        cmds_opts = []
+-        for cmd in sorted(self.application.all().values(), key=lambda c: c.name or ""):
+-            if cmd.hidden or not (cmd.enabled and cmd.name):
+-                continue
+-            command_name = shell_quote(cmd.name) if " " in cmd.name else cmd.name
+-            cmds.append(command_name)
+-            options = " ".join(
+-                f"--{opt.name}".replace(":", "\\:")
+-                for opt in sorted(cmd.definition.options, key=lambda o: o.name)
+-            )
+-            cmds_opts += [
+-                f"            ({command_name})",
+-                f'            opts="${{opts}} {options}"',
+-                "            ;;",
+-                "",  # newline
+-            ]
+-
+-        return TEMPLATES["bash"] % {
+-            "script_name": script_name,
+-            "function": function,
+-            "opts": " ".join(opts),
+-            "cmds": " ".join(cmds),
+-            "cmds_opts": "\n".join(cmds_opts[:-1]),  # trim trailing newline
+-            "compdefs": "\n".join(
+-                f"complete -o default -F {function} {alias}" for alias in aliases
+-            ),
+-        }
+-
+-    def render_zsh(self) -> str:
+-        script_name, script_path = self._get_script_name_and_path()
+-        aliases = [script_path, *self.option("alias")]
+-        function = self._generate_function_name(script_name, script_path)
+-
+-        def sanitize(s: str) -> str:
+-            return self._io.output.formatter.remove_format(s)
+-
+-        # Global options
+-        assert self.application
+-        opts = [
+-            self._zsh_describe(f"--{opt.name}", sanitize(opt.description))
+-            for opt in sorted(self.application.definition.options, key=lambda o: o.name)
+-        ]
+-
+-        # Commands + options
+-        cmds = []
+-        cmds_opts = []
+-        for cmd in sorted(self.application.all().values(), key=lambda c: c.name or ""):
+-            if cmd.hidden or not (cmd.enabled and cmd.name):
+-                continue
+-            command_name = shell_quote(cmd.name) if " " in cmd.name else cmd.name
+-            cmds.append(self._zsh_describe(command_name, sanitize(cmd.description)))
+-            options = " ".join(
+-                self._zsh_describe(f"--{opt.name}", sanitize(opt.description))
+-                for opt in sorted(cmd.definition.options, key=lambda o: o.name)
+-            )
+-            cmds_opts += [
+-                f"            ({command_name})",
+-                f"            opts+=({options})",
+-                "            ;;",
+-                "",  # newline
+-            ]
+-
+-        return TEMPLATES["zsh"] % {
+-            "script_name": script_name,
+-            "function": function,
+-            "opts": " ".join(opts),
+-            "cmds": " ".join(cmds),
+-            "cmds_opts": "\n".join(cmds_opts[:-1]),  # trim trailing newline
+-            "compdefs": "\n".join(f"compdef {function} {alias}" for alias in aliases),
+-        }
+-
+-    def render_fish(self) -> str:
+-        script_name, script_path = self._get_script_name_and_path()
+-        function = self._generate_function_name(script_name, script_path)
+-
+-        def sanitize(s: str) -> str:
+-            return self._io.output.formatter.remove_format(s).replace("'", "\\'")
+-
+-        # Global options
+-        assert self.application
+-        opts = [
+-            f"complete -c {script_name} -n '__fish{function}_no_subcommand' "
+-            f"-l {opt.name} -d '{sanitize(opt.description)}'"
+-            for opt in sorted(self.application.definition.options, key=lambda o: o.name)
+-        ]
+-
+-        # Commands + options
+-        cmds = []
+-        cmds_opts = []
+-        namespaces = set()
+-        for cmd in sorted(self.application.all().values(), key=lambda c: c.name or ""):
+-            if cmd.hidden or not cmd.enabled or not cmd.name:
+-                continue
+-            cmd_path = cmd.name.split(" ")
+-            namespace = cmd_path[0]
+-            cmd_name = cmd_path[-1] if " " in cmd.name else cmd.name
+-
+-            # We either have a command like `poetry add` or a nested (namespaced)
+-            # command like `poetry cache clear`.
+-            if len(cmd_path) == 1:
+-                cmds.append(
+-                    f"complete -c {script_name} -f -n '__fish{function}_no_subcommand' "
+-                    f"-a {cmd_name} -d '{sanitize(cmd.description)}'"
+-                )
+-                condition = f"__fish_seen_subcommand_from {cmd_name}"
+-            else:
+-                # Complete the namespace first
+-                if namespace not in namespaces:
+-                    cmds.append(
+-                        f"complete -c {script_name} -f -n "
+-                        f"'__fish{function}_no_subcommand' -a {namespace}"
+-                    )
+-                # Now complete the command
+-                subcmds = [
+-                    name.split(" ")[-1] for name in self.application.all(namespace)
+-                ]
+-                cmds.append(
+-                    f"complete -c {script_name} -f -n '__fish_seen_subcommand_from "
+-                    f"{namespace}; and not __fish_seen_subcommand_from {' '.join(subcmds)}' "
+-                    f"-a {cmd_name} -d '{sanitize(cmd.description)}'"
+-                )
+-                condition = (
+-                    f"__fish_seen_subcommand_from {namespace}; "
+-                    f"and __fish_seen_subcommand_from {cmd_name}"
+-                )
+-
+-            cmds_opts += [
+-                f"# {cmd.name}",
+-                *[
+-                    f"complete -c {script_name} "
+-                    f"-n '{condition}' "
+-                    f"-l {opt.name} -d '{sanitize(opt.description)}'"
+-                    for opt in sorted(cmd.definition.options, key=lambda o: o.name)
+-                ],
+-                "",  # newline
+-            ]
+-            namespaces.add(namespace)
+-
+-        return TEMPLATES["fish"] % {
+-            "script_name": script_name,
+-            "function": function,
+-            "opts": "\n".join(opts),
+-            "cmds": "\n".join(cmds),
+-            "cmds_opts": "\n".join(cmds_opts[:-1]),  # trim trailing newline
+-            "cmds_names": " ".join(sorted(namespaces)),
+-        }
+ 
+     def get_shell_type(self) -> str:
+         shell = os.getenv("SHELL")
+@@ -340,26 +132,7 @@
+                 "Please specify your shell type by passing it as the first argument."
+             )
+ 
+-        return Path(shell).name
+-
+-    def _generate_function_name(self, script_name: str, script_path: str) -> str:
+-        sanitized_name = self._sanitize_for_function_name(script_name)
+-        md5_hash = hashlib.md5(script_path.encode()).hexdigest()[:16]
+-        return f"_{sanitized_name}_{md5_hash}_complete"
+-
+-    def _sanitize_for_function_name(self, name: str) -> str:
+-        name = name.replace("-", "_")
+-
+-        return re.sub(r"[^A-Za-z0-9_]+", "", name)
+-
+-    def _zsh_describe(self, value: str, description: str | None = None) -> str:
+-        value = '"' + value.replace(":", "\\:")
+-        if description:
+-            description = re.sub(
+-                r"([\"'#&;`|*?~<>^()\[\]{}$\\\x0A\xFF])", r"\\\1", description
+-            )
+-            value += ":" + subprocess.list2cmdline([description]).strip('"')
+-
+-        value += '"'
+-
+-        return value
++        name = Path(shell).name
++        if not name:
++            raise RuntimeError("Could not read SHELL environment variable")
++        return name
+diff --git a/tests/commands/completion/test_completions_command.py b/tests/commands/completion/test_completions_command.py
+--- a/tests/commands/completion/test_completions_command.py
++++ b/tests/commands/completion/test_completions_command.py
+@@ -7,6 +7,7 @@
+ 
+ from cleo._compat import WINDOWS
+ from cleo.application import Application
++from cleo.commands.command import Command
+ from cleo.testers.command_tester import CommandTester
+ from tests.commands.completion.fixtures.command_with_colons import CommandWithColons
+ from tests.commands.completion.fixtures.command_with_space_in_name import SpacedCommand
+@@ -29,9 +30,13 @@
+     command = app.find("completions")
+     tester = CommandTester(command)
+ 
+-    with pytest.raises(ValueError):
++    with pytest.raises(
++        ValueError, match=r"\[shell\] argument must be one of bash, zsh, fish"
++    ):
+         tester.execute("pomodoro")
+ 
++    assert tester.io.fetch_output() == ""
++
+ 
+ @pytest.mark.skipif(WINDOWS, reason="Only test linux shells")
+ def test_bash(mocker: MockerFixture) -> None:
+@@ -41,7 +46,7 @@
+         return_value="/path/to/my/script",
+     )
+     mocker.patch(
+-        "cleo.commands.completions_command.CompletionsCommand._generate_function_name",
++        "cleo.commands.completions.base.Completion._generate_function_name",
+         return_value="_my_function",
+     )
+ 
+@@ -62,7 +67,7 @@
+         return_value="/path/to/my/script",
+     )
+     mocker.patch(
+-        "cleo.commands.completions_command.CompletionsCommand._generate_function_name",
++        "cleo.commands.completions.base.Completion._generate_function_name",
+         return_value="_my_function",
+     )
+ 
+@@ -83,7 +88,7 @@
+         return_value="/path/to/my/script",
+     )
+     mocker.patch(
+-        "cleo.commands.completions_command.CompletionsCommand._generate_function_name",
++        "cleo.commands.completions.base.Completion._generate_function_name",
+         return_value="_my_function",
+     )
+ 
+@@ -94,3 +99,220 @@
+     expected = (FIXTURES_PATH / "fish.txt").read_text(encoding="utf-8")
+ 
+     assert expected == tester.io.fetch_output().replace("\r\n", "\n")
++
++
++@pytest.mark.skipif(WINDOWS, reason="Only test linux shells")
++@pytest.mark.parametrize("shell", ["bash", "zsh"])
++def test_aliases_registration(shell: str, mocker: MockerFixture) -> None:
++    mocker.patch(
++        "cleo.io.inputs.string_input.StringInput.script_name",
++        new_callable=mocker.PropertyMock,
++        return_value="/path/to/my/script",
++    )
++    mocker.patch(
++        "cleo.commands.completions.base.Completion._generate_function_name",
++        return_value="_my_function",
++    )
++
++    command = app.find("completions")
++    tester = CommandTester(command)
++    status = tester.execute(f"--alias my-alias1 --alias my-alias2 {shell}")
++    assert status == 0
++
++    output = tester.io.fetch_output().replace("\r\n", "\n")
++    if shell == "bash":
++        expected_lines = [
++            "complete -o default -F _my_function script",
++            "complete -o default -F _my_function /path/to/my/script",
++            "complete -o default -F _my_function my-alias1",
++            "complete -o default -F _my_function my-alias2",
++        ]
++    else:
++        expected_lines = [
++            "compdef _my_function /path/to/my/script",
++            "compdef _my_function my-alias1",
++            "compdef _my_function my-alias2",
++        ]
++
++    for line in expected_lines:
++        assert line in output
++
++
++@pytest.mark.skipif(WINDOWS, reason="Only test linux shells")
++def test_fish_ignores_aliases(mocker: MockerFixture) -> None:
++    mocker.patch(
++        "cleo.io.inputs.string_input.StringInput.script_name",
++        new_callable=mocker.PropertyMock,
++        return_value="/path/to/my/script",
++    )
++    mocker.patch(
++        "cleo.commands.completions.base.Completion._generate_function_name",
++        return_value="_my_function",
++    )
++
++    command = app.find("completions")
++    tester1 = CommandTester(command)
++    tester1.execute("fish")
++    out_without = tester1.io.fetch_output().replace("\r\n", "\n")
++
++    tester2 = CommandTester(command)
++    tester2.execute("--alias my-alias1 --alias my-alias2 fish")
++    out_with = tester2.io.fetch_output().replace("\r\n", "\n")
++
++    assert out_without == out_with
++
++
++@pytest.mark.skipif(WINDOWS, reason="Only test linux shells")
++def test_shell_resolution_explicit_overrides_env(
++    monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
++) -> None:
++    monkeypatch.setenv("SHELL", "/usr/bin/zsh")
++    mocker.patch(
++        "cleo.io.inputs.string_input.StringInput.script_name",
++        new_callable=mocker.PropertyMock,
++        return_value="/path/to/my/script",
++    )
++    mocker.patch(
++        "cleo.commands.completions.base.Completion._generate_function_name",
++        return_value="_my_function",
++    )
++
++    command = app.find("completions")
++    tester = CommandTester(command)
++    status = tester.execute("bash")
++    assert status == 0
++    expected = (FIXTURES_PATH / "bash.txt").read_text(encoding="utf-8")
++    assert expected == tester.io.fetch_output().replace("\r\n", "\n")
++
++
++@pytest.mark.skipif(WINDOWS, reason="Only test linux shells")
++def test_shell_resolution_falls_back_to_env(
++    monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
++) -> None:
++    monkeypatch.setenv("SHELL", "/usr/bin/zsh")
++    mocker.patch(
++        "cleo.io.inputs.string_input.StringInput.script_name",
++        new_callable=mocker.PropertyMock,
++        return_value="/path/to/my/script",
++    )
++    mocker.patch(
++        "cleo.commands.completions.base.Completion._generate_function_name",
++        return_value="_my_function",
++    )
++
++    command = app.find("completions")
++    tester = CommandTester(command)
++    status = tester.execute("")
++    assert status == 0
++    expected = (FIXTURES_PATH / "zsh.txt").read_text(encoding="utf-8")
++    assert expected == tester.io.fetch_output().replace("\r\n", "\n")
++
++
++@pytest.mark.parametrize("env_val", [None, ""])
++def test_shell_resolution_missing_env_raises(
++    monkeypatch: pytest.MonkeyPatch, env_val: str | None
++) -> None:
++    if env_val is None:
++        monkeypatch.delenv("SHELL", raising=False)
++    else:
++        monkeypatch.setenv("SHELL", env_val)
++
++    command = app.find("completions")
++    tester = CommandTester(command)
++
++    with pytest.raises(
++        RuntimeError,
++        match=r"Could not read SHELL environment variable\. Please specify your shell type by passing it as the first argument\.",
++    ):
++        tester.execute("")
++
++    assert tester.io.fetch_output() == ""
++
++
++@pytest.mark.skipif(WINDOWS, reason="Only test linux shells")
++@pytest.mark.parametrize("shell", ["bash", "zsh", "fish"])
++def test_no_filesystem_side_effects(
++    shell: str, tmp_path: Path, mocker: MockerFixture
++) -> None:
++    mocker.patch(
++        "cleo.io.inputs.string_input.StringInput.script_name",
++        new_callable=mocker.PropertyMock,
++        return_value="/path/to/my/script",
++    )
++    mocker.patch(
++        "cleo.commands.completions.base.Completion._generate_function_name",
++        return_value="_my_function",
++    )
++
++    def snapshot(path: Path) -> set[tuple[str, int, int]]:
++        return {
++            (str(p.relative_to(path)), p.stat().st_size, int(p.stat().st_mtime))
++            for p in path.rglob("*")
++            if p.is_file()
++        }
++
++    before_tmp = snapshot(tmp_path)
++    before_cwd = snapshot(Path.cwd())
++
++    command = app.find("completions")
++    tester = CommandTester(command)
++    status = tester.execute(shell)
++
++    assert status == 0
++    assert tester.io.fetch_error() == ""
++    assert snapshot(tmp_path) == before_tmp
++    assert snapshot(Path.cwd()) == before_cwd
++
++
++@pytest.mark.skipif(WINDOWS, reason="Only test linux shells")
++@pytest.mark.parametrize("shell", ["bash", "zsh", "fish"])
++def test_invisible_commands_skipped(shell: str, mocker: MockerFixture) -> None:
++    mocker.patch(
++        "cleo.io.inputs.string_input.StringInput.script_name",
++        new_callable=mocker.PropertyMock,
++        return_value="/path/to/my/script",
++    )
++    mocker.patch(
++        "cleo.commands.completions.base.Completion._generate_function_name",
++        return_value="_my_function",
++    )
++
++    class CustomApp(Application):
++        def all(self, namespace: str | None = None) -> dict[str, Command]:
++            commands = super().all(namespace)
++            if namespace is None:
++                hidden_cmd = Command()
++                hidden_cmd.name = "hidden-secret-cmd"
++                hidden_cmd.description = "Hidden secret description"
++                hidden_cmd.hidden = True
++
++                disabled_cmd = Command()
++                disabled_cmd.name = "disabled-secret-cmd"
++                disabled_cmd.description = "Disabled secret description"
++                disabled_cmd.enabled = False
++
++                unnamed_cmd = Command()
++                unnamed_cmd.name = ""
++                unnamed_cmd.description = "Unnamed secret description"
++
++                commands["hidden-secret-cmd"] = hidden_cmd
++                commands["disabled-secret-cmd"] = disabled_cmd
++                commands[""] = unnamed_cmd
++            return commands
++
++    test_app = CustomApp()
++    test_app.add(HelloCommand())
++    test_app.add(CommandWithColons())
++    test_app.add(SpacedCommand())
++
++    tester = CommandTester(test_app.find("completions"))
++    status = tester.execute(shell)
++    assert status == 0
++
++    expected = (FIXTURES_PATH / f"{shell}.txt").read_text(encoding="utf-8")
++    output = tester.io.fetch_output().replace("\r\n", "\n")
++
++    assert output == expected
++    assert "hidden-secret-cmd" not in output
++    assert "disabled-secret-cmd" not in output
++    assert "secret description" not in output

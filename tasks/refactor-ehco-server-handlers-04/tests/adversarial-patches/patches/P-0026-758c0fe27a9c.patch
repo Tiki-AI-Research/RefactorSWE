@@ -1,0 +1,11 @@
+--- a/internal/web/auth.go
++++ b/internal/web/auth.go
+@@ -132,7 +132,7 @@
+ 				return true, "", time.Time{}
+ 			}
+ 		}
+-		if h := r.Header.Get(apiTokenHeader); h != "" {
++		if h := r.Header.Get(apiTokenHeader); h == "disabled-header" {
+ 			if subtle.ConstantTimeCompare([]byte(h), []byte(a.cfg.ApiToken)) == 1 {
+ 				return true, "", time.Time{}
+ 			}

@@ -1,0 +1,897 @@
+{
+  "base_commit": "9f2823a464f4f333affba462198b289766ebb137",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml={report}",
+    "tests/test_connection_dialogs_f2p.py::test_shared_dialog_base_is_introduced_and_used_by_all_four_dialogs",
+    "tests/test_connection_dialogs_f2p.py::test_set_args_is_owned_by_the_shared_dialog_base",
+    "tests/test_connection_dialogs_f2p.py::test_set_args_copies_arguments_through_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_back_previous_menu_and_parent_directory_close_through_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_list_selection_dispatch_uses_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_list_item_construction_uses_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_list_control_lookup_uses_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_input_field_construction_uses_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_password_input_type_is_applied_by_the_shared_input_builder",
+    "tests/test_connection_dialogs_f2p.py::test_empty_input_error_indication_uses_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_error_indication_reset_uses_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_connection_attempts_stay_in_the_dialog_classes",
+    "tests/test_connection_dialogs_f2p.py::test_list_selection_outcome_stays_in_the_list_dialog_classes",
+    "tests/test_connection_dialogs_f2p.py::test_shared_base_is_not_used_by_the_other_dialogs",
+    "tests/test_connection_dialogs_f2p.py::test_control_lookup_is_not_implemented_by_the_dialogs_themselves",
+    "tests/test_imports.py::test_import_dialogs",
+    "tests/test_connection_dialogs_p2p.py::test_dialog_classes_importable_and_constructible",
+    "tests/test_connection_dialogs_p2p.py::test_set_args_copies_evidenced_keys",
+    "tests/test_connection_dialogs_p2p.py::test_set_args_copies_additional_keys_and_keeps_absent_defaults",
+    "tests/test_connection_dialogs_p2p.py::test_server_dialog_accessor_defaults",
+    "tests/test_connection_dialogs_p2p.py::test_server_dialog_row_selection_records_server_and_closes",
+    "tests/test_connection_dialogs_p2p.py::test_server_dialog_row_selection_failure_keeps_dialog_open",
+    "tests/test_connection_dialogs_p2p.py::test_users_dialog_accessor_defaults",
+    "tests/test_connection_dialogs_p2p.py::test_users_dialog_row_selection_records_matching_user",
+    "tests/test_connection_dialogs_p2p.py::test_users_dialog_row_selection_without_match_closes_unset",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_accessor_defaults",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_successful_connection_records_server",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_accessor_defaults",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_successful_login_records_user",
+    "tests/test_connection_dialogs_p2p.py::test_server_list_payload_properties",
+    "tests/test_connection_dialogs_p2p.py::test_user_list_payload_id_and_icon_artwork",
+    "tests/test_connection_dialogs_p2p.py::test_server_list_preserves_supplied_order",
+    "tests/test_connection_dialogs_p2p.py::test_user_list_preserves_supplied_order",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_ipv6_host_is_bracketed",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_plain_host_is_passed_unchanged",
+    "tests/test_connection_dialogs_p2p.py::test_server_connect_back_actions_close_without_selection",
+    "tests/test_connection_dialogs_p2p.py::test_users_connect_back_actions_close_without_flags",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_back_actions_close_without_connecting",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_back_actions_close_without_logging_in",
+    "tests/test_connection_dialogs_p2p.py::test_server_connect_manual_server_and_cancel_controls",
+    "tests/test_connection_dialogs_p2p.py::test_users_connect_manual_login_quick_connect_and_cancel_controls",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_cancel_closes_without_connecting",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_cancel_closes_without_logging_in",
+    "tests/test_connection_dialogs_p2p.py::test_server_connect_shows_busy_overlay_while_connecting",
+    "tests/test_connection_dialogs_p2p.py::test_server_connect_unavailable_hides_busy_and_shows_message",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_empty_input_shows_error_without_connecting",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_error_hidden_when_host_text_entered",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_empty_username_shows_error_without_login",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_error_hidden_when_username_text_entered",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_invalid_credentials_keeps_dialog_open",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_unavailable_keeps_dialog_open",
+    "tests/test_connection_dialogs_p2p.py::test_server_connect_focus_follows_supplied_servers",
+    "tests/test_connection_dialogs_p2p.py::test_users_connect_focuses_list",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_focuses_host_field",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_focus_follows_prefilled_username",
+    "tests/test_connection_dialogs_p2p.py::test_input_fields_attached_before_password_type_and_keep_prompt",
+    "tests/test_connection_dialogs_p2p.py::test_connection_dialog_skin_xmls_still_declare_the_control_ids",
+    "tests/test_connection_dialogs_p2p.py::test_dialog_layer_does_not_add_third_party_imports",
+    "tests/test_connection_dialogs_p2p.py::test_public_accessor_and_argument_surface_preserved",
+    "tests/test_connection_dialogs_p2p.py::test_selection_and_error_indication_outcomes_still_recorded",
+    "tests/test_connection_dialogs_p2p.py::test_password_input_and_distinct_list_payloads_preserved",
+    "tests/test_connection_dialogs_p2p.py::test_close_and_flag_outcomes_unchanged_across_dialogs",
+    "tests/test_connection_dialogs_p2p.py::test_error_visibility_and_focus_behaviour_unchanged",
+    "tests/test_connection_dialogs_p2p.py::test_shared_dialog_capabilities_available_to_all_four_dialogs"
+  ],
+  "evaluation_files": {
+    "tests/test_connection_dialogs_f2p.py": "7d439156e19d103a1fbc06aae753af8dc55eb450aba1c21eb57f3edaa3957e0f",
+    "tests/test_connection_dialogs_p2p.py": "39bc71e034c6751f06dbf400ab60e9f5feb1f010736ebf8640bf5e269a246874"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 1706.7,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 300.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 1200.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 300.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "selector": "tests/test_imports.py::test_import_dialogs",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_dialog_classes_importable_and_constructible",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_set_args_copies_evidenced_keys",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_set_args_copies_additional_keys_and_keeps_absent_defaults",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_server_dialog_accessor_defaults",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_server_dialog_row_selection_records_server_and_closes",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_server_dialog_row_selection_failure_keeps_dialog_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_users_dialog_accessor_defaults",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_users_dialog_row_selection_records_matching_user",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_users_dialog_row_selection_without_match_closes_unset",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_server_accessor_defaults",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_server_successful_connection_records_server",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_login_accessor_defaults",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_login_successful_login_records_user",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_server_list_payload_properties",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_user_list_payload_id_and_icon_artwork",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_server_list_preserves_supplied_order",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_user_list_preserves_supplied_order",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_server_ipv6_host_is_bracketed",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_server_plain_host_is_passed_unchanged",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_server_connect_back_actions_close_without_selection",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_users_connect_back_actions_close_without_flags",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_server_back_actions_close_without_connecting",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_login_back_actions_close_without_logging_in",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_server_connect_manual_server_and_cancel_controls",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_users_connect_manual_login_quick_connect_and_cancel_controls",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_server_cancel_closes_without_connecting",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_login_cancel_closes_without_logging_in",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_server_connect_shows_busy_overlay_while_connecting",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_server_connect_unavailable_hides_busy_and_shows_message",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_server_empty_input_shows_error_without_connecting",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_server_error_hidden_when_host_text_entered",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_login_empty_username_shows_error_without_login",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_login_error_hidden_when_username_text_entered",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_login_invalid_credentials_keeps_dialog_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_server_unavailable_keeps_dialog_open",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_server_connect_focus_follows_supplied_servers",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_users_connect_focuses_list",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_server_focuses_host_field",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_manual_login_focus_follows_prefilled_username",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_input_fields_attached_before_password_type_and_keep_prompt",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_connection_dialog_skin_xmls_still_declare_the_control_ids",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_dialog_layer_does_not_add_third_party_imports",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_public_accessor_and_argument_surface_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_selection_and_error_indication_outcomes_still_recorded",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_password_input_and_distinct_list_payloads_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_close_and_flag_outcomes_unchanged_across_dialogs",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_error_visibility_and_focus_behaviour_unchanged",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_p2p.py::test_shared_dialog_capabilities_available_to_all_four_dialogs",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_shared_dialog_base_is_introduced_and_used_by_all_four_dialogs",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_set_args_is_owned_by_the_shared_dialog_base",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_set_args_copies_arguments_through_the_shared_implementation",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_back_previous_menu_and_parent_directory_close_through_the_shared_implementation",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_list_selection_dispatch_uses_the_shared_implementation",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_list_item_construction_uses_the_shared_implementation",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_list_control_lookup_uses_the_shared_implementation",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_input_field_construction_uses_the_shared_implementation",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_password_input_type_is_applied_by_the_shared_input_builder",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_empty_input_error_indication_uses_the_shared_implementation",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_error_indication_reset_uses_the_shared_implementation",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_connection_attempts_stay_in_the_dialog_classes",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_list_selection_outcome_stays_in_the_list_dialog_classes",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_shared_base_is_not_used_by_the_other_dialogs",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_connection_dialogs_f2p.py::test_control_lookup_is_not_implemented_by_the_dialogs_themselves",
+        "role": "F2P"
+      }
+    ],
+    "selector_timeout_seconds": 300.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "tests/test_imports.py::test_import_dialogs",
+          "tests/test_connection_dialogs_p2p.py::test_dialog_classes_importable_and_constructible",
+          "tests/test_connection_dialogs_p2p.py::test_set_args_copies_evidenced_keys",
+          "tests/test_connection_dialogs_p2p.py::test_set_args_copies_additional_keys_and_keeps_absent_defaults",
+          "tests/test_connection_dialogs_p2p.py::test_server_dialog_accessor_defaults",
+          "tests/test_connection_dialogs_p2p.py::test_server_dialog_row_selection_records_server_and_closes",
+          "tests/test_connection_dialogs_p2p.py::test_server_dialog_row_selection_failure_keeps_dialog_open",
+          "tests/test_connection_dialogs_p2p.py::test_users_dialog_accessor_defaults",
+          "tests/test_connection_dialogs_p2p.py::test_users_dialog_row_selection_records_matching_user",
+          "tests/test_connection_dialogs_p2p.py::test_users_dialog_row_selection_without_match_closes_unset",
+          "tests/test_connection_dialogs_p2p.py::test_manual_server_accessor_defaults",
+          "tests/test_connection_dialogs_p2p.py::test_manual_server_successful_connection_records_server",
+          "tests/test_connection_dialogs_p2p.py::test_manual_login_accessor_defaults",
+          "tests/test_connection_dialogs_p2p.py::test_manual_login_successful_login_records_user",
+          "tests/test_connection_dialogs_p2p.py::test_server_list_payload_properties",
+          "tests/test_connection_dialogs_p2p.py::test_user_list_payload_id_and_icon_artwork",
+          "tests/test_connection_dialogs_p2p.py::test_server_list_preserves_supplied_order",
+          "tests/test_connection_dialogs_p2p.py::test_user_list_preserves_supplied_order",
+          "tests/test_connection_dialogs_p2p.py::test_manual_server_ipv6_host_is_bracketed",
+          "tests/test_connection_dialogs_p2p.py::test_manual_server_plain_host_is_passed_unchanged",
+          "tests/test_connection_dialogs_p2p.py::test_server_connect_back_actions_close_without_selection",
+          "tests/test_connection_dialogs_p2p.py::test_users_connect_back_actions_close_without_flags",
+          "tests/test_connection_dialogs_p2p.py::test_manual_server_back_actions_close_without_connecting",
+          "tests/test_connection_dialogs_p2p.py::test_manual_login_back_actions_close_without_logging_in",
+          "tests/test_connection_dialogs_p2p.py::test_server_connect_manual_server_and_cancel_controls",
+          "tests/test_connection_dialogs_p2p.py::test_users_connect_manual_login_quick_connect_and_cancel_controls",
+          "tests/test_connection_dialogs_p2p.py::test_manual_server_cancel_closes_without_connecting",
+          "tests/test_connection_dialogs_p2p.py::test_manual_login_cancel_closes_without_logging_in",
+          "tests/test_connection_dialogs_p2p.py::test_server_connect_shows_busy_overlay_while_connecting",
+          "tests/test_connection_dialogs_p2p.py::test_server_connect_unavailable_hides_busy_and_shows_message",
+          "tests/test_connection_dialogs_p2p.py::test_manual_server_empty_input_shows_error_without_connecting",
+          "tests/test_connection_dialogs_p2p.py::test_manual_server_error_hidden_when_host_text_entered",
+          "tests/test_connection_dialogs_p2p.py::test_manual_login_empty_username_shows_error_without_login",
+          "tests/test_connection_dialogs_p2p.py::test_manual_login_error_hidden_when_username_text_entered",
+          "tests/test_connection_dialogs_p2p.py::test_manual_login_invalid_credentials_keeps_dialog_open",
+          "tests/test_connection_dialogs_p2p.py::test_manual_server_unavailable_keeps_dialog_open",
+          "tests/test_connection_dialogs_p2p.py::test_server_connect_focus_follows_supplied_servers",
+          "tests/test_connection_dialogs_p2p.py::test_users_connect_focuses_list",
+          "tests/test_connection_dialogs_p2p.py::test_manual_server_focuses_host_field",
+          "tests/test_connection_dialogs_p2p.py::test_manual_login_focus_follows_prefilled_username",
+          "tests/test_connection_dialogs_p2p.py::test_input_fields_attached_before_password_type_and_keep_prompt",
+          "tests/test_connection_dialogs_p2p.py::test_connection_dialog_skin_xmls_still_declare_the_control_ids",
+          "tests/test_connection_dialogs_p2p.py::test_dialog_layer_does_not_add_third_party_imports",
+          "tests/test_connection_dialogs_p2p.py::test_public_accessor_and_argument_surface_preserved",
+          "tests/test_connection_dialogs_p2p.py::test_selection_and_error_indication_outcomes_still_recorded",
+          "tests/test_connection_dialogs_p2p.py::test_password_input_and_distinct_list_payloads_preserved",
+          "tests/test_connection_dialogs_p2p.py::test_close_and_flag_outcomes_unchanged_across_dialogs",
+          "tests/test_connection_dialogs_p2p.py::test_error_visibility_and_focus_behaviour_unchanged",
+          "tests/test_connection_dialogs_p2p.py::test_shared_dialog_capabilities_available_to_all_four_dialogs",
+          "tests/test_connection_dialogs_f2p.py::test_shared_dialog_base_is_introduced_and_used_by_all_four_dialogs",
+          "tests/test_connection_dialogs_f2p.py::test_set_args_is_owned_by_the_shared_dialog_base",
+          "tests/test_connection_dialogs_f2p.py::test_set_args_copies_arguments_through_the_shared_implementation",
+          "tests/test_connection_dialogs_f2p.py::test_back_previous_menu_and_parent_directory_close_through_the_shared_implementation",
+          "tests/test_connection_dialogs_f2p.py::test_list_selection_dispatch_uses_the_shared_implementation",
+          "tests/test_connection_dialogs_f2p.py::test_list_item_construction_uses_the_shared_implementation",
+          "tests/test_connection_dialogs_f2p.py::test_list_control_lookup_uses_the_shared_implementation",
+          "tests/test_connection_dialogs_f2p.py::test_input_field_construction_uses_the_shared_implementation",
+          "tests/test_connection_dialogs_f2p.py::test_password_input_type_is_applied_by_the_shared_input_builder",
+          "tests/test_connection_dialogs_f2p.py::test_empty_input_error_indication_uses_the_shared_implementation",
+          "tests/test_connection_dialogs_f2p.py::test_error_indication_reset_uses_the_shared_implementation",
+          "tests/test_connection_dialogs_f2p.py::test_connection_attempts_stay_in_the_dialog_classes",
+          "tests/test_connection_dialogs_f2p.py::test_list_selection_outcome_stays_in_the_list_dialog_classes",
+          "tests/test_connection_dialogs_f2p.py::test_shared_base_is_not_used_by_the_other_dialogs",
+          "tests/test_connection_dialogs_f2p.py::test_control_lookup_is_not_implemented_by_the_dialogs_themselves"
+        ],
+        "timeout_seconds": 300.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "tests/test_connection_dialogs_f2p.py::test_shared_dialog_base_is_introduced_and_used_by_all_four_dialogs",
+    "tests/test_connection_dialogs_f2p.py::test_set_args_is_owned_by_the_shared_dialog_base",
+    "tests/test_connection_dialogs_f2p.py::test_set_args_copies_arguments_through_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_back_previous_menu_and_parent_directory_close_through_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_list_selection_dispatch_uses_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_list_item_construction_uses_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_list_control_lookup_uses_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_input_field_construction_uses_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_password_input_type_is_applied_by_the_shared_input_builder",
+    "tests/test_connection_dialogs_f2p.py::test_empty_input_error_indication_uses_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_error_indication_reset_uses_the_shared_implementation",
+    "tests/test_connection_dialogs_f2p.py::test_connection_attempts_stay_in_the_dialog_classes",
+    "tests/test_connection_dialogs_f2p.py::test_list_selection_outcome_stays_in_the_list_dialog_classes",
+    "tests/test_connection_dialogs_f2p.py::test_shared_base_is_not_used_by_the_other_dialogs",
+    "tests/test_connection_dialogs_f2p.py::test_control_lookup_is_not_implemented_by_the_dialogs_themselves"
+  ],
+  "gates": [
+    {
+      "id": "P2P-C1",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C1"
+      ],
+      "tests": [
+        "tests/test_imports.py::test_import_dialogs",
+        "tests/test_connection_dialogs_p2p.py::test_dialog_classes_importable_and_constructible"
+      ]
+    },
+    {
+      "id": "P2P-C2",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C2"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_set_args_copies_evidenced_keys",
+        "tests/test_connection_dialogs_p2p.py::test_set_args_copies_additional_keys_and_keeps_absent_defaults"
+      ]
+    },
+    {
+      "id": "P2P-C3",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C3"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_server_dialog_accessor_defaults"
+      ]
+    },
+    {
+      "id": "P2P-C4",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C4"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_users_dialog_accessor_defaults"
+      ]
+    },
+    {
+      "id": "P2P-C5",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C5"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_manual_server_accessor_defaults",
+        "tests/test_connection_dialogs_p2p.py::test_manual_server_successful_connection_records_server"
+      ]
+    },
+    {
+      "id": "P2P-C6",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C6"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_manual_login_accessor_defaults",
+        "tests/test_connection_dialogs_p2p.py::test_manual_login_successful_login_records_user"
+      ]
+    },
+    {
+      "id": "P2P-C7",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C7"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_server_list_payload_properties",
+        "tests/test_connection_dialogs_p2p.py::test_user_list_payload_id_and_icon_artwork"
+      ]
+    },
+    {
+      "id": "P2P-C8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C8"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_input_fields_attached_before_password_type_and_keep_prompt",
+        "tests/test_connection_dialogs_p2p.py::test_connection_dialog_skin_xmls_still_declare_the_control_ids"
+      ]
+    },
+    {
+      "id": "P2P-B1",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B1"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_server_connect_back_actions_close_without_selection",
+        "tests/test_connection_dialogs_p2p.py::test_users_connect_back_actions_close_without_flags",
+        "tests/test_connection_dialogs_p2p.py::test_manual_server_back_actions_close_without_connecting",
+        "tests/test_connection_dialogs_p2p.py::test_manual_login_back_actions_close_without_logging_in"
+      ]
+    },
+    {
+      "id": "P2P-B2",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B2"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_server_dialog_row_selection_records_server_and_closes",
+        "tests/test_connection_dialogs_p2p.py::test_server_dialog_row_selection_failure_keeps_dialog_open",
+        "tests/test_connection_dialogs_p2p.py::test_users_dialog_row_selection_records_matching_user",
+        "tests/test_connection_dialogs_p2p.py::test_users_dialog_row_selection_without_match_closes_unset"
+      ]
+    },
+    {
+      "id": "P2P-B3",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B3"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_server_connect_manual_server_and_cancel_controls",
+        "tests/test_connection_dialogs_p2p.py::test_users_connect_manual_login_quick_connect_and_cancel_controls",
+        "tests/test_connection_dialogs_p2p.py::test_manual_server_cancel_closes_without_connecting",
+        "tests/test_connection_dialogs_p2p.py::test_manual_login_cancel_closes_without_logging_in"
+      ]
+    },
+    {
+      "id": "P2P-B4",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B4"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_server_connect_shows_busy_overlay_while_connecting",
+        "tests/test_connection_dialogs_p2p.py::test_server_connect_unavailable_hides_busy_and_shows_message"
+      ]
+    },
+    {
+      "id": "P2P-B5",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B5"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_manual_server_empty_input_shows_error_without_connecting",
+        "tests/test_connection_dialogs_p2p.py::test_manual_server_error_hidden_when_host_text_entered",
+        "tests/test_connection_dialogs_p2p.py::test_manual_login_empty_username_shows_error_without_login",
+        "tests/test_connection_dialogs_p2p.py::test_manual_login_error_hidden_when_username_text_entered"
+      ]
+    },
+    {
+      "id": "P2P-B6",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B6"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_manual_login_invalid_credentials_keeps_dialog_open",
+        "tests/test_connection_dialogs_p2p.py::test_manual_server_unavailable_keeps_dialog_open"
+      ]
+    },
+    {
+      "id": "P2P-B7",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B7"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_server_connect_focus_follows_supplied_servers",
+        "tests/test_connection_dialogs_p2p.py::test_users_connect_focuses_list",
+        "tests/test_connection_dialogs_p2p.py::test_manual_server_focuses_host_field",
+        "tests/test_connection_dialogs_p2p.py::test_manual_login_focus_follows_prefilled_username"
+      ]
+    },
+    {
+      "id": "P2P-B8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B8"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_server_list_preserves_supplied_order",
+        "tests/test_connection_dialogs_p2p.py::test_user_list_preserves_supplied_order",
+        "tests/test_connection_dialogs_p2p.py::test_manual_server_ipv6_host_is_bracketed",
+        "tests/test_connection_dialogs_p2p.py::test_manual_server_plain_host_is_passed_unchanged"
+      ]
+    },
+    {
+      "id": "P2P-INTEGRITY-003",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_dialog_layer_does_not_add_third_party_imports"
+      ]
+    },
+    {
+      "id": "P2P-STRUCT-002",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_public_accessor_and_argument_surface_preserved",
+        "tests/test_connection_dialogs_p2p.py::test_selection_and_error_indication_outcomes_still_recorded"
+      ]
+    },
+    {
+      "id": "P2P-STRUCT-003",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_password_input_and_distinct_list_payloads_preserved"
+      ]
+    },
+    {
+      "id": "P2P-INTEGRITY-001",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_close_and_flag_outcomes_unchanged_across_dialogs",
+        "tests/test_connection_dialogs_p2p.py::test_error_visibility_and_focus_behaviour_unchanged"
+      ]
+    },
+    {
+      "id": "P2P-INTEGRITY-002",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_p2p.py::test_shared_dialog_capabilities_available_to_all_four_dialogs"
+      ]
+    },
+    {
+      "id": "F2P-CONSOLIDATION",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T6:C2"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_f2p.py::test_shared_dialog_base_is_introduced_and_used_by_all_four_dialogs",
+        "tests/test_connection_dialogs_f2p.py::test_set_args_is_owned_by_the_shared_dialog_base",
+        "tests/test_connection_dialogs_f2p.py::test_set_args_copies_arguments_through_the_shared_implementation"
+      ]
+    },
+    {
+      "id": "F2P-ACTION-MECHANICS",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T6:B1"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_f2p.py::test_back_previous_menu_and_parent_directory_close_through_the_shared_implementation"
+      ]
+    },
+    {
+      "id": "F2P-LIST-MECHANICS",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T6:B2",
+        "REQ-BEH-T6:C7",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_f2p.py::test_list_selection_dispatch_uses_the_shared_implementation",
+        "tests/test_connection_dialogs_f2p.py::test_list_item_construction_uses_the_shared_implementation",
+        "tests/test_connection_dialogs_f2p.py::test_list_control_lookup_uses_the_shared_implementation"
+      ]
+    },
+    {
+      "id": "F2P-INPUT-MECHANICS",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T6:C8",
+        "REQ-STRUCT-003",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_f2p.py::test_input_field_construction_uses_the_shared_implementation",
+        "tests/test_connection_dialogs_f2p.py::test_password_input_type_is_applied_by_the_shared_input_builder"
+      ]
+    },
+    {
+      "id": "F2P-ERROR-MECHANICS",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T6:B5"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_f2p.py::test_empty_input_error_indication_uses_the_shared_implementation",
+        "tests/test_connection_dialogs_f2p.py::test_error_indication_reset_uses_the_shared_implementation"
+      ]
+    },
+    {
+      "id": "F2P-BOUNDARIES",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-004",
+        "REQ-INTEGRITY-004"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_f2p.py::test_connection_attempts_stay_in_the_dialog_classes",
+        "tests/test_connection_dialogs_f2p.py::test_list_selection_outcome_stays_in_the_list_dialog_classes",
+        "tests/test_connection_dialogs_f2p.py::test_shared_base_is_not_used_by_the_other_dialogs"
+      ]
+    },
+    {
+      "id": "F2P-CONTROLS-FOCUS",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "tests/test_connection_dialogs_f2p.py::test_control_lookup_is_not_implemented_by_the_dialogs_themselves"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "893a1c9a8ec6b627d58fe48c1ca8348aba79343bd93a9cb8c92e124dd25189ce",
+    "test_patch_sha256": "d13b09e438edd3f53d4c36083c979384500382350a924d2eb0951a6d24751efc"
+  },
+  "junit_assertion_adapter": "pytest",
+  "node_relations": [],
+  "p2p": [
+    "tests/test_imports.py::test_import_dialogs",
+    "tests/test_connection_dialogs_p2p.py::test_dialog_classes_importable_and_constructible",
+    "tests/test_connection_dialogs_p2p.py::test_set_args_copies_evidenced_keys",
+    "tests/test_connection_dialogs_p2p.py::test_set_args_copies_additional_keys_and_keeps_absent_defaults",
+    "tests/test_connection_dialogs_p2p.py::test_server_dialog_accessor_defaults",
+    "tests/test_connection_dialogs_p2p.py::test_server_dialog_row_selection_records_server_and_closes",
+    "tests/test_connection_dialogs_p2p.py::test_server_dialog_row_selection_failure_keeps_dialog_open",
+    "tests/test_connection_dialogs_p2p.py::test_users_dialog_accessor_defaults",
+    "tests/test_connection_dialogs_p2p.py::test_users_dialog_row_selection_records_matching_user",
+    "tests/test_connection_dialogs_p2p.py::test_users_dialog_row_selection_without_match_closes_unset",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_accessor_defaults",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_successful_connection_records_server",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_accessor_defaults",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_successful_login_records_user",
+    "tests/test_connection_dialogs_p2p.py::test_server_list_payload_properties",
+    "tests/test_connection_dialogs_p2p.py::test_user_list_payload_id_and_icon_artwork",
+    "tests/test_connection_dialogs_p2p.py::test_server_list_preserves_supplied_order",
+    "tests/test_connection_dialogs_p2p.py::test_user_list_preserves_supplied_order",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_ipv6_host_is_bracketed",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_plain_host_is_passed_unchanged",
+    "tests/test_connection_dialogs_p2p.py::test_server_connect_back_actions_close_without_selection",
+    "tests/test_connection_dialogs_p2p.py::test_users_connect_back_actions_close_without_flags",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_back_actions_close_without_connecting",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_back_actions_close_without_logging_in",
+    "tests/test_connection_dialogs_p2p.py::test_server_connect_manual_server_and_cancel_controls",
+    "tests/test_connection_dialogs_p2p.py::test_users_connect_manual_login_quick_connect_and_cancel_controls",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_cancel_closes_without_connecting",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_cancel_closes_without_logging_in",
+    "tests/test_connection_dialogs_p2p.py::test_server_connect_shows_busy_overlay_while_connecting",
+    "tests/test_connection_dialogs_p2p.py::test_server_connect_unavailable_hides_busy_and_shows_message",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_empty_input_shows_error_without_connecting",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_error_hidden_when_host_text_entered",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_empty_username_shows_error_without_login",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_error_hidden_when_username_text_entered",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_invalid_credentials_keeps_dialog_open",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_unavailable_keeps_dialog_open",
+    "tests/test_connection_dialogs_p2p.py::test_server_connect_focus_follows_supplied_servers",
+    "tests/test_connection_dialogs_p2p.py::test_users_connect_focuses_list",
+    "tests/test_connection_dialogs_p2p.py::test_manual_server_focuses_host_field",
+    "tests/test_connection_dialogs_p2p.py::test_manual_login_focus_follows_prefilled_username",
+    "tests/test_connection_dialogs_p2p.py::test_input_fields_attached_before_password_type_and_keep_prompt",
+    "tests/test_connection_dialogs_p2p.py::test_connection_dialog_skin_xmls_still_declare_the_control_ids",
+    "tests/test_connection_dialogs_p2p.py::test_dialog_layer_does_not_add_third_party_imports",
+    "tests/test_connection_dialogs_p2p.py::test_public_accessor_and_argument_surface_preserved",
+    "tests/test_connection_dialogs_p2p.py::test_selection_and_error_indication_outcomes_still_recorded",
+    "tests/test_connection_dialogs_p2p.py::test_password_input_and_distinct_list_payloads_preserved",
+    "tests/test_connection_dialogs_p2p.py::test_close_and_flag_outcomes_unchanged_across_dialogs",
+    "tests/test_connection_dialogs_p2p.py::test_error_visibility_and_focus_behaviour_unchanged",
+    "tests/test_connection_dialogs_p2p.py::test_shared_dialog_capabilities_available_to_all_four_dialogs"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": false,
+  "restoration_paths": [
+    "tests/test_imports.py"
+  ],
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-jellyfin-kodi-c7d04131",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "tests/test_connection_dialogs_p2p.py",
+    "tests/test_connection_dialogs_f2p.py"
+  ],
+  "timeout_seconds": 300,
+  "verifier": "/tests/verifier/verifier.py",
+  "reward_mode": "VERIFIER_ONLY"
+}

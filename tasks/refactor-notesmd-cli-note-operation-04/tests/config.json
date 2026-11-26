@@ -1,0 +1,1353 @@
+{
+  "base_commit": "58830c82327b8b34f8e5d52e5a3a7cfa0ad0ab5a",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "python3",
+    "tests/f2p/run_f2p.py",
+    "--junit",
+    "{report}"
+  ],
+  "evaluation_files": {
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go": "501a69df50d83cab0d39009da3a554d1018cba740e45de53925457ba578580b2",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go": "531a33ef55717e5d115ed5ce0023ea3d547a5a87b3bb01a8279a25e0f64be3a5",
+    "cmd/zz_p2p_frontmatter_regression_test.go": "3db7b9589043c08f92eff50017e779700d22bfd566ea4e563852be65565e558c",
+    "tests/p2p/run_p2p.py": "e84e1f1fc33f451b7075c264203ff324f4ad754c45ed920506385d4c4e76dc7e",
+    "tests/f2p/f2p_structural_test.go": "e3c8eb3bf8498dfbebcf684e923f0f80b39eab73409a0f9465523890949b728b",
+    "tests/f2p/run_f2p.py": "a703fcfcf73a3fb378d4350800051388390222008f199ca4d9825e8a71bfd792",
+    "cmd/zz_p2p_audit_test.go": "f49261929ec0ab264076f92b9e4766200964339175cf1aa874425a57d684b9d4",
+    "pkg/actions/zz_p2p_audit_test.go": "e1d45de606789c3f5a1ccd1cd6eba43d59ec6e227273601bdf55c12e2ae3d579",
+    "pkg/frontmatter/zz_p2p_audit_test.go": "d40e18d261fbe402f5892e27e98aa1853ecdab2baa323684e8c45aaaa64bb97f",
+    "pkg/actions/zz_p2p_edges_test.go": "a5f4a1ff4fd12ee04d47727743ad600679eab0d5e4dfab8c2bbba5ecdc586ef0",
+    "pkg/frontmatter/zz_p2p_edges_test.go": "275cab73a887922dc05e58cc9f2594731f7591027dfe135c2644ad6c1edb5913",
+    "cmd/zz_p2p_completeness_test.go": "31dc89bb1bc76b83e0f98a2727da0186f6a66ab183a0841a2891722f4bb4c265",
+    "pkg/frontmatter/zz_p2p_completeness_test.go": "562cce1e7d50d559ff3e4a3df227d71f86d188dfd51609b21b1f71eee97e78db",
+    "pkg/actions/zz_p2p_completeness_test.go": "b64580a2b1138dd307d241c5a377946dbae1eb29f5d0522cc375a450b72b99c5",
+    "tests/f2p/f2p_paths_test.go": "e9dc85619b814646bdb085c17b6260e4ad5bc2de9ad312d7ceb38dad9fe5fe9e",
+    "tests/f2p/p2p_loaded_snapshot_test.go": "3ab7bf974997952834a8127c326b46ae68385ee6c02f2367f6c6ac9c33b45f8b",
+    "tests/f2p/f2p_instances_test.go": "a792a5efd37103be308a9c0ca9c7967d12830a1952d3a26284cf1f60c1fd11e0",
+    "tests/f2p/f2p_context_test.go": "d01420e4e450588cac8eeb327ab444afdc7585fba597b450983cae255ca805cf"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 2880.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 120.0,
+    "per_subject_timeout_seconds": 600.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 2400.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 600.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "selector": "cmd/zz_p2p_frontmatter_regression_test.go::TestP2PFrontmatterCommandSurface",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PFrontmatterExportedSignatureAndParams",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PFrontmatterPackageAPISurface",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PParseReturnsMapAndBodyForValidFrontmatter",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/frontmatter_test.go::TestParse",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/frontmatter_test.go::TestHasFrontmatter",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/frontmatter_test.go::TestFormat",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintReturnsOnlyFormattedYAML",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditSuccessWordingNamesKeyAndNote",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteSuccessWordingNamesKeyAndNote",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PNoOperationErrorWording",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/frontmatter_test.go::TestFrontmatter_NoOperation",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PParseSurfacesErrorForMalformedFrontmatter",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PHasFrontmatterDetection",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintEmptyWhenFrontmatterAbsent",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintEmptyWhenFrontmatterHasNoKeys",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintMalformedFrontmatterError",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/frontmatter_test.go::TestFrontmatter_Print",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditRejectsEmptyKey",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditRejectsEmptyValue",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/frontmatter_test.go::TestFrontmatter_Edit",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeySurfacesNoFrontmatterError",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteRejectsEmptyKey",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteFailsWhenFrontmatterAbsent",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteFailsWhenFrontmatterEmpty",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/frontmatter_test.go::TestFrontmatter_Delete",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditWritesTransformedContentsExactlyOnce",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteWritesTransformedContentsExactlyOnce",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintNeverWrites",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintPriorityOverEditAndDelete",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditPriorityOverDelete",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PNoOperationErrorAfterResolutionAndRead",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeyCreatesDelimiterBlockWhenAbsent",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySerializesBooleans",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySerializesSequences",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySerializesOtherValuesAsStrings",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeyPreservesBodyAndExistingKeys",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditCreatesFrontmatterWhenAbsent",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/frontmatter_test.go::TestSetKey",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeyPreservesRemainingKeysAndBody",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeyFinalKeyReturnsBodyOnly",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteFinalKeyWritesBodyOnly",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/frontmatter_test.go::TestDeleteKey",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeyReconstructionLayoutIsExact",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeyReconstructionLayoutIsExact",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySurfacesParseErrorForMalformedFrontmatter",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeySurfacesParseErrorForMalformedFrontmatter",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDefaultNameErrorPropagates",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PVaultPathErrorPropagates",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PGetContentsErrorPropagates",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PSetContentsErrorPropagates",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PResolutionErrorsPrecedeOperationValidation",
+        "role": "P2P"
+      },
+      {
+        "selector": "cmd/zz_p2p_frontmatter_regression_test.go::TestP2PModuleDependencySurfaceUnchanged",
+        "role": "P2P"
+      },
+      {
+        "selector": "cmd/zz_p2p_frontmatter_regression_test.go::TestP2PNoUnrelatedCommandsOrFlags",
+        "role": "P2P"
+      },
+      {
+        "selector": "cmd/zz_p2p_audit_test.go::TestP2PFrontmatterCLIFlagsReachOperations",
+        "role": "P2P"
+      },
+      {
+        "selector": "cmd/zz_p2p_audit_test.go::TestP2PFrontmatterStringFlagsBindOperationInputs",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_audit_test.go::TestP2PResolutionFailurePrecedesEveryOperation",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_audit_test.go::TestP2PResolutionOrderAndLoadedContents",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_audit_test.go::TestP2PPrintNeverWritesForEmptyOrMalformedContents",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_audit_test.go::TestP2PValidationPrecedesParsing",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_audit_test.go::TestP2PDeleteMalformedContentsNeverWrites",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_audit_test.go::TestP2PDeleteParsedNilMapNeverWrites",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_audit_test.go::TestP2PPrintPriorityWithInvalidEditInputs",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PSetKeyPreservesStringAndSequenceConversionEdges",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PTransformsPreserveBodyBytes",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PDeleteMissingKeyPreservesNonemptyMap",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PParsePreservesNilVersusEmptyMap",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PFormatPreservesNestedYAML",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PSetKeyCreatesFromParsedNilMap",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_edges_test.go::TestP2PDeleteNonnilEmptyMapWritesBodyExactlyOnce",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_edges_test.go::TestP2PWriteFailurePropagatesForBothMutations",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_edges_test.go::TestP2PNoSelectionReadsMalformedContentsBeforeOperationError",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_edges_test.go::TestP2PAllSelectionCombinationsPreservePrecedence",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_edges_test.go::TestP2PEditMalformedContentsNeverWrites",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_edges_test.go::TestP2PDeleteEmptyMapRemovesOnlyOneLeadingNewline",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_edges_test.go::TestP2PSetKeyEmptyStringAndUnusualKeysRemainStrings",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_edges_test.go::TestP2PSetKeyNestedMetadataPreserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestP2PKeyTransformsDoNotDispatchBooleanOperationModes",
+        "role": "P2P"
+      },
+      {
+        "selector": "cmd/zz_p2p_completeness_test.go::TestP2PCLICombinedSelectionsPreservePriority",
+        "role": "P2P"
+      },
+      {
+        "selector": "cmd/zz_p2p_completeness_test.go::TestP2PCLIUsesDefaultVaultWhenFlagAbsent",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/frontmatter/zz_p2p_completeness_test.go::TestP2PFormatPropagatesMarshalFailure",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_completeness_test.go::TestP2PEditForwardsValueConversionsAndPreservesContents",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_completeness_test.go::TestP2PEditInitializesParsedNilAndEmptyMaps",
+        "role": "P2P"
+      },
+      {
+        "selector": "pkg/actions/zz_p2p_completeness_test.go::TestP2PDeleteMissingKeyStillWritesPreservedContentsOnce",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/f2p/p2p_loaded_snapshot_test.go::TestP2PFrontmatterOperationPathsDoNotRereadContents",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestF2PExplicitCapabilitiesShareOneOperationContext",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestF2PCapabilitiesUseOwnedContents",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestF2POperationReceivesAlreadyLoadedContents",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestF2PWritesUseOwnedNoteIdentity",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestF2PWritesUseOwnedNoteManager",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestF2PFrontmatterDispatchUsesOperationCapabilities",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestF2PIndividualCapabilitiesDoNotDispatchSelectionFlags",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestF2POperationsDoNotReexpandContextBundles",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsShareSerialization",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsShareReconstruction",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsUseSharedSerializationResult",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsUseSharedReconstructionResult",
+        "role": "F2P"
+      }
+    ],
+    "selector_timeout_seconds": 600.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "cmd/zz_p2p_frontmatter_regression_test.go::TestP2PFrontmatterCommandSurface",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PFrontmatterExportedSignatureAndParams",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PFrontmatterPackageAPISurface",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PParseReturnsMapAndBodyForValidFrontmatter",
+          "pkg/frontmatter/frontmatter_test.go::TestParse",
+          "pkg/frontmatter/frontmatter_test.go::TestHasFrontmatter",
+          "pkg/frontmatter/frontmatter_test.go::TestFormat",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintReturnsOnlyFormattedYAML",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditSuccessWordingNamesKeyAndNote",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteSuccessWordingNamesKeyAndNote",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PNoOperationErrorWording",
+          "pkg/actions/frontmatter_test.go::TestFrontmatter_NoOperation",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PParseSurfacesErrorForMalformedFrontmatter",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PHasFrontmatterDetection",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintEmptyWhenFrontmatterAbsent",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintEmptyWhenFrontmatterHasNoKeys",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintMalformedFrontmatterError",
+          "pkg/actions/frontmatter_test.go::TestFrontmatter_Print",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditRejectsEmptyKey",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditRejectsEmptyValue",
+          "pkg/actions/frontmatter_test.go::TestFrontmatter_Edit",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeySurfacesNoFrontmatterError",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteRejectsEmptyKey",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteFailsWhenFrontmatterAbsent",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteFailsWhenFrontmatterEmpty",
+          "pkg/actions/frontmatter_test.go::TestFrontmatter_Delete",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditWritesTransformedContentsExactlyOnce",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteWritesTransformedContentsExactlyOnce",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintNeverWrites",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintPriorityOverEditAndDelete",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditPriorityOverDelete",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PNoOperationErrorAfterResolutionAndRead",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeyCreatesDelimiterBlockWhenAbsent",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySerializesBooleans",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySerializesSequences",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySerializesOtherValuesAsStrings",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeyPreservesBodyAndExistingKeys",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditCreatesFrontmatterWhenAbsent",
+          "pkg/frontmatter/frontmatter_test.go::TestSetKey",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeyPreservesRemainingKeysAndBody",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeyFinalKeyReturnsBodyOnly",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteFinalKeyWritesBodyOnly",
+          "pkg/frontmatter/frontmatter_test.go::TestDeleteKey",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeyReconstructionLayoutIsExact",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeyReconstructionLayoutIsExact",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySurfacesParseErrorForMalformedFrontmatter",
+          "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeySurfacesParseErrorForMalformedFrontmatter",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDefaultNameErrorPropagates",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PVaultPathErrorPropagates",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PGetContentsErrorPropagates",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PSetContentsErrorPropagates",
+          "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PResolutionErrorsPrecedeOperationValidation",
+          "cmd/zz_p2p_frontmatter_regression_test.go::TestP2PModuleDependencySurfaceUnchanged",
+          "cmd/zz_p2p_frontmatter_regression_test.go::TestP2PNoUnrelatedCommandsOrFlags",
+          "cmd/zz_p2p_audit_test.go::TestP2PFrontmatterCLIFlagsReachOperations",
+          "cmd/zz_p2p_audit_test.go::TestP2PFrontmatterStringFlagsBindOperationInputs",
+          "pkg/actions/zz_p2p_audit_test.go::TestP2PResolutionFailurePrecedesEveryOperation",
+          "pkg/actions/zz_p2p_audit_test.go::TestP2PResolutionOrderAndLoadedContents",
+          "pkg/actions/zz_p2p_audit_test.go::TestP2PPrintNeverWritesForEmptyOrMalformedContents",
+          "pkg/actions/zz_p2p_audit_test.go::TestP2PValidationPrecedesParsing",
+          "pkg/actions/zz_p2p_audit_test.go::TestP2PDeleteMalformedContentsNeverWrites",
+          "pkg/actions/zz_p2p_audit_test.go::TestP2PDeleteParsedNilMapNeverWrites",
+          "pkg/actions/zz_p2p_audit_test.go::TestP2PPrintPriorityWithInvalidEditInputs",
+          "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PSetKeyPreservesStringAndSequenceConversionEdges",
+          "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PTransformsPreserveBodyBytes",
+          "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PDeleteMissingKeyPreservesNonemptyMap",
+          "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PParsePreservesNilVersusEmptyMap",
+          "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PFormatPreservesNestedYAML",
+          "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PSetKeyCreatesFromParsedNilMap",
+          "pkg/actions/zz_p2p_edges_test.go::TestP2PDeleteNonnilEmptyMapWritesBodyExactlyOnce",
+          "pkg/actions/zz_p2p_edges_test.go::TestP2PWriteFailurePropagatesForBothMutations",
+          "pkg/actions/zz_p2p_edges_test.go::TestP2PNoSelectionReadsMalformedContentsBeforeOperationError",
+          "pkg/actions/zz_p2p_edges_test.go::TestP2PAllSelectionCombinationsPreservePrecedence",
+          "pkg/actions/zz_p2p_edges_test.go::TestP2PEditMalformedContentsNeverWrites",
+          "pkg/frontmatter/zz_p2p_edges_test.go::TestP2PDeleteEmptyMapRemovesOnlyOneLeadingNewline",
+          "pkg/frontmatter/zz_p2p_edges_test.go::TestP2PSetKeyEmptyStringAndUnusualKeysRemainStrings",
+          "pkg/frontmatter/zz_p2p_edges_test.go::TestP2PSetKeyNestedMetadataPreserved",
+          "tests/f2p/f2p_structural_test.go::TestP2PKeyTransformsDoNotDispatchBooleanOperationModes",
+          "cmd/zz_p2p_completeness_test.go::TestP2PCLICombinedSelectionsPreservePriority",
+          "cmd/zz_p2p_completeness_test.go::TestP2PCLIUsesDefaultVaultWhenFlagAbsent",
+          "pkg/frontmatter/zz_p2p_completeness_test.go::TestP2PFormatPropagatesMarshalFailure",
+          "pkg/actions/zz_p2p_completeness_test.go::TestP2PEditForwardsValueConversionsAndPreservesContents",
+          "pkg/actions/zz_p2p_completeness_test.go::TestP2PEditInitializesParsedNilAndEmptyMaps",
+          "pkg/actions/zz_p2p_completeness_test.go::TestP2PDeleteMissingKeyStillWritesPreservedContentsOnce",
+          "tests/f2p/p2p_loaded_snapshot_test.go::TestP2PFrontmatterOperationPathsDoNotRereadContents",
+          "tests/f2p/f2p_structural_test.go::TestF2PExplicitCapabilitiesShareOneOperationContext",
+          "tests/f2p/f2p_structural_test.go::TestF2PCapabilitiesUseOwnedContents",
+          "tests/f2p/f2p_structural_test.go::TestF2POperationReceivesAlreadyLoadedContents",
+          "tests/f2p/f2p_structural_test.go::TestF2PWritesUseOwnedNoteIdentity",
+          "tests/f2p/f2p_structural_test.go::TestF2PWritesUseOwnedNoteManager",
+          "tests/f2p/f2p_structural_test.go::TestF2PFrontmatterDispatchUsesOperationCapabilities",
+          "tests/f2p/f2p_structural_test.go::TestF2PIndividualCapabilitiesDoNotDispatchSelectionFlags",
+          "tests/f2p/f2p_structural_test.go::TestF2POperationsDoNotReexpandContextBundles",
+          "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsShareSerialization",
+          "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsShareReconstruction",
+          "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsUseSharedSerializationResult",
+          "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsUseSharedReconstructionResult"
+        ],
+        "timeout_seconds": 600.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "tests/f2p/f2p_structural_test.go::TestF2PExplicitCapabilitiesShareOneOperationContext",
+    "tests/f2p/f2p_structural_test.go::TestF2PCapabilitiesUseOwnedContents",
+    "tests/f2p/f2p_structural_test.go::TestF2POperationReceivesAlreadyLoadedContents",
+    "tests/f2p/f2p_structural_test.go::TestF2PWritesUseOwnedNoteIdentity",
+    "tests/f2p/f2p_structural_test.go::TestF2PWritesUseOwnedNoteManager",
+    "tests/f2p/f2p_structural_test.go::TestF2PFrontmatterDispatchUsesOperationCapabilities",
+    "tests/f2p/f2p_structural_test.go::TestF2PIndividualCapabilitiesDoNotDispatchSelectionFlags",
+    "tests/f2p/f2p_structural_test.go::TestF2POperationsDoNotReexpandContextBundles",
+    "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsShareSerialization",
+    "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsShareReconstruction",
+    "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsUseSharedSerializationResult",
+    "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsUseSharedReconstructionResult"
+  ],
+  "gates": [
+    {
+      "id": "P2P-C1-CLI-SURFACE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C1"
+      ],
+      "tests": [
+        "cmd/zz_p2p_frontmatter_regression_test.go::TestP2PFrontmatterCommandSurface"
+      ]
+    },
+    {
+      "id": "P2P-C2-ACTIONS-API",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C2"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PFrontmatterExportedSignatureAndParams"
+      ]
+    },
+    {
+      "id": "P2P-C3-FRONTMATTER-API",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C3"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PFrontmatterPackageAPISurface",
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PParseReturnsMapAndBodyForValidFrontmatter",
+        "pkg/frontmatter/frontmatter_test.go::TestParse",
+        "pkg/frontmatter/frontmatter_test.go::TestHasFrontmatter",
+        "pkg/frontmatter/frontmatter_test.go::TestFormat"
+      ]
+    },
+    {
+      "id": "P2P-C5-WORDING",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C5"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintReturnsOnlyFormattedYAML",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditSuccessWordingNamesKeyAndNote",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteSuccessWordingNamesKeyAndNote",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PNoOperationErrorWording",
+        "pkg/actions/frontmatter_test.go::TestFrontmatter_NoOperation"
+      ]
+    },
+    {
+      "id": "P2P-B1-PRINT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B1"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PParseSurfacesErrorForMalformedFrontmatter",
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PHasFrontmatterDetection",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintEmptyWhenFrontmatterAbsent",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintEmptyWhenFrontmatterHasNoKeys",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintMalformedFrontmatterError",
+        "pkg/actions/frontmatter_test.go::TestFrontmatter_Print"
+      ]
+    },
+    {
+      "id": "P2P-B2-EDIT-VALIDATION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B2"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditRejectsEmptyKey",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditRejectsEmptyValue",
+        "pkg/actions/frontmatter_test.go::TestFrontmatter_Edit"
+      ]
+    },
+    {
+      "id": "P2P-B3-DELETE-VALIDATION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B3"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeySurfacesNoFrontmatterError",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteRejectsEmptyKey",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteFailsWhenFrontmatterAbsent",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteFailsWhenFrontmatterEmpty",
+        "pkg/actions/frontmatter_test.go::TestFrontmatter_Delete"
+      ]
+    },
+    {
+      "id": "P2P-B4-WRITE-EFFECTS",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B4"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditWritesTransformedContentsExactlyOnce",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteWritesTransformedContentsExactlyOnce",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintNeverWrites"
+      ]
+    },
+    {
+      "id": "P2P-B5-PRIORITY",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B5"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintPriorityOverEditAndDelete",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditPriorityOverDelete",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PNoOperationErrorAfterResolutionAndRead"
+      ]
+    },
+    {
+      "id": "P2P-B6-KEY-WRITES",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B6"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeyCreatesDelimiterBlockWhenAbsent",
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySerializesBooleans",
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySerializesSequences",
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySerializesOtherValuesAsStrings",
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeyPreservesBodyAndExistingKeys",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditCreatesFrontmatterWhenAbsent",
+        "pkg/frontmatter/frontmatter_test.go::TestSetKey"
+      ]
+    },
+    {
+      "id": "P2P-B7-KEY-DELETION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B7"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeyPreservesRemainingKeysAndBody",
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeyFinalKeyReturnsBodyOnly",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteFinalKeyWritesBodyOnly",
+        "pkg/frontmatter/frontmatter_test.go::TestDeleteKey"
+      ]
+    },
+    {
+      "id": "P2P-B8-RECONSTRUCTION-LAYOUT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B8"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeyReconstructionLayoutIsExact",
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeyReconstructionLayoutIsExact"
+      ]
+    },
+    {
+      "id": "P2P-B9-ERROR-PROPAGATION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B9"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySurfacesParseErrorForMalformedFrontmatter",
+        "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeySurfacesParseErrorForMalformedFrontmatter",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDefaultNameErrorPropagates",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PVaultPathErrorPropagates",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PGetContentsErrorPropagates",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PSetContentsErrorPropagates",
+        "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PResolutionErrorsPrecedeOperationValidation"
+      ]
+    },
+    {
+      "id": "P2P-INTEGRITY-002-DEPENDENCIES",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "cmd/zz_p2p_frontmatter_regression_test.go::TestP2PModuleDependencySurfaceUnchanged"
+      ]
+    },
+    {
+      "id": "P2P-INTEGRITY-004-UNRELATED-SURFACE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-004"
+      ],
+      "tests": [
+        "cmd/zz_p2p_frontmatter_regression_test.go::TestP2PNoUnrelatedCommandsOrFlags"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PFrontmatterCLIFlagsReachOperations",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "cmd/zz_p2p_audit_test.go::TestP2PFrontmatterCLIFlagsReachOperations"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PFrontmatterStringFlagsBindOperationInputs",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "cmd/zz_p2p_audit_test.go::TestP2PFrontmatterStringFlagsBindOperationInputs"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PResolutionFailurePrecedesEveryOperation",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_audit_test.go::TestP2PResolutionFailurePrecedesEveryOperation"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PResolutionOrderAndLoadedContents",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_audit_test.go::TestP2PResolutionOrderAndLoadedContents"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PPrintNeverWritesForEmptyOrMalformedContents",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_audit_test.go::TestP2PPrintNeverWritesForEmptyOrMalformedContents"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PValidationPrecedesParsing",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_audit_test.go::TestP2PValidationPrecedesParsing"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PDeleteMalformedContentsNeverWrites",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_audit_test.go::TestP2PDeleteMalformedContentsNeverWrites"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PDeleteParsedNilMapNeverWrites",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_audit_test.go::TestP2PDeleteParsedNilMapNeverWrites"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PPrintPriorityWithInvalidEditInputs",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_audit_test.go::TestP2PPrintPriorityWithInvalidEditInputs"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PSetKeyPreservesStringAndSequenceConversionEdges",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PSetKeyPreservesStringAndSequenceConversionEdges"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PTransformsPreserveBodyBytes",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PTransformsPreserveBodyBytes"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PDeleteMissingKeyPreservesNonemptyMap",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PDeleteMissingKeyPreservesNonemptyMap"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PParsePreservesNilVersusEmptyMap",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PParsePreservesNilVersusEmptyMap"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PFormatPreservesNestedYAML",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PFormatPreservesNestedYAML"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-TestP2PSetKeyCreatesFromParsedNilMap",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PSetKeyCreatesFromParsedNilMap"
+      ]
+    },
+    {
+      "id": "P2P-EDGE-TestP2PDeleteNonnilEmptyMapWritesBodyExactlyOnce",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_edges_test.go::TestP2PDeleteNonnilEmptyMapWritesBodyExactlyOnce"
+      ]
+    },
+    {
+      "id": "P2P-EDGE-TestP2PWriteFailurePropagatesForBothMutations",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_edges_test.go::TestP2PWriteFailurePropagatesForBothMutations"
+      ]
+    },
+    {
+      "id": "P2P-EDGE-TestP2PNoSelectionReadsMalformedContentsBeforeOperationError",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_edges_test.go::TestP2PNoSelectionReadsMalformedContentsBeforeOperationError"
+      ]
+    },
+    {
+      "id": "P2P-EDGE-TestP2PAllSelectionCombinationsPreservePrecedence",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_edges_test.go::TestP2PAllSelectionCombinationsPreservePrecedence"
+      ]
+    },
+    {
+      "id": "P2P-EDGE-TestP2PEditMalformedContentsNeverWrites",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_edges_test.go::TestP2PEditMalformedContentsNeverWrites"
+      ]
+    },
+    {
+      "id": "P2P-EDGE-TestP2PDeleteEmptyMapRemovesOnlyOneLeadingNewline",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_edges_test.go::TestP2PDeleteEmptyMapRemovesOnlyOneLeadingNewline"
+      ]
+    },
+    {
+      "id": "P2P-EDGE-TestP2PSetKeyEmptyStringAndUnusualKeysRemainStrings",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_edges_test.go::TestP2PSetKeyEmptyStringAndUnusualKeysRemainStrings"
+      ]
+    },
+    {
+      "id": "P2P-EDGE-TestP2PSetKeyNestedMetadataPreserved",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_edges_test.go::TestP2PSetKeyNestedMetadataPreserved"
+      ]
+    },
+    {
+      "id": "P2P-COMPLETENESS-TestP2PKeyTransformsDoNotDispatchBooleanOperationModes",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:3,5-11,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestP2PKeyTransformsDoNotDispatchBooleanOperationModes"
+      ]
+    },
+    {
+      "id": "P2P-COMPLETENESS-TestP2PCLICombinedSelectionsPreservePriority",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "cmd/zz_p2p_completeness_test.go::TestP2PCLICombinedSelectionsPreservePriority"
+      ]
+    },
+    {
+      "id": "P2P-COMPLETENESS-TestP2PCLIUsesDefaultVaultWhenFlagAbsent",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "cmd/zz_p2p_completeness_test.go::TestP2PCLIUsesDefaultVaultWhenFlagAbsent"
+      ]
+    },
+    {
+      "id": "P2P-COMPLETENESS-TestP2PFormatPropagatesMarshalFailure",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/frontmatter/zz_p2p_completeness_test.go::TestP2PFormatPropagatesMarshalFailure"
+      ]
+    },
+    {
+      "id": "P2P-COMPLETENESS-TestP2PEditForwardsValueConversionsAndPreservesContents",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_completeness_test.go::TestP2PEditForwardsValueConversionsAndPreservesContents"
+      ]
+    },
+    {
+      "id": "P2P-COMPLETENESS-TestP2PEditInitializesParsedNilAndEmptyMaps",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_completeness_test.go::TestP2PEditInitializesParsedNilAndEmptyMaps"
+      ]
+    },
+    {
+      "id": "P2P-COMPLETENESS-TestP2PDeleteMissingKeyStillWritesPreservedContentsOnce",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:5-11"
+      ],
+      "tests": [
+        "pkg/actions/zz_p2p_completeness_test.go::TestP2PDeleteMissingKeyStillWritesPreservedContentsOnce"
+      ]
+    },
+    {
+      "id": "F2P-ATOMIC-TestF2PExplicitCapabilitiesShareOneOperationContext",
+      "kind": "F2P",
+      "requirements": [
+        "instruction.md:3,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestF2PExplicitCapabilitiesShareOneOperationContext"
+      ]
+    },
+    {
+      "id": "F2P-ATOMIC-TestF2PCapabilitiesUseOwnedContents",
+      "kind": "F2P",
+      "requirements": [
+        "instruction.md:3,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestF2PCapabilitiesUseOwnedContents"
+      ]
+    },
+    {
+      "id": "F2P-ATOMIC-TestF2POperationReceivesAlreadyLoadedContents",
+      "kind": "F2P",
+      "requirements": [
+        "instruction.md:3,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestF2POperationReceivesAlreadyLoadedContents"
+      ]
+    },
+    {
+      "id": "F2P-ATOMIC-TestF2PWritesUseOwnedNoteIdentity",
+      "kind": "F2P",
+      "requirements": [
+        "instruction.md:3,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestF2PWritesUseOwnedNoteIdentity"
+      ]
+    },
+    {
+      "id": "F2P-ATOMIC-TestF2PWritesUseOwnedNoteManager",
+      "kind": "F2P",
+      "requirements": [
+        "instruction.md:3,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestF2PWritesUseOwnedNoteManager"
+      ]
+    },
+    {
+      "id": "F2P-ATOMIC-TestF2PFrontmatterDispatchUsesOperationCapabilities",
+      "kind": "F2P",
+      "requirements": [
+        "instruction.md:3,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestF2PFrontmatterDispatchUsesOperationCapabilities"
+      ]
+    },
+    {
+      "id": "F2P-ATOMIC-TestF2PIndividualCapabilitiesDoNotDispatchSelectionFlags",
+      "kind": "F2P",
+      "requirements": [
+        "instruction.md:3,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestF2PIndividualCapabilitiesDoNotDispatchSelectionFlags"
+      ]
+    },
+    {
+      "id": "F2P-ATOMIC-TestF2POperationsDoNotReexpandContextBundles",
+      "kind": "F2P",
+      "requirements": [
+        "instruction.md:3,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestF2POperationsDoNotReexpandContextBundles"
+      ]
+    },
+    {
+      "id": "F2P-ATOMIC-TestF2PKeyTransformsShareSerialization",
+      "kind": "F2P",
+      "requirements": [
+        "instruction.md:3,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsShareSerialization"
+      ]
+    },
+    {
+      "id": "F2P-ATOMIC-TestF2PKeyTransformsShareReconstruction",
+      "kind": "F2P",
+      "requirements": [
+        "instruction.md:3,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsShareReconstruction"
+      ]
+    },
+    {
+      "id": "P2P-LOADED-SNAPSHOT-NO-REREAD",
+      "kind": "P2P",
+      "requirements": [
+        "instruction.md:3,7,13"
+      ],
+      "tests": [
+        "tests/f2p/p2p_loaded_snapshot_test.go::TestP2PFrontmatterOperationPathsDoNotRereadContents"
+      ]
+    },
+    {
+      "id": "F2P-ATOMIC-TestF2PKeyTransformsUseSharedSerializationResult",
+      "kind": "F2P",
+      "requirements": [
+        "instruction.md:3,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsUseSharedSerializationResult"
+      ]
+    },
+    {
+      "id": "F2P-ATOMIC-TestF2PKeyTransformsUseSharedReconstructionResult",
+      "kind": "F2P",
+      "requirements": [
+        "instruction.md:3,13"
+      ],
+      "tests": [
+        "tests/f2p/f2p_structural_test.go::TestF2PKeyTransformsUseSharedReconstructionResult"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "fdcf5ab237a9d8658c5f895090c2439352df940dc1f7eea939ee544f17ef1a7e",
+    "test_patch_sha256": "aa85d2eacb0805a49718607774f699c86be4fe0ba742ea64e072e4d47fdf76c7"
+  },
+  "node_relations": [],
+  "p2p": [
+    "cmd/zz_p2p_frontmatter_regression_test.go::TestP2PFrontmatterCommandSurface",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PFrontmatterExportedSignatureAndParams",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PFrontmatterPackageAPISurface",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PParseReturnsMapAndBodyForValidFrontmatter",
+    "pkg/frontmatter/frontmatter_test.go::TestParse",
+    "pkg/frontmatter/frontmatter_test.go::TestHasFrontmatter",
+    "pkg/frontmatter/frontmatter_test.go::TestFormat",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintReturnsOnlyFormattedYAML",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditSuccessWordingNamesKeyAndNote",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteSuccessWordingNamesKeyAndNote",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PNoOperationErrorWording",
+    "pkg/actions/frontmatter_test.go::TestFrontmatter_NoOperation",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PParseSurfacesErrorForMalformedFrontmatter",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PHasFrontmatterDetection",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintEmptyWhenFrontmatterAbsent",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintEmptyWhenFrontmatterHasNoKeys",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintMalformedFrontmatterError",
+    "pkg/actions/frontmatter_test.go::TestFrontmatter_Print",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditRejectsEmptyKey",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditRejectsEmptyValue",
+    "pkg/actions/frontmatter_test.go::TestFrontmatter_Edit",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeySurfacesNoFrontmatterError",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteRejectsEmptyKey",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteFailsWhenFrontmatterAbsent",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteFailsWhenFrontmatterEmpty",
+    "pkg/actions/frontmatter_test.go::TestFrontmatter_Delete",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditWritesTransformedContentsExactlyOnce",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteWritesTransformedContentsExactlyOnce",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintNeverWrites",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PPrintPriorityOverEditAndDelete",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditPriorityOverDelete",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PNoOperationErrorAfterResolutionAndRead",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeyCreatesDelimiterBlockWhenAbsent",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySerializesBooleans",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySerializesSequences",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySerializesOtherValuesAsStrings",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeyPreservesBodyAndExistingKeys",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PEditCreatesFrontmatterWhenAbsent",
+    "pkg/frontmatter/frontmatter_test.go::TestSetKey",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeyPreservesRemainingKeysAndBody",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeyFinalKeyReturnsBodyOnly",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteFinalKeyWritesBodyOnly",
+    "pkg/frontmatter/frontmatter_test.go::TestDeleteKey",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeyReconstructionLayoutIsExact",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeyReconstructionLayoutIsExact",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PSetKeySurfacesParseErrorForMalformedFrontmatter",
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go::TestP2PDeleteKeySurfacesParseErrorForMalformedFrontmatter",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PDefaultNameErrorPropagates",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PVaultPathErrorPropagates",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PGetContentsErrorPropagates",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PSetContentsErrorPropagates",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go::TestP2PResolutionErrorsPrecedeOperationValidation",
+    "cmd/zz_p2p_frontmatter_regression_test.go::TestP2PModuleDependencySurfaceUnchanged",
+    "cmd/zz_p2p_frontmatter_regression_test.go::TestP2PNoUnrelatedCommandsOrFlags",
+    "cmd/zz_p2p_audit_test.go::TestP2PFrontmatterCLIFlagsReachOperations",
+    "cmd/zz_p2p_audit_test.go::TestP2PFrontmatterStringFlagsBindOperationInputs",
+    "pkg/actions/zz_p2p_audit_test.go::TestP2PResolutionFailurePrecedesEveryOperation",
+    "pkg/actions/zz_p2p_audit_test.go::TestP2PResolutionOrderAndLoadedContents",
+    "pkg/actions/zz_p2p_audit_test.go::TestP2PPrintNeverWritesForEmptyOrMalformedContents",
+    "pkg/actions/zz_p2p_audit_test.go::TestP2PValidationPrecedesParsing",
+    "pkg/actions/zz_p2p_audit_test.go::TestP2PDeleteMalformedContentsNeverWrites",
+    "pkg/actions/zz_p2p_audit_test.go::TestP2PDeleteParsedNilMapNeverWrites",
+    "pkg/actions/zz_p2p_audit_test.go::TestP2PPrintPriorityWithInvalidEditInputs",
+    "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PSetKeyPreservesStringAndSequenceConversionEdges",
+    "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PTransformsPreserveBodyBytes",
+    "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PDeleteMissingKeyPreservesNonemptyMap",
+    "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PParsePreservesNilVersusEmptyMap",
+    "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PFormatPreservesNestedYAML",
+    "pkg/frontmatter/zz_p2p_audit_test.go::TestP2PSetKeyCreatesFromParsedNilMap",
+    "pkg/actions/zz_p2p_edges_test.go::TestP2PDeleteNonnilEmptyMapWritesBodyExactlyOnce",
+    "pkg/actions/zz_p2p_edges_test.go::TestP2PWriteFailurePropagatesForBothMutations",
+    "pkg/actions/zz_p2p_edges_test.go::TestP2PNoSelectionReadsMalformedContentsBeforeOperationError",
+    "pkg/actions/zz_p2p_edges_test.go::TestP2PAllSelectionCombinationsPreservePrecedence",
+    "pkg/actions/zz_p2p_edges_test.go::TestP2PEditMalformedContentsNeverWrites",
+    "pkg/frontmatter/zz_p2p_edges_test.go::TestP2PDeleteEmptyMapRemovesOnlyOneLeadingNewline",
+    "pkg/frontmatter/zz_p2p_edges_test.go::TestP2PSetKeyEmptyStringAndUnusualKeysRemainStrings",
+    "pkg/frontmatter/zz_p2p_edges_test.go::TestP2PSetKeyNestedMetadataPreserved",
+    "tests/f2p/f2p_structural_test.go::TestP2PKeyTransformsDoNotDispatchBooleanOperationModes",
+    "cmd/zz_p2p_completeness_test.go::TestP2PCLICombinedSelectionsPreservePriority",
+    "cmd/zz_p2p_completeness_test.go::TestP2PCLIUsesDefaultVaultWhenFlagAbsent",
+    "pkg/frontmatter/zz_p2p_completeness_test.go::TestP2PFormatPropagatesMarshalFailure",
+    "pkg/actions/zz_p2p_completeness_test.go::TestP2PEditForwardsValueConversionsAndPreservesContents",
+    "pkg/actions/zz_p2p_completeness_test.go::TestP2PEditInitializesParsedNilAndEmptyMaps",
+    "pkg/actions/zz_p2p_completeness_test.go::TestP2PDeleteMissingKeyStillWritesPreservedContentsOnce",
+    "tests/f2p/p2p_loaded_snapshot_test.go::TestP2PFrontmatterOperationPathsDoNotRereadContents"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": true,
+  "restoration_paths": [
+    "pkg/actions/frontmatter_test.go",
+    "pkg/frontmatter/frontmatter_test.go"
+  ],
+  "reward_mode": "VERIFIER_ONLY",
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-notesmd-cli-no-5279901c",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "pkg/frontmatter/zz_p2p_frontmatter_regression_test.go",
+    "pkg/actions/zz_p2p_frontmatter_regression_test.go",
+    "cmd/zz_p2p_frontmatter_regression_test.go",
+    "tests/p2p/run_p2p.py",
+    "tests/f2p/f2p_structural_test.go",
+    "tests/f2p/run_f2p.py",
+    "cmd/zz_p2p_audit_test.go",
+    "pkg/actions/zz_p2p_audit_test.go",
+    "pkg/frontmatter/zz_p2p_audit_test.go",
+    "pkg/actions/zz_p2p_edges_test.go",
+    "pkg/frontmatter/zz_p2p_edges_test.go",
+    "cmd/zz_p2p_completeness_test.go",
+    "pkg/frontmatter/zz_p2p_completeness_test.go",
+    "pkg/actions/zz_p2p_completeness_test.go",
+    "tests/f2p/f2p_paths_test.go",
+    "tests/f2p/p2p_loaded_snapshot_test.go",
+    "tests/f2p/f2p_instances_test.go",
+    "tests/f2p/f2p_context_test.go"
+  ],
+  "timeout_seconds": 600,
+  "verifier": "/tests/verifier/verifier.py"
+}

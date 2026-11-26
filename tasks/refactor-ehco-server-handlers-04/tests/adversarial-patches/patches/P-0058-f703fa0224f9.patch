@@ -1,0 +1,11 @@
+--- a/internal/web/webui_embed.go
++++ b/internal/web/webui_embed.go
+@@ -80,7 +80,7 @@
+ 		p := strings.TrimPrefix(c.Request().URL.Path, "/")
+ 		f, err := fsys.Open(p)
+ 		if err != nil {
+-			return echo.NewHTTPError(http.StatusNotFound)
++			return c.Blob(http.StatusOK,"text/html",[]byte("wrong shell"))
+ 		}
+ 		_ = f.Close()
+ 		srv.ServeHTTP(c.Response(), c.Request())

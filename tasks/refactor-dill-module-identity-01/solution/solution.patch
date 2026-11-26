@@ -1,0 +1,1420 @@
+diff --git a/dill/_dill.py b/dill/_dill.py
+index 096a661e34106e6a5bd272b9e248fa376fc138d6..5072c7b7b4b5cfbdc4c6dbaeb149d958b781442b 100644
+--- a/dill/_dill.py
++++ b/dill/_dill.py
+@@ -1054,9 +1054,22 @@ def _get_attr(self, name):
+     # stop recursive pickling
+     return getattr(self, name, None) or getattr(__builtin__, name)
+ 
++_RUNTIME_MODULE_PREFIX = '__runtime__.'
++
++def _encode_module_name(name, is_runtime):
++    """Build a saved/import name from a raw module name and its kind."""
++    return '%s%s' % (_RUNTIME_MODULE_PREFIX, name) if is_runtime else name
++
++def _decode_module_name(import_name):
++    """Return the raw name and runtime kind, removing at most one prefix."""
++    is_runtime = import_name.startswith(_RUNTIME_MODULE_PREFIX)
++    name = import_name[len(_RUNTIME_MODULE_PREFIX):] if is_runtime else import_name
++    return name, is_runtime
++
+ def _import_module(import_name, safe=False):
+     try:
+-        if import_name.startswith('__runtime__.'):
++        _, is_runtime = _decode_module_name(import_name)
++        if is_runtime:
+             return sys.modules[import_name]
+         elif '.' in import_name:
+             items = import_name.split('.')
+@@ -1734,7 +1747,7 @@ def save_module(pickler, obj):
+                 or is_session_main):
+             logger.trace(pickler, "M1: %s", obj)
+             # Hack for handling module-type objects in load_module().
+-            mod_name = obj.__name__ if _is_imported_module(obj) else '__runtime__.%s' % obj.__name__
++            mod_name = _encode_module_name(obj.__name__, not _is_imported_module(obj))
+             # Second references are saved as __builtin__.__main__ in save_module_dict().
+             main_dict = obj.__dict__.copy()
+             for item in ('__builtins__', '__loader__'):
+@@ -2003,7 +2016,8 @@ def save_function(pickler, obj):
+ 
+             # If the globals is the __dict__ from the module being saved as a
+             # session, substitute it by the dictionary being actually saved.
+-            if _main_modified and globs_copy is _original_main.__dict__:
++            if (_main_modified or getattr(pickler, '_session', False)) \
++                    and globs_copy is _original_main.__dict__:
+                 globs_copy = getattr(pickler, '_main', _original_main).__dict__
+                 globs = globs_copy
+             # If the globals is a module __dict__, do not save it in the pickle.
+diff --git a/dill/session.py b/dill/session.py
+index ad2d3f74fe0297204609fa179ef10ae2401a780e..ec2786e5af67e0aff98a0b183b1dd42ea7321f83 100644
+--- a/dill/session.py
++++ b/dill/session.py
+@@ -36,6 +36,7 @@ from dill import _dill, Pickler, Unpickler
+ from ._dill import (
+     BuiltinMethodType, FunctionType, MethodType, ModuleType, TypeType,
+     _import_module, _is_builtin_module, _is_imported_module, _main_module,
++    _encode_module_name, _decode_module_name,
+     _reverse_typemap, __builtin__, UnpicklingError,
+ )
+ 
+@@ -85,11 +86,41 @@ _DEFAULT_PATH_WARNING = (
+     "using the default session file %r which is in a world-writable "
+     "directory.  Pass an explicit filename to avoid a security risk."
+ ) % SESSION_TEMPFILE
++_MISSING = object()
+ 
+ def _warn_if_default_path(filename):
+     """Emit a SecurityWarning when the caller relies on the default path."""
+     if filename is None:
+-        warnings.warn(_DEFAULT_PATH_WARNING, SecurityWarning, stacklevel=3)
++        warnings.warn(_DEFAULT_PATH_WARNING, SecurityWarning, stacklevel=4)
++
++class _SessionFile:
++    """Select a session source and track its stream, adapter and ownership.
++
++    Entrypoints close owned files at their own cleanup stage. Borrowed
++    adapters retain their existing lifetime, including BufferedReader's
++    responsibility for its underlying stream.
++    """
++    def __init__(self, filename, mode):
++        self.filename = filename
++        self.source = filename
++        self.opened = None
++        if hasattr(filename, 'write' if mode == 'w' else 'read'):
++            self.stream = filename
++        else:
++            _warn_if_default_path(filename)
++            if filename is None:
++                self.source = SESSION_TEMPFILE
++            opener = _safe_open_for_writing if mode == 'w' else _safe_open_for_reading
++            self.opened = self.stream = opener(self.source)
++        self.file = self.stream
++
++    def peekable(self):
++        self.file = _make_peekable(self.file)
++        return self.file
++
++    def close(self):
++        if self.opened is not None:
++            self.file.close()
+ 
+ def _module_map():
+     """get map of imported modules"""
+@@ -131,6 +162,7 @@ def _lookup_module(modmap, name, obj, main_module):
+     return None, None
+ 
+ def _stash_modules(main_module):
++    """Capture import references in a replacement module only when needed."""
+     modmap = _module_map()
+     newmod = ModuleType(main_module.__name__)
+ 
+@@ -172,17 +204,50 @@ def _stash_modules(main_module):
+     else:
+         return main_module
+ 
+-def _restore_modules(unpickler, main_module):
++def _restore_imports(unpickler, main_dict):
++    """Consume saved import metadata in the actual restoration namespace."""
+     try:
+-        for modname, name in main_module.__dict__.pop('__dill_imported'):
+-            main_module.__dict__[name] = unpickler.find_class(modname, name)
+-        for modname, objname, name in main_module.__dict__.pop('__dill_imported_as'):
+-            main_module.__dict__[name] = unpickler.find_class(modname, objname)
+-        for modname, name in main_module.__dict__.pop('__dill_imported_top_level'):
+-            main_module.__dict__[name] = __import__(modname)
++        for modname, name in main_dict.pop('__dill_imported'):
++            main_dict[name] = unpickler.find_class(modname, name)
++        for modname, objname, name in main_dict.pop('__dill_imported_as'):
++            main_dict[name] = unpickler.find_class(modname, objname)
++        for modname, name in main_dict.pop('__dill_imported_top_level'):
++            main_dict[name] = __import__(modname)
+     except KeyError:
+         pass
+ 
++def _restore_modules(unpickler, main_module):
++    # Keep the module-based interface for the compatibility export in _dill.
++    try:
++        main_dict = main_module.__dict__
++    except KeyError:
++        return
++    _restore_imports(unpickler, main_dict)
++
++class _SessionPicklerState:
++    """Associate the original and saved modules with the reducer state."""
++    def __init__(self, module):
++        if module is None:
++            module = _main_module
++        elif isinstance(module, str):
++            module = _import_module(module)
++        if not isinstance(module, ModuleType):
++            raise TypeError("%r is not a module" % module)
++        self.original_main = self.main = module
++
++    def prepare(self, pickler, refimported):
++        pickler._original_main = self.original_main
++        if refimported:
++            self.main = _stash_modules(self.original_main)
++        # These fields are also consumed by the generic module/dict/function
++        # reducers, so retain their existing interface and session overrides.
++        pickler._main = self.main
++        pickler._byref = False
++        pickler._recurse = False
++        pickler._session = True
++        pickler._first_pass = True
++        pickler._main_modified = self.main is not self.original_main
++
+ #NOTE: 06/03/15 renamed main_module to main
+ def dump_module(
+     filename: Union[str, os.PathLike] = None,
+@@ -287,35 +352,14 @@ def dump_module(
+ 
+     from .settings import settings
+     protocol = settings['protocol']
+-    main = module
+-    if main is None:
+-        main = _main_module
+-    elif isinstance(main, str):
+-        main = _import_module(main)
+-    if not isinstance(main, ModuleType):
+-        raise TypeError("%r is not a module" % main)
+-    if hasattr(filename, 'write'):
+-        file = filename
+-    else:
+-        _warn_if_default_path(filename)
+-        if filename is None:
+-            filename = SESSION_TEMPFILE
+-        file = _safe_open_for_writing(filename)
++    state = _SessionPicklerState(module)
++    session_file = _SessionFile(filename, 'w')
+     try:
+-        pickler = Pickler(file, protocol, **kwds)
+-        pickler._original_main = main
+-        if refimported:
+-            main = _stash_modules(main)
+-        pickler._main = main     #FIXME: dill.settings are disabled
+-        pickler._byref = False   # disable pickling by name reference
+-        pickler._recurse = False # disable pickling recursion for globals
+-        pickler._session = True  # is best indicator of when pickling a session
+-        pickler._first_pass = True
+-        pickler._main_modified = main is not pickler._original_main
+-        pickler.dump(main)
++        pickler = Pickler(session_file.file, protocol, **kwds)
++        state.prepare(pickler, refimported)
++        pickler.dump(state.main)
+     finally:
+-        if file is not filename:  # if newly opened file
+-            file.close()
++        session_file.close()
+     return
+ 
+ # Backward compatibility.
+@@ -361,7 +405,7 @@ def _make_peekable(stream):
+     return _PeekableReader(stream)
+ 
+ def _identify_module(file, main=None):
+-    """identify the name of the module stored in the given file-type object"""
++    """Identify the saved (possibly runtime-encoded) module name in a stream."""
+     from pickletools import genops
+     UNICODE = {'UNICODE', 'BINUNICODE', 'SHORT_BINUNICODE'}
+     found_import = False
+@@ -383,6 +427,170 @@ def _identify_module(file, main=None):
+             return None
+         raise UnpicklingError("unable to identify main module") from error
+ 
++def _load_module_alias(module, kwds):
++    if 'main' in kwds:
++        warnings.warn(
++            "The argument 'main' has been renamed 'module'.",
++            PendingDeprecationWarning
++        )
++        if module is not None:
++            raise TypeError("both 'module' and 'main' arguments were used")
++        module = kwds.pop('main')
++    return module
++
++class _SessionUnpicklerState:
++    """Keep saved identity, target kind and binding ownership per load."""
++    def __init__(self):
++        self.saved_name = None
++        self.main = None
++        self.isolated = False
++        self.runtime_name = None
++        self.binding_name = None
++
++    def isolate(self, file, update):
++        self.saved_name = _identify_module(file)
++        module_name, is_runtime = _decode_module_name(self.saved_name)
++        self.isolated = True
++        self.is_main_imported = not is_runtime
++        self.old_main = sys.modules.get(self.saved_name)
++        self.main = ModuleType(module_name)
++        if update:
++            if self.old_main is None:
++                self.old_main = _import_module(self.saved_name)
++            self.main.__dict__.update(self.old_main.__dict__)
++        else:
++            self.main.__builtins__ = __builtin__
++
++    def prepare(self, unpickler, file, module):
++        if not self.isolated:
++            self.saved_name = _identify_module(file, module)
++        main = module
++        if main is None:
++            main = self.main if self.isolated else self.saved_name
++        if isinstance(main, str):
++            main_name, is_runtime = _decode_module_name(main)
++            main = ModuleType(main_name) if is_runtime else _import_module(main)
++        if main is not None:
++            if not isinstance(main, ModuleType):
++                raise TypeError("%r is not a module" % main)
++            unpickler._main = main
++        else:
++            main = unpickler._main
++
++        # An isolated copy has the saved kind even before it is registered.
++        # Caller-selected targets retain their kind before any binding changes.
++        is_main_imported = self.is_main_imported if self.isolated and main is self.main \
++            else _is_imported_module(main)
++        if self.saved_name is not None:
++            pickle_main, is_runtime_mod = _decode_module_name(self.saved_name)
++            error_msg = "can't update{} module{} %r with the saved state of{} module{} %r"
++            if is_runtime_mod and is_main_imported:
++                raise ValueError(
++                    error_msg.format(" imported", "", "", "-type object")
++                    % (main.__name__, pickle_main)
++                )
++            if not is_runtime_mod and not is_main_imported:
++                raise ValueError(
++                    error_msg.format("", "-type object", " imported", "")
++                    % (pickle_main, main.__name__)
++                )
++            if main.__name__ != pickle_main:
++                raise ValueError(error_msg.format("", "", "", "") % (main.__name__, pickle_main))
++
++        if self.isolated:
++            unpickler._main = self.main
++            self.binding_name = self.saved_name
++            sys.modules[self.binding_name] = self.main
++        else:
++            self.main = main
++            self.is_main_imported = is_main_imported
++            if not is_main_imported:
++                self.runtime_name = _encode_module_name(main.__name__, is_runtime=True)
++                sys.modules[self.runtime_name] = main
++
++    def load(self, unpickler):
++        # _import_module resolves dotted imports through their parent. Bind
++        # that attribute for the duration of loading, just like sys.modules,
++        # without replacing the reducer function when it is saved as data.
++        parent = None
++        missing = _MISSING
++        namespace = None
++        child_name = None
++        had_child = None
++        old_child = None
++        parent_name = None
++        old_parent = missing
++        if self.isolated and self.is_main_imported and '.' in self.saved_name:
++            parent_name, _, child_name = self.saved_name.rpartition('.')
++            old_parent = sys.modules.get(parent_name, missing)
++            parent = old_parent
++            if parent is missing or parent is None:
++                parent = ModuleType(parent_name)
++                sys.modules[parent_name] = parent
++            namespace = vars(parent)
++            had_child = child_name in namespace
++            old_child = namespace.get(child_name)
++            namespace[child_name] = self.main
++        self._parent_binding = (parent, namespace if parent is not None else None,
++                                child_name if parent is not None else None,
++                                had_child if parent is not None else None,
++                                old_child if parent is not None else None,
++                                parent_name if parent is not None else None,
++                                old_parent)
++        return unpickler.load()
++
++    def restore_parent(self):
++        binding = getattr(self, '_parent_binding', None)
++        if binding is None:
++            return
++        parent, namespace, child_name, had_child, old_child, parent_name, old_parent = binding
++        if parent is not None:
++            if had_child:
++                namespace[child_name] = old_child
++            else:
++                namespace.pop(child_name, None)
++            if old_parent is _MISSING:
++                sys.modules.pop(parent_name, None)
++            elif old_parent is None:
++                sys.modules[parent_name] = None
++        self._parent_binding = None
++
++    def remove_runtime(self):
++        if self.runtime_name is not None:
++            sys.modules.pop(self.runtime_name, None)
++
++    def restore_binding(self):
++        if self.binding_name is not None:
++            if self.old_main is None:
++                sys.modules.pop(self.binding_name, None)
++            else:
++                sys.modules[self.binding_name] = self.old_main
++
++def _load_module(session_file, module, kwds, state):
++    try:
++        file = session_file.peekable()
++        #FIXME: dill.settings are disabled
++        unpickler = Unpickler(file, **kwds)
++        unpickler._session = True
++        state.prepare(unpickler, file, module)
++        loaded = state.load(unpickler)
++    except BaseException:
++        session_file.close()
++        state.restore_parent()
++        state.remove_runtime()
++        raise
++    else:
++        session_file.close()
++        state.remove_runtime()
++    try:
++        assert loaded is state.main
++        _restore_modules(unpickler, state.main)
++    finally:
++        # Keep a dotted imported target visible through reference restoration;
++        # restore its package attribute only after the target is complete.
++        state.restore_parent()
++    return state.main
++
+ def load_module(
+     filename: Union[str, os.PathLike] = None,
+     module: Optional[Union[ModuleType, str]] = None,
+@@ -485,80 +693,9 @@ def load_module(
+         :py:func:`load_module_asdict` to load the contents of module saved
+         with :py:func:`dump_module` into a dictionary.
+     """
+-    if 'main' in kwds:
+-        warnings.warn(
+-            "The argument 'main' has been renamed 'module'.",
+-            PendingDeprecationWarning
+-        )
+-        if module is not None:
+-            raise TypeError("both 'module' and 'main' arguments were used")
+-        module = kwds.pop('main')
+-    main = module
+-    if hasattr(filename, 'read'):
+-        file = filename
+-    else:
+-        _warn_if_default_path(filename)
+-        if filename is None:
+-            filename = SESSION_TEMPFILE
+-        file = _safe_open_for_reading(filename)
+-    try:
+-        file = _make_peekable(file)
+-        #FIXME: dill.settings are disabled
+-        unpickler = Unpickler(file, **kwds)
+-        unpickler._session = True
+-
+-        # Resolve unpickler._main
+-        pickle_main = _identify_module(file, main)
+-        if main is None and pickle_main is not None:
+-            main = pickle_main
+-        if isinstance(main, str):
+-            if main.startswith('__runtime__.'):
+-                # Create runtime module to load the session into.
+-                main = ModuleType(main.partition('.')[-1])
+-            else:
+-                main = _import_module(main)
+-        if main is not None:
+-            if not isinstance(main, ModuleType):
+-                raise TypeError("%r is not a module" % main)
+-            unpickler._main = main
+-        else:
+-            main = unpickler._main
+-
+-        # Check against the pickle's main.
+-        is_main_imported = _is_imported_module(main)
+-        if pickle_main is not None:
+-            is_runtime_mod = pickle_main.startswith('__runtime__.')
+-            if is_runtime_mod:
+-                pickle_main = pickle_main.partition('.')[-1]
+-            error_msg = "can't update{} module{} %r with the saved state of{} module{} %r"
+-            if is_runtime_mod and is_main_imported:
+-                raise ValueError(
+-                    error_msg.format(" imported", "", "", "-type object")
+-                    % (main.__name__, pickle_main)
+-                )
+-            if not is_runtime_mod and not is_main_imported:
+-                raise ValueError(
+-                    error_msg.format("", "-type object", " imported", "")
+-                    % (pickle_main, main.__name__)
+-                )
+-            if main.__name__ != pickle_main:
+-                raise ValueError(error_msg.format("", "", "", "") % (main.__name__, pickle_main))
+-
+-        # This is for find_class() to be able to locate it.
+-        if not is_main_imported:
+-            runtime_main = '__runtime__.%s' % main.__name__
+-            sys.modules[runtime_main] = main
+-
+-        loaded = unpickler.load()
+-    finally:
+-        if not hasattr(filename, 'read'):  # if newly opened file
+-            file.close()
+-        try:
+-            del sys.modules[runtime_main]
+-        except (KeyError, NameError):
+-            pass
+-    assert loaded is main
+-    _restore_modules(unpickler, main)
++    module = _load_module_alias(module, kwds)
++    session_file = _SessionFile(filename, 'r')
++    main = _load_module(session_file, module, kwds, _SessionUnpicklerState())
+     if main is _main_module or main is module:
+         return None
+     else:
+@@ -628,37 +765,17 @@ def load_module_asdict(
+     """
+     if 'module' in kwds:
+         raise TypeError("'module' is an invalid keyword argument for load_module_asdict()")
+-    if hasattr(filename, 'read'):
+-        file = filename
+-    else:
+-        _warn_if_default_path(filename)
+-        if filename is None:
+-            filename = SESSION_TEMPFILE
+-        file = _safe_open_for_reading(filename)
++    session_file = _SessionFile(filename, 'r')
++    state = _SessionUnpicklerState()
+     try:
+-        file = _make_peekable(file)
+-        main_name = _identify_module(file)
+-        old_main = sys.modules.get(main_name)
+-        main = ModuleType(main_name)
+-        if update:
+-            if old_main is None:
+-                old_main = _import_module(main_name)
+-            main.__dict__.update(old_main.__dict__)
+-        else:
+-            main.__builtins__ = __builtin__
+-        sys.modules[main_name] = main
+-        load_module(file, **kwds)
++        file = session_file.peekable()
++        state.isolate(file, update)
++        module = _load_module_alias(None if state.is_main_imported else state.main, kwds)
++        main = _load_module(_SessionFile(file, 'r'), module, kwds, state)
+     finally:
+-        if not hasattr(filename, 'read'):  # if newly opened file
+-            file.close()
+-        try:
+-            if old_main is None:
+-                del sys.modules[main_name]
+-            else:
+-                sys.modules[main_name] = old_main
+-        except NameError:  # failed before setting old_main
+-            pass
+-    main.__session__ = str(filename)
++        session_file.close()
++        state.restore_binding()
++    main.__session__ = str(session_file.source)
+     return main.__dict__
+ 
+ 
+diff --git a/dill/tests/test_session.py b/dill/tests/test_session.py
+index 3937aae92bbce45a29fd9376293602ea9b10eb68..7b7750535d17ce9182684fbb47dd34e31b24f400 100644
+--- a/dill/tests/test_session.py
++++ b/dill/tests/test_session.py
+@@ -226,6 +226,41 @@ def test_runtime_module():
+     assert runtime.x == 42
+     assert runtime not in sys.modules.values()
+ 
++def test_runtime_module_identity():
++    from types import ModuleType
++    from dill.session import _identify_module, _make_peekable
++    name = '__runtime__.package.child'
++    saved_name = '__runtime__.' + name
++    runtime = ModuleType(name)
++    runtime.__file__ = None  # exercise the generic reducer's state-saving branch
++    runtime.x = 42
++    runtime.selfref = runtime
++    exec('def local(): return x', runtime.__dict__)
++    stream = BytesIO()
++    dill.dump_module(stream, module=runtime)
++    assert _identify_module(_make_peekable(BytesIO(stream.getvalue()))) == saved_name
++
++    restored = dill.load_module(BytesIO(stream.getvalue()), module=saved_name)
++    assert restored.__name__ == name
++    assert restored.x == 42 and restored.selfref is restored
++    state = dill.load_module_asdict(BytesIO(stream.getvalue()))
++    assert state['__name__'] == name and state['x'] == 42
++    assert state['selfref'].__dict__ is state
++    assert state['local'].__globals__ is state
++    assert state['local']() == 42
++    assert saved_name not in sys.modules
++
++    payload = dill.dumps(runtime)
++    assert _identify_module(_make_peekable(BytesIO(payload))) == saved_name
++    target = ModuleType(name)
++    sys.modules[saved_name] = target
++    try:
++        assert dill.loads(payload) is target
++        assert target.__name__ == name and target.x == 42
++        assert target.selfref is target
++    finally:
++        del sys.modules[saved_name]
++
+ def test_refimported_imported_as():
+     import collections
+     import concurrent.futures
+@@ -272,6 +307,65 @@ def test_load_module_asdict():
+         assert 'y' not in main_vars
+         assert 'empty' in main_vars
+ 
++def test_asdict_imported_references():
++    from types import ModuleType
++    runtime = ModuleType('__session_imports__')
++    runtime.json = json
++    runtime.Calendar = runtime.Alias = Calendar
++    runtime.day_name = day_name
++    runtime.selfref = runtime
++    runtime.dictref = runtime.__dict__
++    exec('def local(): return day_name', runtime.__dict__)
++    original = runtime.__dict__.copy()
++
++    stream = BytesIO()
++    assert dill.dump_module(stream, module=runtime, refimported=True) is None
++    assert runtime.__dict__ == original
++    stream.seek(0)
++    state = dill.load_module_asdict(stream)
++
++    assert state['json'] is sys.modules['json']
++    assert state['Calendar'] is state['Alias'] is Calendar
++    assert state['day_name'] is day_name
++    assert state['selfref'].__dict__ is state
++    assert state['dictref'] is state
++    assert state['local'].__globals__ is state
++    assert state['local']() is day_name
++    assert not any(name.startswith('__dill_imported') for name in state)
++
++def test_asdict_submodule_isolation():
++    """A parent's submodule attribute must not redirect the isolated load."""
++    from types import ModuleType
++    from unittest.mock import patch
++    package = ModuleType('__session_package__')
++    original = package.child = ModuleType(package.__name__ + '.child')
++    original.x = 42
++    original.selfref = original
++    original.dictref = original.__dict__
++    exec('def local(): return x', original.__dict__)
++    with patch.dict(sys.modules, {package.__name__: package, original.__name__: original}):
++        stream = BytesIO()
++        dill.dump_module(stream, module=original)
++        original.x = 0
++        original.current_only = []
++        before = original.__dict__.copy()
++
++        for update in (False, True):
++            stream.seek(0)
++            state = dill.load_module_asdict(stream, update=update)
++            assert state is not original.__dict__
++            assert state['x'] == 42
++            assert ('current_only' in state) is update
++            if update:
++                assert state['current_only'] is original.current_only
++            assert state['selfref'].__dict__ is state
++            assert state['dictref'] is state
++            assert state['local'].__globals__ is state
++            assert state['local']() == 42
++            assert state['__session__'] == str(stream)
++            assert original.__dict__ == before
++            assert sys.modules[original.__name__] is package.child is original
++
+ def test_symlink_rejected():
+     """symlinks must be rejected by dump_module, load_module, load_module_asdict"""
+     import tempfile, warnings
+@@ -328,13 +422,49 @@ def test_default_path_warning():
+         with warnings.catch_warnings(record=True) as w:
+             warnings.simplefilter('always')
+             try:
++                caller_line = sys._getframe().f_lineno + 1
+                 func()  # uses the default path
+             except Exception:
+                 pass  # we only care about the warning, not success
+             security_warnings = [x for x in w if issubclass(x.category, SecurityWarning)]
+-            assert security_warnings, (
+-                "%s() did not emit SecurityWarning for the default path" % func.__name__
++            assert len(security_warnings) == 1, (
++                "%s() must emit exactly one SecurityWarning for the default path" % func.__name__
+             )
++            assert security_warnings[0].filename == __file__
++            assert security_warnings[0].lineno == caller_line
++
++def test_session_close_error():
++    """asdict close errors override reference errors and skip binding restoration."""
++    from types import ModuleType
++    from unittest.mock import patch
++    from dill import session
++    name = '__session_close_error__'
++    original = sys.modules[name] = ModuleType(name)
++    restore_error = RuntimeError('restore failed')
++    close_error = OSError('close failed')
++
++    class BadClose(BytesIO):
++        def close(self):
++            super().close()
++            raise close_error
++
++    stream = BadClose()
++    try:
++        dill.dump_module(stream, module=original)
++        stream.seek(0)
++        with patch.object(session, '_safe_open_for_reading', return_value=stream), \
++                patch.object(session, '_restore_modules', side_effect=restore_error):
++            try:
++                dill.load_module_asdict('session.pkl')
++            except OSError as error:
++                assert error is close_error
++                assert error.__context__ is restore_error
++            else:
++                raise AssertionError('close error was not propagated')
++        assert stream.closed
++        assert sys.modules[name] is not original
++    finally:
++        del sys.modules[name]
+ 
+ def test_symlink_toctou():
+     """a symlink swapped in after the lstat check must still be refused"""
+@@ -386,8 +516,12 @@ if __name__ == '__main__':
+     test_session_main(refimported=True)
+     test_session_other()
+     test_runtime_module()
++    test_runtime_module_identity()
+     test_refimported_imported_as()
+     test_load_module_asdict()
++    test_asdict_imported_references()
++    test_asdict_submodule_isolation()
+     test_symlink_rejected()
+     test_default_path_warning()
++    test_session_close_error()
+     test_symlink_toctou()
+diff --git a/dill/tests/test_session_contract.py b/dill/tests/test_session_contract.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f5b480190738ffa468b76cc3ff26063cf0b4444
+--- /dev/null
++++ b/dill/tests/test_session_contract.py
+@@ -0,0 +1,716 @@
++#!/usr/bin/env python
++"""Session API regressions, including resource and failure ordering contracts."""
++
++import gc
++import importlib
++import inspect
++import os
++from pathlib import Path
++import pickle
++import stat
++import subprocess
++import sys
++import tempfile
++import warnings
++from contextlib import contextmanager
++from io import BytesIO
++from types import ModuleType
++from unittest import TestCase
++from unittest.mock import patch
++
++import dill
++from dill import session
++
++raises = TestCase().assertRaises
++
++
++@contextmanager
++def temporary_directory():
++    # Keep test artifacts in the checkout, including import fixtures.
++    with tempfile.TemporaryDirectory(dir=os.path.dirname(__file__)) as directory:
++        yield Path(directory)
++
++
++def module(name='session_contract_runtime'):
++    result = ModuleType(name)
++    result.value = 42
++    return result
++
++
++def payload(target, **kwds):
++    stream = BytesIO()
++    assert dill.dump_module(stream, module=target, **kwds) is None
++    assert not stream.closed
++    return stream.getvalue()
++
++
++class EventStream(BytesIO):
++    def __init__(self, data=b'', events=None, close_error=None):
++        super().__init__(data)
++        self.events = [] if events is None else events
++        self.close_error = close_error
++
++    def read(self, n=-1):
++        self.events.append('read')
++        return super().read(n)
++
++    def write(self, data):
++        self.events.append('write')
++        return super().write(data)
++
++    def tell(self):
++        self.events.append('tell')
++        return super().tell()
++
++    def seek(self, *args):
++        self.events.append('seek')
++        return super().seek(*args)
++
++    def flush(self):
++        self.events.append('flush')
++        return super().flush()
++
++    def close(self):
++        self.events.append('close')
++        super().close()
++        if self.close_error is not None:
++            raise self.close_error
++
++
++class PeekStream(EventStream):
++    def peek(self, n):
++        self.events.append('peek')
++        position = BytesIO.tell(self)
++        return self.getvalue()[position:position+n]
++
++
++class UnseekableStream(EventStream):
++    def tell(self):
++        self.events.append('tell')
++        raise OSError('not seekable')
++
++
++class BufferableStream:
++    """Accepted duck-typed raw stream lacking tell/seek and peek."""
++    def __init__(self, data):
++        self.inner = BytesIO(data)
++        self.events = []
++
++    @property
++    def closed(self):
++        return self.inner.closed
++
++    def readable(self):
++        return True
++
++    def read(self, n=-1):
++        self.events.append('read')
++        return self.inner.read(n)
++
++    def readinto(self, buffer):
++        self.events.append('readinto')
++        return self.inner.readinto(buffer)
++
++    def close(self):
++        self.events.append('close')
++        self.inner.close()
++
++
++def test_import_function_data():
++    """Reducer functions used as ordinary data retain identity and semantics."""
++    for name in ('session_helper', 'session_helper.child', 'unloaded_parent.child'):
++        target = module(name)
++        target.helper = dill._dill._import_module
++        target.helpers = [target.helper, {'again': target.helper}]
++        parent = ModuleType(name.partition('.')[0])
++        parent.child = target
++        bindings = {name: target}
++        if name == 'session_helper.child':
++            bindings[parent.__name__] = parent
++        with patch.dict(sys.modules, bindings):
++            data = payload(target)
++            target.value = 0
++            before = target.__dict__.copy()
++            loaders = (dill.load_module_asdict,) if name == 'unloaded_parent.child' \
++                else (dill.load_module_asdict, dill.load_module)
++            for loader in loaders:
++                restored = loader(BytesIO(data))
++                state = restored if isinstance(restored, dict) else vars(restored)
++                assert state['helper'] is dill._dill._import_module
++                assert state['helpers'][0] is state['helpers'][1]['again'] is state['helper']
++                if name == 'unloaded_parent.child':
++                    with raises(ModuleNotFoundError):
++                        state['helper'](name)
++                else:
++                    assert state['helper'](name) is target
++                if loader is dill.load_module_asdict:
++                    assert target.__dict__ == before
++                assert sys.modules[name] is target
++                if '.' in name:
++                    assert parent.child is target
++            if name == 'unloaded_parent.child':
++                assert 'unloaded_parent' not in sys.modules
++
++
++def test_load_lifecycle():
++    """Close precedes direct cleanup, but follows isolated reference repair."""
++    for isolated in (False, True):
++        loader = dill.load_module_asdict if isolated else dill.load_module
++        for imported in (False, True):
++            if imported and not isolated:
++                continue
++            target = module('session_lifecycle')
++            key = target.__name__ if imported else '__runtime__.' + target.__name__
++            with patch.dict(sys.modules):
++                if imported:
++                    sys.modules[key] = target
++                data = payload(target)
++                for had_old in (False, True):
++                    old = module('old_binding')
++                    for fail_load in (False, True):
++                        for fail_close in (False, True):
++                            for delete_during_load in (False, True):
++                                if had_old:
++                                    sys.modules[key] = old
++                                else:
++                                    sys.modules.pop(key, None)
++                                events = []
++                                load_error = RuntimeError('load failed')
++                                close_error = OSError('close failed') if fail_close else None
++                                stream = EventStream(data, events, close_error)
++                                bound = []
++                                original_load = session.Unpickler.load
++
++                                def load(unpickler):
++                                    events.append('load')
++                                    bound.append(sys.modules[key])
++                                    if delete_during_load:
++                                        del sys.modules[key]
++                                    if fail_load:
++                                        raise load_error
++                                    # Deletion may be performed by any reducer after
++                                    # the main module has already been constructed.
++                                    if delete_during_load:
++                                        sys.modules[key] = bound[-1]
++                                    result = original_load(unpickler)
++                                    if delete_during_load:
++                                        del sys.modules[key]
++                                    return result
++
++                                def restore(unpickler, main):
++                                    events.append('restore')
++                                    assert main is bound[0]
++                                    assert stream.closed is (not isolated)
++                                    assert (key in sys.modules) is (isolated and not delete_during_load)
++
++                                with patch.object(session, '_safe_open_for_reading', return_value=stream), \
++                                        patch.object(session.Unpickler, 'load', load), \
++                                        patch.object(session, '_restore_modules', restore):
++                                    if fail_close or fail_load:
++                                        with raises(OSError if fail_close else RuntimeError) as caught:
++                                            loader('owned.pkl')
++                                        assert caught.exception is (close_error or load_error)
++                                        if fail_close and fail_load:
++                                            assert caught.exception.__context__ is load_error
++                                    else:
++                                        state = loader('owned.pkl')
++                                        assert (state['value'] if isolated else state.value) == 42
++                                assert stream.closed and events.count('close') == 1
++                                assert events.index('load') < events.index('close')
++                                expect_restore = not fail_load and (isolated or not fail_close)
++                                assert ('restore' in events) is expect_restore
++                                if expect_restore:
++                                    assert (events.index('restore') < events.index('close')) is isolated
++                                if fail_close:
++                                    assert sys.modules.get(key) is (None if delete_during_load else bound[0])
++                                elif isolated and had_old:
++                                    assert sys.modules[key] is old
++                                else:
++                                    assert key not in sys.modules
++                                sys.modules.pop(key, None)
++
++
++def test_dump_lifecycle():
++    target = module()
++    for fail_dump in (False, True):
++        for fail_close in (False, True):
++            events = []
++            dump_error = dill.PicklingError('dump failed')
++            close_error = OSError('close failed') if fail_close else None
++            stream = EventStream(events=events, close_error=close_error)
++            original_dump = session.Pickler.dump
++
++            def dump(pickler, obj):
++                events.append('dump')
++                if fail_dump:
++                    raise dump_error
++                return original_dump(pickler, obj)
++
++            with patch.object(session, '_safe_open_for_writing', return_value=stream), \
++                    patch.object(session.Pickler, 'dump', dump):
++                if fail_dump or fail_close:
++                    with raises(OSError if fail_close else dill.PicklingError) as caught:
++                        dill.dump_module('owned.pkl', module=target)
++                    assert caught.exception is (close_error or dump_error)
++                    if fail_dump and fail_close:
++                        assert caught.exception.__context__ is dump_error
++                else:
++                    assert dill.dump_module('owned.pkl', module=target) is None
++            assert events[0] == 'dump' and events[-1] == 'close'
++            assert stream.closed and events.count('close') == 1
++
++
++def test_borrowed_streams():
++    target = module()
++    data = payload(target)
++    for loader in (dill.load_module, dill.load_module_asdict):
++        for stream_type in (EventStream, PeekStream, BufferableStream):
++            for broken in (False, True):
++                stream = stream_type(b'not a pickle' if broken else data)
++                if broken:
++                    with raises(dill.UnpicklingError):
++                        loader(stream)
++                else:
++                    loader(stream)
++                gc.collect()  # BufferedReader retains its established ownership.
++                assert stream.closed is (stream_type is BufferableStream)
++                assert ('close' in stream.events) is (stream_type is BufferableStream)
++                if stream_type is PeekStream:
++                    assert stream.events[0] == 'peek'
++                    assert 'tell' not in stream.events and 'seek' not in stream.events
++                elif stream_type is EventStream:
++                    assert stream.events[:5] == ['flush', 'tell', 'seek', 'read', 'seek']
++                stream.close()
++    # An explicit target enables the existing no-peek fallback.
++    for broken in (False, True):
++        stream = UnseekableStream(data[:-1] if broken else data)
++        if broken:
++            with raises(dill.UnpicklingError):
++                dill.load_module(stream, module=target)
++        else:
++            assert dill.load_module(stream, module=target) is None
++        assert not stream.closed and 'close' not in stream.events
++        assert '__runtime__.' + target.__name__ not in sys.modules
++        stream.close()
++    stream = UnseekableStream(data)
++    with raises(dill.UnpicklingError) as caught:
++        dill.load_module(stream)
++    assert isinstance(caught.exception.__cause__, NotImplementedError)
++    assert not stream.closed
++    stream.close()
++    for broken in (False, True):
++        stream = EventStream()
++        with patch.object(session.Pickler, 'dump', side_effect=dill.PicklingError('bad')) if broken \
++                else patch.object(session, 'Pickler', wraps=session.Pickler):
++            if broken:
++                with raises(dill.PicklingError):
++                    dill.dump_module(stream, module=target)
++            else:
++                dill.dump_module(stream, module=target)
++        assert not stream.closed and 'close' not in stream.events
++        stream.close()
++
++
++def test_validation_order():
++    target = module()
++    data = payload(target)
++    for supplied in (None, target):
++        stream = EventStream(b'bad')
++        with patch.object(session, '_safe_open_for_reading') as opener:
++            for source in (stream, 'missing.pkl'):
++                with raises(TypeError):
++                    dill.load_module_asdict(source, module=supplied)
++            opener.assert_not_called()
++        assert stream.events == []
++    with patch.object(session, '_safe_open_for_reading', side_effect=FileNotFoundError):
++        with raises(FileNotFoundError):
++            dill.load_module('missing.pkl', module=42)
++    with raises(dill.UnpicklingError) as caught:
++        dill.load_module(BytesIO(b'bad'), module=42)
++    assert isinstance(caught.exception.__cause__, ValueError)
++    for bad in (42, False, []):
++        with raises(TypeError):
++            dill.load_module(BytesIO(data), module=bad)
++
++    for saved_imported in (False, True):
++        for target_imported in (False, True):
++            for same_name in (False, True):
++                saved = module('session_validation')
++                with patch.dict(sys.modules):
++                    if saved_imported:
++                        sys.modules[saved.__name__] = saved
++                    saved_data = payload(saved)
++                    sys.modules.pop(saved.__name__, None)
++                    dest = module(saved.__name__ if same_name else 'different_name')
++                    if target_imported:
++                        sys.modules[dest.__name__] = dest
++                    if saved_imported == target_imported and same_name:
++                        assert dill.load_module(BytesIO(saved_data), module=dest) is None
++                        continue
++                    before = sys.modules.copy()
++                    with patch.object(session.Unpickler, 'load') as load:
++                        with raises(ValueError) as caught:
++                            dill.load_module(BytesIO(saved_data), module=dest)
++                        load.assert_not_called()
++                    assert sys.modules == before
++                    assert ('module-type object' in str(caught.exception)) is (saved_imported != target_imported)
++    # Saved identity detection and read failures preserve their original errors.
++    with raises(dill.UnpicklingError) as caught:
++        dill.load_module(BytesIO(pickle.dumps(None)))
++    assert str(caught.exception) == 'reached STOP without finding main module'
++    read_error = OSError('read failed')
++    stream = PeekStream(data)
++    with patch.object(stream, 'peek', side_effect=read_error):
++        with raises(OSError) as caught:
++            dill.load_module(stream, module=42)
++    assert caught.exception is read_error and not stream.closed
++
++
++def test_legacy_entrypoints():
++    target = module()
++    data = payload(target)
++    for namespace in (dill, session, dill._dill):
++        for function, kwargs in ((namespace.dump_session, {'main': target}),
++                                 (namespace.load_session, {})):
++            stream = BytesIO(data) if function.__name__ == 'load_session' else BytesIO()
++            with warnings.catch_warnings(record=True) as caught:
++                warnings.simplefilter('always')
++                assert function(stream, **kwargs) is None
++            assert len(caught) == 1 and caught[0].category is PendingDeprecationWarning
++            assert function.__name__ + '() has been renamed' in str(caught[0].message)
++    cases = [
++        (dill.dump_module, {'module': target, 'main': target}, "both 'module' and 'main'"),
++        (dill.dump_module, {'module': target, 'refimported': True, 'byref': True}, "both 'refimported' and 'byref'"),
++        (dill.load_module, {'module': target, 'main': target}, "both 'module' and 'main'"),
++        (dill.load_module, {'module': False, 'main': target}, "both 'module' and 'main'"),
++    ]
++    for function, kwargs, message in cases:
++        stream = EventStream(data)
++        with warnings.catch_warnings(record=True) as caught:
++            warnings.simplefilter('always')
++            with raises(TypeError) as error:
++                function(stream, **kwargs)
++                # Raising warnings as errors below independently pins precedence.
++        assert message in str(error.exception)
++        assert len(caught) == 1 and caught[0].category is PendingDeprecationWarning
++        assert 'has been renamed' in str(caught[0].message)
++        assert stream.events == []
++        with warnings.catch_warnings():
++            warnings.simplefilter('error', PendingDeprecationWarning)
++            with raises(PendingDeprecationWarning):
++                function(stream, **kwargs)
++    with warnings.catch_warnings(record=True) as caught:
++        warnings.simplefilter('always')
++        stream = BytesIO()
++        assert dill.dump_module(stream, module=False, main=target, refimported=False, byref=True) is None
++        stream.seek(0)
++        assert dill.load_module(stream, main=target) is None
++    assert [str(item.message) for item in caught] == [
++        "The argument 'main' has been renamed 'module'.",
++        "The argument 'byref' has been renamed 'refimported' to distinguish it from dill.settings['byref'].",
++        "The argument 'main' has been renamed 'module'.",
++    ]
++
++
++def reference_payload():
++    import calendar
++    import collections
++    import typing
++    import urllib
++    import xml.dom.minidom
++    from xml import sax
++    target = module('session_references')
++    target.calendar = calendar
++    target.url = urllib
++    target.sax = sax
++    target.dom = xml.dom.minidom
++    target.Calendar = target.Alias = calendar.Calendar
++    target.isleap = calendar.isleap
++    target.Dict = collections.UserDict
++    target.AsyncCM = typing.AsyncContextManager
++    target.day_name = calendar.day_name
++    target.selfref = target
++    target.dictref = vars(target)
++    exec('def local(): return day_name', vars(target))
++    # Name lookup recognizes this list, but arbitrary list aliases must remain
++    # by value. The source is importable in the subprocess as well.
++    target.unsupported_alias = calendar.month_name
++    before = vars(target).copy()
++    data = payload(target, refimported=True)
++    assert vars(target) == before
++    return data
++
++
++def check_references(state):
++    for alias, source in (('calendar', 'calendar'), ('url', 'urllib'),
++                          ('sax', 'xml.sax'), ('dom', 'xml.dom.minidom')):
++        assert state[alias] is sys.modules[source]
++    for alias, source, attribute in (
++            ('Calendar', 'calendar', 'Calendar'), ('Alias', 'calendar', 'Calendar'),
++            ('isleap', 'calendar', 'isleap'), ('day_name', 'calendar', 'day_name'),
++            ('Dict', 'collections', 'UserDict'), ('AsyncCM', 'typing', 'AsyncContextManager')):
++        assert state[alias] is getattr(sys.modules[source], attribute)
++    assert state['unsupported_alias'] is not sys.modules['calendar'].month_name
++    assert list(state['unsupported_alias']) == list(sys.modules['calendar'].month_name)
++    assert state['selfref'].__dict__ is state
++    assert state['dictref'] is state
++    assert state['local'].__globals__ is state
++    assert state['local']() is sys.modules['calendar'].day_name
++    assert not any(name.startswith('__dill_imported') for name in state)
++
++
++def test_reference_boundaries():
++    data = reference_payload()
++    for loader in (dill.load_module, dill.load_module_asdict):
++        restored = loader(BytesIO(data))
++        check_references(restored if isinstance(restored, dict) else vars(restored))
++    # A fresh interpreter must import the sources and restore the same aliases.
++    with temporary_directory() as directory:
++        path = directory / 'references.pkl'
++        path.write_bytes(data)
++        subprocess.run([sys.executable, __file__, '--references', str(path)], check=True)
++
++
++def test_asdict_source_and_update():
++    with temporary_directory() as directory:
++        name = 'session_update_fixture'
++        (directory / (name + '.py')).write_text('value = 0\nprior_only = []\n', encoding='utf-8')
++        with patch.object(sys, 'path', [str(directory)] + sys.path), patch.dict(sys.modules):
++            original = importlib.import_module(name)
++            original.value = 42
++            data = payload(original)
++            del sys.modules[name]
++            for update in (False, True):
++                state = dill.load_module_asdict(BytesIO(data), update=update)
++                assert state['value'] == 42
++                if update:
++                    imported = sys.modules[name]
++                    assert imported is not original and imported.value == 0
++                    assert state['prior_only'] is not imported.prior_only  # saved value wins
++                    assert original.value == 42
++                else:
++                    assert name not in sys.modules
++            # Test a variable created only by the import, absent from the dump.
++            clean = module(name)
++            sys.modules[name] = clean
++            data = payload(clean)
++            del sys.modules[name]
++            state = dill.load_module_asdict(BytesIO(data), update=True)
++            imported = sys.modules[name]
++            assert state['prior_only'] is imported.prior_only
++            assert state['value'] == 42 and imported.value == 0
++            before = imported.__dict__.copy()
++            for update in (False, True):
++                state = dill.load_module_asdict(BytesIO(data), update=update)
++                assert ('prior_only' in state) is update
++                assert imported.__dict__ == before and sys.modules[name] is imported
++
++        unavailable = module('session_not_importable')
++        with patch.dict(sys.modules, {unavailable.__name__: unavailable}):
++            data = payload(unavailable)
++        with raises(ModuleNotFoundError):
++            dill.load_module_asdict(BytesIO(data), update=True)
++        assert unavailable.__name__ not in sys.modules
++        runtime = module('session_missing_runtime')
++        runtime_data = payload(runtime)
++        key = '__runtime__.' + runtime.__name__
++        with raises(KeyError) as caught:
++            dill.load_module_asdict(BytesIO(runtime_data), update=True)
++        assert caught.exception.args == (key,) and key not in sys.modules
++        # None bindings retain their previous absent-state meaning.
++        with patch.dict(sys.modules, {key: None}):
++            dill.load_module_asdict(BytesIO(runtime_data))
++            assert key not in sys.modules
++        # Existing runtime state is selected only through its encoded key.
++        old = module(runtime.__name__)
++        old.value = 0
++        old.prior_only = []
++        with patch.dict(sys.modules, {key: old}):
++            state = dill.load_module_asdict(BytesIO(runtime_data), update=True)
++            assert state['value'] == 42 and state['prior_only'] is old.prior_only
++            assert old.value == 0 and sys.modules[key] is old
++
++        path = directory / 'source.pkl'
++        path.write_bytes(runtime_data)
++        for source in (str(path), path, BytesIO(runtime_data)):
++            state = dill.load_module_asdict(source)
++            assert state['__session__'] == str(source)
++        with patch.object(session, 'SESSION_TEMPFILE', str(path)):
++            with warnings.catch_warnings(record=True) as caught:
++                warnings.simplefilter('always')
++                state = dill.load_module_asdict()
++            assert state['__session__'] == str(path)
++            assert len(caught) == 1 and caught[0].category is session.SecurityWarning
++
++
++def test_filesystem_and_warnings():
++    target = module()
++    data = payload(target)
++    with temporary_directory() as directory:
++        real = directory / 'real.pkl'
++        link = directory / 'link.pkl'
++        missing = directory / 'missing.pkl'
++        real.write_bytes(data)
++        for destination in (real, missing):
++            link.symlink_to(destination.resolve())
++            try:
++                for function in (dill.dump_module, dill.load_module, dill.load_module_asdict):
++                    kwargs = {'module': target} if function is dill.dump_module else {}
++                    with raises(OSError):
++                        function(link, **kwargs)
++                    assert real.read_bytes() == data
++                    assert not missing.exists()
++            finally:
++                link.unlink()
++        created = directory / 'created.pkl'
++        dill.dump_module(created, module=target)
++        if os.name == 'posix':
++            assert stat.S_IMODE(created.stat().st_mode) == 0o600
++        created.write_bytes(data + b'extra' * 1000)
++        dill.dump_module(created, module=target)
++        assert created.read_bytes() == data
++        for loader in (dill.load_module, dill.load_module_asdict):
++            with raises(FileNotFoundError):
++                loader(missing)
++        # Atomically enforced refusal after lstat succeeds, for all entrypoints.
++        if hasattr(os, 'O_NOFOLLOW'):
++            for function in (dill.dump_module, dill.load_module, dill.load_module_asdict):
++                created.write_bytes(data)
++                original_lstat = os.lstat
++                swapped = []
++
++                def racing_lstat(path, *args, **kwargs):
++                    result = original_lstat(path, *args, **kwargs)
++                    if Path(path) == created and not swapped:
++                        created.unlink()
++                        created.symlink_to(real.resolve())
++                        swapped.append(True)
++                    return result
++
++                with patch.object(os, 'lstat', racing_lstat):
++                    with raises(OSError):
++                        function(created, **({'module': target} if function is dill.dump_module else {}))
++                assert swapped and real.read_bytes() == data
++                created.unlink()
++        for function in (dill.dump_module, dill.load_module, dill.load_module_asdict):
++            kwargs = {'module': target} if function is dill.dump_module else {}
++            opener_name = '_safe_open_for_writing' if function is dill.dump_module else '_safe_open_for_reading'
++            with patch.object(session, 'SESSION_TEMPFILE', str(real)):
++                # Explicit default paths and borrowed streams never warn.
++                for source in (str(real), BytesIO(data)):
++                    with warnings.catch_warnings(record=True) as caught:
++                        warnings.simplefilter('always')
++                        function(source, **kwargs)
++                    assert caught == []
++                with warnings.catch_warnings(record=True) as caught:
++                    warnings.simplefilter('always')
++                    caller_line = sys._getframe().f_lineno + 1
++                    function(**kwargs)
++                assert len(caught) == 1
++                warning = caught[0]
++                assert warning.category is session.SecurityWarning
++                assert str(warning.message) == session._DEFAULT_PATH_WARNING
++                assert warning.filename == __file__ and warning.lineno == caller_line
++                failure = OSError('open failed')
++                with warnings.catch_warnings(record=True) as caught:
++                    warnings.simplefilter('always')
++
++                    def fail_open(path):
++                        assert len(caught) == 1  # warning is observable before open
++                        raise failure
++
++                    with patch.object(session, opener_name, fail_open):
++                        with raises(OSError) as error:
++                            caller_line = sys._getframe().f_lineno + 1
++                            function(**kwargs)
++                    assert error.exception is failure
++                assert len(caught) == 1 and caught[0].category is session.SecurityWarning
++                assert str(caught[0].message) == session._DEFAULT_PATH_WARNING
++                assert caught[0].filename == __file__ and caught[0].lineno == caller_line
++
++
++def test_save_load_public_contract():
++    assert list(inspect.signature(dill.dump_module).parameters) == ['filename', 'module', 'refimported', 'kwds']
++    assert list(inspect.signature(dill.load_module).parameters) == ['filename', 'module', 'kwds']
++    assert list(inspect.signature(dill.load_module_asdict).parameters) == ['filename', 'update', 'kwds']
++    for function in (dill.dump_module, dill.load_module, dill.load_module_asdict):
++        signature = inspect.signature(function)
++        assert signature.parameters['filename'].default is None
++        if function is not dill.load_module_asdict:
++            assert signature.parameters['module'].default is None
++        else:
++            assert signature.parameters['update'].default is False
++    assert inspect.signature(dill.dump_module).parameters['refimported'].default is False
++
++    with temporary_directory() as directory, patch.dict(sys.modules):
++        imported = module('session_named')
++        sys.modules[imported.__name__] = imported
++        for name in ('session_runtime', 'package.runtime', '__runtime__', '__runtime__.nested.name'):
++            runtime = module(name)
++            for source_module in (imported, imported.__name__, runtime):
++                target = imported if isinstance(source_module, str) else source_module
++                for destination in (directory / 'contract.pkl', BytesIO()):
++                    assert dill.dump_module(destination, module=source_module) is None
++                    data = destination.getvalue() if isinstance(destination, BytesIO) else destination.read_bytes()
++                    encoded = name if target is imported else '__runtime__.' + name
++                    for selected in (None, target, target.__name__ if target is imported else encoded):
++                        result = dill.load_module(BytesIO(data), module=selected)
++                        if selected is target:
++                            assert result is None
++                        else:
++                            assert result.value == 42 and result.__name__ == target.__name__
++                            if target is imported:
++                                assert result is imported
++                        if target is runtime:
++                            assert '__runtime__.' + name not in sys.modules
++                    if target is runtime and name == 'session_runtime':
++                        with raises(ModuleNotFoundError):
++                            dill.load_module(BytesIO(data), module=name)
++        target = module('session_settings')
++        target.selfref = target
++        target.dictref = vars(target)
++        exec('def local(): return value', vars(target))
++        from calendar import day_name
++        target.day_name = day_name
++        original_settings = dill.settings.copy()
++        for protocol in (2, pickle.HIGHEST_PROTOCOL):
++            for refimported in (False, True):
++                captured = []
++                original_dump = session.Pickler.dump
++
++                def dump(pickler, obj):
++                    captured.append((pickler.proto, pickler._byref, pickler._recurse, pickler.fast))
++                    return original_dump(pickler, obj)
++
++                with patch.dict(dill.settings, protocol=protocol, byref=True, recurse=True):
++                    with patch.object(session.Pickler, 'dump', dump), \
++                            patch.object(session, 'Pickler', wraps=session.Pickler) as pickler_type:
++                        stream = BytesIO()
++                        dill.dump_module(stream, module=target, refimported=refimported, recurse=True, fmode=dill.CONTENTS_FMODE)
++                        assert pickler_type.call_args.args == (stream, protocol)
++                        assert pickler_type.call_args.kwargs == {'recurse': True, 'fmode': dill.CONTENTS_FMODE}
++                    assert captured == [(protocol, False, False, 0)]
++                    assert stream.getvalue()[:2] == b'\x80' + bytes([protocol])
++                    for loader in (dill.load_module, dill.load_module_asdict):
++                        restored = loader(BytesIO(stream.getvalue()))
++                        state = restored if isinstance(restored, dict) else vars(restored)
++                        assert state['selfref'].__dict__ is state and state['dictref'] is state
++                        assert state['local'].__globals__ is state and state['local']() == 42
++                        assert (state['day_name'] is day_name) is refimported
++                assert dill.settings == original_settings
++        # A duplicate protocol remains a constructor error after opening.
++        stream = EventStream()
++        with raises(TypeError):
++            dill.dump_module(stream, module=target, protocol=2)
++        assert not stream.closed
++
++
++if __name__ == '__main__':
++    if len(sys.argv) == 3 and sys.argv[1] == '--references':
++        for loader in (dill.load_module, dill.load_module_asdict):
++            restored = loader(sys.argv[2])
++            check_references(restored if isinstance(restored, dict) else vars(restored))
++    else:
++        for name, test in list(globals().items()):
++            if name.startswith('test_'):
++                test()

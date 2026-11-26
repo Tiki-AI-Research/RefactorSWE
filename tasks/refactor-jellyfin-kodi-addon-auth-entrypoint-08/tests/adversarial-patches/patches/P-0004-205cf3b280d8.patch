@@ -1,0 +1,714 @@
+diff --git a/jellyfin_kodi/database/__init__.py b/jellyfin_kodi/database/__init__.py
+--- a/jellyfin_kodi/database/__init__.py
++++ b/jellyfin_kodi/database/__init__.py
+@@ -362,18 +362,9 @@
+         outfile.write(data)
+ 
+ 
+-def get_credentials():
+-    if (3, 0) <= sys.version_info < (3, 6):
+-        LOG.error("Python versions 3.0-3.5 are NOT supported.")
+-
+-    if not xbmcvfs.exists(ADDON_DATA):
+-        xbmcvfs.mkdirs(ADDON_DATA)
+-
+-    try:
+-        with open(os.path.join(ADDON_DATA, "data.json"), "rb") as infile:
+-            credentials = json.load(infile)
+-    except IOError:
+-        credentials = {}
++def read_credentials():
++    with open(os.path.join(ADDON_DATA, "data.json"), "rb") as infile:
++        credentials = json.load(infile)
+ 
+     credentials["Servers"] = credentials.get("Servers", [])
+ 
+@@ -398,6 +389,19 @@
+     return credentials
+ 
+ 
++def get_credentials():
++    if (3, 0) <= sys.version_info < (3, 6):
++        LOG.error("Python versions 3.0-3.5 are NOT supported.")
++
++    if not xbmcvfs.exists(ADDON_DATA):
++        xbmcvfs.mkdirs(ADDON_DATA)
++
++    try:
++        return read_credentials()
++    except IOError:
++        return {"Servers": []}
++
++
+ def save_credentials(credentials):
+     credentials = credentials or {}
+ 
+diff --git a/jellyfin_kodi/entrypoint/context.py b/jellyfin_kodi/entrypoint/context.py
+--- a/jellyfin_kodi/entrypoint/context.py
++++ b/jellyfin_kodi/entrypoint/context.py
+@@ -10,9 +10,9 @@
+ 
+ from .. import database
+ from ..dialogs import context
+-from ..helper import translate, settings, dialog, LazyLogger
+-from ..helper.utils import translate_path
++from ..helper import dialog, LazyLogger, settings, translate
+ from ..jellyfin import Jellyfin
++from ..jellyfin.configuration import Config
+ 
+ #################################################################################################
+ 
+@@ -56,18 +56,13 @@
+                 self.media = xbmc.getInfoLabel("ListItem.DBTYPE")
+                 item_id = None
+ 
+-        addon_data = translate_path(
+-            "special://profile/addon_data/plugin.video.jellyfin/data.json"
+-        )
+-        with open(addon_data, "rb") as infile:
+-            data = json.load(infile)
++        try:
++            Config.get_credentials()
++        except (AttributeError, IndexError, KeyError, TypeError):
++            pass
+ 
+         try:
+-            server_data = data["Servers"][0]
+-            self.api_client.config.data["auth.server"] = server_data.get("address")
+-            self.api_client.config.data["auth.server-name"] = server_data.get("Name")
+-            self.api_client.config.data["auth.user_id"] = server_data.get("UserId")
+-            self.api_client.config.data["auth.token"] = server_data.get("AccessToken")
++            self.api_client.config.inject()
+         except Exception as e:
+             LOG.warning("Addon appears to not be configured yet: {}".format(e))
+ 
+diff --git a/jellyfin_kodi/entrypoint/default.py b/jellyfin_kodi/entrypoint/default.py
+--- a/jellyfin_kodi/entrypoint/default.py
++++ b/jellyfin_kodi/entrypoint/default.py
+@@ -2,7 +2,6 @@
+ 
+ #################################################################################################
+ 
+-import json
+ import sys
+ import os
+ from urllib.parse import parse_qsl, urlencode
+@@ -71,18 +70,8 @@
+         jellyfin_client = Jellyfin(server).get_client()
+         api_client = jellyfin_client.jellyfin
+ 
+-        addon_data = translate_path(
+-            "special://profile/addon_data/plugin.video.jellyfin/data.json"
+-        )
+         try:
+-            with open(addon_data, "rb") as infile:
+-                data = json.load(infile)
+-
+-            server_data = data["Servers"][0]
+-            api_client.config.data["auth.server"] = server_data.get("address")
+-            api_client.config.data["auth.server-name"] = server_data.get("Name")
+-            api_client.config.data["auth.user_id"] = server_data.get("UserId")
+-            api_client.config.data["auth.token"] = server_data.get("AccessToken")
++            api_client.config.inject()
+         except Exception as e:
+             LOG.warning("Addon appears to not be configured yet: {}".format(e))
+ 
+diff --git a/jellyfin_kodi/helper/api.py b/jellyfin_kodi/helper/api.py
+--- a/jellyfin_kodi/helper/api.py
++++ b/jellyfin_kodi/helper/api.py
+@@ -1,11 +1,9 @@
+ # -*- coding: utf-8 -*-
+ 
+-import json
+-
+ ##################################################################################################
+ 
+-from . import settings, LazyLogger
+-from .utils import translate_path
++from . import LazyLogger, settings
++from ..jellyfin.configuration import Config
+ 
+ ##################################################################################################
+ 
+@@ -21,14 +19,11 @@
+         """
+         self.item = item
+         self.server = server
+-
+-        addon_data = translate_path(
+-            "special://profile/addon_data/plugin.video.jellyfin/data.json"
+-        )
++        self.path_data = {}
++
+         try:
+-            with open(addon_data, "rb") as infile:
+-                data = json.load(infile)
+-            self.path_data = data["Servers"][0].get("paths", {})
++            server_data = Config.get_server()
++            self.path_data = server_data.get("paths", {})
+         except Exception as e:
+             LOG.warning("Addon appears to not be configured yet: {}".format(e))
+ 
+@@ -216,7 +211,7 @@
+     def get_file_path(self, path=None):
+ 
+         if path is None:
+-            path = self.item.get("Path")
++            path = self.item.get("Filename")
+ 
+         if not path:
+             return ""
+diff --git a/jellyfin_kodi/jellyfin/configuration.py b/jellyfin_kodi/jellyfin/configuration.py
+--- a/jellyfin_kodi/jellyfin/configuration.py
++++ b/jellyfin_kodi/jellyfin/configuration.py
+@@ -18,6 +18,53 @@
+ 
+ 
+ class Config(object):
++
++    _credentials_cache = None
++
++    @classmethod
++    def reset_credentials_cache(cls):
++        cls._credentials_cache = None
++
++    @classmethod
++    def _load_credentials(cls):
++        if cls._credentials_cache is not None:
++            success, result = cls._credentials_cache
++            if success:
++                return result
++            raise result
++
++        try:
++            from ..database import read_credentials
++
++            credentials = read_credentials()
++            cls._credentials_cache = (True, credentials)
++            return credentials
++        except Exception as e:
++            cls._credentials_cache = (False, e)
++            raise
++
++    @classmethod
++    def get_credentials(cls):
++        return cls._load_credentials()
++
++    @classmethod
++    def get_server(cls):
++        credentials = cls._load_credentials()
++        return credentials["Servers"][0]
++
++    get_first_server = get_server
++
++    def inject(self, target=None):
++        cfg = target or self
++        if not isinstance(cfg, Config):
++            raise TypeError("Config instance required for inject")
++        server = self.get_server()
++        cfg.data["auth.server"] = server.get("address")
++        cfg.data["auth.server-name"] = server.get("Name")
++        cfg.data["auth.user_id"] = server.get("UserId")
++        cfg.data["auth.token"] = server.get("AccessToken")
++
++    inject_credentials = inject
+ 
+     def __init__(self):
+ 
+diff --git a/jellyfin_kodi/objects/actions.py b/jellyfin_kodi/objects/actions.py
+--- a/jellyfin_kodi/objects/actions.py
++++ b/jellyfin_kodi/objects/actions.py
+@@ -4,7 +4,6 @@
+ 
+ import threading
+ import sys
+-import json
+ from datetime import timedelta
+ 
+ import xbmc
+@@ -16,7 +15,6 @@
+ from ..dialogs import resume
+ from ..helper import LazyLogger
+ from ..jellyfin import Jellyfin
+-from ..helper.utils import translate_path
+ 
+ from .obj import Objects
+ 
+@@ -36,25 +34,13 @@
+             LOG.debug("No api client provided, attempting to use config file")
+             jellyfin_client = Jellyfin(server_id).get_client()
+             api_client = jellyfin_client.jellyfin
+-            addon_data = translate_path(
+-                "special://profile/addon_data/plugin.video.jellyfin/data.json"
+-            )
+             try:
+-                with open(addon_data, "rb") as infile:
+-                    data = json.load(infile)
+-
+-                    server_data = data["Servers"][0]
+-                    api_client.config.data["auth.server"] = server_data.get("address")
+-                    api_client.config.data["auth.server-name"] = server_data.get("Name")
+-                    api_client.config.data["auth.user_id"] = server_data.get("UserId")
+-                    api_client.config.data["auth.token"] = server_data.get(
+-                        "AccessToken"
+-                    )
++                api_client.config.inject()
+             except Exception as e:
+                 LOG.warning("Addon appears to not be configured yet: {}".format(e))
+ 
+         self.api_client = api_client
+-        self.server = self.api_client.config.data["auth.server"]
++        self.server = self.api_client.config.data.get("auth.server")
+ 
+         self.stack = []
+ 
+diff --git a/tests/test_configuration_credentials.py b/tests/test_configuration_credentials.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_configuration_credentials.py
+@@ -0,0 +1,445 @@
++# -*- coding: utf-8 -*-
++
++import json
++import sys
++from unittest.mock import MagicMock
++
++import pytest
++
++from jellyfin_kodi import database
++from jellyfin_kodi.entrypoint import context as context_mod
++from jellyfin_kodi.helper.api import API
++from jellyfin_kodi.jellyfin.configuration import Config
++from jellyfin_kodi.objects.actions import Actions
++
++_old_argv = list(sys.argv)
++sys.argv = ["plugin://plugin.video.jellyfin/", "1", ""]
++try:
++    from jellyfin_kodi.entrypoint import default as default_mod
++finally:
++    sys.argv = _old_argv
++
++
++@pytest.fixture(autouse=True)
++def reset_credentials_cache(monkeypatch, tmp_path):
++    Config.reset_credentials_cache()
++    monkeypatch.setattr(database, "ADDON_DATA", str(tmp_path))
++    yield
++    Config.reset_credentials_cache()
++
++
++def _write_data(tmp_path, data):
++    path = tmp_path / "data.json"
++    if isinstance(data, str):
++        path.write_text(data, encoding="utf-8")
++    else:
++        path.write_text(json.dumps(data), encoding="utf-8")
++    return path
++
++
++def test_config_inject_values(tmp_path):
++    server = {
++        "address": "http://192.168.1.100:8096",
++        "Name": "HomeServer",
++        "UserId": "user-uuid-1",
++        "AccessToken": "token-xyz",
++    }
++    _write_data(tmp_path, {"Servers": [server, {"address": "http://other:8096"}]})
++
++    cfg = Config()
++    cfg.inject()
++
++    assert cfg.data["auth.server"] == "http://192.168.1.100:8096"
++    assert cfg.data["auth.server-name"] == "HomeServer"
++    assert cfg.data["auth.user_id"] == "user-uuid-1"
++    assert cfg.data["auth.token"] == "token-xyz"
++
++
++def test_config_inject_partial_fields(tmp_path):
++    _write_data(tmp_path, {"Servers": [{"address": "http://server:8096"}]})
++
++    cfg = Config()
++    cfg.inject()
++
++    assert cfg.data["auth.server"] == "http://server:8096"
++    assert cfg.data["auth.server-name"] is None
++    assert cfg.data["auth.user_id"] is None
++    assert cfg.data["auth.token"] is None
++
++
++def test_config_read_once_and_cached(monkeypatch, tmp_path):
++    _write_data(tmp_path, {"Servers": [{"address": "http://srv:8096", "Name": "S"}]})
++    original_read = database.read_credentials
++    read_spy = MagicMock(side_effect=original_read)
++    monkeypatch.setattr(database, "read_credentials", read_spy)
++
++    cfg1 = Config()
++    cfg1.inject()
++    cfg2 = Config()
++    cfg2.inject()
++    srv = Config.get_server()
++    creds = Config.get_credentials()
++
++    assert read_spy.call_count == 1
++    assert cfg1.data["auth.server"] == cfg2.data["auth.server"] == "http://srv:8096"
++    assert srv["address"] == "http://srv:8096"
++    assert creds["Servers"][0]["Name"] == "S"
++
++
++@pytest.mark.parametrize("payload", [{"Servers": []}, {}])
++def test_config_empty_servers_cached_failure(monkeypatch, tmp_path, payload):
++    _write_data(tmp_path, payload)
++    original_read = database.read_credentials
++    read_spy = MagicMock(side_effect=original_read)
++    monkeypatch.setattr(database, "read_credentials", read_spy)
++
++    with pytest.raises(IndexError):
++        Config.get_server()
++    with pytest.raises(IndexError):
++        Config.get_server()
++
++    assert read_spy.call_count == 1
++
++
++def test_config_read_failure_cached(monkeypatch):
++    original_read = database.read_credentials
++    read_spy = MagicMock(side_effect=original_read)
++    monkeypatch.setattr(database, "read_credentials", read_spy)
++
++    with pytest.raises(IOError):
++        Config.get_server()
++    with pytest.raises(IOError):
++        Config.get_server()
++
++    assert read_spy.call_count == 1
++
++
++def test_get_credentials_semantics(tmp_path):
++    # Missing file returns {"Servers": []}
++    assert database.get_credentials() == {"Servers": []}
++
++    # ManualAddress / LocalAddress migration
++    _write_data(
++        tmp_path,
++        {
++            "Servers": [
++                {
++                    "Name": "S1",
++                    "ManualAddress": "http://manual:8096",
++                    "LocalAddress": "http://local:8096",
++                    "RemoteAddress": "http://remote:8096",
++                    "LastConnectionMode": "Manual",
++                }
++            ]
++        },
++    )
++    res = database.get_credentials()
++    srv = res["Servers"][0]
++    assert srv["address"] == "http://manual:8096"
++    assert "ManualAddress" not in srv
++    assert "LocalAddress" not in srv
++    assert "RemoteAddress" not in srv
++    assert "LastConnectionMode" not in srv
++
++    # LocalAddress only
++    _write_data(tmp_path, {"Servers": [{"LocalAddress": "http://local-only:8096"}]})
++    res = database.get_credentials()
++    assert res["Servers"][0]["address"] == "http://local-only:8096"
++
++    # Bad JSON propagates
++    _write_data(tmp_path, "not a valid json {")
++    with pytest.raises(json.JSONDecodeError):
++        database.get_credentials()
++
++    # Null root propagates AttributeError
++    _write_data(tmp_path, "null")
++    with pytest.raises(AttributeError):
++        database.get_credentials()
++
++    # Non-list Servers passes through
++    _write_data(tmp_path, {"Servers": "non-list-string"})
++    res = database.get_credentials()
++    assert res["Servers"] == "non-list-string"
++
++
++def test_get_credentials_reads_fresh(tmp_path):
++    _write_data(tmp_path, {"Servers": [{"address": "http://v1:8096"}]})
++    assert database.get_credentials()["Servers"][0]["address"] == "http://v1:8096"
++
++    _write_data(tmp_path, {"Servers": [{"address": "http://v2:8096"}]})
++    assert database.get_credentials()["Servers"][0]["address"] == "http://v2:8096"
++
++
++def test_helper_api_configured_and_paths(monkeypatch, tmp_path):
++    _write_data(
++        tmp_path,
++        {
++            "Servers": [
++                {
++                    "address": "http://srv:8096",
++                    "paths": {"/media/movies": "smb://nas/movies"},
++                }
++            ]
++        },
++    )
++    original_read = database.read_credentials
++    read_spy = MagicMock(side_effect=original_read)
++    monkeypatch.setattr(database, "read_credentials", read_spy)
++
++    item = {"Type": "Movie", "Path": "/media/movies/test.mkv"}
++    apis = [API(item) for _ in range(5)]
++
++    assert read_spy.call_count == 1
++    for a in apis:
++        assert a.path_data == {"/media/movies": "smb://nas/movies"}
++        assert a.get_file_path("/media/movies/test.mkv") == "smb://nas/movies/test.mkv"
++        assert a.get_file_path("/other/path/test.mkv") == "/other/path/test.mkv"
++
++
++def test_helper_api_missing_paths_key(tmp_path):
++    _write_data(tmp_path, {"Servers": [{"address": "http://srv:8096"}]})
++    api_inst = API({})
++    assert api_inst.path_data == {}
++
++
++@pytest.mark.parametrize(
++    "setup_fn",
++    [
++        lambda p: None,
++        lambda p: _write_data(p, "bad json"),
++        lambda p: _write_data(p, {"Servers": []}),
++    ],
++)
++def test_helper_api_unconfigured_warn_and_continue(monkeypatch, tmp_path, setup_fn):
++    setup_fn(tmp_path)
++    warn_spy = MagicMock()
++    monkeypatch.setattr("jellyfin_kodi.helper.api.LOG.warning", warn_spy)
++
++    apis = [API({}) for _ in range(3)]
++    for api_inst in apis:
++        assert api_inst.path_data == {}
++    assert warn_spy.call_count == 3
++    for call in warn_spy.call_args_list:
++        assert call[0][0].startswith("Addon appears to not be configured yet:")
++
++
++def test_helper_api_directory_unreadable(tmp_path):
++    data_dir = tmp_path / "data.json"
++    data_dir.mkdir()
++    api_inst = API({})
++    assert api_inst.path_data == {}
++
++
++def test_actions_forms(monkeypatch, tmp_path):
++    _write_data(tmp_path, {"Servers": [{"address": "http://srv:8096", "Name": "S"}]})
++
++    # Form 1: no args (uses stored credentials)
++    act1 = Actions()
++    assert act1.server == "http://srv:8096"
++    assert act1.server_id is None
++
++    # Form 2: server_id only
++    from jellyfin_kodi.jellyfin import Jellyfin
++
++    Jellyfin("my-server-id").construct()
++    act2 = Actions(server_id="my-server-id")
++    assert act2.server == "http://srv:8096"
++    assert act2.server_id == "my-server-id"
++
++    # Form 3: explicit client (not injected)
++    custom_client = MagicMock()
++    custom_client.config.data = {"auth.server": "http://custom:8096"}
++    act3 = Actions(api_client=custom_client)
++    assert act3.server == "http://custom:8096"
++    assert "auth.server-name" not in custom_client.config.data
++
++
++def test_actions_unconfigured_continues_without_preset():
++    from jellyfin_kodi.jellyfin import Jellyfin
++
++    client = Jellyfin(None).get_client().jellyfin
++    client.config.data.pop("auth.server", None)
++
++    assert Actions().server is None
++
++
++def test_actions_unconfigured_warn_and_continue(monkeypatch):
++    warn_spy = MagicMock()
++    monkeypatch.setattr("jellyfin_kodi.objects.actions.LOG.warning", warn_spy)
++
++    # Pre-set default server so self.server = ... doesn't KeyError
++    from jellyfin_kodi.jellyfin import Jellyfin
++
++    client = Jellyfin(None).get_client().jellyfin
++    client.config.data["auth.server"] = "http://fallback:8096"
++
++    act = Actions()
++    assert act.server == "http://fallback:8096"
++    warn_spy.assert_called_once()
++    assert warn_spy.call_args[0][0].startswith("Addon appears to not be configured yet:")
++
++
++def test_events_default_configured(monkeypatch, tmp_path):
++    _write_data(
++        tmp_path,
++        {
++            "Servers": [
++                {
++                    "address": "http://srv:8096",
++                    "Name": "DefaultServer",
++                    "UserId": "u1",
++                    "AccessToken": "tok1",
++                }
++            ]
++        },
++    )
++    monkeypatch.setattr(default_mod, "ADDON_BASE_URL", "plugin://plugin.video.jellyfin/")
++    monkeypatch.setattr(default_mod, "QUERY_STRING", "?mode=unknown")
++
++    order = []
++
++    def fake_listing():
++        from jellyfin_kodi.jellyfin import Jellyfin
++        cl = Jellyfin(None).get_client().jellyfin
++        order.append(dict(cl.config.data))
++
++    monkeypatch.setattr(default_mod, "listing", fake_listing)
++
++    events = default_mod.Events()
++    from jellyfin_kodi.jellyfin import Jellyfin
++
++    client = Jellyfin(None).get_client().jellyfin
++    assert client.config.data["auth.server"] == "http://srv:8096"
++    assert client.config.data["auth.server-name"] == "DefaultServer"
++    assert client.config.data["auth.user_id"] == "u1"
++    assert client.config.data["auth.token"] == "tok1"
++    assert events is not None
++    assert len(order) == 1
++    assert order[0]["auth.server"] == "http://srv:8096"
++
++
++@pytest.mark.parametrize(
++    "setup_fn",
++    [
++        lambda p: None,
++        lambda p: _write_data(p, "{bad"),
++        lambda p: _write_data(p, {"Servers": []}),
++    ],
++)
++def test_events_default_unconfigured_warns(monkeypatch, tmp_path, setup_fn):
++    setup_fn(tmp_path)
++    monkeypatch.setattr(default_mod, "ADDON_BASE_URL", "plugin://plugin.video.jellyfin/")
++    monkeypatch.setattr(default_mod, "QUERY_STRING", "?mode=unknown")
++    monkeypatch.setattr(default_mod, "listing", lambda: None)
++    warn_spy = MagicMock()
++    monkeypatch.setattr("jellyfin_kodi.entrypoint.default.LOG.warning", warn_spy)
++
++    events = default_mod.Events()
++    assert events is not None
++    warn_spy.assert_called_once()
++    assert warn_spy.call_args[0][0].startswith("Addon appears to not be configured yet:")
++
++
++def test_context_missing_file_propagates():
++    with pytest.raises(FileNotFoundError):
++        context_mod.Context()
++
++
++def test_context_bad_json_propagates(tmp_path):
++    _write_data(tmp_path, "not-json-content")
++    with pytest.raises(ValueError):
++        context_mod.Context()
++
++
++def test_context_directory_propagates(tmp_path):
++    # data.json is a directory
++    data_dir = tmp_path / "data.json"
++    data_dir.mkdir()
++    with pytest.raises(OSError):
++        context_mod.Context()
++
++
++def test_context_empty_servers_warns_and_continues(monkeypatch, tmp_path):
++    _write_data(tmp_path, {"Servers": []})
++    warn_spy = MagicMock()
++    monkeypatch.setattr("jellyfin_kodi.entrypoint.context.LOG.warning", warn_spy)
++    monkeypatch.setattr(context_mod.Context, "get_item_id", lambda self: None)
++
++    ctx = context_mod.Context()
++    assert ctx is not None
++    warn_spy.assert_called_once()
++    assert warn_spy.call_args[0][0].startswith("Addon appears to not be configured yet:")
++
++
++def test_context_null_server_warns_and_continues(monkeypatch, tmp_path):
++    _write_data(tmp_path, {"Servers": [None]})
++    warn_spy = MagicMock()
++    monkeypatch.setattr("jellyfin_kodi.entrypoint.context.LOG.warning", warn_spy)
++    monkeypatch.setattr(context_mod.Context, "get_item_id", lambda self: None)
++
++    ctx = context_mod.Context()
++    assert ctx is not None
++    warn_spy.assert_called_once()
++    assert warn_spy.call_args[0][0].startswith("Addon appears to not be configured yet:")
++
++    # Directly calling inject raises TypeError
++    with pytest.raises(TypeError):
++        Config().inject()
++
++
++def test_context_inject_before_get_item(monkeypatch, tmp_path):
++    _write_data(
++        tmp_path,
++        {
++            "Servers": [
++                {
++                    "address": "http://srv:8096",
++                    "Name": "CtxServer",
++                    "UserId": "u-ctx",
++                    "AccessToken": "tok-ctx",
++                }
++            ]
++        },
++    )
++    captured_data = []
++
++    def fake_get_item(self, item_id):
++        captured_data.append(dict(self.config.data))
++        return {"Type": "Movie"}
++
++    mock_listitem = MagicMock()
++    mock_listitem.getVideoInfoTag().getDbId.return_value = None
++    mock_listitem.getProperty.return_value = "default"
++    monkeypatch.setattr(sys, "listitem", mock_listitem, raising=False)
++    monkeypatch.setattr("jellyfin_kodi.jellyfin.api.API.get_item", fake_get_item)
++    monkeypatch.setattr(context_mod.Context, "get_media_type", lambda self: "movie")
++    monkeypatch.setattr(context_mod.Context, "select_menu", lambda self: False)
++
++    ctx = context_mod.Context()
++    assert ctx is not None
++    assert len(captured_data) == 1
++    assert captured_data[0]["auth.server"] == "http://srv:8096"
++    assert captured_data[0]["auth.server-name"] == "CtxServer"
++    assert captured_data[0]["auth.user_id"] == "u-ctx"
++    assert captured_data[0]["auth.token"] == "tok-ctx"
++
++
++def test_fresh_interpreter_imports():
++    modules = [
++        "jellyfin_kodi",
++        "jellyfin_kodi.helper.api",
++        "jellyfin_kodi.database",
++        "jellyfin_kodi.objects.actions",
++        "jellyfin_kodi.jellyfin.configuration",
++        "jellyfin_kodi.entrypoint.default",
++        "jellyfin_kodi.entrypoint.context",
++    ]
++    import subprocess
++
++    for mod in modules:
++        res = subprocess.run(
++            [sys.executable, "-c", f"import {mod}"],
++            capture_output=True,
++            text=True,
++        )
++        assert res.returncode == 0, f"Failed importing {mod}: {res.stderr}"

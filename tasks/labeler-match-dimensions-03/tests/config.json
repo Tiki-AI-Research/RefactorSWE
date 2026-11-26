@@ -1,0 +1,1095 @@
+{
+  "base_commit": "98ce1450c7908643084f7487327dfa4f4bf8a367",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "node",
+    "__tests__/support/f2p-runner.cjs",
+    "--report",
+    "{report}",
+    "__tests__/labeler.test.ts",
+    "__tests__/branch.test.ts",
+    "__tests__/changedFiles.test.ts",
+    "__tests__/main.test.ts",
+    "__tests__/p2p-matching-regression.test.ts",
+    "__tests__/f2p-dimension-contract.test.ts"
+  ],
+  "evaluation_files": {
+    "__tests__/f2p-dimension-contract.test.ts": "a570c5d57971a3d2b3fbdc18f0de85a95dd8885fe92be5aba8262933ba0392da",
+    "__tests__/p2p-matching-regression.test.ts": "4ce49b66fb8d5b28ac06a1a1334d162576bee5b9673ae18e9a4a7446209a4f4b",
+    "__tests__/support/dimension-probe.ts": "7261cdb1536c1d977ceae72b4d605e9ef53cf20eae7a20281f8fe1510449450c",
+    "__tests__/support/f2p-runner.cjs": "10a47e137fa444ae025f19c1ff4742ac1a4afc5888376b1a2d63201cf7f77c35",
+    "__tests__/support/p2p-runner.cjs": "e6147da20d4e67534a89f3d79dd349490616fed72db78eb66f22a6e2886e3df6"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 40800.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 120.0,
+    "per_subject_timeout_seconds": 10080.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 43200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 40320.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 10080.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 10080.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 10080.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 10080.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true when either the branch or changed files patter matches"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/branch.test.ts::checkAnyBranch when multiple patterns are provided and at least one pattern matches returns true"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::any quantifier semantics returns false when no entry has a present dimension"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::any quantifier semantics returns false when every present dimension fails"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::any quantifier semantics matches when a later entry has a matching dimension"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run does not add a label when the match config options are not supported"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/branch.test.ts::checkAllBranch when multiple patterns are provided and not all patterns matched returns false"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::all quantifier semantics requires every present dimension of an entry to match"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::all quantifier semantics accepts an entry that has no present dimension"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::all quantifier semantics returns false when every entry is empty"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::all quantifier semantics returns false when a later entry fails"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run adds a label when matching any and all patterns are provided"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run does not add a label when not all any and all patterns are matched"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::combined any and all blocks requires both the any block and the all block to match"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting checks the base branch before changed files and the head branch"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting short-circuits an any entry as soon as a dimension matches"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting short-circuits an all entry as soon as a dimension fails"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting does not evaluate the head branch after the changed files dimension fails"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting stops evaluating an all block at the first failing entry"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::empty changed files in an all block fails an all entry with changed files before evaluating any file patterns"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::empty changed files in an all block fails an all block with an empty changed files list even when branch dimensions match"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::checkMatchConfigs when multiple MatchConfigs are supplied returns false when only one config matches"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::checkMatchConfigs when multiple MatchConfigs are supplied returns true when only both config matches"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns false for a file starting with dot if `dot` option is false"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true for a file starting with dot if `dot` option is true"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run (with dot: true) adds labels to PRs that match our glob patterns"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run (with dot: false) does not add labels to PRs that do not match our glob patterns"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::configuration normalization presence controls dotfile matching in an all block"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::getLabelConfigMapFromObject returns a MatchConfig"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::toMatchConfig when all expected config options are present and there are also unexpected options present does not include the unexpected items in the returned MatchConfig object"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::configuration normalization presence treats a dimension as absent when its configuration key is missing"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::configuration normalization presence keeps a dimension present when its configuration key has an empty pattern array"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::toMatchConfig when all expected config options are present returns a MatchConfig object with all options"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::configuration normalization presence combines base branch, changed files and head branch in one entry"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/branch.test.ts::toBranchMatchConfig when the config contains a head-branch option and the matching option is a string sets headBranch in the matchConfig"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/branch.test.ts::toBranchMatchConfig when the config contains both a base-branch and head-branch option sets headBranch and baseBranch in the matchConfig"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::configuration normalization presence normalizes branch string patterns to one element arrays"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config but the glob pattern config key is not provided throws the error"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config but the glob pattern config key is not valid throws the error"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config and the glob pattern config key is provided and the value is an array of strings sets the value in the config object"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config and the glob pattern config key is provided and the value is a string sets the string as an array in the config object"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/changedFiles.test.ts::checkAnyChangedFiles when any given glob pattern config matched returns true"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/changedFiles.test.ts::checkAllChangedFiles when all given glob pattern configs matched returns true"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::configuration normalization presence matches with each of the four changed files pattern modes"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true when our pattern does match changed files"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns false when our pattern does not match changed files"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run max-files-changed skips file-based labels when changed files exceed limit"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run max-files-changed still applies branch-based labels when max-files-changed is exceeded"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run max-files-changed preserves preexisting changed-files labels with sync-labels when max-files-changed is exceeded"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run changed-files-labels-limit skips changed-files labels when count exceeds limit"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run changed-files-labels-limit still applies branch-based labels when changed-files limit is exceeded"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run (with sync-labels: true) it deletes preexisting PR labels that no longer match the glob pattern"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run (with dot: false) adds labels to PRs that match our glob patterns"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::getLabelConfigResultFromObject extracts changed-files-labels-limit as a number"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::getLabelConfigResultFromObject extracts max-files-changed as a number"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/labeler.test.ts::configUsesChangedFiles returns true when config has changed-files in all block"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::missing branch context fails the head branch dimension without throwing"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::missing branch context fails the base branch dimension without throwing"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::missing branch context still matches the changed files dimension when branch context is missing"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run adds multiple labels based on branch names that match different regexp patterns"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run can support multiple branches by providing an array"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run does not lose a label added concurrently with matching labels"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/p2p-matching-regression.test.ts::preserved matching surface keeps both quantifiers, all dimensions and all pattern modes working together"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run max-files-changed applies labels when changed files count equals limit"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run changed-files-labels-limit applies labels when new count equals the limit"
+      },
+      {
+        "role": "P2P",
+        "selector": "__tests__/main.test.ts::run changed-files-labels-limit does not count preexisting labels toward the limit"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract drives both quantifiers through one shared production function"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract shares the any entry orchestration with all"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract shares the all entry orchestration with any"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates the base branch dimension through the shared function"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates the changed files dimension through the shared function"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates the head branch dimension through the shared function"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract shares an orchestration owner across every adapter and both quantifiers"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates all block dimensions in order through the shared function"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates any block dimensions in order through the shared function"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract enforces the empty changed files boundary through the shared function"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract short circuits an all block below the public entry point"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract short circuits an any block below the public entry point"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract automatically evaluates a newly registered dimension in any"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract automatically evaluates a newly registered dimension in all"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract extends any across entries without changing its shared driver"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract extends all across entries without changing its shared driver"
+      },
+      {
+        "role": "F2P",
+        "selector": "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract drives every configuration through the same shared function"
+      }
+    ],
+    "selector_timeout_seconds": 10080.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true when either the branch or changed files patter matches",
+          "__tests__/branch.test.ts::checkAnyBranch when multiple patterns are provided and at least one pattern matches returns true",
+          "__tests__/p2p-matching-regression.test.ts::any quantifier semantics returns false when no entry has a present dimension",
+          "__tests__/p2p-matching-regression.test.ts::any quantifier semantics returns false when every present dimension fails",
+          "__tests__/p2p-matching-regression.test.ts::any quantifier semantics matches when a later entry has a matching dimension",
+          "__tests__/main.test.ts::run does not add a label when the match config options are not supported",
+          "__tests__/branch.test.ts::checkAllBranch when multiple patterns are provided and not all patterns matched returns false"
+        ],
+        "timeout_seconds": 850.0
+      },
+      {
+        "id": "shard-002",
+        "selectors": [
+          "__tests__/p2p-matching-regression.test.ts::all quantifier semantics requires every present dimension of an entry to match",
+          "__tests__/p2p-matching-regression.test.ts::all quantifier semantics accepts an entry that has no present dimension",
+          "__tests__/p2p-matching-regression.test.ts::all quantifier semantics returns false when every entry is empty",
+          "__tests__/p2p-matching-regression.test.ts::all quantifier semantics returns false when a later entry fails",
+          "__tests__/main.test.ts::run adds a label when matching any and all patterns are provided",
+          "__tests__/main.test.ts::run does not add a label when not all any and all patterns are matched",
+          "__tests__/p2p-matching-regression.test.ts::combined any and all blocks requires both the any block and the all block to match"
+        ],
+        "timeout_seconds": 850.0
+      },
+      {
+        "id": "shard-003",
+        "selectors": [
+          "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting checks the base branch before changed files and the head branch",
+          "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting short-circuits an any entry as soon as a dimension matches",
+          "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting short-circuits an all entry as soon as a dimension fails",
+          "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting does not evaluate the head branch after the changed files dimension fails",
+          "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting stops evaluating an all block at the first failing entry",
+          "__tests__/p2p-matching-regression.test.ts::empty changed files in an all block fails an all entry with changed files before evaluating any file patterns",
+          "__tests__/p2p-matching-regression.test.ts::empty changed files in an all block fails an all block with an empty changed files list even when branch dimensions match"
+        ],
+        "timeout_seconds": 850.0
+      },
+      {
+        "id": "shard-004",
+        "selectors": [
+          "__tests__/labeler.test.ts::checkMatchConfigs when multiple MatchConfigs are supplied returns false when only one config matches",
+          "__tests__/labeler.test.ts::checkMatchConfigs when multiple MatchConfigs are supplied returns true when only both config matches",
+          "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns false for a file starting with dot if `dot` option is false",
+          "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true for a file starting with dot if `dot` option is true",
+          "__tests__/main.test.ts::run (with dot: true) adds labels to PRs that match our glob patterns",
+          "__tests__/main.test.ts::run (with dot: false) does not add labels to PRs that do not match our glob patterns",
+          "__tests__/p2p-matching-regression.test.ts::configuration normalization presence controls dotfile matching in an all block"
+        ],
+        "timeout_seconds": 850.0
+      },
+      {
+        "id": "shard-005",
+        "selectors": [
+          "__tests__/labeler.test.ts::getLabelConfigMapFromObject returns a MatchConfig",
+          "__tests__/labeler.test.ts::toMatchConfig when all expected config options are present and there are also unexpected options present does not include the unexpected items in the returned MatchConfig object",
+          "__tests__/p2p-matching-regression.test.ts::configuration normalization presence treats a dimension as absent when its configuration key is missing",
+          "__tests__/p2p-matching-regression.test.ts::configuration normalization presence keeps a dimension present when its configuration key has an empty pattern array",
+          "__tests__/labeler.test.ts::toMatchConfig when all expected config options are present returns a MatchConfig object with all options",
+          "__tests__/p2p-matching-regression.test.ts::configuration normalization presence combines base branch, changed files and head branch in one entry",
+          "__tests__/branch.test.ts::toBranchMatchConfig when the config contains a head-branch option and the matching option is a string sets headBranch in the matchConfig"
+        ],
+        "timeout_seconds": 850.0
+      },
+      {
+        "id": "shard-006",
+        "selectors": [
+          "__tests__/branch.test.ts::toBranchMatchConfig when the config contains both a base-branch and head-branch option sets headBranch and baseBranch in the matchConfig",
+          "__tests__/p2p-matching-regression.test.ts::configuration normalization presence normalizes branch string patterns to one element arrays",
+          "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config but the glob pattern config key is not provided throws the error",
+          "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config but the glob pattern config key is not valid throws the error",
+          "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config and the glob pattern config key is provided and the value is an array of strings sets the value in the config object",
+          "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config and the glob pattern config key is provided and the value is a string sets the string as an array in the config object",
+          "__tests__/changedFiles.test.ts::checkAnyChangedFiles when any given glob pattern config matched returns true"
+        ],
+        "timeout_seconds": 850.0
+      },
+      {
+        "id": "shard-007",
+        "selectors": [
+          "__tests__/changedFiles.test.ts::checkAllChangedFiles when all given glob pattern configs matched returns true",
+          "__tests__/p2p-matching-regression.test.ts::configuration normalization presence matches with each of the four changed files pattern modes",
+          "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true when our pattern does match changed files",
+          "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns false when our pattern does not match changed files",
+          "__tests__/main.test.ts::run max-files-changed skips file-based labels when changed files exceed limit",
+          "__tests__/main.test.ts::run max-files-changed still applies branch-based labels when max-files-changed is exceeded",
+          "__tests__/main.test.ts::run max-files-changed preserves preexisting changed-files labels with sync-labels when max-files-changed is exceeded"
+        ],
+        "timeout_seconds": 850.0
+      },
+      {
+        "id": "shard-008",
+        "selectors": [
+          "__tests__/main.test.ts::run changed-files-labels-limit skips changed-files labels when count exceeds limit",
+          "__tests__/main.test.ts::run changed-files-labels-limit still applies branch-based labels when changed-files limit is exceeded",
+          "__tests__/main.test.ts::run (with sync-labels: true) it deletes preexisting PR labels that no longer match the glob pattern",
+          "__tests__/main.test.ts::run (with dot: false) adds labels to PRs that match our glob patterns",
+          "__tests__/labeler.test.ts::getLabelConfigResultFromObject extracts changed-files-labels-limit as a number",
+          "__tests__/labeler.test.ts::getLabelConfigResultFromObject extracts max-files-changed as a number",
+          "__tests__/labeler.test.ts::configUsesChangedFiles returns true when config has changed-files in all block"
+        ],
+        "timeout_seconds": 850.0
+      },
+      {
+        "id": "shard-009",
+        "selectors": [
+          "__tests__/p2p-matching-regression.test.ts::missing branch context fails the head branch dimension without throwing",
+          "__tests__/p2p-matching-regression.test.ts::missing branch context fails the base branch dimension without throwing",
+          "__tests__/p2p-matching-regression.test.ts::missing branch context still matches the changed files dimension when branch context is missing",
+          "__tests__/main.test.ts::run adds multiple labels based on branch names that match different regexp patterns",
+          "__tests__/main.test.ts::run can support multiple branches by providing an array",
+          "__tests__/main.test.ts::run does not lose a label added concurrently with matching labels",
+          "__tests__/p2p-matching-regression.test.ts::preserved matching surface keeps both quantifiers, all dimensions and all pattern modes working together"
+        ],
+        "timeout_seconds": 850.0
+      },
+      {
+        "id": "shard-010",
+        "selectors": [
+          "__tests__/main.test.ts::run max-files-changed applies labels when changed files count equals limit",
+          "__tests__/main.test.ts::run changed-files-labels-limit applies labels when new count equals the limit",
+          "__tests__/main.test.ts::run changed-files-labels-limit does not count preexisting labels toward the limit",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract drives both quantifiers through one shared production function",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract shares the any entry orchestration with all",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract shares the all entry orchestration with any",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates the base branch dimension through the shared function"
+        ],
+        "timeout_seconds": 850.0
+      },
+      {
+        "id": "shard-011",
+        "selectors": [
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates the changed files dimension through the shared function",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates the head branch dimension through the shared function",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract shares an orchestration owner across every adapter and both quantifiers",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates all block dimensions in order through the shared function",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates any block dimensions in order through the shared function",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract enforces the empty changed files boundary through the shared function",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract short circuits an all block below the public entry point"
+        ],
+        "timeout_seconds": 850.0
+      },
+      {
+        "id": "shard-012",
+        "selectors": [
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract short circuits an any block below the public entry point",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract automatically evaluates a newly registered dimension in any",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract automatically evaluates a newly registered dimension in all",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract extends any across entries without changing its shared driver",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract extends all across entries without changing its shared driver",
+          "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract drives every configuration through the same shared function"
+        ],
+        "timeout_seconds": 730.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 43200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract drives both quantifiers through one shared production function",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract shares the any entry orchestration with all",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract shares the all entry orchestration with any",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates the base branch dimension through the shared function",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates the changed files dimension through the shared function",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates the head branch dimension through the shared function",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract shares an orchestration owner across every adapter and both quantifiers",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates all block dimensions in order through the shared function",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates any block dimensions in order through the shared function",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract enforces the empty changed files boundary through the shared function",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract short circuits an all block below the public entry point",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract short circuits an any block below the public entry point",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract automatically evaluates a newly registered dimension in any",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract automatically evaluates a newly registered dimension in all",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract extends any across entries without changing its shared driver",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract extends all across entries without changing its shared driver",
+    "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract drives every configuration through the same shared function"
+  ],
+  "gates": [
+    {
+      "id": "P2P-ANY-QUANTIFIER",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B1"
+      ],
+      "tests": [
+        "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true when either the branch or changed files patter matches",
+        "__tests__/branch.test.ts::checkAnyBranch when multiple patterns are provided and at least one pattern matches returns true",
+        "__tests__/p2p-matching-regression.test.ts::any quantifier semantics returns false when no entry has a present dimension",
+        "__tests__/p2p-matching-regression.test.ts::any quantifier semantics returns false when every present dimension fails",
+        "__tests__/p2p-matching-regression.test.ts::any quantifier semantics matches when a later entry has a matching dimension"
+      ]
+    },
+    {
+      "id": "P2P-ALL-QUANTIFIER",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B2"
+      ],
+      "tests": [
+        "__tests__/main.test.ts::run does not add a label when the match config options are not supported",
+        "__tests__/branch.test.ts::checkAllBranch when multiple patterns are provided and not all patterns matched returns false",
+        "__tests__/p2p-matching-regression.test.ts::all quantifier semantics requires every present dimension of an entry to match",
+        "__tests__/p2p-matching-regression.test.ts::all quantifier semantics accepts an entry that has no present dimension",
+        "__tests__/p2p-matching-regression.test.ts::all quantifier semantics returns false when every entry is empty",
+        "__tests__/p2p-matching-regression.test.ts::all quantifier semantics returns false when a later entry fails"
+      ]
+    },
+    {
+      "id": "P2P-ANY-AND-ALL-COMBINED",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B3"
+      ],
+      "tests": [
+        "__tests__/main.test.ts::run adds a label when matching any and all patterns are provided",
+        "__tests__/main.test.ts::run does not add a label when not all any and all patterns are matched",
+        "__tests__/p2p-matching-regression.test.ts::combined any and all blocks requires both the any block and the all block to match"
+      ]
+    },
+    {
+      "id": "P2P-DIMENSION-ORDER-AND-SHORT-CIRCUIT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B4",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting checks the base branch before changed files and the head branch",
+        "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting short-circuits an any entry as soon as a dimension matches",
+        "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting short-circuits an all entry as soon as a dimension fails",
+        "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting does not evaluate the head branch after the changed files dimension fails",
+        "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting stops evaluating an all block at the first failing entry"
+      ]
+    },
+    {
+      "id": "P2P-EMPTY-CHANGED-FILES-IN-ALL",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B5"
+      ],
+      "tests": [
+        "__tests__/p2p-matching-regression.test.ts::empty changed files in an all block fails an all entry with changed files before evaluating any file patterns",
+        "__tests__/p2p-matching-regression.test.ts::empty changed files in an all block fails an all block with an empty changed files list even when branch dimensions match"
+      ]
+    },
+    {
+      "id": "P2P-CONFIG-LIST",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B6"
+      ],
+      "tests": [
+        "__tests__/labeler.test.ts::checkMatchConfigs when multiple MatchConfigs are supplied returns false when only one config matches",
+        "__tests__/labeler.test.ts::checkMatchConfigs when multiple MatchConfigs are supplied returns true when only both config matches"
+      ]
+    },
+    {
+      "id": "P2P-DOT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B7"
+      ],
+      "tests": [
+        "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns false for a file starting with dot if `dot` option is false",
+        "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true for a file starting with dot if `dot` option is true",
+        "__tests__/main.test.ts::run (with dot: true) adds labels to PRs that match our glob patterns",
+        "__tests__/main.test.ts::run (with dot: false) does not add labels to PRs that do not match our glob patterns",
+        "__tests__/p2p-matching-regression.test.ts::configuration normalization presence controls dotfile matching in an all block"
+      ]
+    },
+    {
+      "id": "P2P-NORMALIZATION-AND-PRESENCE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B8",
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "__tests__/labeler.test.ts::getLabelConfigMapFromObject returns a MatchConfig",
+        "__tests__/labeler.test.ts::toMatchConfig when all expected config options are present and there are also unexpected options present does not include the unexpected items in the returned MatchConfig object",
+        "__tests__/p2p-matching-regression.test.ts::configuration normalization presence treats a dimension as absent when its configuration key is missing",
+        "__tests__/p2p-matching-regression.test.ts::configuration normalization presence keeps a dimension present when its configuration key has an empty pattern array"
+      ]
+    },
+    {
+      "id": "P2P-CONFIG-COMBINED-DIMENSIONS",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C1"
+      ],
+      "tests": [
+        "__tests__/labeler.test.ts::toMatchConfig when all expected config options are present returns a MatchConfig object with all options",
+        "__tests__/p2p-matching-regression.test.ts::configuration normalization presence combines base branch, changed files and head branch in one entry"
+      ]
+    },
+    {
+      "id": "P2P-BRANCH-NORMALIZATION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C2"
+      ],
+      "tests": [
+        "__tests__/branch.test.ts::toBranchMatchConfig when the config contains a head-branch option and the matching option is a string sets headBranch in the matchConfig",
+        "__tests__/branch.test.ts::toBranchMatchConfig when the config contains both a base-branch and head-branch option sets headBranch and baseBranch in the matchConfig",
+        "__tests__/p2p-matching-regression.test.ts::configuration normalization presence normalizes branch string patterns to one element arrays"
+      ]
+    },
+    {
+      "id": "P2P-CHANGED-FILES-MODES",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C3"
+      ],
+      "tests": [
+        "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config but the glob pattern config key is not provided throws the error",
+        "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config but the glob pattern config key is not valid throws the error",
+        "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config and the glob pattern config key is provided and the value is an array of strings sets the value in the config object",
+        "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config and the glob pattern config key is provided and the value is a string sets the string as an array in the config object",
+        "__tests__/changedFiles.test.ts::checkAnyChangedFiles when any given glob pattern config matched returns true",
+        "__tests__/changedFiles.test.ts::checkAllChangedFiles when all given glob pattern configs matched returns true",
+        "__tests__/p2p-matching-regression.test.ts::configuration normalization presence matches with each of the four changed files pattern modes"
+      ]
+    },
+    {
+      "id": "P2P-MATCH-ENTRY-POINT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:C4"
+      ],
+      "tests": [
+        "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true when our pattern does match changed files",
+        "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns false when our pattern does not match changed files"
+      ]
+    },
+    {
+      "id": "P2P-LIMITS-AND-OUTPUTS",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B9",
+        "REQ-BEH-T3:C5"
+      ],
+      "tests": [
+        "__tests__/main.test.ts::run max-files-changed skips file-based labels when changed files exceed limit",
+        "__tests__/main.test.ts::run max-files-changed still applies branch-based labels when max-files-changed is exceeded",
+        "__tests__/main.test.ts::run max-files-changed preserves preexisting changed-files labels with sync-labels when max-files-changed is exceeded",
+        "__tests__/main.test.ts::run changed-files-labels-limit skips changed-files labels when count exceeds limit",
+        "__tests__/main.test.ts::run changed-files-labels-limit still applies branch-based labels when changed-files limit is exceeded",
+        "__tests__/main.test.ts::run (with sync-labels: true) it deletes preexisting PR labels that no longer match the glob pattern",
+        "__tests__/main.test.ts::run (with dot: false) adds labels to PRs that match our glob patterns",
+        "__tests__/labeler.test.ts::getLabelConfigResultFromObject extracts changed-files-labels-limit as a number",
+        "__tests__/labeler.test.ts::getLabelConfigResultFromObject extracts max-files-changed as a number",
+        "__tests__/labeler.test.ts::configUsesChangedFiles returns true when config has changed-files in all block",
+        "__tests__/main.test.ts::run max-files-changed applies labels when changed files count equals limit",
+        "__tests__/main.test.ts::run changed-files-labels-limit applies labels when new count equals the limit",
+        "__tests__/main.test.ts::run changed-files-labels-limit does not count preexisting labels toward the limit"
+      ]
+    },
+    {
+      "id": "P2P-MISSING-BRANCH-CONTEXT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T3:B10"
+      ],
+      "tests": [
+        "__tests__/p2p-matching-regression.test.ts::missing branch context fails the head branch dimension without throwing",
+        "__tests__/p2p-matching-regression.test.ts::missing branch context fails the base branch dimension without throwing",
+        "__tests__/p2p-matching-regression.test.ts::missing branch context still matches the changed files dimension when branch context is missing"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-PUBLIC-BEHAVIOR",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-001",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "__tests__/main.test.ts::run adds multiple labels based on branch names that match different regexp patterns",
+        "__tests__/main.test.ts::run can support multiple branches by providing an array",
+        "__tests__/main.test.ts::run does not lose a label added concurrently with matching labels",
+        "__tests__/p2p-matching-regression.test.ts::preserved matching surface keeps both quantifiers, all dimensions and all pattern modes working together"
+      ]
+    },
+    {
+      "id": "F2P-SHARED-QUANTIFIER-CONTRACT-01",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract drives both quantifiers through one shared production function"
+      ]
+    },
+    {
+      "id": "F2P-SHARED-QUANTIFIER-CONTRACT-02",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract shares the any entry orchestration with all"
+      ]
+    },
+    {
+      "id": "F2P-SHARED-QUANTIFIER-CONTRACT-03",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract shares the all entry orchestration with any"
+      ]
+    },
+    {
+      "id": "F2P-SHARED-QUANTIFIER-CONTRACT-04",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates the base branch dimension through the shared function"
+      ]
+    },
+    {
+      "id": "F2P-SHARED-QUANTIFIER-CONTRACT-05",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates the changed files dimension through the shared function"
+      ]
+    },
+    {
+      "id": "F2P-SHARED-QUANTIFIER-CONTRACT-06",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates the head branch dimension through the shared function"
+      ]
+    },
+    {
+      "id": "F2P-SHARED-QUANTIFIER-CONTRACT-07",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract shares an orchestration owner across every adapter and both quantifiers"
+      ]
+    },
+    {
+      "id": "F2P-DIMENSION-ORDER-CONTRACT-01",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates all block dimensions in order through the shared function"
+      ]
+    },
+    {
+      "id": "F2P-DIMENSION-ORDER-CONTRACT-02",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract evaluates any block dimensions in order through the shared function"
+      ]
+    },
+    {
+      "id": "F2P-EMPTY-CHANGED-FILES-BOUNDARY",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T3:B5"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract enforces the empty changed files boundary through the shared function"
+      ]
+    },
+    {
+      "id": "F2P-QUANTIFIER-SHORT-CIRCUIT-01",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T3:B4"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract short circuits an all block below the public entry point"
+      ]
+    },
+    {
+      "id": "F2P-QUANTIFIER-SHORT-CIRCUIT-02",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T3:B4"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract short circuits an any block below the public entry point"
+      ]
+    },
+    {
+      "id": "F2P-DIMENSION-SET-EXTENSIBILITY-01",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract automatically evaluates a newly registered dimension in any"
+      ]
+    },
+    {
+      "id": "F2P-DIMENSION-SET-EXTENSIBILITY-02",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract automatically evaluates a newly registered dimension in all"
+      ]
+    },
+    {
+      "id": "F2P-DIMENSION-SET-EXTENSIBILITY-03",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract extends any across entries without changing its shared driver"
+      ]
+    },
+    {
+      "id": "F2P-DIMENSION-SET-EXTENSIBILITY-04",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract extends all across entries without changing its shared driver"
+      ]
+    },
+    {
+      "id": "F2P-DIMENSION-SET-EXTENSIBILITY-05",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "__tests__/f2p-dimension-contract.test.ts::F2P shared quantifier contract drives every configuration through the same shared function"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "ba5b52b76a4ee161f62e00a6ebd8bb2ad81d8bd21c0bb02fb2bbfda95071ce24",
+    "test_patch_sha256": "3165bfc771a8e28f7b6a3eb8089619f0a699e84a621963f86ca5357e115b6530"
+  },
+  "node_command": [
+    "node",
+    "__tests__/support/f2p-runner.cjs",
+    "--report",
+    "{report}",
+    "--selector",
+    "{selector}"
+  ],
+  "node_relations": [],
+  "node_timeout_seconds": 120,
+  "p2p": [
+    "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true when either the branch or changed files patter matches",
+    "__tests__/branch.test.ts::checkAnyBranch when multiple patterns are provided and at least one pattern matches returns true",
+    "__tests__/p2p-matching-regression.test.ts::any quantifier semantics returns false when no entry has a present dimension",
+    "__tests__/p2p-matching-regression.test.ts::any quantifier semantics returns false when every present dimension fails",
+    "__tests__/p2p-matching-regression.test.ts::any quantifier semantics matches when a later entry has a matching dimension",
+    "__tests__/main.test.ts::run does not add a label when the match config options are not supported",
+    "__tests__/branch.test.ts::checkAllBranch when multiple patterns are provided and not all patterns matched returns false",
+    "__tests__/p2p-matching-regression.test.ts::all quantifier semantics requires every present dimension of an entry to match",
+    "__tests__/p2p-matching-regression.test.ts::all quantifier semantics accepts an entry that has no present dimension",
+    "__tests__/p2p-matching-regression.test.ts::all quantifier semantics returns false when every entry is empty",
+    "__tests__/p2p-matching-regression.test.ts::all quantifier semantics returns false when a later entry fails",
+    "__tests__/main.test.ts::run adds a label when matching any and all patterns are provided",
+    "__tests__/main.test.ts::run does not add a label when not all any and all patterns are matched",
+    "__tests__/p2p-matching-regression.test.ts::combined any and all blocks requires both the any block and the all block to match",
+    "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting checks the base branch before changed files and the head branch",
+    "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting short-circuits an any entry as soon as a dimension matches",
+    "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting short-circuits an all entry as soon as a dimension fails",
+    "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting does not evaluate the head branch after the changed files dimension fails",
+    "__tests__/p2p-matching-regression.test.ts::dimension evaluation order and short-circuiting stops evaluating an all block at the first failing entry",
+    "__tests__/p2p-matching-regression.test.ts::empty changed files in an all block fails an all entry with changed files before evaluating any file patterns",
+    "__tests__/p2p-matching-regression.test.ts::empty changed files in an all block fails an all block with an empty changed files list even when branch dimensions match",
+    "__tests__/labeler.test.ts::checkMatchConfigs when multiple MatchConfigs are supplied returns false when only one config matches",
+    "__tests__/labeler.test.ts::checkMatchConfigs when multiple MatchConfigs are supplied returns true when only both config matches",
+    "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns false for a file starting with dot if `dot` option is false",
+    "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true for a file starting with dot if `dot` option is true",
+    "__tests__/main.test.ts::run (with dot: true) adds labels to PRs that match our glob patterns",
+    "__tests__/main.test.ts::run (with dot: false) does not add labels to PRs that do not match our glob patterns",
+    "__tests__/p2p-matching-regression.test.ts::configuration normalization presence controls dotfile matching in an all block",
+    "__tests__/labeler.test.ts::getLabelConfigMapFromObject returns a MatchConfig",
+    "__tests__/labeler.test.ts::toMatchConfig when all expected config options are present and there are also unexpected options present does not include the unexpected items in the returned MatchConfig object",
+    "__tests__/p2p-matching-regression.test.ts::configuration normalization presence treats a dimension as absent when its configuration key is missing",
+    "__tests__/p2p-matching-regression.test.ts::configuration normalization presence keeps a dimension present when its configuration key has an empty pattern array",
+    "__tests__/labeler.test.ts::toMatchConfig when all expected config options are present returns a MatchConfig object with all options",
+    "__tests__/p2p-matching-regression.test.ts::configuration normalization presence combines base branch, changed files and head branch in one entry",
+    "__tests__/branch.test.ts::toBranchMatchConfig when the config contains a head-branch option and the matching option is a string sets headBranch in the matchConfig",
+    "__tests__/branch.test.ts::toBranchMatchConfig when the config contains both a base-branch and head-branch option sets headBranch and baseBranch in the matchConfig",
+    "__tests__/p2p-matching-regression.test.ts::configuration normalization presence normalizes branch string patterns to one element arrays",
+    "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config but the glob pattern config key is not provided throws the error",
+    "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config but the glob pattern config key is not valid throws the error",
+    "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config and the glob pattern config key is provided and the value is an array of strings sets the value in the config object",
+    "__tests__/changedFiles.test.ts::toChangedFilesMatchConfig when there is a 'changed-files' key in the config and the glob pattern config key is provided and the value is a string sets the string as an array in the config object",
+    "__tests__/changedFiles.test.ts::checkAnyChangedFiles when any given glob pattern config matched returns true",
+    "__tests__/changedFiles.test.ts::checkAllChangedFiles when all given glob pattern configs matched returns true",
+    "__tests__/p2p-matching-regression.test.ts::configuration normalization presence matches with each of the four changed files pattern modes",
+    "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns true when our pattern does match changed files",
+    "__tests__/labeler.test.ts::checkMatchConfigs when a single match config is provided returns false when our pattern does not match changed files",
+    "__tests__/main.test.ts::run max-files-changed skips file-based labels when changed files exceed limit",
+    "__tests__/main.test.ts::run max-files-changed still applies branch-based labels when max-files-changed is exceeded",
+    "__tests__/main.test.ts::run max-files-changed preserves preexisting changed-files labels with sync-labels when max-files-changed is exceeded",
+    "__tests__/main.test.ts::run changed-files-labels-limit skips changed-files labels when count exceeds limit",
+    "__tests__/main.test.ts::run changed-files-labels-limit still applies branch-based labels when changed-files limit is exceeded",
+    "__tests__/main.test.ts::run (with sync-labels: true) it deletes preexisting PR labels that no longer match the glob pattern",
+    "__tests__/main.test.ts::run (with dot: false) adds labels to PRs that match our glob patterns",
+    "__tests__/labeler.test.ts::getLabelConfigResultFromObject extracts changed-files-labels-limit as a number",
+    "__tests__/labeler.test.ts::getLabelConfigResultFromObject extracts max-files-changed as a number",
+    "__tests__/labeler.test.ts::configUsesChangedFiles returns true when config has changed-files in all block",
+    "__tests__/p2p-matching-regression.test.ts::missing branch context fails the head branch dimension without throwing",
+    "__tests__/p2p-matching-regression.test.ts::missing branch context fails the base branch dimension without throwing",
+    "__tests__/p2p-matching-regression.test.ts::missing branch context still matches the changed files dimension when branch context is missing",
+    "__tests__/main.test.ts::run adds multiple labels based on branch names that match different regexp patterns",
+    "__tests__/main.test.ts::run can support multiple branches by providing an array",
+    "__tests__/main.test.ts::run does not lose a label added concurrently with matching labels",
+    "__tests__/p2p-matching-regression.test.ts::preserved matching surface keeps both quantifiers, all dimensions and all pattern modes working together",
+    "__tests__/main.test.ts::run max-files-changed applies labels when changed files count equals limit",
+    "__tests__/main.test.ts::run changed-files-labels-limit applies labels when new count equals the limit",
+    "__tests__/main.test.ts::run changed-files-labels-limit does not count preexisting labels toward the limit"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": false,
+  "restoration_paths": [
+    "__tests__/labeler.test.ts",
+    "__tests__/branch.test.ts",
+    "__tests__/changedFiles.test.ts",
+    "__tests__/main.test.ts",
+    "__tests__/fixtures/all_options.yml",
+    "__tests__/fixtures/any_and_all.yml",
+    "__tests__/fixtures/branches.yml",
+    "__tests__/fixtures/limit_0.yml",
+    "__tests__/fixtures/limit_1.yml",
+    "__tests__/fixtures/limit_2.yml",
+    "__tests__/fixtures/limit_3.yml",
+    "__tests__/fixtures/max_files_5.yml",
+    "__tests__/fixtures/max_files_with_branch.yml",
+    "__tests__/fixtures/mixed_labels.yml",
+    "__tests__/fixtures/mixed_rules.yml",
+    "__tests__/fixtures/not_supported.yml",
+    "__tests__/fixtures/only_pdfs.yml"
+  ],
+  "reward_mode": "VERIFIER_ONLY",
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "labeler-src-labeler-ts-bc5982b4",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "__tests__/p2p-matching-regression.test.ts",
+    "__tests__/support/p2p-runner.cjs",
+    "__tests__/f2p-dimension-contract.test.ts",
+    "__tests__/support/f2p-runner.cjs",
+    "__tests__/support/dimension-probe.ts"
+  ],
+  "timeout_seconds": 600,
+  "verifier": "/tests/verifier/verifier.py"
+}

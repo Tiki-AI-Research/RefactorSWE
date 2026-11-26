@@ -1,0 +1,472 @@
+diff --git a/pkg/graph/graph.go b/pkg/graph/graph.go
+index bff684c..6d0475b 100644
+--- a/pkg/graph/graph.go
++++ b/pkg/graph/graph.go
+@@ -183,169 +183,86 @@ func (g *graph) setSubgraphs(textSubgraphs []*textSubgraph) {
+ }
+ 
+ func (g *graph) createMapping() {
+-	// Set mapping coord for every node in the graph.
+-	// Keyed by level so it grows with the graph instead of assuming a fixed
+-	// number of levels; a missing key reads as the zero value.
+-	highestPositionPerLevel := map[int]int{}
++	state := newMappingState()
+ 
+ 	// TODO: should the mapping be bottom-to-top instead of top-to-bottom?
+-	// Set root nodes to level 0
+-	nodesFound := make(map[string]bool)
+-	rootNodes := []*node{}
+-	for _, n := range g.nodes {
+-		if _, ok := nodesFound[n.name]; !ok {
+-			rootNodes = append(rootNodes, n)
+-		}
+-		nodesFound[n.name] = true
+-		for _, child := range g.getChildren(n) {
+-			nodesFound[child.name] = true
+-		}
+-	}
+-
+-	// Check if we have a mix of external and subgraph root nodes with edges in subgraphs
+-	// This indicates we should separate them visually in LR layout
+-	hasExternalRoots := false
+-	hasSubgraphRootsWithEdges := false
+-	for _, n := range rootNodes {
+-		if g.isNodeInAnySubgraph(n) {
+-			// Check if this node or any node in its subgraph has children
+-			if len(g.getChildren(n)) > 0 {
+-				hasSubgraphRootsWithEdges = true
+-			}
+-		} else {
+-			hasExternalRoots = true
+-		}
+-	}
+-
+-	// Separate root nodes by whether they're in subgraphs, but only if we have both types
+-	// AND there are edges in subgraphs (indicating intentional layout structure)
+-	shouldSeparate := g.graphDirection == "LR" && hasExternalRoots && hasSubgraphRootsWithEdges
++	rootNodes := g.findRootNodes()
++	externalRootNodes, subgraphRootNodes, shouldSeparate := g.separateRoots(rootNodes)
++	g.reserveRootCoords(state, externalRootNodes, subgraphRootNodes, shouldSeparate)
++	g.reserveChildCoords(state)
++	g.sizeGridForNodes()
++	g.layoutFanouts()
++	g.finalizeEdges()
+ 
+-	externalRootNodes := []*node{}
+-	subgraphRootNodes := []*node{}
+-	if shouldSeparate {
+-		for _, n := range rootNodes {
+-			if g.isNodeInAnySubgraph(n) {
+-				subgraphRootNodes = append(subgraphRootNodes, n)
+-			} else {
+-				externalRootNodes = append(externalRootNodes, n)
+-			}
+-		}
+-	} else {
+-		// Treat all root nodes the same
+-		externalRootNodes = rootNodes
+-	}
++	// ! Last point before we manipulate the drawing !
++	log.Debug("Mapping complete, starting to draw")
+ 
+-	// Place external root nodes first at level 0
+-	for _, n := range externalRootNodes {
+-		var mappingCoord *gridCoord
+-		if g.graphDirection == "LR" {
+-			mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: 0, y: highestPositionPerLevel[0]})
+-		} else {
+-			mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: highestPositionPerLevel[0], y: 0})
+-		}
+-		log.Debugf("Setting mapping coord for external rootnode %s to %v", n.name, mappingCoord)
+-		g.nodes[n.index].gridCoord = mappingCoord
+-		highestPositionPerLevel[0] = highestPositionPerLevel[0] + 4
+-	}
+-
+-	// Place subgraph root nodes at level 4 (one level to the right/down of external nodes)
+-	// This creates visual separation between external nodes and subgraphs
+-	if shouldSeparate && len(subgraphRootNodes) > 0 {
+-		subgraphLevel := 4
+-		for _, n := range subgraphRootNodes {
+-			var mappingCoord *gridCoord
+-			if g.graphDirection == "LR" {
+-				mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: subgraphLevel, y: highestPositionPerLevel[subgraphLevel]})
+-			} else {
+-				mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: highestPositionPerLevel[subgraphLevel], y: subgraphLevel})
++	g.convertGridToDrawing()
++	var calculateBounds func(*subgraph)
++	calculateBounds = func(sg *subgraph) {
++		if len(sg.nodes) == 0 {
++			return
++		}
++
++		// Start with impossible bounds
++		minX := 1000000
++		minY := 1000000
++		maxX := -1000000
++		maxY := -1000000
++
++		// First, calculate bounding box for all child subgraphs
++		for _, child := range sg.children {
++			calculateBounds(child)
++			if len(child.nodes) > 0 {
++				minX = Min(minX, child.minX)
++				minY = Min(minY, child.minY)
++				maxX = Max(maxX, child.maxX)
++				maxY = Max(maxY, child.maxY)
+ 			}
+-			log.Debugf("Setting mapping coord for subgraph rootnode %s to %v", n.name, mappingCoord)
+-			g.nodes[n.index].gridCoord = mappingCoord
+-			highestPositionPerLevel[subgraphLevel] = highestPositionPerLevel[subgraphLevel] + 4
+ 		}
+-	}
+ 
+-	for _, n := range g.nodes {
+-		log.Debugf("Creating mapping for node %s at %v", n.name, n.gridCoord)
+-		var childLevel int
+-		// Next column is 4 coords further. This is because every node is 3 coords wide + 1 coord inbetween.
+-		if g.graphDirection == "LR" {
+-			childLevel = n.gridCoord.x + 4
+-		} else {
+-			childLevel = n.gridCoord.y + 4
+-		}
+-		highestPosition := highestPositionPerLevel[childLevel]
+-		for _, child := range g.getChildren(n) {
+-			// Skip if the child already has a mapping coord
+-			if child.gridCoord != nil {
++		// Then include all direct nodes
++		for _, node := range sg.nodes {
++			if node.drawingCoord == nil || node.drawing == nil {
+ 				continue
+ 			}
+ 
+-			var mappingCoord *gridCoord
+-			if anchor := g.mappedSubgraphSibling(child); anchor != nil {
+-				if g.graphDirection == "LR" {
+-					mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: childLevel, y: anchor.y})
+-				} else {
+-					mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: anchor.x, y: childLevel})
+-				}
+-			} else if g.graphDirection == "LR" {
+-				mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: childLevel, y: highestPosition})
+-			} else {
+-				mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: highestPosition, y: childLevel})
+-			}
+-			log.Debugf("Setting mapping coord for child %s of parent %s to %v", child.name, n.name, mappingCoord)
+-			g.nodes[child.index].gridCoord = mappingCoord
+-			position := highestPosition + 4
+-			if g.graphDirection == "LR" {
+-				position = Max(position, mappingCoord.y+4)
+-			} else {
+-				position = Max(position, mappingCoord.x+4)
+-			}
+-			highestPositionPerLevel[childLevel] = position
+-		}
+-	}
++			// Get the actual bounds of the node's drawing
++			nodeMinX := node.drawingCoord.x
++			nodeMinY := node.drawingCoord.y
++			nodeMaxX := nodeMinX + len(*node.drawing) - 1
++			nodeMaxY := nodeMinY + len((*node.drawing)[0]) - 1
+ 
+-	for _, n := range g.nodes {
+-		g.setColumnWidth(n)
+-	}
++			minX = Min(minX, nodeMinX)
++			minY = Min(minY, nodeMinY)
++			maxX = Max(maxX, nodeMaxX)
++			maxY = Max(maxY, nodeMaxY)
++		}
+ 
+-	g.layoutFanouts()
+-	for _, e := range g.edges {
+-		if e.fanout {
+-			continue
++		// Ensure the title fits inside the frame after padding is applied.
++		currentWidth := maxX - minX
++		currentInnerWidth := currentWidth + 3
++		if currentInnerWidth < sg.label.width {
++			extraWidth := sg.label.width - currentInnerWidth
++			minX -= extraWidth / 2
++			maxX += extraWidth - (extraWidth / 2)
+ 		}
+-		g.determinePath(e)
+-		g.increaseGridSizeForPath(e.path)
+-		g.determineLabelLine(e)
+-	}
+ 
+-	// ! Last point before we manipulate the drawing !
+-	log.Debug("Mapping complete, starting to draw")
++		// Add padding (allow negative coordinates, we'll offset later)
++		const subgraphPadding = 2
++		subgraphLabelSpace := sg.label.contentHeight() + 1
++		sg.minX = minX - subgraphPadding
++		sg.minY = minY - subgraphPadding - subgraphLabelSpace
++		sg.maxX = maxX + subgraphPadding
++		sg.maxY = maxY + subgraphPadding
+ 
+-	for _, n := range g.nodes {
+-		dc := g.gridToDrawingCoord(*n.gridCoord, nil)
+-		g.nodes[n.index].setCoord(&dc)
+-		g.nodes[n.index].setDrawing(*g)
++		log.Debugf("Subgraph %s bounding box: (%d,%d) to (%d,%d)", sg.name, sg.minX, sg.minY, sg.maxX, sg.maxY)
+ 	}
+-	g.setDrawingSizeToGridConstraints()
+-
+-	// Calculate subgraph bounding boxes after nodes are positioned
+-	g.calculateSubgraphBoundingBoxes()
+-
+-	// Offset everything if subgraphs have negative coordinates
+-	g.offsetDrawingForSubgraphs()
+-}
+-
+-func (g *graph) calculateSubgraphBoundingBoxes() {
+-	// Calculate bounding boxes for subgraphs
+-	// Process innermost subgraphs first (those with no children)
+-	for _, sg := range g.subgraphs {
+-		g.calculateSubgraphBoundingBox(sg)
++	for _, currentSubgraph := range g.subgraphs {
++		calculateBounds(currentSubgraph)
+ 	}
+-
+-	// Ensure minimum spacing between subgraphs
+ 	g.ensureSubgraphSpacing()
++	g.offsetDrawingForSubgraphs()
+ }
+ 
+ func (g *graph) isNodeInAnySubgraph(n *node) bool {
+@@ -494,66 +411,6 @@ func (g *graph) ensureSubgraphSpacing() {
+ 	}
+ }
+ 
+-func (g *graph) calculateSubgraphBoundingBox(sg *subgraph) {
+-	if len(sg.nodes) == 0 {
+-		return
+-	}
+-
+-	// Start with impossible bounds
+-	minX := 1000000
+-	minY := 1000000
+-	maxX := -1000000
+-	maxY := -1000000
+-
+-	// First, calculate bounding box for all child subgraphs
+-	for _, child := range sg.children {
+-		g.calculateSubgraphBoundingBox(child)
+-		if len(child.nodes) > 0 {
+-			minX = Min(minX, child.minX)
+-			minY = Min(minY, child.minY)
+-			maxX = Max(maxX, child.maxX)
+-			maxY = Max(maxY, child.maxY)
+-		}
+-	}
+-
+-	// Then include all direct nodes
+-	for _, node := range sg.nodes {
+-		if node.drawingCoord == nil || node.drawing == nil {
+-			continue
+-		}
+-
+-		// Get the actual bounds of the node's drawing
+-		nodeMinX := node.drawingCoord.x
+-		nodeMinY := node.drawingCoord.y
+-		nodeMaxX := nodeMinX + len(*node.drawing) - 1
+-		nodeMaxY := nodeMinY + len((*node.drawing)[0]) - 1
+-
+-		minX = Min(minX, nodeMinX)
+-		minY = Min(minY, nodeMinY)
+-		maxX = Max(maxX, nodeMaxX)
+-		maxY = Max(maxY, nodeMaxY)
+-	}
+-
+-	// Ensure the title fits inside the frame after padding is applied.
+-	currentWidth := maxX - minX
+-	currentInnerWidth := currentWidth + 3
+-	if currentInnerWidth < sg.label.width {
+-		extraWidth := sg.label.width - currentInnerWidth
+-		minX -= extraWidth / 2
+-		maxX += extraWidth - (extraWidth / 2)
+-	}
+-
+-	// Add padding (allow negative coordinates, we'll offset later)
+-	const subgraphPadding = 2
+-	subgraphLabelSpace := sg.label.contentHeight() + 1
+-	sg.minX = minX - subgraphPadding
+-	sg.minY = minY - subgraphPadding - subgraphLabelSpace
+-	sg.maxX = maxX + subgraphPadding
+-	sg.maxY = maxY + subgraphPadding
+-
+-	log.Debugf("Subgraph %s bounding box: (%d,%d) to (%d,%d)", sg.name, sg.minX, sg.minY, sg.maxX, sg.maxY)
+-}
+-
+ func (g *graph) offsetDrawingForSubgraphs() {
+ 	if len(g.subgraphs) == 0 {
+ 		return
+diff --git a/pkg/graph/mapping.go b/pkg/graph/mapping.go
+new file mode 100644
+index 0000000..5fc7f4d
+--- /dev/null
++++ b/pkg/graph/mapping.go
+@@ -0,0 +1,163 @@
++package graph
++
++import (
++	log "github.com/sirupsen/logrus"
++)
++
++// mappingState tracks the cursor state across mapping phases.
++type mappingState struct {
++	highestPositionPerLevel map[int]int
++}
++
++func newMappingState() *mappingState {
++	return &mappingState{
++		highestPositionPerLevel: make(map[int]int),
++	}
++}
++
++// findRootNodes identifies all root nodes in the graph in g.nodes order.
++func (g *graph) findRootNodes() []*node {
++	nodesFound := make(map[string]bool)
++	rootNodes := []*node{}
++	for _, n := range g.nodes {
++		if _, ok := nodesFound[n.name]; !ok {
++			rootNodes = append(rootNodes, n)
++		}
++		nodesFound[n.name] = true
++		for _, child := range g.getChildren(n) {
++			nodesFound[child.name] = true
++		}
++	}
++	return rootNodes
++}
++
++// separateRoots partitions root nodes into external and subgraph roots when
++// the LR layout mix condition holds.
++func (g *graph) separateRoots(rootNodes []*node) (externalRootNodes []*node, subgraphRootNodes []*node, shouldSeparate bool) {
++	hasExternalRoots := false
++	hasSubgraphRootsWithEdges := false
++	for _, n := range rootNodes {
++		if g.isNodeInAnySubgraph(n) {
++			if len(g.getChildren(n)) > 0 {
++				hasSubgraphRootsWithEdges = true
++			}
++		} else {
++			hasExternalRoots = true
++		}
++	}
++
++	shouldSeparate = g.graphDirection == "LR" && hasExternalRoots && hasSubgraphRootsWithEdges
++
++	if shouldSeparate {
++		for _, n := range rootNodes {
++			if g.isNodeInAnySubgraph(n) {
++				subgraphRootNodes = append(subgraphRootNodes, n)
++			} else {
++				externalRootNodes = append(externalRootNodes, n)
++			}
++		}
++	} else {
++		externalRootNodes = rootNodes
++	}
++	return externalRootNodes, subgraphRootNodes, shouldSeparate
++}
++
++// reserveRootCoords places external and subgraph root nodes into the grid.
++func (g *graph) reserveRootCoords(state *mappingState, externalRootNodes []*node, subgraphRootNodes []*node, shouldSeparate bool) {
++	for _, n := range externalRootNodes {
++		var mappingCoord *gridCoord
++		if g.graphDirection == "LR" {
++			mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: 0, y: state.highestPositionPerLevel[0]})
++		} else {
++			mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: state.highestPositionPerLevel[0], y: 0})
++		}
++		log.Debugf("Setting mapping coord for external rootnode %s to %v", n.name, mappingCoord)
++		g.nodes[n.index].gridCoord = mappingCoord
++		state.highestPositionPerLevel[0] = state.highestPositionPerLevel[0] + 4
++	}
++
++	if shouldSeparate && len(subgraphRootNodes) > 0 {
++		subgraphLevel := 4
++		for _, n := range subgraphRootNodes {
++			var mappingCoord *gridCoord
++			if g.graphDirection == "LR" {
++				mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: subgraphLevel, y: state.highestPositionPerLevel[subgraphLevel]})
++			} else {
++				mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: state.highestPositionPerLevel[subgraphLevel], y: subgraphLevel})
++			}
++			log.Debugf("Setting mapping coord for subgraph rootnode %s to %v", n.name, mappingCoord)
++			g.nodes[n.index].gridCoord = mappingCoord
++			state.highestPositionPerLevel[subgraphLevel] = state.highestPositionPerLevel[subgraphLevel] + 4
++		}
++	}
++}
++
++// reserveChildCoords iterates through nodes and reserves coordinates for their descendants.
++func (g *graph) reserveChildCoords(state *mappingState) {
++	for _, n := range g.nodes {
++		log.Debugf("Creating mapping for node %s at %v", n.name, n.gridCoord)
++		var childLevel int
++		if g.graphDirection == "LR" {
++			childLevel = n.gridCoord.x + 4
++		} else {
++			childLevel = n.gridCoord.y + 4
++		}
++		highestPosition := state.highestPositionPerLevel[childLevel]
++		for _, child := range g.getChildren(n) {
++			if child.gridCoord != nil {
++				continue
++			}
++
++			var mappingCoord *gridCoord
++			if anchor := g.mappedSubgraphSibling(child); anchor != nil {
++				if g.graphDirection == "LR" {
++					mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: childLevel, y: anchor.y})
++				} else {
++					mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: anchor.x, y: childLevel})
++				}
++			} else if g.graphDirection == "LR" {
++				mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: childLevel, y: highestPosition})
++			} else {
++				mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: highestPosition, y: childLevel})
++			}
++			log.Debugf("Setting mapping coord for child %s of parent %s to %v", child.name, n.name, mappingCoord)
++			g.nodes[child.index].gridCoord = mappingCoord
++			position := highestPosition + 4
++			if g.graphDirection == "LR" {
++				position = Max(position, mappingCoord.y+4)
++			} else {
++				position = Max(position, mappingCoord.x+4)
++			}
++			state.highestPositionPerLevel[childLevel] = position
++		}
++	}
++}
++
++// sizeGridForNodes computes column widths and row heights for all nodes.
++func (g *graph) sizeGridForNodes() {
++	for _, n := range g.nodes {
++		g.setColumnWidth(n)
++	}
++}
++
++// finalizeEdges routes non-fanout edges, determines grid sizing for paths, and finalizes label lines.
++func (g *graph) finalizeEdges() {
++	for _, e := range g.edges {
++		if e.fanout {
++			continue
++		}
++		g.determinePath(e)
++		g.increaseGridSizeForPath(e.path)
++		g.determineLabelLine(e)
++	}
++}
++
++// convertGridToDrawing converts node grid coordinates into drawing coordinates and sets up drawings.
++func (g *graph) convertGridToDrawing() {
++	for _, n := range g.nodes {
++		dc := g.gridToDrawingCoord(*n.gridCoord, nil)
++		g.nodes[n.index].setCoord(&dc)
++		g.nodes[n.index].setDrawing(*g)
++	}
++	g.setDrawingSizeToGridConstraints()
++}

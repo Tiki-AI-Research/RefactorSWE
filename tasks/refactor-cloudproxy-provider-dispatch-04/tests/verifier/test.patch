@@ -1,0 +1,843 @@
+diff --git a/tests/test_f2p_provider_model_ownership.py b/tests/test_f2p_provider_model_ownership.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6818046fd2a49ccc93a0dffd3cb0ee22e484e60c
+--- /dev/null
++++ b/tests/test_f2p_provider_model_ownership.py
+@@ -0,0 +1,408 @@
++"""Fail-to-pass tests: provider types own construction and configuration normalization.
++
++These tests pin the structural obligations of the provider-model refactor:
++
++* each provider type derives its own top-level defaults from the configuration it
++  receives, so region/AMI derivation is no longer duplicated in a shared branch
++  chain (REQ-STRUCT-002),
++* the factory selects the existing provider types without a shared chain of name
++  comparisons, and unknown names retain the generic fallback (REQ-STRUCT-001,
++  REQ-STRUCT-003),
++* constructing through the type leaves the caller-supplied configuration mapping
++  untouched (REQ-BEH-T4:B6).
++
++The frozen contract leaves internal module placement, dispatch mechanism and
++helper structure free (REQ-BEH-T4:C6), so every case drives the provider type
++through the type-owned construction entry actually used by the public factory,
++or the model's public validation entry when construction uses model validators.
++Construction helpers are discovered by behavior, never by their method name.
++While a type builds through its own entry, the shared
++name-dispatch factory is made unavailable, so an entry point that merely forwards
++the configuration back to the shared factory (which still holds the name-keyed
++derivation) fails the case.  The dispatch and listing cases observe that same
++factory from the outside instead and require it to preserve each type's own
++normalization. Runtime registration of new types is not a public requirement.
++No private helper name and no unique implementation shape is required; a
++baseline that keeps construction and normalization in the shared name-comparison
++chain fails every case with a real assertion failure.
++"""
++import ast
++import copy
++import inspect
++import sys
++from pathlib import Path
++
++from fastapi.testclient import TestClient
++from pydantic import ValidationError
++
++from cloudproxy import main as main_module
++from cloudproxy.main import (
++    AWSProvider,
++    BaseProvider,
++    DigitalOceanProvider,
++    GCPProvider,
++    HetznerProvider,
++    ProviderInstance,
++    ProviderScaling,
++    app,
++    get_provider_model,
++)
++from cloudproxy.providers import settings
++
++client = TestClient(app)
++
++def _instance(**overrides):
++    config = {
++        "enabled": True,
++        "ips": [],
++        "scaling": {"min_scaling": 1, "max_scaling": 3},
++    }
++    config.update(overrides)
++    return config
++
++
++def _type_construction_entry(model_type, provider_config):
++    """Discover the factory's type-owned builder without prescribing its name.
++
++    A type-owned builder may have any name (internal helpers are unrestricted).
++    Observe which type-owned helper returns the model, then exercise it directly
++    on the original raw configuration with the shared factory unavailable. Merely
++    observing a successful factory call does not establish type ownership.
++    """
++    entries = {}
++    for _name, entry in inspect.getmembers(model_type, callable):
++        code = getattr(getattr(entry, "__func__", entry), "__code__", None)
++        if code is not None:
++            entries[code] = entry
++    selected = None
++
++    def profile(frame, event, result):
++        nonlocal selected
++        if event == "return" and frame.f_code in entries and isinstance(result, model_type):
++            entry = entries[frame.f_code]
++            try:
++                inspect.signature(entry).bind(provider_config)
++            except TypeError:
++                return
++            # Outer builders return after their helpers, so prefer the entry
++            # nearest the public factory over nested implementation helpers.
++            selected = entry
++
++    name = next(name for name, candidate, _config in _factory_cases()
++                if candidate is model_type)
++    previous = sys.getprofile()
++    try:
++        sys.setprofile(profile)
++        get_provider_model(name, copy.deepcopy(provider_config))
++    finally:
++        sys.setprofile(previous)
++    return selected or model_type.model_validate
++
++
++def _shared_factory_unavailable(monkeypatch):
++    """Make the shared name-dispatch factory unreachable while a provider type builds.
++
++    The provider type must own its construction and default derivation.  An entry
++    point that forwards the caller's configuration back to the shared factory --
++    the module-level ``get_provider_model`` symbol or any module-level alias of
++    it -- therefore cannot build a model inside these cases.
++    """
++
++    def _forbidden_factory(*args, **kwargs):
++        raise AssertionError(
++            "building the provider type reached the shared name-dispatch factory "
++            "get_provider_model; the provider type must own its construction and "
++            "default derivation instead of forwarding the configuration to the "
++            "shared factory"
++        )
++
++    shared_factory = getattr(main_module, "get_provider_model", None)
++    monkeypatch.setattr(
++        main_module, "get_provider_model", _forbidden_factory, raising=False
++    )
++    for attribute, value in list(vars(main_module).items()):
++        if value is shared_factory and value is not _forbidden_factory:
++            monkeypatch.setattr(main_module, attribute, _forbidden_factory)
++
++
++def _build_via_type(model_type, provider_config, monkeypatch=None):
++    """Build ``model_type`` from ``provider_config`` through the type's own entry point."""
++    entry = model_type.model_validate
++    try:
++        entry = _type_construction_entry(model_type, provider_config)
++        if monkeypatch is not None:
++            _shared_factory_unavailable(monkeypatch)
++        return entry(provider_config)
++    except ValidationError as exc:
++        # These valid configurations must construct successfully. Report this
++        # contract mismatch as an assertion in every probe, not an unknown error.
++        raise AssertionError(
++            f"{model_type.__name__} did not own construction of its model from the "
++            f"configuration it receives: building through {getattr(entry, '__name__', entry)!r} "
++            f"failed with {type(exc).__name__}: {exc}"
++        ) from None
++
++
++def _factory_cases():
++    """Exercise supported names and the public fallback, not an invented registry API."""
++    for name, model_type in (
++        ("digitalocean", DigitalOceanProvider),
++        ("aws", AWSProvider),
++        ("gcp", GCPProvider),
++        ("hetzner", HetznerProvider),
++        ("f2p-unmodeled-provider", BaseProvider),
++    ):
++        config = {
++            "instances": {"default": _instance(region=f"{name}-region", ami="ami-f2p")}
++        }
++        if model_type is GCPProvider:
++            config.update(zone="f2p-zone", image_project="f2p-project", image_family="f2p-family")
++        yield name, model_type, config
++
++
++def _trace_factory_paths(cases):
++    """Observe executed production functions, including helpers in private modules.
++
++    A module-wide text search would reject unrelated lifecycle code or dead code.
++    Trace only factory probes, then inspect the executed branch lines per function.
++    No mapping, helper name, construction method, or registration API is assumed.
++    """
++    root = Path(main_module.__file__).resolve().parent.parent
++    paths = {}
++
++    def trace(frame, event, arg):
++        if event == "call":
++            filename = frame.f_code.co_filename
++            # Frozen or synthetic code objects (e.g. "<frozen abc>") are not
++            # source files; resolving them relative to the cwd misplaces them
++            # inside the repository.
++            if filename.startswith("<") or not Path(filename).is_file():
++                return None
++            source = Path(filename).resolve()
++            if not source.is_relative_to(root):
++                return None
++            relative = source.relative_to(root)
++            if any(part.startswith(".") or part in {"tests", "test"} for part in relative.parts):
++                return None
++        if event == "line":
++            paths.setdefault(frame.f_code, set()).add(frame.f_lineno)
++        return trace
++
++    previous = sys.gettrace()
++    try:
++        sys.settrace(trace)
++        for name, expected_type, config in cases:
++            result = get_provider_model(name, copy.deepcopy(config))
++            assert type(result) is expected_type
++    finally:
++        sys.settrace(previous)
++    assert paths, "the public factory did not execute observable production code"
++    return paths
++
++
++def _assert_no_central_name_chain(paths):
++    """Reject executed literal-name branch chains, not declarative dispatch tables.
++
++    Group conditions by their compared expression within each executed function.
++    Independent type-owned validators are therefore not conflated. Dict lookup,
++    subclass discovery, and helper-module placement remain unrestricted.
++    """
++    names = {"digitalocean", "aws", "gcp", "hetzner"}
++
++    def literals(node):
++        if isinstance(node, ast.Constant) and isinstance(node.value, str):
++            return {node.value} & names
++        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
++            return set().union(*(literals(item) for item in node.elts))
++        return set()
++
++    trees = {}
++    for code, executed in paths.items():
++        filename = code.co_filename
++        if filename not in trees:
++            trees[filename] = ast.parse(Path(filename).read_text(encoding="utf-8"))
++        comparisons = {}
++        for node in ast.walk(trees[filename]):
++            if not isinstance(node, (ast.If, ast.IfExp, ast.Match)) or node.lineno not in executed:
++                continue
++            if isinstance(node, ast.Match):
++                choices = [
++                    {part.value.value for part in ast.walk(case.pattern)
++                     if isinstance(part, ast.MatchValue)
++                     and isinstance(part.value, ast.Constant)
++                     and isinstance(part.value.value, str)} & names
++                    for case in node.cases
++                ]
++                key = ast.dump(node.subject)
++                comparisons.setdefault(key, []).extend(choice for choice in choices if choice)
++                continue
++            for condition in ast.walk(node.test):
++                if not isinstance(condition, ast.Compare):
++                    continue
++                operands = [condition.left, *condition.comparators]
++                for left, op, right in zip(operands, condition.ops, operands[1:]):
++                    if not isinstance(op, (ast.Eq, ast.NotEq, ast.Is, ast.IsNot, ast.In, ast.NotIn)):
++                        continue
++                    for value, expression in ((left, right), (right, left)):
++                        choice = literals(value)
++                        if choice and not literals(expression):
++                            comparisons.setdefault(ast.dump(expression), []).append(choice)
++        for choices in comparisons.values():
++            assert not (len(choices) > 1 and len(set().union(*choices)) > 1), (
++                f"central provider-name comparison chain in {Path(filename).name}:{code.co_name}; "
++                "provider selection must not retain shared literal-name branches"
++            )
++
++
++def test_f2p_digitalocean_type_build_derives_region_from_default_instance(monkeypatch):
++    provider_config = {"instances": {"default": _instance(region="nyc1")}}
++
++    provider = _build_via_type(DigitalOceanProvider, provider_config, monkeypatch)
++
++    assert isinstance(provider, DigitalOceanProvider)
++    assert provider.region == "nyc1"
++
++
++def test_f2p_aws_type_build_derives_region_from_default_instance(monkeypatch):
++    provider_config = {
++        "instances": {"default": _instance(region="us-east-1", ami="ami-12345")}
++    }
++
++    provider = _build_via_type(AWSProvider, provider_config, monkeypatch)
++
++    assert isinstance(provider, AWSProvider)
++    assert provider.region == "us-east-1"
++
++
++def test_f2p_aws_type_build_derives_ami_from_default_instance(monkeypatch):
++    provider_config = {
++        "instances": {"default": _instance(region="us-east-1", ami="ami-12345")}
++    }
++
++    provider = _build_via_type(AWSProvider, provider_config, monkeypatch)
++
++    assert isinstance(provider, AWSProvider)
++    assert provider.ami == "ami-12345"
++
++
++def test_f2p_type_build_exposes_derived_region_on_default_instance(monkeypatch):
++    provider_config = {"instances": {"default": _instance(region="nyc1")}}
++
++    provider = _build_via_type(DigitalOceanProvider, provider_config, monkeypatch)
++
++    default_instance = provider.instances["default"]
++    assert isinstance(default_instance, ProviderInstance)
++    assert default_instance.region == "nyc1"
++
++
++def test_f2p_aws_type_build_keeps_explicit_top_level_region_and_derives_ami(monkeypatch):
++    provider_config = {
++        "region": "eu-west-2",
++        "instances": {"default": _instance(region="us-east-1", ami="ami-instance")},
++    }
++
++    provider = _build_via_type(AWSProvider, provider_config, monkeypatch)
++
++    assert provider.region == "eu-west-2"
++    assert provider.ami == "ami-instance"
++
++
++def test_f2p_type_build_derives_from_the_default_instance_only(monkeypatch):
++    provider_config = {
++        "instances": {
++            "prod": _instance(region="ams3"),
++            "default": _instance(region="nyc1"),
++        }
++    }
++
++    provider = _build_via_type(DigitalOceanProvider, provider_config, monkeypatch)
++
++    assert provider.region == "nyc1"
++
++
++def test_f2p_type_build_does_not_add_derived_keys_to_caller_config(monkeypatch):
++    provider_config = {"instances": {"default": _instance(region="nyc1")}}
++    before = copy.deepcopy(provider_config)
++
++    provider = _build_via_type(DigitalOceanProvider, provider_config, monkeypatch)
++
++    assert provider.region == "nyc1"
++    assert provider_config == before
++
++
++def test_f2p_type_build_does_not_rewrite_nested_instance_config(monkeypatch):
++    scaling = ProviderScaling(min_scaling=1, max_scaling=3)
++    default_instance = _instance(region="nyc1", scaling=scaling)
++    provider_config = {"instances": {"default": default_instance}}
++
++    provider = _build_via_type(DigitalOceanProvider, provider_config, monkeypatch)
++
++    assert provider.region == "nyc1"
++    assert provider.instances["default"].scaling.max_scaling == 3
++    # The frozen factory may normalize a nested scaling model into a mapping.
++    # Preserve values without imposing a new nested-object identity contract.
++    observed = dict(provider_config["instances"]["default"])
++    observed_scaling = observed["scaling"]
++    observed["scaling"] = (observed_scaling.model_dump()
++                           if isinstance(observed_scaling, ProviderScaling)
++                           else dict(observed_scaling))
++    assert observed == _instance(region="nyc1", scaling={"min_scaling": 1, "max_scaling": 3})
++
++
++def test_f2p_type_build_normalizes_provider_scaling_model_instance(monkeypatch):
++    provider_config = {
++        "scaling": ProviderScaling(min_scaling=5, max_scaling=7),
++        "instances": {"default": _instance(region="nyc1")},
++    }
++
++    provider = _build_via_type(DigitalOceanProvider, provider_config, monkeypatch)
++
++    assert provider.region == "nyc1"
++    assert provider.scaling.min_scaling == 5
++    assert provider.scaling.max_scaling == 7
++
++
++def test_f2p_type_build_normalizes_scaling_mapping_on_provider_and_instances(monkeypatch):
++    provider_config = {
++        "scaling": {"min_scaling": 2, "max_scaling": 4},
++        "instances": {
++            "default": _instance(region="nyc1", scaling={"min_scaling": 1, "max_scaling": 3})
++        },
++    }
++
++    provider = _build_via_type(DigitalOceanProvider, provider_config, monkeypatch)
++
++    assert provider.scaling.min_scaling == 2
++    assert provider.scaling.max_scaling == 4
++    assert provider.instances["default"].scaling.min_scaling == 1
++
++
++def test_f2p_factory_has_no_central_provider_name_chain():
++    _assert_no_central_name_chain(_trace_factory_paths(_factory_cases()))
++
++
++def test_f2p_factory_preserves_type_owned_normalization():
++    for name, model_type, config in _factory_cases():
++        if model_type not in (DigitalOceanProvider, AWSProvider):
++            continue
++        direct = _build_via_type(model_type, copy.deepcopy(config))
++        provider = get_provider_model(name, copy.deepcopy(config))
++        assert type(provider) is model_type
++        assert provider.region == direct.region == f"{name}-region"
++        if model_type is AWSProvider:
++            assert provider.ami == direct.ami == "ami-f2p"
++
++
++def test_f2p_provider_listing_preserves_type_owned_normalization(monkeypatch):
++    cases = [(name, model_type, config) for name, model_type, config in _factory_cases()
++             if model_type in (DigitalOceanProvider, AWSProvider)]
++    monkeypatch.setitem(settings.config, "providers", {
++        name: copy.deepcopy(config) for name, _model_type, config in cases
++    })
++    response = client.get("/providers")
++    assert response.status_code == 200
++    payload = response.json()["providers"]
++    assert set(payload) == {name for name, _model_type, _config in cases}
++    for name, model_type, config in cases:
++        direct = _build_via_type(model_type, copy.deepcopy(config))
++        assert payload[name]["region"] == direct.region == f"{name}-region"
+diff --git a/tests/test_p2p_provider_model_regression.py b/tests/test_p2p_provider_model_regression.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8b137316c44c85a229fb33d455ee41ca4d84478b
+--- /dev/null
++++ b/tests/test_p2p_provider_model_regression.py
+@@ -0,0 +1,423 @@
++"""Supplemental pass-to-pass regression tests for provider-model construction.
++
++These tests pin the frozen public behavior of the provider-model factory
++``get_provider_model`` and of the provider model types it returns:
++
++* provider-specific backfill of region/ami from the default instance entry,
++* generic fallback for unmodeled provider names,
++* scaling normalization for model instances and min/max mappings,
++* immutability of the caller-supplied configuration mapping,
++* unchanged model validation expectations,
++* provider listing/retrieval payloads with secrets excluded.
++* provider listing resolution through the public factory call path.
++"""
++import copy
++import json
++from collections.abc import Mapping
++
++import pytest
++from fastapi.testclient import TestClient
++from pydantic import ValidationError
++
++from cloudproxy.main import (
++    AWSProvider,
++    BaseProvider,
++    DigitalOceanProvider,
++    GCPProvider,
++    HetznerProvider,
++    ProviderScaling,
++    app,
++    get_provider_model,
++)
++from cloudproxy.providers import settings
++
++client = TestClient(app)
++
++
++class _ReadOnlyMapping(Mapping):
++    """Mapping protocol only; dict-specific mutation/copy methods are absent."""
++
++    def __init__(self, values):
++        self._values = values
++
++    def __getitem__(self, key):
++        return self._values[key]
++
++    def __iter__(self):
++        return iter(self._values)
++
++    def __len__(self):
++        return len(self._values)
++
++
++def _instance_config(**overrides):
++    config = {
++        "enabled": True,
++        "ips": [],
++        "scaling": {"min_scaling": 1, "max_scaling": 3},
++    }
++    config.update(overrides)
++    return config
++
++
++def test_p2p_factory_public_entrypoint_on_cloudproxy_main():
++    """get_provider_model stays at cloudproxy.main and is callable by keyword."""
++    from cloudproxy import main as main_module
++
++    factory = getattr(main_module, "get_provider_model", None)
++    assert callable(factory)
++
++    provider = main_module.get_provider_model(
++        provider_name="digitalocean",
++        provider_config={"instances": {"default": _instance_config(region="nyc1")}},
++    )
++    assert isinstance(provider, DigitalOceanProvider)
++
++
++def test_p2p_aws_backfills_region_and_ami_from_default_instance():
++    """AWS region/ami are derived from the default instance when absent at top level."""
++    provider_config = {
++        "instances": {"default": _instance_config(region="us-east-1", ami="ami-12345")}
++    }
++
++    provider = get_provider_model("aws", provider_config)
++
++    assert isinstance(provider, AWSProvider)
++    assert provider.region == "us-east-1"
++    assert provider.ami == "ami-12345"
++    assert provider.instances["default"].region == "us-east-1"
++    assert provider.instances["default"].ami == "ami-12345"
++
++    # Equivalent nested mappings accepted by the existing factory must not
++    # disable default derivation simply because they are not concrete dicts.
++    from collections import UserDict
++    from types import MappingProxyType
++
++    expected = provider.model_dump()
++    for mapping_type in (UserDict, MappingProxyType, _ReadOnlyMapping):
++        for instances in (
++            mapping_type({"default": _instance_config(region="us-east-1", ami="ami-12345")}),
++            {"default": mapping_type(_instance_config(region="us-east-1", ami="ami-12345"))},
++        ):
++            try:
++                actual = get_provider_model("aws", {"instances": instances})
++            except (AttributeError, TypeError, ValidationError) as exc:
++                raise AssertionError(
++                    "nested mappings accepted by the existing factory must remain "
++                    f"supported, including mappings without dict.copy(): {exc}"
++                ) from None
++            assert isinstance(actual, AWSProvider)
++            assert actual.model_dump() == expected
++
++
++def test_p2p_digitalocean_backfills_region_from_default_instance():
++    """DigitalOcean region is derived from the default instance when absent at top level."""
++    provider_config = {"instances": {"default": _instance_config(region="nyc1")}}
++
++    provider = get_provider_model("digitalocean", provider_config)
++
++    assert isinstance(provider, DigitalOceanProvider)
++    assert provider.region == "nyc1"
++    assert provider.instances["default"].region == "nyc1"
++
++
++def test_p2p_explicit_top_level_values_win_over_default_instance():
++    """Backfill must not override values already present at the top level."""
++    aws_provider = get_provider_model(
++        "aws",
++        {
++            "region": "eu-west-2",
++            "ami": "ami-top-level",
++            "instances": {
++                "default": _instance_config(region="us-east-1", ami="ami-instance")
++            },
++        },
++    )
++    assert aws_provider.region == "eu-west-2"
++    assert aws_provider.ami == "ami-top-level"
++
++    do_provider = get_provider_model(
++        "digitalocean",
++        {
++            "region": "sfo3",
++            "instances": {"default": _instance_config(region="nyc1")},
++        },
++    )
++    assert do_provider.region == "sfo3"
++
++
++def test_p2p_construction_does_not_add_backfilled_keys_to_caller_config():
++    """The caller-supplied mapping must not gain backfilled top-level keys."""
++    aws_config = {"instances": {"default": _instance_config(region="us-east-1", ami="ami-12345")}}
++    aws_snapshot = copy.deepcopy(aws_config)
++
++    aws_provider = get_provider_model("aws", aws_config)
++
++    assert aws_provider.region == "us-east-1"
++    assert aws_provider.ami == "ami-12345"
++    assert "region" not in aws_config
++    assert "ami" not in aws_config
++    assert aws_config == aws_snapshot
++
++    do_config = {"instances": {"default": _instance_config(region="nyc1")}}
++    do_snapshot = copy.deepcopy(do_config)
++
++    do_provider = get_provider_model("digitalocean", do_config)
++
++    assert do_provider.region == "nyc1"
++    assert "region" not in do_config
++    assert do_config == do_snapshot
++
++
++def test_p2p_unmodeled_provider_names_fall_back_to_generic_base_provider():
++    """Unknown or unmodeled names must not raise and must use the generic model."""
++    provider_config = {
++        "instances": {"default": _instance_config(region="nyc1", ami="ami-1")}
++    }
++
++    for provider_name in ("azure", "vultr", "scaleway", "p2p-not-a-provider"):
++        provider = get_provider_model(provider_name, copy.deepcopy(provider_config))
++        assert type(provider) is BaseProvider
++        assert "default" in provider.instances
++
++
++def test_p2p_scaling_model_instances_are_normalized_on_provider_and_instances():
++    """Scaling supplied as ProviderScaling instances is exposed on provider and instances."""
++    provider_config = {
++        "region": "nyc1",
++        "scaling": ProviderScaling(min_scaling=4, max_scaling=6),
++        "instances": {
++            "default": _instance_config(
++                scaling=ProviderScaling(min_scaling=1, max_scaling=2)
++            )
++        },
++    }
++
++    provider = get_provider_model("digitalocean", provider_config)
++
++    assert provider.scaling.min_scaling == 4
++    assert provider.scaling.max_scaling == 6
++    assert provider.instances["default"].scaling.min_scaling == 1
++    assert provider.instances["default"].scaling.max_scaling == 2
++    _assert_scaling_revalidation_and_isolation()
++
++
++def test_p2p_scaling_mappings_are_exposed_on_provider_and_instances():
++    """Scaling supplied as min/max mappings is exposed on provider and instances."""
++    provider_config = {
++        "region": "nyc1",
++        "scaling": {"min_scaling": 5, "max_scaling": 7},
++        "instances": {
++            "default": _instance_config(scaling={"min_scaling": 2, "max_scaling": 3})
++        },
++    }
++
++    provider = get_provider_model("digitalocean", provider_config)
++
++    assert provider.scaling.min_scaling == 5
++    assert provider.scaling.max_scaling == 7
++    assert provider.instances["default"].scaling.min_scaling == 2
++    assert provider.instances["default"].scaling.max_scaling == 3
++
++
++def test_p2p_provider_model_validation_expectations_are_unchanged():
++    """Model field requirements and bounds stay unchanged."""
++    with pytest.raises(ValidationError):
++        DigitalOceanProvider()
++
++    with pytest.raises(ValidationError):
++        get_provider_model("digitalocean", {"instances": {"prod": _instance_config()}})
++
++    with pytest.raises(ValidationError):
++        GCPProvider(zone="us-central1-a", image_project="debian-cloud")
++
++    with pytest.raises(ValidationError):
++        GCPProvider(zone="us-central1-a", image_family="debian-10")
++
++    with pytest.raises(ValidationError):
++        GCPProvider(image_project="debian-cloud", image_family="debian-10")
++
++    gcp_provider = GCPProvider(
++        zone="us-central1-a", image_project="debian-cloud", image_family="debian-10"
++    )
++    assert gcp_provider.zone == "us-central1-a"
++    assert gcp_provider.image_project == "debian-cloud"
++    assert gcp_provider.image_family == "debian-10"
++
++    with pytest.raises(ValidationError):
++        ProviderScaling(min_scaling=-1, max_scaling=1)
++
++    with pytest.raises(ValidationError):
++        ProviderScaling(min_scaling=0, max_scaling=-1)
++
++    assert AWSProvider().spot is False
++    assert AWSProvider(spot=True).spot is True
++    assert isinstance(HetznerProvider(location="nbg1"), BaseProvider)
++
++    # Type-owned normalization must not change the original public constructors.
++    with pytest.raises(ValidationError):
++        DigitalOceanProvider(instances={"default": _instance_config(region="from-default")})
++    direct = AWSProvider(instances={"default": _instance_config(region="from-default", ami="ami-default")})
++    assert direct.region == "" and direct.ami == ""
++    explicit = AWSProvider(region="explicit", instances={"default": _instance_config(region="from-default", ami="ami-default")})
++    assert explicit.region == "explicit" and explicit.ami == ""
++    _assert_subclass_declaration_does_not_replace_existing_provider()
++
++    # An absent/empty instances mapping is valid; an explicitly malformed
++    # container must not be silently treated as an empty mapping instead.
++    for provider_name in ("digitalocean", "aws", "gcp", "hetzner", "p2p-unmodeled"):
++        fields = {"region": "p2p-region", "zone": "p2p-zone",
++                  "image_project": "p2p-project", "image_family": "p2p-family"}
++        assert not get_provider_model(provider_name, dict(fields)).instances
++        assert not get_provider_model(provider_name, dict(fields, instances={})).instances
++        for invalid_instances in (None, []):
++            with pytest.raises((AttributeError, TypeError, ValidationError)):
++                get_provider_model(provider_name, dict(fields, instances=invalid_instances))
++
++
++def test_p2p_providers_listing_covers_configured_providers_without_secrets(monkeypatch):
++    """Exercise secret exclusion with nonempty values, not ambient credentials."""
++    configured = copy.deepcopy(settings.config["providers"])
++    for name, provider_config in configured.items():
++        provider_config["secrets"] = {"token": f"p2p-provider-secret-{name}-sentinel"}
++        for instance_name, instance_config in provider_config.get("instances", {}).items():
++            instance_config["secrets"] = {
++                "token": f"p2p-instance-secret-{name}-{instance_name}-sentinel"
++            }
++    monkeypatch.setitem(settings.config, "providers", configured)
++
++    response = client.get("/providers")
++    assert response.status_code == 200
++
++    payload = response.json()
++    assert "metadata" in payload
++    assert "providers" in payload
++
++    configured = settings.config["providers"]
++    assert configured
++    for name, provider_config in configured.items():
++        assert name in payload["providers"]
++        provider_data = payload["providers"][name]
++        assert "secrets" not in provider_data
++        for secret_value in provider_config["secrets"].values():
++            assert secret_value not in json.dumps(payload)
++        for instance_name, instance_config in provider_config.get("instances", {}).items():
++            assert instance_name in provider_data["instances"]
++            assert "secrets" not in provider_data["instances"][instance_name]
++            for secret_value in (instance_config.get("secrets") or {}).values():
++                if secret_value:
++                    assert secret_value not in json.dumps(payload)
++
++
++def test_p2p_provider_retrieval_payload_fields_for_configured_provider(monkeypatch):
++    """GET /providers/{provider} preserves its exact success message and payload."""
++    for known in ("digitalocean", "aws"):
++        config = {
++            "enabled": True,
++            "ips": [],
++            "scaling": {"min_scaling": 1, "max_scaling": 3},
++            "size": "p2p-size",
++            "region": "p2p-region",
++            "instances": {"default": _instance_config(region="p2p-instance-region")},
++        }
++        monkeypatch.setitem(settings.config["providers"], known, config)
++        response = client.get(f"/providers/{known}")
++        assert response.status_code == 200
++
++        payload = response.json()
++        assert payload["message"] == f"Provider '{known}' configuration retrieved successfully"
++        assert "metadata" in payload
++        provider = payload["provider"]
++        assert set(provider) == {"enabled", "ips", "scaling", "size", "region"}
++        assert set(provider["scaling"]) == {"min_scaling", "max_scaling"}
++        assert isinstance(provider["ips"], list)
++        assert "instances" in payload
++        assert "default" in payload["instances"]
++
++
++def test_p2p_unknown_provider_retrieval_returns_404_with_exact_detail():
++    """Unknown provider retrieval returns 404 with the exact detail message."""
++    unknown = "p2p-unknown-provider"
++    assert unknown not in settings.config["providers"]
++
++    response = client.get(f"/providers/{unknown}")
++    assert response.status_code == 404
++    assert response.json()["detail"] == f"Provider '{unknown}' not found"
++
++def test_p2p_listing_route_resolves_models_through_public_factory_name():
++    """GET /providers must resolve configured providers through the public factory symbol."""
++    from unittest.mock import patch
++
++    from cloudproxy import main as main_module
++
++    with patch.object(main_module, "get_provider_model") as factory:
++        factory.side_effect = lambda name, config: BaseProvider(
++            enabled=True, ips=[], scaling={"min_scaling": 0, "max_scaling": 0}
++        )
++        response = client.get("/providers")
++
++    assert response.status_code == 200
++    payload = response.json()
++    configured = set(settings.config["providers"])
++    assert configured
++    assert configured <= set(payload["providers"])
++    resolved_through_factory = {call.args[0] for call in factory.call_args_list if call.args}
++    assert configured <= resolved_through_factory
++
++
++def _regression_factory_config():
++    return dict(region='region', zone='zone', image_project='project', image_family='family',
++                instances={'default': _instance_config(region='instance-region', ami='instance-ami')})
++
++
++def _assert_scaling_revalidation_and_isolation():
++    for name in ('aws', 'digitalocean', 'gcp', 'hetzner', 'p2p-unmodeled'):
++        for location in ('provider', 'instance'):
++            for field in ('min_scaling', 'max_scaling'):
++                data = _regression_factory_config()
++                invalid = ProviderScaling(min_scaling=1, max_scaling=3)
++                setattr(invalid, field, -1)
++                target = data if location == 'provider' else data['instances']['default']
++                target['scaling'] = invalid
++                with pytest.raises(ValidationError):
++                    get_provider_model(name, data)
++        data = _regression_factory_config()
++        top = ProviderScaling(min_scaling=1, max_scaling=3)
++        nested = ProviderScaling(min_scaling=2, max_scaling=4)
++        data['scaling'] = top; data['instances']['default']['scaling'] = nested
++        result = get_provider_model(name, data)
++        before = result.model_dump()
++        top.min_scaling = 6; top.max_scaling = 7
++        nested.min_scaling = 8; nested.max_scaling = 9
++        assert result.model_dump() == before, 'factory output must retain its scaling snapshot after input mutation'
++        result.scaling.min_scaling = 10; result.scaling.max_scaling = 11
++        result.instances['default'].scaling.min_scaling = 12
++        result.instances['default'].scaling.max_scaling = 13
++        assert (top.min_scaling, top.max_scaling, nested.min_scaling, nested.max_scaling) == (6, 7, 8, 9), 'output mutations must not change caller scaling objects'
++
++
++def _assert_subclass_declaration_does_not_replace_existing_provider():
++    # Registration side effects stay in a fresh process, never leaking to tests.
++    import json
++    import subprocess
++    import sys
++    script = '''import json
++from cloudproxy import main as m
++def observe():
++    try:
++        result=m.get_provider_model('aws', {'region':'region','ami':'ami','instances':{}})
++        return {'type':type(result).__name__,'value':result.model_dump()}
++    except Exception as exc:
++        return {'error':type(exc).__name__,'message':str(exc)}
++before=observe()
++class ExtendedAWS(m.AWSProvider):
++    deployment_label: str
++print('PROVIDER_SUBCLASS_RESULT='+json.dumps({'before':before,'after':observe()}))
++'''
++    result = subprocess.run([sys.executable, '-B', '-c', script], capture_output=True, text=True, timeout=30)
++    if result.returncode: raise RuntimeError('subclass observation process failed: '+result.stderr[-2000:])
++    receipts = [line for line in result.stdout.splitlines() if line.startswith('PROVIDER_SUBCLASS_RESULT=')]
++    if len(receipts) != 1: raise RuntimeError('missing unique subclass observation receipt')
++    observation = json.loads(receipts[0].split('=', 1)[1])
++    assert observation['before']['type'] == 'AWSProvider'
++    assert observation['after'] == observation['before'], 'declaring an unregistered subclass must not take over aws'

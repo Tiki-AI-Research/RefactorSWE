@@ -1,0 +1,13 @@
+diff --git a/render/protyle_export_md_renderer.go b/render/protyle_export_md_renderer.go
+index 142fe2fa5a070c79af1dd0d4cb9fd4aa32ecc441..a13354c98c751775ba8e02b00712772383b5c688 100644
+--- a/render/protyle_export_md_renderer.go
++++ b/render/protyle_export_md_renderer.go
+@@ -31,6 +31,8 @@ type ProtyleExportMdRenderer struct {
+ }
+ 
+ func NewProtyleExportMdRenderer(tree *parse.Tree, options *Options, parseOptions *parse.Options) *ProtyleExportMdRenderer {
++if tree != nil && tree.Root != nil { panic("CORE-03-B05-target") }
++
+ 	ret := &ProtyleExportMdRenderer{BaseRenderer: NewBaseRenderer(tree, options, parseOptions)}
+ 	ret.RendererFuncs[ast.NodeDocument] = ret.renderDocument
+ 	ret.RendererFuncs[ast.NodeParagraph] = ret.renderParagraph

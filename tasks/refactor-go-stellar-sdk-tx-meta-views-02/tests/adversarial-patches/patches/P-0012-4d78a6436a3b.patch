@@ -1,0 +1,666 @@
+diff --git a/ingest/ledger_transaction.go b/ingest/ledger_transaction.go
+--- a/ingest/ledger_transaction.go
++++ b/ingest/ledger_transaction.go
+@@ -86,79 +86,33 @@
+ func (t *LedgerTransaction) GetChanges() ([]Change, error) {
+ 	var changes []Change
+ 
+-	// Transaction meta
+-	switch t.UnsafeMeta.V {
+-	case 0:
++	if t.UnsafeMeta.V == 0 {
+ 		return changes, errors.New("TransactionMeta.V=0 not supported")
+-	case 1:
+-		v1Meta := t.UnsafeMeta.MustV1()
+-		// The var `txChanges` reflect the ledgerEntryChanges that are changed because of the transaction as a whole
+-		txChanges := t.getTransactionChanges(v1Meta.TxChanges)
+-		changes = append(changes, txChanges...)
+-
+-		// Ignore operations meta if txInternalError https://github.com/stellar/go-stellar-sdk/issues/2111
+-		if t.txInternalError() && t.LedgerVersion <= 12 {
+-			return changes, nil
+-		}
+-
+-		// These changes reflect the ledgerEntry changes that were caused by the operations in the transaction
+-		// Populate the operationInfo for these changes in the `Change` struct
+-
+-		operationMeta := v1Meta.Operations
+-		//	operationMeta is a list of lists.
+-		//	Each element in operationMeta is a list of ledgerEntryChanges
+-		//	caused by the operation at that index of the element
+-		for opIdx := range operationMeta {
+-			opChanges := t.operationChanges(operationsMetaV1(v1Meta.Operations), uint32(opIdx))
+-			changes = append(changes, opChanges...)
+-		}
+-	case 2, 3, 4:
+-		var (
+-			txBeforeChanges, txAfterChanges xdr.LedgerEntryChanges
+-			meta                            operationsMeta
+-		)
+-
+-		switch t.UnsafeMeta.V {
+-		case 2:
+-			v2Meta := t.UnsafeMeta.MustV2()
+-			txBeforeChanges = v2Meta.TxChangesBefore
+-			txAfterChanges = v2Meta.TxChangesAfter
+-			meta = operationsMetaV1(v2Meta.Operations)
+-		case 3:
+-			v3Meta := t.UnsafeMeta.MustV3()
+-			txBeforeChanges = v3Meta.TxChangesBefore
+-			txAfterChanges = v3Meta.TxChangesAfter
+-			meta = operationsMetaV1(v3Meta.Operations)
+-		case 4:
+-			v4Meta := t.UnsafeMeta.MustV4()
+-			txBeforeChanges = v4Meta.TxChangesBefore
+-			txAfterChanges = v4Meta.TxChangesAfter
+-			meta = operationsMetaV2(v4Meta.Operations)
+-		default:
+-			panic("Invalid meta version, expected 2, 3, or 4")
+-		}
+-
+-		txChangesBefore := t.getTransactionChanges(txBeforeChanges)
+-		changes = append(changes, txChangesBefore...)
+-
+-		// Ignore operations meta and txChangesAfter if txInternalError
+-		// https://github.com/stellar/go-stellar-sdk/issues/2111
+-		if t.txInternalError() && t.LedgerVersion <= 12 {
+-			return changes, nil
+-		}
+-
+-		//	operationMeta is a list of lists.
+-		//	Each element in operationMeta is a list of ledgerEntryChanges
+-		//	caused by the operation at that index of the element
+-		for opIdx := 0; opIdx < meta.len(); opIdx++ {
+-			opChanges := t.operationChanges(meta, uint32(opIdx))
+-			changes = append(changes, opChanges...)
+-		}
+-
+-		txChangesAfter := t.getTransactionChanges(txAfterChanges)
++	}
++
++	layout, err := t.UnsafeMeta.NewLayout()
++	if err != nil {
++		return changes, err
++	}
++
++	// Transaction-level changes before operations
++	txChangesBefore := t.getTransactionChanges(layout.LeadingTxChanges())
++	changes = append(changes, txChangesBefore...)
++
++	// Ignore operations meta and txChangesAfter if txInternalError
++	// https://github.com/stellar/go-stellar-sdk/issues/2111
++	if t.txInternalError() && t.LedgerVersion <= 12 {
++		return changes, nil
++	}
++
++	for opIdx := 0; opIdx < layout.OperationsLen(); opIdx++ {
++		opChanges := t.operationChangesFromLayout(layout, uint32(opIdx))
++		changes = append(changes, opChanges...)
++	}
++
++	if trailing, ok := layout.TrailingTxChanges(); ok {
++		txChangesAfter := t.getTransactionChanges(trailing)
+ 		changes = append(changes, txChangesAfter...)
+-	default:
+-		return changes, fmt.Errorf("unsupported TransactionMeta version: %v", t.UnsafeMeta.V)
+ 	}
+ 
+ 	return changes, nil
+@@ -185,53 +139,20 @@
+ 		return []Change{}, nil
+ 	}
+ 
+-	var meta operationsMeta
+-	switch t.UnsafeMeta.V {
+-	case 1:
+-		meta = operationsMetaV1(t.UnsafeMeta.MustV1().Operations)
+-	case 2:
+-		meta = operationsMetaV1(t.UnsafeMeta.MustV2().Operations)
+-	case 3:
+-		meta = operationsMetaV1(t.UnsafeMeta.MustV3().Operations)
+-	case 4:
+-		meta = operationsMetaV2(t.UnsafeMeta.MustV4().Operations)
+-	default:
+-		return []Change{}, fmt.Errorf("unsupported TransactionMeta version: %v", t.UnsafeMeta.V)
+-	}
+-	return t.operationChanges(meta, operationIndex), nil
+-}
+-
+-type operationsMeta interface {
+-	getChanges(op uint32) xdr.LedgerEntryChanges
+-	len() int
+-}
+-
+-type operationsMetaV1 []xdr.OperationMeta
+-
+-func (ops operationsMetaV1) getChanges(op uint32) xdr.LedgerEntryChanges {
+-	return ops[op].Changes
+-}
+-
+-func (ops operationsMetaV1) len() int {
+-	return len(ops)
+-}
+-
+-type operationsMetaV2 []xdr.OperationMetaV2
+-
+-func (ops operationsMetaV2) getChanges(op uint32) xdr.LedgerEntryChanges {
+-	return ops[op].Changes
+-}
+-
+-func (ops operationsMetaV2) len() int {
+-	return len(ops)
+-}
+-
+-func (t *LedgerTransaction) operationChanges(ops operationsMeta, index uint32) []Change {
+-	if int(index) >= ops.len() {
++	layout, err := t.UnsafeMeta.NewLayout()
++	if err != nil {
++		return []Change{}, err
++	}
++
++	return t.operationChangesFromLayout(layout, operationIndex), nil
++}
++
++func (t *LedgerTransaction) operationChangesFromLayout(layout xdr.TransactionMetaLayout, index uint32) []Change {
++	if int(index) >= layout.OperationsLen() {
+ 		return []Change{}
+ 	}
+ 
+-	changes := GetChangesFromLedgerEntryChanges(ops.getChanges(index))
++	changes := GetChangesFromLedgerEntryChanges(layout.OperationChanges(index))
+ 
+ 	for i := range changes {
+ 		changes[i].Reason = LedgerEntryChangeReasonOperation
+@@ -277,39 +198,13 @@
+ // It is preferred to use this function in horizon and rpc
+ func (t *LedgerTransaction) GetTransactionEvents() (TransactionEvents, error) {
+ 	txEvents := TransactionEvents{}
+-	switch t.UnsafeMeta.V {
+-	case 1, 2:
+-		return txEvents, nil
+-	case 3:
+-		// There wont be any events for classic operations in TxMetaV3
+-		if !t.IsSorobanTx() {
+-			return txEvents, nil
+-		}
+-		contractEvents, err := t.GetContractEvents()
+-		if err != nil {
+-			return txEvents, err
+-		}
+-		diagnosticEvents, err := t.GetDiagnosticEvents()
+-		if err != nil {
+-			return txEvents, err
+-		}
+-		// There  will only ever be 1 smart contract operation per tx.
+-		txEvents.OperationEvents = make([][]xdr.ContractEvent, 1)
+-		txEvents.OperationEvents[0] = contractEvents
+-		txEvents.DiagnosticEvents = diagnosticEvents
+-	case 4:
+-		txMeta := t.UnsafeMeta.MustV4()
+-		txEvents.TransactionEvents = txMeta.Events
+-		txEvents.DiagnosticEvents = txMeta.DiagnosticEvents
+-		txEvents.OperationEvents = make([][]xdr.ContractEvent, len(txMeta.Operations))
+-		for i, op := range txMeta.Operations {
+-			txEvents.OperationEvents[i] = op.Events
+-		}
+-	default:
+-		return txEvents, fmt.Errorf("unsupported TransactionMeta version: %v", t.UnsafeMeta.V)
+-	}
++	layout, err := t.UnsafeMeta.NewLayout()
++	if err != nil {
++		return txEvents, err
++	}
++	txEvents.TransactionEvents, txEvents.OperationEvents, txEvents.DiagnosticEvents =
++		layout.EventsForTransaction(t.IsSorobanTx)
+ 	return txEvents, nil
+-
+ }
+ 
+ func (t *LedgerTransaction) ID() int64 {
+@@ -327,6 +222,11 @@
+ 
+ func (t *LedgerTransaction) MaxFee() uint32 {
+ 	return t.Envelope.Fee()
++}
++
++// MetaGeneration returns the underlying TransactionMeta version.
++func (t *LedgerTransaction) MetaGeneration() int32 {
++	return t.UnsafeMeta.V
+ }
+ 
+ func (t *LedgerTransaction) FeeCharged() (int64, bool) {
+@@ -625,13 +525,12 @@
+ 	if !t.IsSorobanTx() {
+ 		return 0
+ 	}
+-	var txChangesAfter xdr.LedgerEntryChanges
+-	switch t.UnsafeMeta.V {
+-	case 3:
+-		txChangesAfter = t.UnsafeMeta.MustV3().TxChangesAfter
+-	case 4:
+-		txChangesAfter = t.UnsafeMeta.MustV4().TxChangesAfter
+-	default:
++	layout, err := t.UnsafeMeta.NewLayout()
++	if err != nil {
++		panic(fmt.Errorf("Invalid txMeta version: %d", t.UnsafeMeta.V))
++	}
++	txChangesAfter, ok := layout.FeeRefundTrailingChanges()
++	if !ok {
+ 		panic(fmt.Errorf("Invalid txMeta version: %d", t.UnsafeMeta.V))
+ 	}
+ 
+diff --git a/processors/token_transfer/contract_events.go b/processors/token_transfer/contract_events.go
+--- a/processors/token_transfer/contract_events.go
++++ b/processors/token_transfer/contract_events.go
+@@ -131,7 +131,7 @@
+ 	}
+ 
+ 	// Determine if this is V3 or V4 based on transaction meta version
+-	txMetaVersion := tx.UnsafeMeta.V
++	txMetaVersion := tx.MetaGeneration()
+ 
+ 	// First, try parsing as a standard SEP41 token contractEvent
+ 	var protoEvent *TokenTransferEvent
+diff --git a/processors/token_transfer/token_transfer_processor.go b/processors/token_transfer/token_transfer_processor.go
+--- a/processors/token_transfer/token_transfer_processor.go
++++ b/processors/token_transfer/token_transfer_processor.go
+@@ -231,18 +231,23 @@
+ 	}
+ 
+ 	// Check if operationEvents need to be fetched from unified events stream OR (operation + operationResult + ledgerEntryChanges)
+-	txMetaVersion := tx.UnsafeMeta.V
++	txMetaVersion := tx.MetaGeneration()
+ 	if p.readFromUnifiedEventsStream {
+ 		if txMetaVersion != 4 {
+ 			return txEvents, fmt.Errorf("invalid transaction metadata version for reading from unified events, expected: 4, found: %d", txMetaVersion)
+ 		}
+-		operationMetaV2 := tx.UnsafeMeta.MustV4().Operations
+-		for i := range operationMetaV2 {
+-			events, err := p.contractEventsFromOperation(tx, uint32(i))
+-			if err != nil {
+-				return TransactionEvents{}, fmt.Errorf("error reading operation events for operation: %v, txHash: %v, error:%w", i, tx.Hash.HexString(), err)
++		txMetaEvents, err := tx.GetTransactionEvents()
++		if err != nil {
++			return txEvents, err
++		}
++		for i, opEvents := range txMetaEvents.OperationEvents {
++			opIdx := uint32(i)
++			for _, contractEvent := range opEvents {
++				ev, err := p.parseEvent(tx, &opIdx, contractEvent)
++				if err == nil {
++					operationEvents = append(operationEvents, ev)
++				}
+ 			}
+-			operationEvents = append(operationEvents, events...)
+ 		}
+ 	} else {
+ 		operations := tx.Envelope.Operations()
+@@ -470,7 +475,7 @@
+ 
+ func (p *EventsProcessor) generateFeeEvents(tx ingest.LedgerTransaction) ([]*TokenTransferEvent, error) {
+ 	// Check if we need to read from unified events OR derive fees from ledgerEntryChanges + FeeCharged field
+-	txMetaVersion := tx.UnsafeMeta.V
++	txMetaVersion := tx.MetaGeneration()
+ 	if p.readFromUnifiedEventsStream {
+ 		// If processor is configured to read from unified events, then txMeta version MUST BE 4
+ 		if txMetaVersion != 4 {
+diff --git a/xdr/transaction_meta.go b/xdr/transaction_meta.go
+--- a/xdr/transaction_meta.go
++++ b/xdr/transaction_meta.go
+@@ -1,31 +1,11 @@
+ package xdr
+ 
+-import (
+-	"fmt"
+-)
+-
+ func (t *TransactionMeta) GetContractEventsForOperation(opIndex uint32) ([]ContractEvent, error) {
+-	switch t.V {
+-	case 1, 2:
+-		return nil, nil
+-	// For TxMetaV3, events appear in the TxMetaV3.SorobanMeta.Events, and we dont need to rely on opIndex
+-	case 3:
+-		sorobanMeta := t.MustV3().SorobanMeta
+-		if sorobanMeta == nil {
+-			return nil, nil
+-		}
+-		return sorobanMeta.Events, nil
+-	case 4:
+-		txMeta := t.MustV4()
+-		// For a failed transaction, txMeta.Operations slice will be nil.
+-		// This length check helps prevent an index out of range error and you dont have to explicitly check if it's a failed tx
+-		if len(txMeta.Operations) == 0 {
+-			return nil, nil
+-		}
+-		return txMeta.Operations[opIndex].Events, nil
+-	default:
+-		return nil, fmt.Errorf("unsupported TransactionMeta version: %v", t.V)
++	layout, err := t.NewLayout()
++	if err != nil {
++		return nil, err
+ 	}
++	return layout.ContractEventsForOperation(opIndex)
+ }
+ 
+ // GetDiagnosticEvents returns the diagnostic events as they appear in the TransactionMeta
+@@ -33,31 +13,19 @@
+ // it is possible that, for smart contract transactions, the list of generated diagnostic events MAY include contract events as well
+ // Users of this function (horizon, rpc, etc) should be careful not to double count diagnostic events and contract events in that case
+ func (t *TransactionMeta) GetDiagnosticEvents() ([]DiagnosticEvent, error) {
+-	switch t.V {
+-	case 1, 2:
+-		return nil, nil
+-	case 3:
+-		sorobanMeta := t.MustV3().SorobanMeta
+-		if sorobanMeta == nil {
+-			return nil, nil
+-		}
+-		return sorobanMeta.DiagnosticEvents, nil
+-	case 4:
+-		return t.MustV4().DiagnosticEvents, nil
+-	default:
+-		return nil, fmt.Errorf("unsupported TransactionMeta version: %v", t.V)
++	layout, err := t.NewLayout()
++	if err != nil {
++		return nil, err
+ 	}
++	return layout.DiagnosticEvents()
+ }
+ 
+ // GetTransactionEvents returns the xdr.transactionEvents present in the ledger.
+ // For TxMetaVersions < 4, they will be empty
+ func (t *TransactionMeta) GetTransactionEvents() ([]TransactionEvent, error) {
+-	switch t.V {
+-	case 1, 2, 3:
+-		return nil, nil
+-	case 4:
+-		return t.MustV4().Events, nil
+-	default:
+-		return nil, fmt.Errorf("unsupported TransactionMeta version: %v", t.V)
++	layout, err := t.NewLayout()
++	if err != nil {
++		return nil, err
+ 	}
++	return layout.TransactionEvents()
+ }
+diff --git a/xdr/transaction_meta_layout.go b/xdr/transaction_meta_layout.go
+new file mode 100644
+--- /dev/null
++++ b/xdr/transaction_meta_layout.go
+@@ -0,0 +1,276 @@
++package xdr
++
++import (
++	"fmt"
++)
++
++// TransactionMetaLayout provides a read-only consolidated view over decoded
++// TransactionMeta for supported generations (1, 2, 3, 4).
++// It encapsulates the differences in leading/trailing changes, operation changes,
++// events, and fee-refund trailing change sources.
++type TransactionMetaLayout interface {
++	// Generation returns the underlying metadata generation (1, 2, 3, or 4).
++	Generation() int32
++
++	// LeadingTxChanges returns transaction-level changes that occur before operations.
++	// For V1 this is TxChanges; for V2-V4 this is TxChangesBefore.
++	LeadingTxChanges() LedgerEntryChanges
++
++	// TrailingTxChanges returns transaction-level changes that occur after operations,
++	// and whether trailing transaction changes exist for this generation.
++	// For V1 this returns (nil, false); for V2-V4 this returns (TxChangesAfter, true).
++	TrailingTxChanges() (LedgerEntryChanges, bool)
++
++	// OperationsLen returns the number of recorded operations in metadata.
++	OperationsLen() int
++
++	// OperationChanges returns the LedgerEntryChanges for the given operation index.
++	// Note: index validity is the caller's responsibility or handled according to generation.
++	OperationChanges(opIndex uint32) LedgerEntryChanges
++
++	// ContractEventsForOperation returns contract events for the given operation index.
++	// For V1 and V2: returns (nil, nil).
++	// For V3: returns SorobanMeta.Events if SorobanMeta != nil, else nil.
++	// For V4: if Operations is empty, returns (nil, nil). Otherwise returns Operations[opIndex].Events.
++	// (Note: For V4 with non-empty Operations, opIndex out of bounds panics, matching baseline).
++	ContractEventsForOperation(opIndex uint32) ([]ContractEvent, error)
++
++	// DiagnosticEvents returns diagnostic events.
++	// For V1 and V2: returns (nil, nil).
++	// For V3: returns SorobanMeta.DiagnosticEvents if SorobanMeta != nil, else nil.
++	// For V4: returns DiagnosticEvents.
++	DiagnosticEvents() ([]DiagnosticEvent, error)
++
++	// TransactionEvents returns top-level transaction events.
++	// For V1, V2, V3: returns (nil, nil).
++	// For V4: returns Events.
++	TransactionEvents() ([]TransactionEvent, error)
++
++	// EventsForTransaction assembles transaction, operation and diagnostic events.
++	// Only V3 consults isSoroban; other generations do not inspect the envelope.
++	EventsForTransaction(isSoroban func() bool) ([]TransactionEvent, [][]ContractEvent, []DiagnosticEvent)
++
++	// FeeRefundTrailingChanges returns the trailing changes used for deriving
++	// Soroban resource fee refunds, along with a boolean indicating whether
++	// the generation provides a fee-refund trailing changes source (true for V3 and V4).
++	FeeRefundTrailingChanges() (LedgerEntryChanges, bool)
++}
++
++// NewLayout constructs a TransactionMetaLayout for the given TransactionMeta.
++// It returns an error with message "unsupported TransactionMeta version: %v" if the version is not supported.
++func (t TransactionMeta) NewLayout() (TransactionMetaLayout, error) {
++	switch t.V {
++	case 1:
++		return &metaLayoutV1{t: t}, nil
++	case 2:
++		return &metaLayoutV2{t: t}, nil
++	case 3:
++		return &metaLayoutV3{t: t}, nil
++	case 4:
++		return &metaLayoutV4{t: t}, nil
++	default:
++		return nil, fmt.Errorf("unsupported TransactionMeta version: %v", t.V)
++	}
++}
++
++type metaLayoutV1 struct {
++	t TransactionMeta
++}
++
++func (m *metaLayoutV1) Generation() int32 {
++	return 1
++}
++
++func (m *metaLayoutV1) LeadingTxChanges() LedgerEntryChanges {
++	return m.t.MustV1().TxChanges
++}
++
++func (m *metaLayoutV1) TrailingTxChanges() (LedgerEntryChanges, bool) {
++	return nil, false
++}
++
++func (m *metaLayoutV1) OperationsLen() int {
++	return len(m.t.MustV1().Operations)
++}
++
++func (m *metaLayoutV1) OperationChanges(opIndex uint32) LedgerEntryChanges {
++	return m.t.MustV1().Operations[opIndex].Changes
++}
++
++func (m *metaLayoutV1) ContractEventsForOperation(opIndex uint32) ([]ContractEvent, error) {
++	return nil, nil
++}
++
++func (m *metaLayoutV1) DiagnosticEvents() ([]DiagnosticEvent, error) {
++	return nil, nil
++}
++
++func (m *metaLayoutV1) TransactionEvents() ([]TransactionEvent, error) {
++	return nil, nil
++}
++
++func (m *metaLayoutV1) EventsForTransaction(isSoroban func() bool) ([]TransactionEvent, [][]ContractEvent, []DiagnosticEvent) {
++	return nil, nil, nil
++}
++
++func (m *metaLayoutV1) FeeRefundTrailingChanges() (LedgerEntryChanges, bool) {
++	return nil, false
++}
++
++type metaLayoutV2 struct {
++	t TransactionMeta
++}
++
++func (m *metaLayoutV2) Generation() int32 {
++	return 2
++}
++
++func (m *metaLayoutV2) LeadingTxChanges() LedgerEntryChanges {
++	return m.t.MustV2().TxChangesBefore
++}
++
++func (m *metaLayoutV2) TrailingTxChanges() (LedgerEntryChanges, bool) {
++	return m.t.MustV2().TxChangesAfter, true
++}
++
++func (m *metaLayoutV2) OperationsLen() int {
++	return len(m.t.MustV2().Operations)
++}
++
++func (m *metaLayoutV2) OperationChanges(opIndex uint32) LedgerEntryChanges {
++	return m.t.MustV2().Operations[opIndex].Changes
++}
++
++func (m *metaLayoutV2) ContractEventsForOperation(opIndex uint32) ([]ContractEvent, error) {
++	return nil, nil
++}
++
++func (m *metaLayoutV2) DiagnosticEvents() ([]DiagnosticEvent, error) {
++	return nil, nil
++}
++
++func (m *metaLayoutV2) TransactionEvents() ([]TransactionEvent, error) {
++	return nil, nil
++}
++
++func (m *metaLayoutV2) EventsForTransaction(isSoroban func() bool) ([]TransactionEvent, [][]ContractEvent, []DiagnosticEvent) {
++	return nil, nil, nil
++}
++
++func (m *metaLayoutV2) FeeRefundTrailingChanges() (LedgerEntryChanges, bool) {
++	return nil, false
++}
++
++type metaLayoutV3 struct {
++	t TransactionMeta
++}
++
++func (m *metaLayoutV3) Generation() int32 {
++	return 3
++}
++
++func (m *metaLayoutV3) LeadingTxChanges() LedgerEntryChanges {
++	return m.t.MustV3().TxChangesBefore
++}
++
++func (m *metaLayoutV3) TrailingTxChanges() (LedgerEntryChanges, bool) {
++	return m.t.MustV3().TxChangesAfter, true
++}
++
++func (m *metaLayoutV3) OperationsLen() int {
++	return len(m.t.MustV3().Operations)
++}
++
++func (m *metaLayoutV3) OperationChanges(opIndex uint32) LedgerEntryChanges {
++	return m.t.MustV3().Operations[opIndex].Changes
++}
++
++func (m *metaLayoutV3) ContractEventsForOperation(opIndex uint32) ([]ContractEvent, error) {
++	sorobanMeta := m.t.MustV3().SorobanMeta
++	if sorobanMeta == nil {
++		return nil, nil
++	}
++	return sorobanMeta.Events, nil
++}
++
++func (m *metaLayoutV3) DiagnosticEvents() ([]DiagnosticEvent, error) {
++	sorobanMeta := m.t.MustV3().SorobanMeta
++	if sorobanMeta == nil {
++		return nil, nil
++	}
++	return sorobanMeta.DiagnosticEvents, nil
++}
++
++func (m *metaLayoutV3) TransactionEvents() ([]TransactionEvent, error) {
++	return nil, nil
++}
++
++func (m *metaLayoutV3) EventsForTransaction(isSoroban func() bool) ([]TransactionEvent, [][]ContractEvent, []DiagnosticEvent) {
++	if !isSoroban() {
++		return nil, nil, nil
++	}
++	groups := make([][]ContractEvent, 1)
++	sorobanMeta := m.t.MustV3().SorobanMeta
++	if sorobanMeta == nil {
++		return nil, nil, nil
++	}
++	groups[0] = sorobanMeta.Events
++	return nil, groups, sorobanMeta.DiagnosticEvents
++}
++
++func (m *metaLayoutV3) FeeRefundTrailingChanges() (LedgerEntryChanges, bool) {
++	return m.t.MustV3().TxChangesAfter, true
++}
++
++type metaLayoutV4 struct {
++	t TransactionMeta
++}
++
++func (m *metaLayoutV4) Generation() int32 {
++	return 4
++}
++
++func (m *metaLayoutV4) LeadingTxChanges() LedgerEntryChanges {
++	return m.t.MustV4().TxChangesBefore
++}
++
++func (m *metaLayoutV4) TrailingTxChanges() (LedgerEntryChanges, bool) {
++	return m.t.MustV4().TxChangesAfter, true
++}
++
++func (m *metaLayoutV4) OperationsLen() int {
++	return len(m.t.MustV4().Operations)
++}
++
++func (m *metaLayoutV4) OperationChanges(opIndex uint32) LedgerEntryChanges {
++	return m.t.MustV4().Operations[opIndex].Changes
++}
++
++func (m *metaLayoutV4) ContractEventsForOperation(opIndex uint32) ([]ContractEvent, error) {
++	txMeta := m.t.MustV4()
++	if len(txMeta.Operations) == 0 {
++		return nil, nil
++	}
++	return txMeta.Operations[opIndex].Events, nil
++}
++
++func (m *metaLayoutV4) DiagnosticEvents() ([]DiagnosticEvent, error) {
++	return m.t.MustV4().DiagnosticEvents, nil
++}
++
++func (m *metaLayoutV4) TransactionEvents() ([]TransactionEvent, error) {
++	return m.t.MustV4().Events, nil
++}
++
++func (m *metaLayoutV4) EventsForTransaction(isSoroban func() bool) ([]TransactionEvent, [][]ContractEvent, []DiagnosticEvent) {
++	txMeta := m.t.MustV4()
++	groups := make([][]ContractEvent, len(txMeta.Operations))
++	for i, op := range txMeta.Operations {
++		groups[i] = op.Events
++	}
++	return txMeta.Events, groups, txMeta.DiagnosticEvents
++}
++
++func (m *metaLayoutV4) FeeRefundTrailingChanges() (LedgerEntryChanges, bool) {
++	return m.t.MustV4().TxChangesAfter, true
++}

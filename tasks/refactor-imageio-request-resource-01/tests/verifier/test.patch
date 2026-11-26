@@ -1,0 +1,1961 @@
+diff --git a/tests/case32_lifecycle_probe.py b/tests/case32_lifecycle_probe.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d1608b6ea546e362e77f99e19305dd7a3e6cc248
+--- /dev/null
++++ b/tests/case32_lifecycle_probe.py
+@@ -0,0 +1,156 @@
++"""Public-operation differential observations; no expected result copied from candidates."""
++import contextlib
++import importlib
++import io
++import json
++import os
++from pathlib import Path
++import sys
++import tempfile
++import urllib.request
++import zipfile
++from unittest.mock import patch
++
++sys.path.insert(0, os.getcwd())
++rm = importlib.import_module('imageio.core.request')
++Request = rm.Request
++REAL_BYTES = io.BytesIO
++payload = bytes(range(256)) * 3 + b'end'
++rows = {}
++
++def value(fn):
++    try:
++        x = fn()
++        return x.hex() if isinstance(x, bytes) else x
++    except Exception as e:
++        return {'error': type(e).__name__, 'message': str(e)}
++
++@contextlib.contextmanager
++def all_core_aliases(original, replacement):
++    with contextlib.ExitStack() as stack:
++        for modname, mod in list(sys.modules.items()):
++            if modname.startswith('imageio.core') and mod:
++                for key, obj in list(vars(mod).items()):
++                    if obj is original:
++                        stack.enter_context(patch.object(mod, key, replacement))
++        yield
++
++with tempfile.TemporaryDirectory() as td:
++    root = Path(td)
++    local = root/'read.bin'
++    local.write_bytes(payload)
++    zp = root/'read.zip'
++    with zipfile.ZipFile(zp, 'w') as z:
++        z.writestr('member.bin', payload)
++    for kind in ('bytes', 'memoryview', 'path', 'file_uri', 'zip', 'caller'):
++        for mode in ('ri', 'r?', 'rI'):
++            for via in ('handle', 'temporary'):
++                caller = REAL_BYTES(payload)
++                uri = {'bytes':payload, 'memoryview':memoryview(payload), 'path':local,
++                       'file_uri':'file://'+str(local), 'zip':str(zp)+'/member.bin', 'caller':caller}[kind]
++                r = Request(uri, mode, extension='.bin', label='audit')
++                o = {'kind':r._uri_type, 'mode':str(r.mode), 'extension':r.extension,
++                     'kwargs':r.kwargs, 'header':r.firstbytes.hex()}
++                handle = r.get_file()
++                o['reuse'] = r.get_file() is handle
++                if via == 'handle':
++                    o['chunks'] = [handle.read(7).hex(), handle.read().hex()]
++                else:
++                    temp = r.get_local_filename()
++                    o['contents'] = Path(temp).read_bytes().hex()
++                    o['was_local'] = temp == str(local)
++                o['finish'] = value(r.finish)
++                o['second_finish'] = value(r.finish)
++                o['result'] = value(r.get_result)
++                o['closed'] = handle.closed
++                o['caller_closed'] = caller.closed
++                if via == 'temporary':
++                    o['path_exists_after'] = Path(temp).exists()
++                rows[f'read/{kind}/{mode}/{via}'] = o
++                caller.close()
++    for kind in ('bytes', 'local', 'zip', 'caller'):
++        for via in ('handle', 'temporary'):
++            dest = root/f'write-{kind}-{via}.bin'
++            archive = root/f'write-{kind}-{via}.zip'
++            caller = REAL_BYTES()
++            uri = {'bytes':rm.RETURN_BYTES, 'local':dest, 'zip':str(archive)+'/member.bin', 'caller':caller}[kind]
++            r = Request(uri, 'wi')
++            if via == 'handle':
++                h = r.get_file(); h.write(payload[:30]); h.write(payload[30:])
++            else:
++                temp = r.get_local_filename(); Path(temp).write_bytes(payload)
++            o = {'finish':value(r.finish), 'second_finish':value(r.finish),
++                 'result':value(r.get_result), 'consumed_result':value(r.get_result), 'caller_closed':caller.closed}
++            if kind == 'local': o['contents'] = dest.read_bytes().hex()
++            if kind == 'zip':
++                with zipfile.ZipFile(archive) as z: o['contents'] = z.read('member.bin').hex()
++            if kind == 'caller': o['contents'] = caller.getvalue().hex()
++            if via == 'temporary': o['path_exists_after'] = Path(temp).exists()
++            rows[f'write/{kind}/{via}'] = o
++            caller.close()
++
++    # Two live requests of the same kind must not share mutable lifecycle state.
++    pair = [Request(rm.RETURN_BYTES, 'wi') for _ in range(2)]
++    pair[0].get_file().write(b'A'); pair[1].get_file().write(b'B')
++    pair[1].finish(); pair[0].finish()
++    rows['interleaved'] = [value(p.get_result) for p in pair]
++
++    # Failed allocation, followed by cleanup and a successful new opening.
++    for kind in ('bytes', 'zip'):
++        archive = root/f'fault-{kind}.zip'
++        uri = rm.RETURN_BYTES if kind == 'bytes' else str(archive)+'/member'
++        r = Request(uri, 'wi')
++        error = MemoryError('audit buffer allocation')
++        def fail_buffer(*args, **kwargs): raise error
++        with all_core_aliases(REAL_BYTES, fail_buffer), patch.object(io, 'BytesIO', fail_buffer):
++            o = {'open':value(r.get_file), 'finish':value(r.finish), 'second_finish':value(r.finish),
++                 'result':value(r.get_result), 'archive_exists':archive.exists()}
++        h = r.get_file(); h.write(b'retry'); o['retry_finish'] = value(r.finish)
++        o['retry_result'] = value(r.get_result)
++        if kind == 'zip':
++            with zipfile.ZipFile(archive) as z: o['retry_contents'] = z.read('member').hex()
++        rows['allocation/'+kind] = o
++
++    # The stream has opened, but creating its seekable wrapper fails. Keep a
++    # strong external reference so Python garbage collection cannot hide loss
++    # of the owner's explicit cleanup responsibility.
++    for kind in ('http', 'zip'):
++        acquired = []
++        def fail_wrapper(stream):
++            acquired.append(stream)
++            raise MemoryError('audit wrapper allocation')
++        remote = REAL_BYTES(payload)
++        r = Request('http://audit.invalid/file.bin' if kind == 'http' else str(zp)+'/member.bin', 'ri')
++        with all_core_aliases(rm.SeekableFileObject, fail_wrapper), patch.object(urllib.request.OpenerDirector, 'open', lambda *a, **k:remote):
++            o = {'open':value(r.get_file), 'opened_count':len(acquired),
++                 'closed_before_finish':[s.closed for s in acquired], 'finish':value(r.finish),
++                 'closed_after_finish':[s.closed for s in acquired]}
++        rows['wrapper/'+kind] = o
++        for stream in acquired: stream.close()
++        remote.close()
++
++    # Caller write-back failure must keep caller ownership and be retryable.
++    class Caller(REAL_BYTES):
++        fail = True
++        def write(self, data):
++            if self.fail: raise OSError('audit caller write')
++            return super().write(data)
++    caller = Caller(); r = Request(caller, 'wi'); temp = r.get_local_filename(); Path(temp).write_bytes(b'retry-data')
++    o = {'finish':value(r.finish), 'caller_closed':caller.closed, 'temp_after_failure':Path(temp).exists()}
++    caller.fail = False; o['retry_finish'] = value(r.finish); o['contents'] = caller.getvalue().hex()
++    o['temp_after_retry'] = Path(temp).exists(); caller.close(); rows['caller-write-error'] = o
++
++    for uri in ('ftp://audit.invalid/a.bin', 'ftps://audit.invalid/a.bin', '<video0>', '<screen>', '<clipboard>'):
++        r = Request(uri, 'ri')
++        o = {'kind':r._uri_type, 'handle_none':r.get_file() is None, 'finish':value(r.finish)}
++        rows['sentinel/'+uri] = o
++
++    # A real plugin round trip exercises its semantic query and write-back.
++    import imageio.v3 as iio
++    import numpy as np
++    pixels = np.arange(60, dtype=np.uint8).reshape(4,5,3)
++    encoded = iio.imwrite('<bytes>', pixels, extension='.png', plugin='pillow')
++    decoded = iio.imread(encoded, plugin='pillow')
++    rows['pillow-roundtrip'] = {'same':bool(np.array_equal(decoded,pixels)), 'shape':list(decoded.shape), 'dtype':str(decoded.dtype)}
++
++print(json.dumps(rows, sort_keys=True))
+diff --git a/tests/test_request_f2p_kind_delegation.py b/tests/test_request_f2p_kind_delegation.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..20e4a71a4f35b9b275aa512c8cd2606a6c2a03c4
+--- /dev/null
++++ b/tests/test_request_f2p_kind_delegation.py
+@@ -0,0 +1,187 @@
++"""Lifecycle behavior and independence from legacy numeric dispatch."""
++
++from contextlib import contextmanager
++from io import BytesIO
++from pathlib import Path
++import pytest
++from urllib.request import OpenerDirector
++from zipfile import ZipFile
++
++from imageio.core import Request
++from imageio.core.request import (
++    URI_BYTES,
++    URI_FILE,
++    URI_FILENAME,
++    URI_FTP,
++    URI_HTTP,
++    URI_ZIPPED,
++)
++
++
++PAYLOAD_A = b"f2p-delegation-alpha-0123456789"
++PAYLOAD_B = b"f2p-delegation-beta-9876543210"
++
++
++@contextmanager
++def _without_numeric_dispatch(monkeypatch):
++    original = Request.__getattribute__
++
++    def attribute(instance, name):
++        if name == "_uri_type":
++            return -987654321
++        return original(instance, name)
++
++    with monkeypatch.context() as scoped:
++        scoped.setattr(Request, "__getattribute__", attribute)
++        yield
++
++
++def _archive(path):
++    with ZipFile(path, "w") as archive:
++        archive.writestr("existing.bin", PAYLOAD_A)
++    return path
++
++
++def test_local_read_handle_without_numeric_dispatch(tmp_path, monkeypatch):
++    source = tmp_path / "source.bin"
++    source.write_bytes(PAYLOAD_A)
++    request = Request(str(source), "ri")
++    with _without_numeric_dispatch(monkeypatch):
++        handle = request.get_file()
++        assert handle is not None, "a local read request must return a file handle"
++        assert handle is request.get_file()
++        assert handle.read() == PAYLOAD_A
++        request.finish()
++    assert handle.closed
++
++
++def test_zip_write_handle_without_numeric_dispatch(tmp_path, monkeypatch):
++    archive = _archive(tmp_path / "target.zip")
++    request = Request(f"{archive}/new.bin", "wi")
++    with _without_numeric_dispatch(monkeypatch):
++        handle = request.get_file()
++        assert handle is not None, "a ZIP write request must return a file handle"
++        handle.write(PAYLOAD_B)
++        request.finish()
++    with ZipFile(archive) as result:
++        assert "new.bin" in result.namelist(), "finish() must write the requested ZIP member"
++        assert result.read("new.bin") == PAYLOAD_B
++        assert result.read("existing.bin") == PAYLOAD_A
++
++
++def test_local_filename_without_numeric_dispatch(tmp_path, monkeypatch):
++    source = tmp_path / "source.bin"
++    source.write_bytes(PAYLOAD_A)
++    request = Request(str(source), "ri")
++    with _without_numeric_dispatch(monkeypatch):
++        try:
++            local = request.get_local_filename()
++        except Exception as exc:
++            pytest.fail(f"local filename capability failed without numeric dispatch: {type(exc).__name__}: {exc}")
++        assert Path(local) == source
++        assert Path(local).read_bytes() == PAYLOAD_A
++        request.finish()
++    assert source.read_bytes() == PAYLOAD_A
++
++
++def test_temporary_read_without_numeric_dispatch(tmp_path, monkeypatch):
++    request = Request(PAYLOAD_A, "ri")
++    with _without_numeric_dispatch(monkeypatch):
++        assert request.get_file() is not None, "an in-memory read request must return a file handle"
++        local = Path(request.get_local_filename())
++        assert local.read_bytes() == PAYLOAD_A
++        request.finish()
++    assert not local.exists()
++
++
++def test_return_bytes_write_without_numeric_dispatch(tmp_path, monkeypatch):
++    request = Request("<bytes>", "wi")
++    with _without_numeric_dispatch(monkeypatch):
++        handle = request.get_file()
++        assert handle is not None, "a return-bytes write request must return a file handle"
++        handle.write(PAYLOAD_B)
++        request.finish()
++        assert request.get_result() == PAYLOAD_B
++
++
++def test_zip_temporary_write_without_numeric_dispatch(tmp_path, monkeypatch):
++    archive = _archive(tmp_path / "target.zip")
++    request = Request(f"{archive}/new.bin", "wi")
++    with _without_numeric_dispatch(monkeypatch):
++        local = Path(request.get_local_filename())
++        local.write_bytes(PAYLOAD_B)
++        request.finish()
++    assert not local.exists()
++    with ZipFile(archive) as result:
++        assert "new.bin" in result.namelist(), "finish() must write the requested ZIP member"
++        assert result.read("new.bin") == PAYLOAD_B
++        assert result.read("existing.bin") == PAYLOAD_A
++
++
++def test_caller_file_temporary_write_without_numeric_dispatch(monkeypatch):
++    target = BytesIO()
++    request = Request(target, "wi")
++    with _without_numeric_dispatch(monkeypatch):
++        local = Path(request.get_local_filename())
++        local.write_bytes(PAYLOAD_B)
++        request.finish()
++    assert not local.exists()
++    assert not target.closed
++    assert target.getvalue() == PAYLOAD_B
++
++
++def test_legacy_classification_stays_readable_after_finish(tmp_path, monkeypatch):
++    source = tmp_path / "source.bin"
++    source.write_bytes(PAYLOAD_A)
++    archive = _archive(tmp_path / "source.zip")
++    caller = BytesIO(PAYLOAD_A)
++    cases = (
++        (PAYLOAD_A, URI_BYTES),
++        (str(source), URI_FILENAME),
++        (f"{archive}/existing.bin", URI_ZIPPED),
++        (caller, URI_FILE),
++        ("http://example.invalid/one.png", URI_HTTP),
++        ("ftp://example.invalid/one.png", URI_FTP),
++    )
++    for uri, expected_kind in cases:
++        request = Request(uri, "ri")
++        assert request._uri_type == expected_kind
++        with _without_numeric_dispatch(monkeypatch):
++            request.finish()
++        assert request._uri_type == expected_kind
++    assert not caller.closed
++
++
++def test_owned_handle_closes_without_numeric_dispatch(tmp_path, monkeypatch):
++    source = tmp_path / "source.bin"
++    source.write_bytes(PAYLOAD_A)
++    request = Request(str(source), "ri")
++    with _without_numeric_dispatch(monkeypatch):
++        handle = request.get_file()
++        assert handle is not None, "an owned local resource must return a file handle"
++        assert not handle.closed
++        assert request.finish() is None
++    assert handle.closed
++
++
++def test_resource_kinds_work_without_numeric_dispatch(tmp_path, monkeypatch):
++    source = tmp_path / "source.bin"
++    source.write_bytes(PAYLOAD_A)
++    archive = _archive(tmp_path / "source.zip")
++    caller = BytesIO(PAYLOAD_A)
++    monkeypatch.setattr(OpenerDirector, "open", lambda *args, **kwargs: BytesIO(PAYLOAD_A))
++    cases = (
++        (PAYLOAD_A, PAYLOAD_A),
++        (str(source), PAYLOAD_A),
++        (f"{archive}/existing.bin", PAYLOAD_A),
++        (caller, PAYLOAD_A),
++        ("http://example.invalid/one.png", PAYLOAD_A),
++        ("ftp://example.invalid/one.png", None),
++    )
++    for uri, expected in cases:
++        request = Request(uri, "ri")
++        with _without_numeric_dispatch(monkeypatch):
++            handle = request.get_file()
++            assert (None if handle is None else handle.read()) == expected
++            request.finish()
++    assert not caller.closed
+diff --git a/tests/test_request_f2p_semantic_queries.py b/tests/test_request_f2p_semantic_queries.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0a5efa23901101f8e1c518bbda462081ee4374c7
+--- /dev/null
++++ b/tests/test_request_f2p_semantic_queries.py
+@@ -0,0 +1,535 @@
++"""F2P tests for the semantic resource-kind queries of ``imageio.core.Request``.
++
++The frozen obligation behind these tests is the responsibility move: the
++request must delegate opening, temporary-file creation, write-back and closing
++to per-kind resource objects and expose *semantic, documented queries* about
++the resource kind, so that plugins no longer have to read the private numeric
++kind (``_uri_type``) or hard-code its numeric values.
++
++The tests discover the query surface dynamically from the public attributes of
++``Request`` instances: a "kind query" is a public (non-underscore) attribute
++that is not part of the preserved request surface and yields, as a value or
++a documented no-argument method, a stable result for the same kind across
++distinct URIs.  The discovered queries must separate all supported input
++classes; the tests then pin the plugin-facing contract (public, read-only,
++reliable), the mode and consumer splits, the shipped type declarations and the
++unchanged error priority.  The per-kind resource objects that own opening,
++temporary-file creation, write-back and closing are pinned separately in
++``tests/test_request_f2p_kind_delegation.py``.  Every check runs
++offline and only uses temporary files created under ``tmp_path``.
++"""
++
++import ast
++import builtins
++import enum
++import inspect
++import itertools
++import tempfile
++import zipfile
++from io import BytesIO
++from pathlib import Path
++from urllib.request import OpenerDirector
++
++import imageio.core.request as request_module
++from imageio.core import Request
++from imageio.core.imopen import imopen
++
++PAYLOAD_A = b"f2p-payload-alpha-0123456789"
++PAYLOAD_B = b"f2p-payload-beta-9876543210"
++PAYLOAD_C = b"f2p-payload-gamma-1122334455"
++
++DIRECTORY_ERROR = (
++    "ImageIO does not generally support reading folders. "
++    "Limited support may be available via specific plugins. "
++    "Specify the plugin explicitly using the `plugin` kwarg, e.g. `plugin='DICOM'`"
++)
++
++#: Documented public surface of ``Request`` that the frozen contract preserves.
++#: These names are not resource-kind queries: ``raw_uri`` / ``filename`` /
++#: ``extension`` / ``format_hint`` / ``mode`` / ``kwargs`` / ``firstbytes``
++#: carry per-instance values and the methods open or close the resource.
++PRESERVED_PUBLIC = frozenset(
++    {
++        "raw_uri",
++        "filename",
++        "extension",
++        "format_hint",
++        "mode",
++        "kwargs",
++        "firstbytes",
++        "get_file",
++        "get_local_filename",
++        "finish",
++        "get_result",
++    }
++)
++
++def _write_file(path, payload):
++    path.write_bytes(payload)
++    return str(path)
++
++
++def _make_zip(path, member, payload):
++    with zipfile.ZipFile(path, "w") as archive:
++        archive.writestr(member, payload)
++    return str(path)
++
++
++def _build_families(root):
++    """Build at least two distinct read requests for every input class."""
++    file_a = root / "alpha.bin"
++    file_b = root / "beta.bin"
++    _write_file(file_a, PAYLOAD_A)
++    _write_file(file_b, PAYLOAD_B)
++
++    zip_a = _make_zip(root / "first.zip", "member.bin", PAYLOAD_A)
++    zip_b = _make_zip(root / "second.zip", "member.bin", PAYLOAD_B)
++
++    return {
++        "bytes": [
++            Request(PAYLOAD_A, "ri"),
++            Request(PAYLOAD_B, "ri"),
++            Request(memoryview(PAYLOAD_C), "ri"),
++        ],
++        "file_object": [
++            Request(file_a.open("rb"), "ri"),
++            Request(file_b.open("rb"), "ri"),
++        ],
++        "local_path": [
++            Request(str(file_a), "ri"),
++            Request(Path(file_b), "ri"),
++            Request("file://" + str(file_a), "ri"),
++        ],
++        "zip_member": [
++            Request(f"{zip_a}/member.bin", "ri"),
++            Request(f"{zip_b}/member.bin", "ri"),
++        ],
++        "http": [
++            Request("http://example.invalid/one.png", "ri"),
++            Request("https://example.invalid/two.jpg", "ri"),
++        ],
++        "ftp": [
++            Request("ftp://example.invalid/one.png", "ri"),
++            Request("ftps://example.invalid/two.jpg", "ri"),
++        ],
++    }
++
++
++def _query_value(request, name):
++    value = getattr(request, name)
++    if callable(value):
++        inspect.signature(value).bind()
++        assert inspect.getdoc(value), f"the public query {name} is undocumented"
++        return value()
++    return value
++
++
++def _query_state(request):
++    names = (
++        "raw_uri", "filename", "extension", "format_hint", "mode", "kwargs",
++        "_uri_type", "_filename_zip",
++    )
++    state = {name: repr(getattr(request, name)) for name in names}
++    stream = request.raw_uri
++    if isinstance(stream, BytesIO):
++        state["caller_file"] = (
++            stream.closed, None if stream.closed else (stream.tell(), stream.getvalue())
++        )
++    return state
++
++
++def _public_snapshot(request):
++    """Public property or no-argument method query results."""
++    values = {}
++    for name in dir(request):
++        if name.startswith("_") or name in PRESERVED_PUBLIC:
++            continue
++        try:
++            value = _query_value(request, name)
++        except Exception:
++            continue
++        values[name] = value
++    return values
++
++
++def _values_differ(left, right):
++    if type(left) is not type(right):
++        return True
++    try:
++        return not bool(left == right)
++    except Exception:
++        return True
++
++
++def _kind_queries(families):
++    """Public attributes that are stable for a kind and shared by all kinds."""
++    per_kind = {}
++    for kind, requests in families.items():
++        snapshots = [_public_snapshot(request) for request in requests]
++        names = set(snapshots[0])
++        for snapshot in snapshots[1:]:
++            names &= set(snapshot)
++        stable = {}
++        for name in names:
++            first = snapshots[0][name]
++            if all(not _values_differ(first, snapshot[name]) for snapshot in snapshots[1:]):
++                stable[name] = first
++        per_kind[kind] = stable
++
++    common = set.intersection(*[set(values) for values in per_kind.values()])
++    queries = {
++        name: {kind: per_kind[kind][name] for kind in families} for name in sorted(common)
++    }
++    assert queries, (
++        "Request exposes no public attribute that is stable for a given resource "
++        "kind and shared by every supported input class, so plugins still have to "
++        "inspect the private numeric kind instead of a semantic query"
++    )
++    return queries
++
++
++def _separating_queries(queries):
++    kinds = sorted(next(iter(queries.values())))
++    separating = {
++        name: values
++        for name, values in queries.items()
++        if any(
++            _values_differ(values[left], values[right])
++            for left, right in itertools.combinations(kinds, 2)
++        )
++    }
++    assert separating, "no public kind query distinguishes any pair of input classes"
++    return separating
++
++
++def _expected_vectors(families):
++    queries = _kind_queries(families)
++    names = sorted(_separating_queries(queries))
++    expected = {kind: {name: queries[name][kind] for name in names} for kind in families}
++    return names, expected
++
++
++_MISSING = object()
++
++
++def _read_queries(request, names):
++    values = {}
++    for name in names:
++        try:
++            values[name] = _query_value(request, name)
++        except Exception:
++            values[name] = _MISSING
++    return values
++
++
++def _same_values(left, right):
++    if set(left) != set(right):
++        return False
++    return all(not _values_differ(left[name], right[name]) for name in left)
++
++
++def _return_bytes():
++    value = getattr(request_module, "RETURN_BYTES", None)
++    assert isinstance(value, str), "the public RETURN_BYTES constant is not importable"
++    return value
++
++
++# ---------------------------------------------------------------------------
++# the public, read-only and reliable query surface
++# ---------------------------------------------------------------------------
++
++
++def test_public_kind_queries_distinguish_all_input_classes(tmp_path):
++    families = _build_families(tmp_path)
++    queries = _kind_queries(families)
++    kinds = sorted(families)
++    for left, right in itertools.combinations(kinds, 2):
++        assert any(
++            _values_differ(queries[name][left], queries[name][right])
++            for name in queries
++        ), f"public kind queries do not distinguish {left!r} from {right!r}"
++
++
++def test_kind_queries_are_read_only(tmp_path, monkeypatch):
++    families = _build_families(tmp_path)
++
++    def unexpected_io(*args, **kwargs):
++        raise AssertionError("a kind query performed resource I/O")
++
++    monkeypatch.setattr(builtins, "open", unexpected_io)
++    monkeypatch.setattr(Path, "open", unexpected_io)
++    monkeypatch.setattr(tempfile, "mkstemp", unexpected_io)
++    monkeypatch.setattr(OpenerDirector, "open", unexpected_io)
++    queries = _kind_queries(families)
++    for kind in ("bytes", "local_path", "zip_member", "http"):
++        request = families[kind][0]
++        for name in queries:
++            state = _query_state(request)
++            before = _query_value(request, name)
++            assert not _values_differ(_query_value(request, name), before)
++            assert _query_state(request) == state, f"the query {name} mutates its request"
++            if callable(getattr(request, name)):
++                continue
++            rejected = False
++            try:
++                setattr(request, name, before)
++            except AttributeError:
++                rejected = True
++            assert rejected, f"the kind query {name} of a {kind} request can be overwritten"
++            assert not _values_differ(_query_value(request, name), before), (
++                f"the kind query {name} changed after a write attempt"
++            )
++
++
++def test_kind_queries_are_reliable_for_unseen_instances(tmp_path):
++    families = _build_families(tmp_path)
++    names, expected = _expected_vectors(families)
++
++    extra_file = _write_file(tmp_path / "gamma.bin", PAYLOAD_C)
++    extra_zip = _make_zip(tmp_path / "third.zip", "other.bin", PAYLOAD_C)
++    unseen = {
++        "bytes": Request(PAYLOAD_C, "ri"),
++        "file_object": Request((tmp_path / "gamma.bin").open("rb"), "ri"),
++        "local_path": Request(Path(extra_file), "ri"),
++        "zip_member": Request(f"{extra_zip}/other.bin", "ri"),
++        "http": Request("https://example.invalid/three.png", "ri"),
++        "ftp": Request("ftps://example.invalid/three.png", "ri"),
++    }
++    for kind, request in unseen.items():
++        assert _same_values(_read_queries(request, names), expected[kind]), (
++            f"an unseen {kind} request reports different kind queries"
++        )
++
++
++def test_kind_queries_are_semantic_and_not_numeric_codes(tmp_path):
++    families = _build_families(tmp_path)
++    queries = _kind_queries(families)
++    for name, values in queries.items():
++        for kind, value in values.items():
++            assert isinstance(value, (bool, enum.Enum)) or not isinstance(
++                value, (int, float)
++            ), f"the kind query {name} returns a bare numeric value {value!r} for {kind}"
++
++
++# ---------------------------------------------------------------------------
++# mode and consumer splits
++# ---------------------------------------------------------------------------
++
++
++def test_kind_queries_do_not_depend_on_io_mode(tmp_path):
++    families = _build_families(tmp_path)
++    names, expected = _expected_vectors(families)
++
++    write_requests = {
++        "bytes": Request(_return_bytes(), "wi"),
++        "local_path": Request(str(tmp_path / "written.bin"), "wi"),
++        "zip_member": Request(str(tmp_path / "first.zip") + "/member.bin", "wi"),
++        "file_object": Request(BytesIO(), "wi"),
++    }
++    for kind, request in write_requests.items():
++        assert _same_values(_read_queries(request, names), expected[kind]), (
++            f"a write-mode {kind} request reports different kind queries than the "
++            "read-mode request of the same kind"
++        )
++
++
++def test_write_back_targets_are_distinguishable_by_public_kind_queries(tmp_path):
++    families = _build_families(tmp_path)
++    names, _ = _expected_vectors(families)
++
++    targets = {
++        "bytes": Request(_return_bytes(), "wi"),
++        "local_path": Request(str(tmp_path / "written.bin"), "wi"),
++        "zip_member": Request(str(tmp_path / "first.zip") + "/member.bin", "wi"),
++        "file_object": Request(BytesIO(), "wi"),
++    }
++    for left, right in itertools.combinations(sorted(targets), 2):
++        left_values = _read_queries(targets[left], names)
++        right_values = _read_queries(targets[right], names)
++        assert any(
++            _values_differ(left_values[name], right_values[name]) for name in names
++        ), f"the write-back targets {left!r} and {right!r} are not distinguishable"
++
++
++def test_plugin_consumer_sees_kind_queries_through_imopen(tmp_path):
++    families = _build_families(tmp_path)
++    names, expected = _expected_vectors(families)
++
++    seen = []
++
++    def recording_plugin(request, **kwargs):
++        seen.append(request)
++        return object()
++
++    imopen(PAYLOAD_A, "r", plugin=recording_plugin)
++    assert len(seen) == 1, "imopen did not hand a request to the plugin"
++    assert _same_values(_read_queries(seen[0], names), expected["bytes"]), (
++        "the request handed to a plugin for in-memory bytes does not report the bytes kind"
++    )
++
++    file_path = _write_file(tmp_path / "delta.bin", PAYLOAD_C)
++    imopen(file_path, "r", plugin=recording_plugin)
++    assert len(seen) == 2, "imopen did not hand the second request to the plugin"
++    assert _same_values(_read_queries(seen[-1], names), expected["local_path"]), (
++        "the request handed to a plugin for a local path does not report the "
++        "local-path kind"
++    )
++
++
++def test_legacy_request_handoff_to_a_plugin_keeps_kind_queries(tmp_path):
++    families = _build_families(tmp_path)
++    names, expected = _expected_vectors(families)
++
++    file_path = _write_file(tmp_path / "epsilon.bin", PAYLOAD_C)
++    request = Request(file_path, "ri")
++    seen = []
++
++    def recording_plugin(plugin_request, **kwargs):
++        seen.append(plugin_request)
++        return object()
++
++    imopen(request, "r", plugin=recording_plugin, legacy_mode=True)
++    assert seen and seen[-1] is request, "legacy mode must hand the built request to the plugin"
++    assert _same_values(_read_queries(seen[-1], names), expected["local_path"]), (
++        "the legacy request handed to the plugin does not report the local-path kind"
++    )
++
++
++# ---------------------------------------------------------------------------
++# state, side effects and error priority
++# ---------------------------------------------------------------------------
++
++
++def test_kind_queries_are_stable_across_get_file_and_finish(tmp_path):
++    families = _build_families(tmp_path)
++    names, expected = _expected_vectors(families)
++
++    read_request = Request(PAYLOAD_A, "ri")
++    before_read = _read_queries(read_request, names)
++    assert _same_values(before_read, expected["bytes"])
++    assert read_request.get_file().read(len(PAYLOAD_A)) == PAYLOAD_A
++    read_request.finish()
++    assert _same_values(_read_queries(read_request, names), before_read), (
++        "the kind queries changed while a bytes request was read and finished"
++    )
++
++    write_request = Request(_return_bytes(), "wi")
++    before_write = _read_queries(write_request, names)
++    assert _same_values(before_write, expected["bytes"])
++    write_request.get_file().write(PAYLOAD_B)
++    write_request.finish()
++    assert _same_values(_read_queries(write_request, names), before_write), (
++        "the kind queries changed while a write-to-bytes request was finished"
++    )
++
++
++def test_kind_queries_work_without_opening_the_resource(tmp_path):
++    families = _build_families(tmp_path)
++    names, expected = _expected_vectors(families)
++    folder = tmp_path / "folder"
++    folder.mkdir()
++    missing = tmp_path / "never-written.bin"
++
++    targets = {
++        # a directory cannot be opened for reading
++        "local_path": [
++            Request(str(folder), "ri"),
++            # the write target does not exist yet
++            Request(str(missing), "wi"),
++        ],
++        "http": [Request("http://example.invalid/missing.png", "ri")],
++        "ftp": [Request("ftp://example.invalid/missing.png", "ri")],
++    }
++    for kind, requests in targets.items():
++        for request in requests:
++            assert _same_values(_read_queries(request, names), expected[kind]), (
++                f"an unavailable {kind} target is not classified as {kind}"
++            )
++    assert not missing.exists(), "classifying a write target created it as a side effect"
++
++
++def test_directory_requests_keep_error_priority_and_kind_queries(tmp_path):
++    families = _build_families(tmp_path)
++    names, expected = _expected_vectors(families)
++    folder = tmp_path / "folder"
++    folder.mkdir()
++
++    directory_request = Request(str(folder), "ri")
++    assert _same_values(_read_queries(directory_request, names), expected["local_path"]), (
++        "a directory request does not report the local-path kind"
++    )
++
++    outcomes = []
++    for legacy_mode in (True, False):
++        try:
++            imopen(str(folder), "r", legacy_mode=legacy_mode)
++        except Exception as error:
++            outcomes.append((legacy_mode, type(error), str(error)))
++        else:
++            outcomes.append((legacy_mode, None, None))
++    assert outcomes == [
++        (True, ValueError, DIRECTORY_ERROR),
++        (False, IOError, DIRECTORY_ERROR),
++    ], f"the directory error priority changed: {outcomes!r}"
++
++
++# ---------------------------------------------------------------------------
++# special URIs, documented surface and the per-kind resource objects
++# ---------------------------------------------------------------------------
++
++
++def test_special_read_uris_report_the_bytes_kind_queries(tmp_path):
++    families = _build_families(tmp_path)
++    names, expected = _expected_vectors(families)
++    for uri in ("<video0>", "<video1>", "<screen>", "<clipboard>"):
++        request = Request(uri, "ri")
++        assert _same_values(_read_queries(request, names), expected["bytes"]), (
++            f"the special read uri {uri!r} does not report the bytes kind"
++        )
++
++
++def _declared_stub_members(tree, class_name):
++    for node in ast.walk(tree):
++        if isinstance(node, ast.ClassDef) and node.name == class_name:
++            names = set()
++            for item in node.body:
++                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
++                    names.add(item.name)
++                elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
++                    names.add(item.target.id)
++                elif isinstance(item, ast.Assign):
++                    for target in item.targets:
++                        if isinstance(target, ast.Name):
++                            names.add(target.id)
++            return names
++    return None
++
++
++def test_kind_queries_are_declared_in_shipped_type_stub(tmp_path):
++    families = _build_families(tmp_path)
++    queries = _kind_queries(families)
++    stub_path = Path(request_module.__file__).with_suffix(".pyi")
++    assert stub_path.is_file(), f"the shipped type declaration {stub_path} is missing"
++    declared = _declared_stub_members(ast.parse(stub_path.read_text()), "Request")
++    assert declared is not None, "request.pyi does not declare the Request class"
++    missing = sorted(name for name in queries if name not in declared)
++    assert not missing, f"the semantic kind queries {missing} are missing from request.pyi"
++
++
++def test_plugin_modules_do_not_read_the_private_numeric_kind():
++    import imageio.plugins as plugins_package
++
++    root = Path(plugins_package.__file__).parent
++    consumer_paths = sorted(root.rglob("*.py"))
++    consumer_paths.append(Path(request_module.__file__).with_name("imopen.py"))
++    offenders = []
++    for path in consumer_paths:
++        try:
++            tree = ast.parse(path.read_text(encoding="utf-8"))
++        except SyntaxError as error:
++            offenders.append(f"{path.name}:{error.lineno} (unparsable)")
++            continue
++        for node in ast.walk(tree):
++            if isinstance(node, ast.Attribute) and node.attr == "_uri_type":
++                offenders.append(f"{path.name}:{node.lineno}")
++    assert not offenders, f"query consumers still read the private numeric kind: {offenders}"
+diff --git a/tests/test_request_lifecycle_boundary.py b/tests/test_request_lifecycle_boundary.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4be6bb51029145bfe1f805eca282c9047bf65ebe
+--- /dev/null
++++ b/tests/test_request_lifecycle_boundary.py
+@@ -0,0 +1,39 @@
++"""Frozen baseline observations through public request operations."""
++import functools
++import json
++from pathlib import Path
++import subprocess
++import sys
++
++@functools.lru_cache(maxsize=1)
++def lifecycle_observations():
++    root = Path(__file__).resolve().parents[1]
++    try:
++        process = subprocess.run([sys.executable, str(root / "tests/case32_lifecycle_probe.py")], cwd=root, capture_output=True, text=True, timeout=90)
++    except subprocess.TimeoutExpired:
++        return {"error": "public lifecycle probe timed out"}, {}
++    if process.returncode:
++        return {"error": process.stderr[-10000:], "exit_code": process.returncode}, {}
++    try:
++        actual = json.loads(process.stdout)
++    except ValueError:
++        return {"error": "invalid probe output", "stdout": process.stdout[-10000:]}, {}
++    expected = json.loads((root / "tests/testdata/case32_lifecycle.json").read_text())
++    return actual, expected
++
++def test_http_partial_initialization_releases_opened_stream():
++    actual, expected = lifecycle_observations()
++    assert "error" not in actual, actual
++    assert actual["wrapper/http"] == expected["wrapper/http"]
++
++def test_zip_partial_initialization_releases_opened_member():
++    actual, expected = lifecycle_observations()
++    assert "error" not in actual, actual
++    assert actual["wrapper/zip"] == expected["wrapper/zip"]
++
++def test_lifecycle_retry_ownership_and_byte_results_preserved():
++    actual, expected = lifecycle_observations()
++    assert "error" not in actual, actual
++    assert set(actual) == set(expected)
++    differences = {key: {"actual": actual[key], "expected": expected[key]} for key in expected if not key.startswith("wrapper/") and actual[key] != expected[key]}
++    assert not differences, differences
+diff --git a/tests/test_request_p2p_preserved.py b/tests/test_request_p2p_preserved.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..809e2fbff17a21fa403c0f6f4217146397000439
+--- /dev/null
++++ b/tests/test_request_p2p_preserved.py
+@@ -0,0 +1,1007 @@
++"""P2P regression tests for the preserved Request resource-kind contract.
++
++These tests pin the externally observable behavior of ``imageio.core.Request``
++and the resource-kind machinery around it that the frozen instruction requires
++to stay unchanged while resource-kind handling is moved behind resource
++objects.  They only touch the surface that is promised to keep working
++(``get_file``, ``get_local_filename``, ``finish``, ``get_result``, the public
++request attributes and the legacy ``_uri_type`` / ``_filename_zip`` attributes)
++so that any correct implementation of the responsibility move keeps passing
++them.
++
++Everything runs offline and only uses temporary files created via ``tmp_path``.
++"""
++
++import ast
++import builtins
++import inspect
++import io
++import os
++import re
++import socket
++import tempfile
++import zipfile
++from pathlib import Path
++from urllib.request import OpenerDirector, Request as UrlRequest
++
++import numpy as np
++import pytest
++
++import imageio as iio
++import imageio.core.request as request_module
++from imageio.core import Request
++from imageio.core.request import (
++    RETURN_BYTES,
++    URI_BYTES,
++    URI_FILE,
++    URI_FILENAME,
++    URI_FTP,
++    URI_HTTP,
++    URI_ZIPPED,
++    IOMode,
++    ImageMode,
++    Mode,
++)
++
++PAYLOAD = bytes(range(256)) * 3
++
++DIRECTORY_ERROR = (
++    "ImageIO does not generally support reading folders. "
++    "Limited support may be available via specific plugins. "
++    "Specify the plugin explicitly using the `plugin` kwarg, e.g. `plugin='DICOM'`"
++)
++
++
++def _make_zip(path, member, payload=PAYLOAD):
++    with zipfile.ZipFile(path, "w") as archive:
++        archive.writestr(member, payload)
++    return path
++
++
++def _member_uri(zip_path, member):
++    return os.path.join(str(zip_path), member)
++
++
++def test_module_public_names_preserved():
++    legacy_names = (
++        "errno os BytesIO zipfile tempfile shutil enum warnings urlopen "
++        "get_remote_file Path urlparse Optional URI_BYTES URI_FILE "
++        "URI_FILENAME URI_ZIPPED URI_HTTP URI_FTP IOMode ImageMode Mode "
++        "SPECIAL_READ_URIS RETURN_BYTES EXAMPLE_IMAGES Request "
++        "read_n_bytes SeekableFileObject InitializationError"
++    ).split()
++    missing_names = [name for name in legacy_names if not hasattr(request_module, name)]
++    assert not missing_names, f"the request module lost public names: {missing_names}"
++
++
++def test_constructor_signature_preserved():
++    parameters = list(inspect.signature(Request).parameters.values())
++    expected = [
++        ("uri", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.empty),
++        ("mode", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.empty),
++        ("extension", inspect.Parameter.KEYWORD_ONLY, None),
++        ("format_hint", inspect.Parameter.KEYWORD_ONLY, None),
++        ("kwargs", inspect.Parameter.VAR_KEYWORD, inspect.Parameter.empty),
++    ]
++    assert [(item.name, item.kind, item.default) for item in parameters] == expected
++    with pytest.raises(TypeError):
++        Request(PAYLOAD)
++
++
++class _ReadableFile:
++    def read(self, n=-1):
++        return b""
++
++    def close(self):
++        return None
++
++
++class _WritableFile:
++    def write(self, data):
++        return len(data)
++
++    def close(self):
++        return None
++
++
++# ---------------------------------------------------------------------------
++# input classes / classification
++# ---------------------------------------------------------------------------
++
++
++def test_string_uri_classification_preserved(tmp_path):
++    data_file = tmp_path / "plain.bin"
++    data_file.write_bytes(PAYLOAD)
++    zip_path = _make_zip(tmp_path / "archive.zip", "inner/member.bin")
++
++    cases = [
++        ("http://example.com/x.png", URI_HTTP),
++        ("https://example.com/x.png", URI_HTTP),
++        ("ftp://example.com/x.png", URI_FTP),
++        ("ftps://example.com/x.png", URI_FTP),
++        ("file://" + str(data_file), URI_FILENAME),
++        (str(data_file), URI_FILENAME),
++        (_member_uri(zip_path, "inner/member.bin"), URI_ZIPPED),
++    ]
++    for uri, expected_type in cases:
++        request = Request(uri, "ri")
++        assert request._uri_type == expected_type, uri
++    assert Request("file://" + str(data_file), "ri").filename == str(data_file)
++    assert Request(str(data_file), "ri").filename == str(data_file)
++    assert Request(_member_uri(zip_path, "inner/member.bin"), "ri").extension == ".bin"
++
++
++def test_special_read_uris_and_return_bytes_classification_preserved():
++    for uri in ("<video0>", "<video1>", "<screen>", "<clipboard>"):
++        request = Request(uri, "rI")
++        assert request._uri_type == URI_BYTES, uri
++        assert request.filename == uri
++
++    request = Request(RETURN_BYTES, "wi")
++    assert request._uri_type == URI_BYTES
++    assert request.filename == RETURN_BYTES
++
++
++def test_inmemory_and_path_inputs_classification_preserved(tmp_path):
++    request = Request(PAYLOAD, "ri")
++    assert request._uri_type == URI_BYTES
++    assert request.filename == "<bytes>"
++
++    request = Request(memoryview(PAYLOAD), "ri")
++    assert request._uri_type == URI_BYTES
++    assert request.filename == "<bytes>"
++
++    image = tmp_path / "image.png"
++    image.write_bytes(PAYLOAD)
++    request = Request(image, "ri")
++    assert request._uri_type == URI_FILENAME
++    assert request.filename == str(image)
++    assert request.extension == ".png"
++
++    request = Request(str(image), "ri")
++    assert request._uri_type == URI_FILENAME
++    assert request.filename == str(image)
++
++
++def test_file_object_classification_preserved():
++    request = Request(_ReadableFile(), "ri")
++    assert request._uri_type == URI_FILE
++    assert request.filename == "<file>"
++
++    request = Request(_WritableFile(), "wi")
++    assert request._uri_type == URI_FILE
++    assert request.filename == "<file>"
++
++
++
++def test_standard_image_uri_resolution_preserved(monkeypatch, tmp_path):
++    userdir = tmp_path / "userdir"
++    cache = userdir / ".imageio" / "images"
++    cache.mkdir(parents=True)
++    png_bytes = b"\x89PNG\r\n\x1a\n" + b"seeded-standard-image" * 8
++    (cache / "chelsea.png").write_bytes(png_bytes)
++    with zipfile.ZipFile(cache / "chelsea.zip", "w") as archive:
++        archive.writestr("chelsea.png", png_bytes)
++    monkeypatch.setenv("IMAGEIO_USERDIR", str(userdir))
++
++    plain = Request("imageio:chelsea.png", "ri")
++    assert plain._uri_type == URI_FILENAME
++    assert plain.filename == str(cache / "chelsea.png")
++    assert plain.extension == ".png"
++    assert plain.get_file().read() == png_bytes
++    plain.finish()
++
++    zipped = Request("imageio:chelsea.zip/chelsea.png", "ri")
++    assert zipped._uri_type == URI_ZIPPED
++    assert zipped._filename_zip == (str(cache / "chelsea.zip"), "chelsea.png")
++    assert zipped.extension == ".png"
++    assert zipped.get_file().read() == png_bytes
++    zipped.finish()
++
++def test_zip_lookalike_directory_stays_plain_path(tmp_path):
++    bait = tmp_path / "lookalike.zip"
++    bait.mkdir()
++    inner = bait / "foo.jpg"
++    inner.write_bytes(PAYLOAD)
++
++    request = Request(str(inner), "ri")
++    assert request._uri_type == URI_FILENAME
++    assert request._filename_zip is None
++
++
++def test_user_dir_expansion_and_absolute_paths_preserved(tmp_path, monkeypatch):
++    request = Request("~/imageio_p2p_missing_file.png", "wi")
++    assert request._uri_type == URI_FILENAME
++    assert request.filename == os.path.abspath(
++        os.path.expanduser("~/imageio_p2p_missing_file.png")
++    )
++
++    relative = tmp_path / "relative.bin"
++    relative.write_bytes(PAYLOAD)
++    monkeypatch.chdir(tmp_path)
++    request = Request("relative.bin", "ri")
++    assert request.filename == str(relative)
++
++
++# ---------------------------------------------------------------------------
++# public attributes and properties
++# ---------------------------------------------------------------------------
++
++
++def test_public_attributes_and_properties_preserved(tmp_path):
++    image = tmp_path / "picture.png"
++    image.write_bytes(PAYLOAD)
++
++    request = Request(image, "ri", my_kwarg=17)
++    assert request.raw_uri == image
++    assert request.filename == str(image)
++    assert request.extension == ".png"
++    assert request.format_hint is None
++    assert request.mode == "ri"
++    assert request.mode.io_mode is IOMode.read
++    assert request.mode.image_mode is ImageMode.single_image
++    assert request.mode[0] == "r"
++    assert request.mode[1] == "i"
++    assert request.kwargs == {"my_kwarg": 17}
++
++    string_request = Request(str(image), "ri")
++    assert string_request.raw_uri == str(image)
++
++
++def test_mode_normalization_preserved():
++    assert Request(PAYLOAD, "r").mode == "r?"
++    assert Request("~/bar.zip/spam.png", "w").mode == "w?"
++    assert Request(PAYLOAD, "r").mode.io_mode is IOMode.read
++    assert Request("~/bar.zip/spam.png", "w").mode[0] == "w"
++
++    mode = Mode("ri")
++    assert mode == "ri"
++    assert mode[0] == "r"
++    with pytest.raises(IndexError):
++        mode[3]
++
++
++def test_firstbytes_header_bytes_preserved(tmp_path):
++    payload = bytes(range(256)) + b"trailing"
++    header = tmp_path / "header.bin"
++    header.write_bytes(payload)
++
++    request = Request(header, "ri")
++    assert request.firstbytes == payload[:256]
++    assert request.firstbytes == payload[:256]
++
++    handle = request.get_file()
++    assert handle.read(4) == payload[:4]
++    request.finish()
++
++    in_memory = Request(payload, "ri")
++    assert in_memory.firstbytes == payload[:256]
++
++
++def test_extension_argument_and_format_hint_preserved(tmp_path):
++    extensionless = tmp_path / "no_extension"
++    extensionless.write_bytes(PAYLOAD)
++
++    request = Request(extensionless, "ri", extension=".dat")
++    assert request.extension == ".dat"
++
++    with pytest.warns(DeprecationWarning):
++        request = Request(extensionless, "ri", format_hint=".jpg")
++    assert request.format_hint == ".jpg"
++    assert request.extension == ".jpg"
++
++    with pytest.raises(ValueError):
++        Request(extensionless, "ri", extension="dat")
++
++    with pytest.warns(DeprecationWarning):
++        with pytest.raises(ValueError):
++            Request(extensionless, "ri", format_hint="jpg")
++
++
++# ---------------------------------------------------------------------------
++# get_file / read / write / release semantics
++# ---------------------------------------------------------------------------
++
++
++def test_get_file_local_path_read_preserved(tmp_path):
++    source = tmp_path / "source.bin"
++    source.write_bytes(PAYLOAD)
++
++    request = Request(source, "ri")
++    assert request.get_file().read() == PAYLOAD
++    assert request.finish() is None
++
++
++def test_get_file_local_path_write_preserved(tmp_path):
++    target = tmp_path / "target.bin"
++
++    request = Request(target, "wi")
++    request.get_file().write(PAYLOAD)
++    assert request.finish() is None
++    assert target.read_bytes() == PAYLOAD
++
++
++def test_get_file_reuses_handle_for_local_reads(tmp_path):
++    source = tmp_path / "source.bin"
++    source.write_bytes(PAYLOAD)
++
++    request = Request(source, "ri")
++    first = request.get_file()
++    assert first is request.get_file()
++    assert first.read(4) == PAYLOAD[:4]
++    assert request.get_file().read(4) == PAYLOAD[4:8]
++    request.finish()
++
++
++def test_get_file_zip_member_read_preserved(tmp_path, monkeypatch):
++    zip_path = _make_zip(tmp_path / "archive.zip", "inner/member.bin")
++    opened_members = []
++    original_open = zipfile.ZipFile.open
++
++    def tracked_open(archive, *args, **kwargs):
++        member = original_open(archive, *args, **kwargs)
++        opened_members.append((archive, member))
++        return member
++
++    monkeypatch.setattr(zipfile.ZipFile, "open", tracked_open)
++
++    request = Request(_member_uri(zip_path, "inner/member.bin"), "ri")
++    handle = request.get_file()
++    assert handle.read() == PAYLOAD
++    assert request.finish() is None
++    assert handle.closed
++    assert opened_members
++    for archive, member in opened_members:
++        assert member.closed
++        with pytest.raises(ValueError):
++            archive.read("inner/member.bin")
++
++
++def test_get_file_inmemory_bytes_read_preserved():
++    request = Request(PAYLOAD, "ri")
++    assert request.get_file().read() == PAYLOAD
++
++    request = Request(memoryview(PAYLOAD), "ri")
++    assert request.get_file().read() == PAYLOAD
++
++
++def test_get_file_return_bytes_write_captures_result():
++    request = Request(RETURN_BYTES, "wi")
++    handle = request.get_file()
++    assert handle is request.get_file()
++    handle.write(PAYLOAD)
++    assert request.finish() is None
++    assert request.get_result() == PAYLOAD
++    assert request.get_result() is None
++
++
++def test_get_file_caller_file_object_read_preserved():
++    stream = io.BytesIO(PAYLOAD)
++    request = Request(stream, "ri")
++    assert request.get_file() is stream
++    assert request.get_file().read() == PAYLOAD
++    request.finish()
++    assert not stream.closed
++
++
++def test_get_file_caller_file_object_write_preserved():
++    stream = io.BytesIO()
++    request = Request(stream, "wi")
++    assert request.get_file() is stream
++    request.get_file().write(PAYLOAD)
++    assert request.finish() is None
++    assert stream.getvalue() == PAYLOAD
++    assert not stream.closed
++
++
++def test_finish_does_not_close_caller_file_object():
++    read_stream = io.BytesIO(PAYLOAD)
++    request = Request(read_stream, "ri")
++    request.get_file()
++    request.finish()
++    assert not read_stream.closed
++    read_stream.seek(0)
++    assert read_stream.read() == PAYLOAD
++
++    write_stream = io.BytesIO()
++    request = Request(write_stream, "wi")
++    request.get_file().write(PAYLOAD)
++    request.finish()
++    assert not write_stream.closed
++    assert write_stream.getvalue() == PAYLOAD
++
++
++def test_finish_closes_handles_the_request_opened(tmp_path):
++    source = tmp_path / "source.bin"
++    source.write_bytes(PAYLOAD)
++    request = Request(source, "ri")
++    handle = request.get_file()
++    request.finish()
++    assert handle.closed
++
++    target = tmp_path / "target.bin"
++    request = Request(target, "wi")
++    handle = request.get_file()
++    handle.write(PAYLOAD)
++    request.finish()
++    assert handle.closed
++    assert target.read_bytes() == PAYLOAD
++
++
++def test_zip_member_write_back_byte_for_byte(tmp_path):
++    zip_path = tmp_path / "created.zip"
++
++    request = Request(_member_uri(zip_path, "inner/new.bin"), "wi")
++    request.get_file().write(PAYLOAD)
++    assert request.finish() is None
++    with zipfile.ZipFile(zip_path) as archive:
++        assert archive.read("inner/new.bin") == PAYLOAD
++
++
++def test_zip_member_write_back_keeps_existing_members(tmp_path):
++    zip_path = _make_zip(tmp_path / "mixed.zip", "keep.bin", b"KEEP")
++
++    request = Request(_member_uri(zip_path, "added.bin"), "wi")
++    request.get_file().write(PAYLOAD)
++    request.finish()
++    with zipfile.ZipFile(zip_path) as archive:
++        assert archive.read("keep.bin") == b"KEEP"
++        assert archive.read("added.bin") == PAYLOAD
++
++
++# ---------------------------------------------------------------------------
++# get_local_filename / finish / get_result
++# ---------------------------------------------------------------------------
++
++
++def test_get_local_filename_returns_existing_local_path(tmp_path):
++    source = tmp_path / "local.bin"
++    source.write_bytes(PAYLOAD)
++
++    request = Request(source, "ri")
++    assert request.get_local_filename() == str(source)
++    request.finish()
++
++
++def test_get_local_filename_reads_zip_member_via_temp_file(tmp_path):
++    zip_path = _make_zip(tmp_path / "archive.zip", "inner/member.bin")
++
++    request = Request(_member_uri(zip_path, "inner/member.bin"), "ri")
++    local_name = request.get_local_filename()
++    assert local_name != _member_uri(zip_path, "inner/member.bin")
++    assert os.path.isfile(local_name)
++    with open(local_name, "rb") as file:
++        assert file.read() == PAYLOAD
++    assert request.finish() is None
++    assert not os.path.exists(local_name)
++
++
++def test_get_local_filename_write_back_for_zip_member(tmp_path):
++    zip_path = _make_zip(tmp_path / "archive.zip", "keep.bin", b"KEEP")
++
++    request = Request(_member_uri(zip_path, "created.bin"), "wi")
++    local_name = request.get_local_filename()
++    assert os.path.isfile(local_name)
++    with open(local_name, "wb") as file:
++        file.write(PAYLOAD)
++    assert request.finish() is None
++    assert not os.path.exists(local_name)
++    with zipfile.ZipFile(zip_path) as archive:
++        assert archive.read("created.bin") == PAYLOAD
++        assert archive.read("keep.bin") == b"KEEP"
++
++
++def test_get_local_filename_write_back_for_return_bytes():
++    request = Request(RETURN_BYTES, "wi")
++    local_name = request.get_local_filename()
++    with open(local_name, "wb") as file:
++        file.write(PAYLOAD)
++    assert request.finish() is None
++    assert not os.path.exists(local_name)
++    assert request.get_result() == PAYLOAD
++    assert request.get_result() is None
++
++
++def test_get_local_filename_write_back_for_caller_file_object():
++    stream = io.BytesIO()
++    request = Request(stream, "wi")
++    local_name = request.get_local_filename()
++    assert os.path.isfile(local_name)
++    with open(local_name, "wb") as file:
++        file.write(PAYLOAD)
++    assert request.finish() is None
++    assert not os.path.exists(local_name)
++    assert stream.getvalue() == PAYLOAD
++    assert not stream.closed
++
++
++def test_get_local_filename_reads_inmemory_bytes_via_temp_file():
++    request = Request(PAYLOAD, "ri")
++    local_name = request.get_local_filename()
++    assert os.path.isfile(local_name)
++    with open(local_name, "rb") as file:
++        assert file.read() == PAYLOAD
++    assert request.finish() is None
++    assert not os.path.exists(local_name)
++
++
++def test_finish_returns_none_for_every_write_target(tmp_path, monkeypatch):
++    request = Request(tmp_path / "direct.bin", "wi")
++    request.get_file()
++    assert request.finish() is None
++
++    request = Request(RETURN_BYTES, "wi")
++    request.get_file()
++    assert request.finish() is None
++
++    request = Request(io.BytesIO(), "wi")
++    request.get_file()
++    assert request.finish() is None
++
++    import sys
++
++    for uri in (RETURN_BYTES, _member_uri(tmp_path / "unopened.zip", "member.bin")):
++        request = Request(uri, "wi")
++        allocation_error = MemoryError("buffer allocation denied")
++        allocation_calls = []
++
++        def fail_allocate(*args, **kwargs):
++            allocation_calls.append((args, kwargs))
++            raise allocation_error
++
++        with monkeypatch.context() as allocation:
++            for module_name, module in tuple(sys.modules.items()):
++                if module_name.startswith("imageio.core.") and module is not None:
++                    for name, value in tuple(vars(module).items()):
++                        if value is io.BytesIO:
++                            allocation.setattr(module, name, fail_allocate)
++            allocation.setattr(io, "BytesIO", fail_allocate)
++            with pytest.raises(MemoryError) as raised:
++                request.get_file()
++            assert raised.value is allocation_error
++            try:
++                completion = request.finish()
++            except Exception as error:
++                raise AssertionError(
++                    "finish() must remain valid after write-buffer allocation fails"
++                ) from error
++            assert completion is None
++            assert request.finish() is None
++            assert request.get_result() is None
++            assert len(allocation_calls) == 1
++            assert not (tmp_path / "unopened.zip").exists()
++
++
++def test_get_result_is_none_for_non_bytes_write_targets(tmp_path):
++    target = tmp_path / "direct.bin"
++    request = Request(target, "wi")
++    request.get_file().write(PAYLOAD)
++    request.finish()
++    assert request.get_result() is None
++
++    stream = io.BytesIO()
++    request = Request(stream, "wi")
++    request.get_file().write(PAYLOAD)
++    request.finish()
++    assert request.get_result() is None
++
++    zip_path = tmp_path / "archive.zip"
++    request = Request(_member_uri(zip_path, "member.bin"), "wi")
++    request.get_file().write(PAYLOAD)
++    request.finish()
++    assert request.get_result() is None
++    assert request.get_result() is None
++
++
++# ---------------------------------------------------------------------------
++# error behavior
++# ---------------------------------------------------------------------------
++
++
++def test_directory_error_type_and_message_preserved(tmp_path):
++    folder = tmp_path / "folder"
++    folder.mkdir()
++
++    with pytest.raises(ValueError, match=re.escape(DIRECTORY_ERROR)):
++        iio.v3.imopen(folder, "r", legacy_mode=True)
++
++    with pytest.raises(IOError, match=re.escape(DIRECTORY_ERROR)):
++        iio.v3.imopen(folder, "r")
++
++
++def test_explicit_plugin_receives_directory_before_generic_rejection(tmp_path):
++    folder = tmp_path / "plugin-folder"
++    folder.mkdir()
++    for legacy_mode in (False, True):
++        requests = []
++
++        class DirectoryPlugin:
++            def __init__(self, request):
++                requests.append(request)
++                self.request = request
++
++        try:
++            plugin = iio.v3.imopen(folder, "r", plugin=DirectoryPlugin, legacy_mode=legacy_mode)
++        except OSError as error:
++            if error.errno is not None:
++                raise
++            pytest.fail(
++                "an explicit plugin must receive directory requests before generic "
++                f"directory rejection: {error}"
++            )
++        try:
++            assert requests == [plugin.request]
++            assert Path(plugin.request.filename) == folder
++            assert plugin.request.mode.io_mode is IOMode.read
++        finally:
++            plugin.request.finish()
++
++
++def test_read_only_special_uri_write_error_type_preserved():
++    with pytest.raises(ValueError):
++        iio.v3.imopen("<video0>", "w", legacy_mode=True)
++
++    with pytest.raises(IOError):
++        iio.v3.imopen("<video0>", "w")
++
++
++def test_write_to_remote_uri_rejected():
++    for uri in (
++        "http://example.com/x.png",
++        "https://example.com/x.png",
++        "ftp://example.com/x.png",
++        "ftps://example.com/x.png",
++    ):
++        with pytest.raises(IOError):
++            Request(uri, "wi")
++
++
++def test_write_to_standard_image_rejected():
++    with pytest.raises(RuntimeError):
++        Request("imageio:chelsea.png", "wi")
++
++    with pytest.raises(ValueError):
++        Request("imageio:this_standard_image_does_not_exist.png", "ri")
++
++
++def test_invalid_modes_and_uris_preserved():
++    for mode in (None, 3, "", "rii", "xi"):
++        with pytest.raises(ValueError):
++            Request("/some/file", mode)
++
++    with pytest.raises(IOError):
++        Request(4, "ri")
++
++    with pytest.raises(IOError):
++        Request(["invalid", "uri"] * 10, "ri")
++
++
++def test_missing_target_errors_preserved(tmp_path):
++    with pytest.raises(FileNotFoundError):
++        Request("/does/not/exist", "ri")
++
++    with pytest.raises(FileNotFoundError):
++        Request(Path("/does/not/exist"), "ri")
++
++    with pytest.raises(FileNotFoundError):
++        Request(str(tmp_path / "missing_dir" / "file.png"), "wi")
++
++    with pytest.raises(FileNotFoundError):
++        Request("/does/not/exist.zip/member.png", "ri")
++
++
++# ---------------------------------------------------------------------------
++# legacy numeric surface
++# ---------------------------------------------------------------------------
++
++
++def test_legacy_numeric_constants_importable_with_unchanged_values():
++    assert URI_BYTES == 1
++    assert URI_FILE == 2
++    assert URI_FILENAME == 3
++    assert URI_ZIPPED == 4
++    assert URI_HTTP == 5
++    assert URI_FTP == 6
++
++    assert request_module.URI_BYTES == 1
++    assert request_module.URI_FILE == 2
++    assert request_module.URI_FILENAME == 3
++    assert request_module.URI_ZIPPED == 4
++    assert request_module.URI_HTTP == 5
++    assert request_module.URI_FTP == 6
++
++
++def test_legacy_uri_type_attribute_values_preserved(tmp_path):
++    source = tmp_path / "source.png"
++    source.write_bytes(PAYLOAD)
++    zip_path = _make_zip(tmp_path / "archive.zip", "member.bin")
++
++    cases = [
++        (str(source), "ri", URI_FILENAME),
++        ("file://" + str(source), "ri", URI_FILENAME),
++        (PAYLOAD, "ri", URI_BYTES),
++        (memoryview(PAYLOAD), "ri", URI_BYTES),
++        ("<video0>", "ri", URI_BYTES),
++        (RETURN_BYTES, "wi", URI_BYTES),
++        ("http://example.com/x.png", "ri", URI_HTTP),
++        ("ftp://example.com/x.png", "ri", URI_FTP),
++        (_member_uri(zip_path, "member.bin"), "ri", URI_ZIPPED),
++        (io.BytesIO(PAYLOAD), "ri", URI_FILE),
++        (io.BytesIO(), "wi", URI_FILE),
++    ]
++    for uri, mode, expected_type in cases:
++        assert Request(uri, mode)._uri_type == expected_type, uri
++
++
++def test_legacy_zip_member_pair_attribute_preserved(tmp_path):
++    zip_path = _make_zip(tmp_path / "archive.zip", "inner/member.bin")
++
++    request = Request(_member_uri(zip_path, "inner/member.bin"), "ri")
++    assert request._filename_zip == (str(zip_path), "inner/member.bin")
++
++    source = tmp_path / "plain.bin"
++    source.write_bytes(PAYLOAD)
++    assert Request(source, "ri")._filename_zip is None
++
++
++def test_type_declaration_keeps_legacy_numeric_surface():
++    declaration = Path(request_module.__file__).with_suffix(".pyi")
++    assert declaration.is_file()
++
++    text = declaration.read_text(encoding="utf-8")
++    for name in (
++        "URI_BYTES",
++        "URI_FILE",
++        "URI_FILENAME",
++        "URI_ZIPPED",
++        "URI_HTTP",
++        "URI_FTP",
++    ):
++        assert name in text, name
++    assert "_uri_type" in text
++    tree = ast.parse(text)
++    declaration = next(
++        (node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Request"),
++        None,
++    )
++    assert declaration is not None, "the stub no longer declares Request"
++    annotated = {
++        node.target.id for node in declaration.body
++        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
++    }
++    methods = {}
++    for node in declaration.body:
++        if isinstance(node, ast.FunctionDef):
++            methods.setdefault(node.name, []).append(node)
++    assert "raw_uri" in annotated, "the stub lost Request.raw_uri"
++    def is_int(annotation):
++        return (
++            isinstance(annotation, ast.Name) and annotation.id == "int"
++            or isinstance(annotation, ast.Constant) and annotation.value == "int"
++            or isinstance(annotation, ast.Attribute) and isinstance(annotation.value, ast.Name)
++               and annotation.value.id == "builtins" and annotation.attr == "int"
++        )
++    numeric_attribute = any(
++        isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
++        and node.target.id == "_uri_type" and is_int(node.annotation)
++        for node in declaration.body
++    )
++    numeric_property = any(
++        is_int(node.returns)
++        and [a.arg for a in node.args.posonlyargs + node.args.args] == ["self"]
++        and not node.args.kwonlyargs and node.args.vararg is None and node.args.kwarg is None
++        and any(
++            isinstance(d, ast.Name) and d.id == "property"
++            or isinstance(d, ast.Attribute) and isinstance(d.value, ast.Name)
++               and d.value.id == "builtins" and d.attr == "property"
++            for d in node.decorator_list
++        )
++        for node in methods.get("_uri_type", [])
++    )
++    assert numeric_attribute or numeric_property, "the stub must describe readable Request._uri_type as int"
++    for name in ("filename", "extension", "format_hint", "mode", "kwargs", "firstbytes"):
++        assert name in annotated or any(
++            isinstance(decorator, ast.Name) and decorator.id == "property"
++            for node in methods.get(name, []) for decorator in node.decorator_list
++        ), f"the stub lost the public Request.{name} property"
++    for name in ("get_file", "get_local_filename", "finish", "get_result"):
++        assert name in methods, f"the stub lost Request.{name}"
++        assert any(
++            [argument.arg for argument in node.args.posonlyargs + node.args.args] == ["self"]
++            and not node.args.posonlyargs and not node.args.defaults
++            and not node.args.kwonlyargs and node.args.vararg is None
++            and node.args.kwarg is None and node.returns is not None
++            for node in methods[name]
++        ), f"the stub changed the public signature of Request.{name}"
++    assert any(
++        not node.args.posonlyargs
++        and [argument.arg for argument in node.args.args] == ["self", "uri", "mode"]
++        and not node.args.defaults and node.args.vararg is None
++        and [argument.arg for argument in node.args.kwonlyargs] == ["extension", "format_hint"]
++        and all(isinstance(value, ast.Constant) and value.value is None for value in node.args.kw_defaults)
++        and node.args.kwarg is not None and node.args.kwarg.arg == "kwargs"
++        for node in methods.get("__init__", [])
++    ), "the stub changed the public Request constructor signature"
++
++
++# ---------------------------------------------------------------------------
++# no added side effects when building a request
++# ---------------------------------------------------------------------------
++
++
++def test_building_requests_has_no_io_side_effects(monkeypatch, tmp_path):
++    source = tmp_path / "plain.bin"
++    source.write_bytes(PAYLOAD)
++    zip_path = _make_zip(tmp_path / "archive.zip", "member.bin")
++
++    io_calls = []
++    real_open = io.open
++
++    def spy_open(file, *args, **kwargs):
++        io_calls.append(("open", str(file)))
++        return real_open(file, *args, **kwargs)
++
++    def spy_mkstemp(*args, **kwargs):
++        io_calls.append(("mkstemp",))
++        raise AssertionError("creating a request must not create temporary files")
++
++    def spy_create_connection(*args, **kwargs):
++        io_calls.append(("connect",))
++        raise AssertionError("creating a request must not open network connections")
++
++    monkeypatch.setattr(io, "open", spy_open)
++    monkeypatch.setattr(builtins, "open", spy_open)
++    monkeypatch.setattr(tempfile, "mkstemp", spy_mkstemp)
++    monkeypatch.setattr(socket, "create_connection", spy_create_connection)
++
++    requests = [
++        (str(source), "ri"),
++        (str(tmp_path / "missing_target.png"), "wi"),
++        (PAYLOAD, "ri"),
++        (memoryview(PAYLOAD), "ri"),
++        ("<video0>", "ri"),
++        (RETURN_BYTES, "wi"),
++        (_member_uri(zip_path, "member.bin"), "ri"),
++        (io.BytesIO(PAYLOAD), "ri"),
++        ("http://example.com/x.png", "ri"),
++        ("ftp://example.com/x.png", "ri"),
++    ]
++    for uri, mode in requests:
++        Request(uri, mode)
++
++    assert io_calls == []
++
++
++# ---------------------------------------------------------------------------
++# ftp handle quirk
++# ---------------------------------------------------------------------------
++
++
++def test_ftp_get_file_still_returns_none():
++    request = Request("ftp://example.com/image.png", "ri")
++    assert request._uri_type == URI_FTP
++    assert request.get_file() is None
++    assert request.get_file() is None
++    assert request.finish() is None
++
++    request = Request("ftps://example.com/image.png", "ri")
++    assert request._uri_type == URI_FTP
++    assert request.get_file() is None
++
++
++# ---------------------------------------------------------------------------
++# http(s) video reader keeps using the raw uri
++# ---------------------------------------------------------------------------
++
++
++def test_http_open_preserves_url_timeout_and_seekable_stream(monkeypatch):
++    calls = []
++    environment_reads = []
++    configured = {"timeout": "13"}
++
++    def fake_getenv(name, default=None):
++        if name == "IMAGEIO_REQUEST_TIMEOUT":
++            environment_reads.append(name)
++            return configured["timeout"]
++        return default
++
++    class StreamingResponse(io.BytesIO):
++        def seekable(self):
++            return False
++
++        def seek(self, *args, **kwargs):
++            raise io.UnsupportedOperation("HTTP responses are not seekable")
++
++    def fake_open(opener, url, data=None, timeout=None):
++        if isinstance(url, UrlRequest):
++            url = url.full_url
++        calls.append((url, timeout))
++        return StreamingResponse(PAYLOAD)
++
++    monkeypatch.setattr(os, "getenv", fake_getenv)
++    monkeypatch.setattr(OpenerDirector, "open", fake_open)
++    for scheme in ("http", "https"):
++        for value, expected in ((None, 5.0), ("7", 7.0), ("invalid", 5.0)):
++            configured["timeout"] = "13"
++            url = f"{scheme}://example.invalid/original.bin?keep=1"
++            previous_calls = len(calls)
++            previous_reads = len(environment_reads)
++            request = Request(url, "ri")
++            assert len(calls) == previous_calls, "HTTP construction opened a connection"
++            assert len(environment_reads) == previous_reads, "timeout was read before opening"
++            configured["timeout"] = value
++            try:
++                handle = request.get_file()
++                assert calls[previous_calls:] == [(url, expected)]
++                assert len(environment_reads) > previous_reads
++                assert handle.seekable()
++                assert handle.read(17) == PAYLOAD[:17]
++                handle.seek(0)
++                assert handle.read() == PAYLOAD
++                assert request.get_file() is handle
++                assert len(calls) == previous_calls + 1
++            finally:
++                request.finish()
++
++
++def test_http_video_reader_passes_raw_uri_to_backend(monkeypatch):
++    import imageio.plugins.pyav as pyav_module
++
++    captured = []
++
++    class _Probe(Exception):
++        pass
++
++    def fake_open(source, *args, **kwargs):
++        captured.append(source)
++        raise _Probe()
++
++    monkeypatch.setattr(pyav_module.av, "open", fake_open)
++
++    with pytest.raises((_Probe, OSError)):
++        iio.v3.imopen("http://example.com/video.mp4", "r", plugin="pyav")
++
++    assert captured, "the pyav backend was never asked to open the resource"
++    assert captured[0] == "http://example.com/video.mp4"
++
++
++# ---------------------------------------------------------------------------
++# plugin-facing contract
++# ---------------------------------------------------------------------------
++
++
++def test_request_object_handed_to_plugin_unchanged(tmp_path):
++    image = tmp_path / "image.png"
++    array = np.zeros((4, 5, 3), dtype=np.uint8)
++    array[0, 0] = [1, 2, 3]
++    iio.v3.imwrite(image, array)
++
++    with iio.v3.imopen(image, "r") as file:
++        request = file.request
++        assert isinstance(request, Request)
++        assert request.raw_uri == image
++        assert request.mode == "r?"
++        assert request.extension == ".png"
++        assert request.filename == str(image)
++        result = file.read()
++
++    assert result.shape == array.shape
++    assert np.array_equal(result, array)
++
++
++def test_plugin_write_back_byte_for_byte(tmp_path):
++    image = tmp_path / "written.png"
++    array = np.arange(6 * 7 * 3, dtype=np.uint8).reshape(6, 7, 3)
++    iio.v3.imwrite(image, array)
++
++    with iio.v3.imopen(image, "r") as file:
++        result = file.read()
++    assert np.array_equal(result, array)
++
++
++def test_return_bytes_write_result_through_public_api():
++    array = np.arange(4 * 5 * 3, dtype=np.uint8).reshape(4, 5, 3)
++    result = iio.v3.imwrite(RETURN_BYTES, array, extension=".png")
++    assert isinstance(result, bytes)
++    assert result.startswith(b"\x89PNG\r\n\x1a\n")
++    assert len(result) > 0
+diff --git a/tests/testdata/case32_lifecycle.json b/tests/testdata/case32_lifecycle.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..ad9b8de6838f5e11c5ce70e7fb24a0e5be527637
+--- /dev/null
++++ b/tests/testdata/case32_lifecycle.json
+@@ -0,0 +1 @@
++{"allocation/bytes": {"archive_exists": false, "finish": null, "open": {"error": "MemoryError", "message": "audit buffer allocation"}, "result": null, "retry_finish": null, "retry_result": "7265747279", "second_finish": null}, "allocation/zip": {"archive_exists": false, "finish": null, "open": {"error": "MemoryError", "message": "audit buffer allocation"}, "result": null, "retry_contents": "7265747279", "retry_finish": null, "retry_result": null, "second_finish": null}, "caller-write-error": {"caller_closed": false, "contents": "72657472792d64617461", "finish": {"error": "OSError", "message": "audit caller write"}, "retry_finish": null, "temp_after_failure": true, "temp_after_retry": false}, "interleaved": ["41", "42"], "pillow-roundtrip": {"dtype": "uint8", "same": true, "shape": [4, 5, 3]}, "read/bytes/r?/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 1, "kwargs": {"label": "audit"}, "mode": "Mode.read_any", "result": null, "reuse": true, "second_finish": null}, "read/bytes/r?/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 1, "kwargs": {"label": "audit"}, "mode": "Mode.read_any", "path_exists_after": false, "result": null, "reuse": true, "second_finish": null, "was_local": false}, "read/bytes/rI/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 1, "kwargs": {"label": "audit"}, "mode": "Mode.read_multi_image", "result": null, "reuse": true, "second_finish": null}, "read/bytes/rI/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 1, "kwargs": {"label": "audit"}, "mode": "Mode.read_multi_image", "path_exists_after": false, "result": null, "reuse": true, "second_finish": null, "was_local": false}, "read/bytes/ri/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 1, "kwargs": {"label": "audit"}, "mode": "Mode.read_single_image", "result": null, "reuse": true, "second_finish": null}, "read/bytes/ri/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 1, "kwargs": {"label": "audit"}, "mode": "Mode.read_single_image", "path_exists_after": false, "result": null, "reuse": true, "second_finish": null, "was_local": false}, "read/caller/r?/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": false, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 2, "kwargs": {"label": "audit"}, "mode": "Mode.read_any", "result": null, "reuse": true, "second_finish": null}, "read/caller/r?/temporary": {"caller_closed": false, "closed": false, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 2, "kwargs": {"label": "audit"}, "mode": "Mode.read_any", "path_exists_after": false, "result": null, "reuse": true, "second_finish": null, "was_local": false}, "read/caller/rI/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": false, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 2, "kwargs": {"label": "audit"}, "mode": "Mode.read_multi_image", "result": null, "reuse": true, "second_finish": null}, "read/caller/rI/temporary": {"caller_closed": false, "closed": false, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 2, "kwargs": {"label": "audit"}, "mode": "Mode.read_multi_image", "path_exists_after": false, "result": null, "reuse": true, "second_finish": null, "was_local": false}, "read/caller/ri/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": false, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 2, "kwargs": {"label": "audit"}, "mode": "Mode.read_single_image", "result": null, "reuse": true, "second_finish": null}, "read/caller/ri/temporary": {"caller_closed": false, "closed": false, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 2, "kwargs": {"label": "audit"}, "mode": "Mode.read_single_image", "path_exists_after": false, "result": null, "reuse": true, "second_finish": null, "was_local": false}, "read/file_uri/r?/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 3, "kwargs": {"label": "audit"}, "mode": "Mode.read_any", "result": null, "reuse": true, "second_finish": null}, "read/file_uri/r?/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 3, "kwargs": {"label": "audit"}, "mode": "Mode.read_any", "path_exists_after": true, "result": null, "reuse": true, "second_finish": null, "was_local": true}, "read/file_uri/rI/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 3, "kwargs": {"label": "audit"}, "mode": "Mode.read_multi_image", "result": null, "reuse": true, "second_finish": null}, "read/file_uri/rI/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 3, "kwargs": {"label": "audit"}, "mode": "Mode.read_multi_image", "path_exists_after": true, "result": null, "reuse": true, "second_finish": null, "was_local": true}, "read/file_uri/ri/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 3, "kwargs": {"label": "audit"}, "mode": "Mode.read_single_image", "result": null, "reuse": true, "second_finish": null}, "read/file_uri/ri/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 3, "kwargs": {"label": "audit"}, "mode": "Mode.read_single_image", "path_exists_after": true, "result": null, "reuse": true, "second_finish": null, "was_local": true}, "read/memoryview/r?/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 1, "kwargs": {"label": "audit"}, "mode": "Mode.read_any", "result": null, "reuse": true, "second_finish": null}, "read/memoryview/r?/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 1, "kwargs": {"label": "audit"}, "mode": "Mode.read_any", "path_exists_after": false, "result": null, "reuse": true, "second_finish": null, "was_local": false}, "read/memoryview/rI/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 1, "kwargs": {"label": "audit"}, "mode": "Mode.read_multi_image", "result": null, "reuse": true, "second_finish": null}, "read/memoryview/rI/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 1, "kwargs": {"label": "audit"}, "mode": "Mode.read_multi_image", "path_exists_after": false, "result": null, "reuse": true, "second_finish": null, "was_local": false}, "read/memoryview/ri/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 1, "kwargs": {"label": "audit"}, "mode": "Mode.read_single_image", "result": null, "reuse": true, "second_finish": null}, "read/memoryview/ri/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 1, "kwargs": {"label": "audit"}, "mode": "Mode.read_single_image", "path_exists_after": false, "result": null, "reuse": true, "second_finish": null, "was_local": false}, "read/path/r?/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 3, "kwargs": {"label": "audit"}, "mode": "Mode.read_any", "result": null, "reuse": true, "second_finish": null}, "read/path/r?/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 3, "kwargs": {"label": "audit"}, "mode": "Mode.read_any", "path_exists_after": true, "result": null, "reuse": true, "second_finish": null, "was_local": true}, "read/path/rI/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 3, "kwargs": {"label": "audit"}, "mode": "Mode.read_multi_image", "result": null, "reuse": true, "second_finish": null}, "read/path/rI/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 3, "kwargs": {"label": "audit"}, "mode": "Mode.read_multi_image", "path_exists_after": true, "result": null, "reuse": true, "second_finish": null, "was_local": true}, "read/path/ri/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 3, "kwargs": {"label": "audit"}, "mode": "Mode.read_single_image", "result": null, "reuse": true, "second_finish": null}, "read/path/ri/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 3, "kwargs": {"label": "audit"}, "mode": "Mode.read_single_image", "path_exists_after": true, "result": null, "reuse": true, "second_finish": null, "was_local": true}, "read/zip/r?/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 4, "kwargs": {"label": "audit"}, "mode": "Mode.read_any", "result": null, "reuse": true, "second_finish": null}, "read/zip/r?/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 4, "kwargs": {"label": "audit"}, "mode": "Mode.read_any", "path_exists_after": false, "result": null, "reuse": true, "second_finish": null, "was_local": false}, "read/zip/rI/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 4, "kwargs": {"label": "audit"}, "mode": "Mode.read_multi_image", "result": null, "reuse": true, "second_finish": null}, "read/zip/rI/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 4, "kwargs": {"label": "audit"}, "mode": "Mode.read_multi_image", "path_exists_after": false, "result": null, "reuse": true, "second_finish": null, "was_local": false}, "read/zip/ri/handle": {"caller_closed": false, "chunks": ["00010203040506", "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64"], "closed": true, "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 4, "kwargs": {"label": "audit"}, "mode": "Mode.read_single_image", "result": null, "reuse": true, "second_finish": null}, "read/zip/ri/temporary": {"caller_closed": false, "closed": true, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "extension": ".bin", "finish": null, "header": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff", "kind": 4, "kwargs": {"label": "audit"}, "mode": "Mode.read_single_image", "path_exists_after": false, "result": null, "reuse": true, "second_finish": null, "was_local": false}, "sentinel/<clipboard>": {"finish": null, "handle_none": false, "kind": 1}, "sentinel/<screen>": {"finish": null, "handle_none": false, "kind": 1}, "sentinel/<video0>": {"finish": null, "handle_none": false, "kind": 1}, "sentinel/ftp://audit.invalid/a.bin": {"finish": null, "handle_none": true, "kind": 6}, "sentinel/ftps://audit.invalid/a.bin": {"finish": null, "handle_none": true, "kind": 6}, "wrapper/http": {"closed_after_finish": [true], "closed_before_finish": [false], "finish": null, "open": {"error": "MemoryError", "message": "audit wrapper allocation"}, "opened_count": 1}, "wrapper/zip": {"closed_after_finish": [true], "closed_before_finish": [false], "finish": null, "open": {"error": "MemoryError", "message": "audit wrapper allocation"}, "opened_count": 1}, "write/bytes/handle": {"caller_closed": false, "consumed_result": null, "finish": null, "result": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "second_finish": null}, "write/bytes/temporary": {"caller_closed": false, "consumed_result": null, "finish": null, "path_exists_after": false, "result": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "second_finish": null}, "write/caller/handle": {"caller_closed": false, "consumed_result": null, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "finish": null, "result": null, "second_finish": null}, "write/caller/temporary": {"caller_closed": false, "consumed_result": null, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "finish": null, "path_exists_after": false, "result": null, "second_finish": null}, "write/local/handle": {"caller_closed": false, "consumed_result": null, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "finish": null, "result": null, "second_finish": null}, "write/local/temporary": {"caller_closed": false, "consumed_result": null, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "finish": null, "path_exists_after": true, "result": null, "second_finish": null}, "write/zip/handle": {"caller_closed": false, "consumed_result": null, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "finish": null, "result": null, "second_finish": null}, "write/zip/temporary": {"caller_closed": false, "consumed_result": null, "contents": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff656e64", "finish": null, "path_exists_after": false, "result": null, "second_finish": null}}

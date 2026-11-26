@@ -1,0 +1,2939 @@
+diff --git a/test/test_audit_regressions.py b/test/test_audit_regressions.py
+new file mode 100644
+index 0000000..e7dce99
+--- /dev/null
++++ b/test/test_audit_regressions.py
+@@ -0,0 +1,481 @@
++"""Public behavior regressions for audit issues 2--13 (no implementation names)."""
++import hashlib
++import inspect
++import json
++import multiprocessing
++import os
++import subprocess
++import sys
++import zipfile
++from pathlib import Path
++from unittest.mock import patch
++
++from click.testing import CliRunner
++
++from shiv.cli import main
++from shiv.bootstrap import extract_site_packages
++from shiv.bootstrap.environment import Environment
++
++
++def build(sp, target, *options):
++    result = CliRunner().invoke(main, [
++        '--site-packages', str(sp), '-o', str(target), '--reproducible', *options,
++    ])
++    assert result.exit_code == 0, repr(result.exception)
++    return target
++
++
++def execute(archive, cache, *args, overrides=None, stdin=None):
++    runtime_env = {k: v for k, v in os.environ.items() if not k.startswith('SHIV_')}
++    runtime_env['SHIV_ROOT'] = str(cache)
++    runtime_env.update(overrides or {})
++    return subprocess.run(
++        [sys.executable, '-B', str(archive), *args], input=stdin,
++        env=runtime_env, capture_output=True, text=True, timeout=20,
++    )
++
++
++def make_payload(tmp_path):
++    sp = tmp_path / 'sp'
++    sp.mkdir()
++    (sp / 'payload.py').write_text(
++        "import json,sys\n"
++        "def main():\n"
++        "    print(json.dumps({'target':'metadata','argv':sys.argv}))\n"
++        "    return 7\n"
++        "def other():\n"
++        "    print(json.dumps({'target':'entry','argv':sys.argv}))\n"
++        "    return 9\n"
++    )
++    return sp
++
++
++def test_pip_arguments_and_staged_merge(tmp_path):
++    """Issue 2: exercise the actual CLI while keeping installation offline."""
++    import shiv.cli as cli
++    sp = tmp_path / 'existing'
++    sp.mkdir()
++    (sp / 'kept.txt').write_bytes(b'original')
++    args = ['--no-index', '--find-links', 'wheel dir', 'package==1.2', '--no-deps']
++    calls = []
++
++    def install(actual):
++        calls.append(list(actual))
++        assert actual[0] == '--target', 'pip must install into transient staging'
++        assert actual[2:] == args, 'pass-through pip arguments/order were changed'
++        staged = Path(actual[1])
++        assert staged.resolve() != sp.resolve()
++        assert (staged / 'kept.txt').read_bytes() == b'original'
++        (staged / 'kept.txt').write_bytes(b'staged modification')
++        (staged / 'installed.txt').write_bytes(b'installed')
++
++    archive = tmp_path / 'merged.pyz'
++    with patch.object(cli.pip, 'install', side_effect=install):
++        result = CliRunner().invoke(main, [
++            '--site-packages', str(sp), '-o', str(archive), '--', *args,
++        ])
++    assert result.exit_code == 0, repr(result.exception)
++    assert len(calls) == 1, 'dependency installation was dropped'
++    assert (sp / 'kept.txt').read_bytes() == b'original'
++    assert not (sp / 'installed.txt').exists()
++    with zipfile.ZipFile(archive) as zf:
++        assert zf.read('site-packages/kept.txt') == b'staged modification'
++        assert zf.read('site-packages/installed.txt') == b'installed'
++
++
++def test_default_content_identity_and_explicit_build_id(tmp_path):
++    """Issue 3: frozen identity hashes file bytes then relative names in order."""
++    sp = tmp_path / 'identity'
++    sp.mkdir()
++    (sp / 'a.txt').write_bytes(b'alpha')
++    (sp / 'z.txt').write_bytes(b'omega')
++    (sp / 'ignored.pyc').write_bytes(b'not archived')
++    identities = []
++    for variant in range(3):
++        digest = hashlib.sha256()
++        for path in sorted(sp.rglob('*'), key=str):
++            if path.is_file() and path.suffix != '.pyc':
++                digest.update(path.read_bytes())
++                digest.update(str(path.relative_to(sp)).encode())
++        archive = build(sp, tmp_path / ('identity-%s.pyz' % variant))
++        with zipfile.ZipFile(archive) as zf:
++            actual = json.loads(zf.read('environment.json'))['build_id']
++        assert actual == digest.hexdigest(), 'persisted default build_id lost content identity'
++        identities.append(actual)
++        if variant == 0:
++            (sp / 'a.txt').write_bytes(b'changed')
++        elif variant == 1:
++            (sp / 'a.txt').rename(sp / 'renamed.txt')
++    assert len(set(identities)) == 3
++    explicit = build(sp, tmp_path / 'explicit.pyz', '--build-id', 'chosen-id')
++    with zipfile.ZipFile(explicit) as zf:
++        assert json.loads(zf.read('environment.json'))['build_id'] == 'chosen-id'
++
++
++def test_force_boolean_resolution_and_real_cache_rebuild(tmp_path, monkeypatch):
++    """Issue 4: force boolean parsing is separate from interpreter string truthiness."""
++    sp = make_payload(tmp_path)
++    archive = build(sp, tmp_path / 'force.pyz')
++    cache = tmp_path / 'cache'
++    result = execute(archive, cache, '-c', 'pass')
++    assert result.returncode == 0, result.stderr
++    cached = next(cache.rglob('payload.py'))
++    original = (sp / 'payload.py').read_bytes()
++    for value, expected in [('yes', True), ('true', True), ('t', True), ('1', True),
++                            ('TRUE', True), ('false', False), ('0', False), ('', False)]:
++        monkeypatch.setenv('SHIV_FORCE_EXTRACT', value)
++        for default in (False, True):
++            env = Environment(built_at='2020-01-01 00:00:00', shiv_version='probe',
++                              always_write_cache=default)
++            assert env.force_extract is expected
++        cached.write_bytes(b'# cache sentinel\n')
++        result = execute(archive, cache, '-c', 'pass', overrides={'SHIV_FORCE_EXTRACT': value})
++        assert result.returncode == 0, result.stderr
++        assert cached.read_bytes() == (original if expected else b'# cache sentinel\n'), (
++            'force did not control real cache materialization', value,
++        )
++    monkeypatch.delenv('SHIV_FORCE_EXTRACT')
++    for default in (False, True):
++        env = Environment(built_at='2020-01-01 00:00:00', shiv_version='probe',
++                          always_write_cache=default)
++        assert env.force_extract is default, 'absent override must use always_write_cache'
++
++
++def _cache_contender(archive_path, target, role, ready, first_extract, release, overlap, count, errors, force_first=False):
++    """Hold process 1 inside extraction so process 2 competes before placement."""
++    real_extract = zipfile.ZipFile.extract
++
++    def extract(self, *args, **kwargs):
++        with count.get_lock():
++            count.value += 1
++        if role == 1:
++            first_extract.set()
++            if not release.wait(8):
++                raise RuntimeError('parent did not release extraction')
++        elif not release.is_set():
++            overlap.set()
++        return real_extract(self, *args, **kwargs)
++
++    try:
++        with patch.object(zipfile.ZipFile, 'extract', extract):
++            ready.set()
++            with zipfile.ZipFile(archive_path) as zf:
++                extract_site_packages(zf, Path(target), force=force_first and role == 1)
++        if role == 2:
++            if not release.is_set():
++                overlap.set()
++            assert (Path(target) / "site-packages/only.txt").read_bytes() == b"complete contents", (
++                "cache reuse returned before the concurrent refresh completed"
++            )
++        errors.put(None)
++    except BaseException as exc:
++        errors.put(type(exc).__name__ + ': ' + str(exc))
++
++
++def test_competing_materializations_are_serialized(tmp_path):
++    """Initial extraction and forced refresh both serialize compatibility cache reuse."""
++    for force_first in (False, True):
++        work_dir = tmp_path / ("refresh" if force_first else "initial")
++        work_dir.mkdir()
++        _check_competing_materializations(work_dir, force_first)
++
++
++def _check_competing_materializations(tmp_path, force_first):
++    assert os.name == 'posix', 'task runtime requires POSIX lock validation'
++    archive = tmp_path / 'cache.zip'
++    with zipfile.ZipFile(archive, 'w') as zf:
++        zf.writestr('site-packages/only.txt', b'complete contents')
++    ctx = multiprocessing.get_context('fork')
++    ready1, ready2, inside, release, overlap = [ctx.Event() for _ in range(5)]
++    count, errors = ctx.Value('i', 0), ctx.Queue()
++    target = tmp_path / 'shared-cache'
++    if force_first:
++        (target / "site-packages").mkdir(parents=True)
++        (target / "site-packages/only.txt").write_bytes(b"stale contents")
++    workers = [ctx.Process(target=_cache_contender, args=(
++        str(archive), str(target), role, ready, inside, release, overlap, count, errors, force_first,
++    )) for role, ready in [(1, ready1), (2, ready2)]]
++    try:
++        workers[0].start()
++        assert inside.wait(5), 'first materialization never reached extraction'
++        workers[1].start()
++        assert ready2.wait(5), 'second process never started materialization'
++        # First extraction remains blocked throughout this bounded contention window.
++        overlap.wait(0.5)
++        release.set()
++        for worker in workers:
++            worker.join(8)
++        assert all(not worker.is_alive() and worker.exitcode == 0 for worker in workers)
++        assert not overlap.is_set(), 'same-cache extraction or cache reuse bypassed synchronization'
++        results = [errors.get(timeout=2) for _ in workers]
++        assert results == [None, None], results
++        assert count.value == 1, 'cache was not rechecked after synchronization'
++        assert (target / 'site-packages/only.txt').read_bytes() == b'complete contents'
++    finally:
++        release.set()
++        for worker in workers:
++            if worker.pid and worker.is_alive():
++                worker.terminate()
++                worker.join(2)
++        errors.close()
++
++
++def test_compile_workers_and_disabled_compilation(tmp_path, monkeypatch):
++    """Issue 6: inspect actual compiler arguments, not only whether it was called."""
++    import compileall
++    compiler_signature = inspect.signature(compileall.compile_dir)
++    archive = tmp_path / 'compile.zip'
++    with zipfile.ZipFile(archive, 'w') as zf:
++        zf.writestr('site-packages/example.py', b'value=1\n')
++    env = Environment(built_at='2020-01-01 00:00:00', shiv_version='probe')
++    for index, (value, workers) in enumerate([('0', 0), ('2', 2), ('3', 3), ('invalid', 0)]):
++        monkeypatch.setenv('SHIV_COMPILE_WORKERS', value)
++        assert env.compile_workers == workers
++        target = tmp_path / ('compile-%s' % index)
++        with patch.object(compileall, 'compile_dir', return_value=True) as compiler:
++            with zipfile.ZipFile(archive) as zf:
++                extract_site_packages(zf, target, compile_pyc=True, compile_workers=env.compile_workers)
++        assert compiler.call_count == 1
++        args, kwargs = compiler.call_args
++        bound = compiler_signature.bind(*args, **kwargs)
++        bound.apply_defaults()
++        assert bound.arguments['quiet'] == 2
++        assert bound.arguments['workers'] == workers, 'configured workers were ignored'
++        assert Path(args[0]).parent == target.parent
++    with patch.object(compileall, 'compile_dir') as compiler:
++        with zipfile.ZipFile(archive) as zf:
++            extract_site_packages(zf, tmp_path / 'disabled', compile_pyc=False, compile_workers=3)
++    compiler.assert_not_called()
++
++    # Also exercise propagation from runtime environment through production bootstrap.
++    sp = tmp_path / 'runtime-sp'
++    sp.mkdir()
++    (sp / 'example.py').write_text('value=1\n')
++    app = build(sp, tmp_path / 'runtime-compile.pyz', '--compile-pyc')
++    launcher = (
++        "import compileall,inspect,json,runpy,sys\n"
++        "signature=inspect.signature(compileall.compile_dir)\n"
++        "def observe(*args,**kwargs):\n"
++        "    bound=signature.bind(*args,**kwargs);bound.apply_defaults()\n"
++        "    print(json.dumps({k:bound.arguments[k] for k in ['quiet','workers']}))\n"
++        "    return True\n"
++        "compileall.compile_dir=observe\n"
++        "archive=sys.argv[1];sys.argv=[archive,'-c','pass']\n"
++        "runpy.run_path(archive,run_name='__main__')\n"
++    )
++    for value, workers in [('3', 3), ('invalid', 0)]:
++        runtime_env = {k: v for k, v in os.environ.items() if not k.startswith('SHIV_')}
++        runtime_env.update(SHIV_ROOT=str(tmp_path / ('runtime-cache-' + value)),
++                           SHIV_COMPILE_WORKERS=value)
++        result = subprocess.run([sys.executable, '-B', '-c', launcher, str(app)],
++                                env=runtime_env, capture_output=True, text=True, timeout=20)
++        assert result.returncode == 0, result.stderr
++        assert json.loads(result.stdout) == {'quiet': 2, 'workers': workers}, (
++            'bootstrap did not pass the configured compile worker value',
++        )
++
++
++def test_preamble_actual_context_and_order(tmp_path):
++    """Issue 7: run the preamble with its actual injected globals."""
++    sp = make_payload(tmp_path)
++    preamble = tmp_path / 'pre.py'
++    preamble.write_text(
++        "import json\n"
++        "print(json.dumps({'preamble': True, 'archive': archive, 'build_id': env.build_id,"
++        " 'entry_point': env.entry_point, 'site_packages': str(site_packages),"
++        " 'payload_present': (site_packages / 'payload.py').is_file()}))\n"
++    )
++    archive = build(sp, tmp_path / 'pre.pyz', '-e', 'payload:main', '--preamble', str(preamble))
++    with zipfile.ZipFile(archive) as zf:
++        metadata = json.loads(zf.read('environment.json'))
++    cache = tmp_path / 'cache'
++    result = execute(archive, cache)
++    assert result.returncode == 7, result.stderr
++    pre, app = [json.loads(line) for line in result.stdout.splitlines()]
++    assert pre == {
++        'preamble': True, 'archive': str(archive), 'build_id': metadata['build_id'],
++        'entry_point': 'payload:main', 'site_packages': str(next(cache.rglob('payload.py')).parent),
++        'payload_present': True,
++    }, 'preamble globals lost archive/environment/site-packages context'
++    assert app['target'] == 'metadata', 'preamble must precede the selected application'
++
++
++def test_callable_exit_argv_and_streams(tmp_path):
++    """Issue 8: the real callable handoff must propagate return values and streams."""
++    sp = make_payload(tmp_path)
++    (sp / 'app.py').write_text(
++        "import json,sys\n"
++        "def main():\n"
++        "    print(json.dumps(sys.argv))\n"
++        "    print('app stderr', file=sys.stderr)\n"
++        "    return None if sys.argv[-1]=='none' else int(sys.argv[-1])\n"
++    )
++    archive = build(sp, tmp_path / 'exit.pyz', '-e', 'app:main')
++    for value, expected in [('7', 7), ('0', 0), ('none', 0)]:
++        result = execute(archive, tmp_path / 'cache', 'tail with space', value)
++        assert result.returncode == expected, 'callable return value was not propagated'
++        assert json.loads(result.stdout) == [str(archive), 'tail with space', value]
++        assert result.stderr == 'app stderr\n'
++
++
++def test_nonempty_interpreter_override(tmp_path):
++    """Issue 9: any nonempty override, including false/0, forces interpreter."""
++    sp = make_payload(tmp_path)
++    archive = build(sp, tmp_path / 'override.pyz', '-e', 'payload:main')
++    for value in ['false', '0', 'yes', 'arbitrary']:
++        result = execute(archive, tmp_path / 'cache', '-c', "print('interpreter')",
++                         overrides={'SHIV_INTERPRETER': value})
++        assert result.returncode == 0 and result.stdout == 'interpreter\n', (
++            'nonempty SHIV_INTERPRETER failed to force interpreter', value, result.stderr,
++        )
++    for overrides in [{}, {'SHIV_INTERPRETER': ''}]:
++        result = execute(archive, tmp_path / 'cache', overrides=overrides)
++        assert result.returncode == 7, result.stderr
++        assert json.loads(result.stdout)['target'] == 'metadata'
++
++    # Preambles run before primary dispatch and may set runtime overrides.
++    preamble = tmp_path / 'interpreter_override.py'
++    preamble.write_text(
++        "import os\n"
++        "os.environ['SHIV_INTERPRETER'] = '1'\n"
++        "print('preamble')\n"
++    )
++    archive = build(sp, tmp_path / 'preamble-override.pyz', '-e', 'payload:main',
++                    '--preamble', str(preamble))
++    result = execute(archive, tmp_path / 'preamble-cache', '-c',
++                     "import sys; print('interpreter'); sys.exit(6)")
++    assert (result.returncode, result.stdout, result.stderr) == (6, 'preamble\ninterpreter\n', ''), (
++        'SHIV_INTERPRETER set by the preamble must override the configured entry point',
++        result.returncode, result.stdout, result.stderr,
++    )
++
++SCRIPT = ("import json,sys\n"
++          "print(json.dumps({'argv':sys.argv,'file':__file__,'name':__name__}))\n"
++          "print('script stderr',file=sys.stderr)\n"
++          "sys.exit(6)\n")
++
++
++def test_interpreter_script_context_and_open_error(tmp_path):
++    """Issue 10: execute script content and inspect its real __file__/argv/exit."""
++    sp = make_payload(tmp_path)
++    archive = build(sp, tmp_path / 'script.pyz')
++    script = tmp_path / 'script with space.py'
++    script.write_text(SCRIPT)
++    result = execute(archive, tmp_path / 'cache', str(script), 'tail')
++    assert result.returncode == 6, result.stderr
++    assert json.loads(result.stdout) == {'argv': [str(script), 'tail'], 'file': str(script), 'name': '__main__'}
++    assert result.stderr == 'script stderr\n'
++    missing = tmp_path / 'missing.py'
++    result = execute(archive, tmp_path / 'cache', str(missing))
++    assert result.returncode != 0 and "Could not open '%s'" % missing in result.stderr
++
++
++def test_interpreter_stdin_execution_and_exit(tmp_path):
++    """Issue 11: a no-op stdin branch must fail observable content execution."""
++    sp = make_payload(tmp_path)
++    archive = build(sp, tmp_path / 'stdin.pyz')
++    result = execute(archive, tmp_path / 'cache', '-', 'tail with space', stdin=SCRIPT)
++    assert result.returncode == 6, 'stdin content did not execute/propagate exit'
++    assert json.loads(result.stdout) == {'argv': ['-', 'tail with space'], 'file': '-', 'name': '__main__'}
++    assert result.stderr == 'script stderr\n'
++
++
++def test_entry_point_module_and_metadata_precedence(tmp_path):
++    """Issue 12: observe distinct targets under conflicting overrides and fallback."""
++    sp = make_payload(tmp_path)
++    archive = build(sp, tmp_path / 'precedence.pyz', '-e', 'payload:main')
++    for overrides, target, exit_code in [
++        ({'SHIV_ENTRY_POINT': 'payload:other', 'SHIV_MODULE': 'payload:main'}, 'entry', 9),
++        ({'SHIV_MODULE': 'payload:other'}, 'entry', 9),
++        ({}, 'metadata', 7),
++    ]:
++        result = execute(archive, tmp_path / 'cache', overrides=overrides)
++        assert result.returncode == exit_code, result.stderr
++        assert json.loads(result.stdout)['target'] == target, 'ENTRY_POINT/MODULE/metadata precedence changed'
++
++
++def test_cli_historical_precedence_help():
++    """Issue 13: retain help wording independently of runtime console-script precedence."""
++    result = CliRunner().invoke(main, ['--help'])
++    assert result.exit_code == 0
++    normalized = ' '.join(result.output.split())
++    assert 'The entry point to invoke (takes precedence over --console-script).' in normalized
++
++
++def test_runtime_cache_path_remains_consistent_during_materialization(tmp_path):
++    """Root overrides must not split extraction from the path handed to runtime."""
++    import contextlib
++    import stat
++    import types
++
++    import pytest
++    import shiv.bootstrap as bootstrap
++
++    # Both cases use a real zip, real extraction, permissions, and compilation.
++    # The filename proxy supplies a deterministic change after root resolution,
++    # equivalent to another thread updating the referenced environment variable.
++    for change_root in (False, True):
++        work = tmp_path / ('changed' if change_root else 'stable')
++        work.mkdir()
++        initial_root, later_root = work / 'initial', work / 'later'
++        archive_path = work / 'app.pyz'
++        metadata = Environment(
++            built_at='2020-09-13 12:26:40', shiv_version='probe', build_id='context',
++            compile_pyc=True, entry_point='_cache_context_probe:main',
++        )
++        with zipfile.ZipFile(archive_path, 'w') as archive:
++            member = zipfile.ZipInfo('site-packages/context_payload.py')
++            member.external_attr = 0o100640 << 16
++            archive.writestr(member, 'VALUE = 42\n')
++            archive.writestr('environment.json', metadata.to_json())
++
++        class ArchiveView:
++            def __init__(self, archive):
++                self.archive = archive
++                self.changed = False
++
++            @property
++            def filename(self):
++                if change_root and not self.changed:
++                    os.environ['CACHE_CONTEXT_ROOT'] = str(later_root)
++                    self.changed = True
++                return str(archive_path)
++
++            def __getattr__(self, name):
++                return getattr(self.archive, name)
++
++        @contextlib.contextmanager
++        def current_archive():
++            with zipfile.ZipFile(archive_path) as archive:
++                yield ArchiveView(archive)
++
++        application = types.ModuleType('_cache_context_probe')
++        application.main = lambda: 0
++        site_dirs = []
++        runtime_env = {key: value for key, value in os.environ.items()
++                       if not key.startswith('SHIV_')}
++        runtime_env.update(
++            SHIV_ROOT='$CACHE_CONTEXT_ROOT', CACHE_CONTEXT_ROOT=str(initial_root),
++            SHIV_COMPILE_WORKERS='1',
++        )
++        with contextlib.ExitStack() as stack:
++            stack.enter_context(patch.dict(os.environ, runtime_env, clear=True))
++            stack.enter_context(patch.dict(sys.modules, {'_cache_context_probe': application}))
++            stack.enter_context(patch.object(sys, 'argv', [str(archive_path)]))
++            stack.enter_context(patch.object(sys, 'path', list(sys.path)))
++            stack.enter_context(patch.object(bootstrap, 'current_zipfile', current_archive))
++            stack.enter_context(patch.object(
++                bootstrap.site, 'addsitedir', lambda directory: site_dirs.append(str(directory)),
++            ))
++            with pytest.raises(SystemExit) as exit_info:
++                bootstrap.bootstrap()
++            assert exit_info.value.code == 0
++
++        expected = initial_root / 'app.pyz_context' / 'site-packages'
++        assert site_dirs == [str(expected)], 'runtime received a different cache path'
++        payload = expected / 'context_payload.py'
++        assert payload.is_file(), 'runtime cache path differs from the materialized directory'
++        assert payload.read_text() == 'VALUE = 42\n'
++        assert stat.S_IMODE(payload.stat().st_mode) == 0o640
++        assert list(expected.rglob('*.pyc')), 'bytecode was not placed in the runtime cache'
++        assert not later_root.exists(), 'materialization changed its evaluated cache target'
+diff --git a/test/test_f2p_behavior.py b/test/test_f2p_behavior.py
+new file mode 100644
+index 0000000..8225a2b
+--- /dev/null
++++ b/test/test_f2p_behavior.py
+@@ -0,0 +1,1994 @@
++import ast
++import code
++import compileall
++import contextlib
++import dis
++import io
++import os
++import py_compile
++import runpy
++import shutil
++import sys
++import types
++import zipfile
++from pathlib import Path
++from unittest.mock import patch
++import pytest
++
++# ---------------------------------------------------------------------------
++# Behavior Node 1 (BN-1 / E1): Preparation -> Explicit Handoff -> Emission
++# ---------------------------------------------------------------------------
++def _is_statically_false(test_node):
++    if isinstance(test_node, ast.Constant):
++        return not bool(test_node.value)
++    if isinstance(test_node, ast.UnaryOp) and isinstance(test_node.op, ast.Not):
++        return _is_statically_true(test_node.operand)
++    return False
++
++
++def _is_statically_true(test_node):
++    if isinstance(test_node, ast.Constant):
++        return bool(test_node.value)
++    if isinstance(test_node, ast.UnaryOp) and isinstance(test_node.op, ast.Not):
++        return _is_statically_false(test_node.operand)
++    return False
++
++
++def _extract_target_keys(target):
++    if isinstance(target, ast.Name):
++        return [target.id]
++    elif isinstance(target, ast.Attribute):
++        if isinstance(target.value, ast.Name):
++            return [f"{target.value.id}.{target.attr}"]
++        curr = target
++        parts = []
++        while isinstance(curr, ast.Attribute):
++            parts.append(curr.attr)
++            curr = curr.value
++        if isinstance(curr, ast.Name):
++            parts.append(curr.id)
++            return [".".join(reversed(parts))]
++    elif isinstance(target, (ast.Tuple, ast.List)):
++        keys = []
++        for elt in target.elts:
++            keys.extend(_extract_target_keys(elt))
++        return keys
++    return []
++
++
++def _expr_in_prep(expr, prep_vars):
++    if isinstance(expr, ast.Name):
++        return expr.id in prep_vars
++    elif isinstance(expr, ast.Attribute):
++        if isinstance(expr.value, ast.Name):
++            return f"{expr.value.id}.{expr.attr}" in prep_vars or expr.value.id in prep_vars
++        curr = expr
++        parts = []
++        while isinstance(curr, ast.Attribute):
++            parts.append(curr.attr)
++            curr = curr.value
++        if isinstance(curr, ast.Name):
++            parts.append(curr.id)
++            key = ".".join(reversed(parts))
++            return key in prep_vars or curr.id in prep_vars
++    return False
++
++
++def _build_symbol_table(py_files_map):
++    mod_to_file = {}
++    file_to_mod = {}
++    for rel_path in py_files_map:
++        parts = Path(rel_path).with_suffix("").parts
++        if parts[-1] == "__init__":
++            mod_parts = parts[:-1]
++        else:
++            mod_parts = parts
++        mod1 = ".".join(mod_parts)
++        mod2 = "shiv." + mod1 if mod1 else "shiv"
++        short = mod_parts[-1] if mod_parts else ""
++        file_to_mod[rel_path] = mod2
++        mod_to_file[mod2] = rel_path
++        if mod1:
++            mod_to_file[mod1] = rel_path
++        if short:
++            mod_to_file[short] = rel_path
++
++    file_functions = {}
++    file_classes = {}
++    file_imports = {}
++    file_aliases = {}
++
++    for fname, tree in py_files_map.items():
++        fns = {}
++        cls = {}
++        imps = {}
++        aliases = {}
++        for node in tree.body:
++            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
++                fns[node.name] = node
++            elif isinstance(node, ast.ClassDef):
++                cls[node.name] = node
++                for item in node.body:
++                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
++                        fns[f"{node.name}.{item.name}"] = item
++            elif isinstance(node, ast.Import):
++                for alias in node.names:
++                    as_name = alias.asname or alias.name
++                    target_mod = alias.name
++                    target_file = mod_to_file.get(target_mod)
++                    if not target_file:
++                        for sub in target_mod.split("."):
++                            if sub in mod_to_file:
++                                target_file = mod_to_file[sub]
++                    if target_file:
++                        imps[as_name] = ("MODULE", target_file)
++                    elif target_mod == "contextlib":
++                        imps[as_name] = ("STDLIB_MODULE", "contextlib")
++                    else:
++                        imps[as_name] = ("EXT_MODULE", target_mod)
++            elif isinstance(node, ast.ImportFrom):
++                mod = node.module or ""
++                cur_mod = file_to_mod.get(fname, "")
++                if node.level > 0:
++                    pkg = ".".join(cur_mod.split(".")[:-node.level])
++                    resolved_mod = f"{pkg}.{mod}" if mod else pkg
++                else:
++                    resolved_mod = mod
++                target_file = mod_to_file.get(resolved_mod)
++                for alias in node.names:
++                    as_name = alias.asname or alias.name
++                    if target_file:
++                        imps[as_name] = ("SYMBOL", target_file, alias.name)
++                    elif resolved_mod == "contextlib":
++                        imps[as_name] = ("STDLIB_SYMBOL", "contextlib", alias.name)
++                    else:
++                        submod = f"{resolved_mod}.{alias.name}" if resolved_mod else alias.name
++                        subfile = mod_to_file.get(submod) or mod_to_file.get(alias.name)
++                        if subfile:
++                            imps[as_name] = ("MODULE", subfile)
++                        else:
++                            imps[as_name] = ("EXT_SYMBOL", resolved_mod, alias.name)
++            elif isinstance(node, ast.Assign):
++                if isinstance(node.value, ast.Name):
++                    for tgt in node.targets:
++                        if isinstance(tgt, ast.Name):
++                            aliases[tgt.id] = node.value.id
++        file_functions[fname] = fns
++        file_classes[fname] = cls
++        file_imports[fname] = imps
++        file_aliases[fname] = aliases
++
++    return file_functions, file_classes, file_imports, file_aliases
++
++
++class TestF2P01E1BuildOrchestration:
++    def test_e1_preparation_explicit_handoff_emission(self):
++        """BN-1: Preparation phase stages dependencies/metadata and returns an explicit
++        intermediate handoff representation that is consumed by the archive emission phase."""
++        import configparser
++        import json
++        import signal
++        import subprocess
++        import tempfile
++        import zipfile
++
++        repo_root = Path(__file__).resolve().parent.parent
++        src_shiv = repo_root / "src" / "shiv"
++        assert src_shiv.is_dir(), f"Missing {src_shiv}"
++
++        py_files = [p for p in src_shiv.rglob("*.py") if "test" not in p.parts]
++        py_files_map = {str(p.relative_to(src_shiv)): ast.parse(p.read_text(encoding="utf-8")) for p in py_files}
++
++        file_archive_aliases = {}
++        file_builder_aliases = {}
++        for fname, tree in py_files_map.items():
++            arc_aliases = {"create_archive"}
++            bld_aliases = {"builder"}
++            for node in ast.walk(tree):
++                if isinstance(node, ast.ImportFrom):
++                    mod = node.module or ""
++                    if "builder" in mod:
++                        for a in node.names:
++                            if a.name == "create_archive":
++                                arc_aliases.add(a.asname or a.name)
++                            elif a.name == "builder":
++                                bld_aliases.add(a.asname or a.name)
++                    elif mod in (".", "shiv", ""):
++                        for a in node.names:
++                            if a.name == "builder":
++                                bld_aliases.add(a.asname or a.name)
++                            elif a.name == "create_archive":
++                                arc_aliases.add(a.asname or a.name)
++                elif isinstance(node, ast.Import):
++                    for a in node.names:
++                        if "builder" in a.name:
++                            bld_aliases.add(a.asname or a.name)
++            file_archive_aliases[fname] = arc_aliases
++            file_builder_aliases[fname] = bld_aliases
++
++        def is_archive_expr(expr, fname, local_aliases):
++            if isinstance(expr, ast.Name):
++                return expr.id in local_aliases
++            elif isinstance(expr, ast.Attribute):
++                if expr.attr in local_aliases:
++                    return True
++                if isinstance(expr.value, ast.Name) and expr.value.id in file_builder_aliases.get(fname, set()):
++                    return True
++            return False
++
++        def is_pip_call(c):
++            cs = ast.unparse(c.func)
++            if "pip.install" in cs:
++                return True
++            if isinstance(c.func, ast.Attribute) and c.func.attr == "install":
++                val_name = getattr(c.func.value, "id", None) or getattr(c.func.value, "attr", "") or ""
++                if "pip" in val_name:
++                    return True
++            if isinstance(c.func, ast.Call):
++                if isinstance(c.func.func, ast.Name) and c.func.func.id == "getattr":
++                    if len(c.func.args) >= 2:
++                        obj = ast.unparse(c.func.args[0])
++                        attr = getattr(c.func.args[1], "value", getattr(c.func.args[1], "s", None))
++                        if "pip" in obj and attr == "install":
++                            return True
++            return False
++
++        file_functions, file_classes, file_imports, file_aliases = _build_symbol_table(py_files_map)
++
++        # Discover registered console_scripts and determine the single verified production entrypoint
++        registered_scripts = {}
++        setup_cfg = repo_root / "setup.cfg"
++        if setup_cfg.is_file():
++            cp = configparser.ConfigParser()
++            cp.read(setup_cfg, encoding="utf-8")
++            if cp.has_section("options.entry_points"):
++                scripts = cp.get("options.entry_points", "console_scripts", fallback="")
++                for line in scripts.splitlines():
++                    line = line.strip()
++                    if line and "=" in line:
++                        script_name, target = [x.strip() for x in line.split("=", 1)]
++                        if ":" in target:
++                            mod_part, fn_part = target.split(":", 1)
++                            registered_scripts[script_name] = (mod_part, fn_part)
++
++        # Contract requires "shiv" CLI command as the primary build orchestrator.
++        # Both static analysis and dynamic CLI execution strictly share this exact primary target.
++        if "shiv" in registered_scripts:
++            primary_entry_target = registered_scripts["shiv"]
++        else:
++            non_info = [t for name, t in registered_scripts.items() if "info" not in name and "info" not in t[0]]
++            if len(non_info) == 1:
++                primary_entry_target = non_info[0]
++            elif len(non_info) > 1:
++                assert False, f"E1 refactoring boundary violation: ambiguous CLI entry points {non_info}"
++            else:
++                primary_entry_target = ("shiv.__main__", "main")
++
++        primary_mod, primary_fn = primary_entry_target
++        mod_parts = primary_mod.split(".")
++        if mod_parts and mod_parts[0] == "shiv":
++            mod_parts = mod_parts[1:]
++        primary_rel_file = "/".join(mod_parts) + ".py"
++
++        cli_roots = []
++        if primary_rel_file in py_files_map:
++            tree = py_files_map[primary_rel_file]
++            for node in tree.body:
++                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
++                    if node.name == primary_fn:
++                        cli_roots.append((primary_rel_file, node))
++            if not cli_roots and primary_mod == "shiv.__main__" and primary_fn == "main":
++                for node in tree.body:
++                    if isinstance(node, ast.If):
++                        test_str = ast.unparse(node.test)
++                        if "__name__" in test_str and "__main__" in test_str:
++                            for sub in node.body:
++                                if isinstance(sub, ast.Expr) and isinstance(sub.value, ast.Call):
++                                    call_func = sub.value.func
++                                    if isinstance(call_func, ast.Name):
++                                        callee_name = call_func.id
++                                        if callee_name in file_aliases.get(primary_rel_file, {}):
++                                            callee_name = file_aliases[primary_rel_file][callee_name]
++                                        if callee_name in file_functions.get(primary_rel_file, {}):
++                                            cli_roots.append((primary_rel_file, file_functions[primary_rel_file][callee_name]))
++
++        assert cli_roots, f"E1 refactoring boundary violation: resolved primary CLI entrypoint {primary_entry_target} not found in source tree"
++
++        def _get_suppressed_types(args):
++            types = set()
++            for a in args:
++                if isinstance(a, ast.Name):
++                    types.add(a.id)
++                elif isinstance(a, ast.Attribute):
++                    types.add(a.attr)
++            return types
++
++        def _get_raised_types(exc_node):
++            if exc_node is None:
++                return set()
++            if isinstance(exc_node, ast.Name):
++                return {exc_node.id}
++            if isinstance(exc_node, ast.Attribute):
++                return {exc_node.attr}
++            if isinstance(exc_node, ast.Call):
++                return _get_raised_types(exc_node.func)
++            return set()
++
++        def _is_suppress_context(context_expr, cur_fname):
++            if not isinstance(context_expr, ast.Call):
++                return False, set()
++            func = context_expr.func
++            if isinstance(func, ast.Name):
++                sym = func.id
++                if sym in file_aliases.get(cur_fname, {}):
++                    sym = file_aliases[cur_fname][sym]
++                imp = file_imports.get(cur_fname, {}).get(sym)
++                if imp and imp[0] == "STDLIB_SYMBOL" and imp[1] == "contextlib" and imp[2] == "suppress":
++                    return True, _get_suppressed_types(context_expr.args)
++                return False, set()
++            elif isinstance(func, ast.Attribute) and func.attr == "suppress":
++                val = func.value
++                if isinstance(val, ast.Name):
++                    mod_sym = val.id
++                    if mod_sym in file_aliases.get(cur_fname, {}):
++                        mod_sym = file_aliases[cur_fname][mod_sym]
++                    imp = file_imports.get(cur_fname, {}).get(mod_sym)
++                    if imp and imp[0] == "STDLIB_MODULE" and imp[1] == "contextlib":
++                        return True, _get_suppressed_types(context_expr.args)
++                    if mod_sym == "contextlib":
++                        return True, _get_suppressed_types(context_expr.args)
++            return False, set()
++
++        def get_reachable_calls_and_stmts(stmts, cur_fname=""):
++            calls = []
++            eff_stmts = []
++
++            def _walk_expr(expr):
++                if expr is None:
++                    return
++                for n in ast.walk(expr):
++                    if isinstance(n, ast.Call):
++                        calls.append(n)
++
++            for stmt in stmts:
++                if isinstance(stmt, (ast.Return, ast.Raise)):
++                    eff_stmts.append(stmt)
++                    _walk_expr(stmt.value if isinstance(stmt, ast.Return) else stmt.exc)
++                    return eff_stmts, calls, True
++                elif isinstance(stmt, ast.If):
++                    _walk_expr(stmt.test)
++                    if _is_statically_false(stmt.test):
++                        if stmt.orelse:
++                            s, c, term = get_reachable_calls_and_stmts(stmt.orelse, cur_fname)
++                            eff_stmts.extend(s)
++                            calls.extend(c)
++                            if term:
++                                return eff_stmts, calls, True
++                    elif _is_statically_true(stmt.test):
++                        s, c, term = get_reachable_calls_and_stmts(stmt.body, cur_fname)
++                        eff_stmts.extend(s)
++                        calls.extend(c)
++                        if term:
++                            return eff_stmts, calls, True
++                    else:
++                        s_b, c_b, term_b = get_reachable_calls_and_stmts(stmt.body, cur_fname)
++                        eff_stmts.extend(s_b)
++                        calls.extend(c_b)
++                        term_o = False
++                        if stmt.orelse:
++                            s_o, c_o, term_o = get_reachable_calls_and_stmts(stmt.orelse, cur_fname)
++                            eff_stmts.extend(s_o)
++                            calls.extend(c_o)
++                        if term_b and term_o:
++                            return eff_stmts, calls, True
++                elif isinstance(stmt, (ast.For, ast.While)):
++                    test_node = getattr(stmt, "test", None)
++                    if test_node:
++                        _walk_expr(test_node)
++                    if isinstance(stmt, ast.While) and _is_statically_false(stmt.test):
++                        continue
++                    s_b, c_b, term_b = get_reachable_calls_and_stmts(stmt.body, cur_fname)
++                    eff_stmts.extend(s_b)
++                    calls.extend(c_b)
++                    if stmt.orelse:
++                        s_o, c_o, term_o = get_reachable_calls_and_stmts(stmt.orelse, cur_fname)
++                        eff_stmts.extend(s_o)
++                        calls.extend(c_o)
++                elif isinstance(stmt, ast.With):
++                    eff_stmts.append(stmt)
++                    suppress_info = [_is_suppress_context(it.context_expr, cur_fname) for it in stmt.items]
++                    is_suppress = any(si[0] for si in suppress_info)
++                    suppressed_types = set()
++                    for si in suppress_info:
++                        if si[0]:
++                            suppressed_types.update(si[1])
++                    for it in stmt.items:
++                        _walk_expr(it.context_expr)
++                    s_b, c_b, term_b = get_reachable_calls_and_stmts(stmt.body, cur_fname)
++                    eff_stmts.extend(s_b)
++                    calls.extend(c_b)
++                    if term_b:
++                        if not is_suppress:
++                            return eff_stmts, calls, True
++                        last_stmt = stmt.body[-1] if stmt.body else None
++                        if isinstance(last_stmt, ast.Return):
++                            return eff_stmts, calls, True
++                        elif isinstance(last_stmt, ast.Raise):
++                            raised_types = _get_raised_types(last_stmt.exc)
++                            if not raised_types or not raised_types.issubset(suppressed_types):
++                                return eff_stmts, calls, True
++                elif isinstance(stmt, ast.Try):
++                    s_b, c_b, term_b = get_reachable_calls_and_stmts(stmt.body, cur_fname)
++                    eff_stmts.extend(s_b)
++                    calls.extend(c_b)
++                    handlers_term = bool(stmt.handlers)
++                    for h in stmt.handlers:
++                        s_h, c_h, term_h = get_reachable_calls_and_stmts(h.body, cur_fname)
++                        eff_stmts.extend(s_h)
++                        calls.extend(c_h)
++                        if not term_h:
++                            handlers_term = False
++                    term_else = False
++                    if stmt.orelse:
++                        s_o, c_o, term_o = get_reachable_calls_and_stmts(stmt.orelse, cur_fname)
++                        eff_stmts.extend(s_o)
++                        calls.extend(c_o)
++                        term_else = term_o
++                    term_final = False
++                    if stmt.finalbody:
++                        s_f, c_f, term_f = get_reachable_calls_and_stmts(stmt.finalbody, cur_fname)
++                        eff_stmts.extend(s_f)
++                        calls.extend(c_f)
++                        term_final = term_f
++                    if term_final:
++                        return eff_stmts, calls, True
++                    if term_b and (term_else or not stmt.orelse):
++                        if not stmt.handlers or handlers_term:
++                            return eff_stmts, calls, True
++                else:
++                    eff_stmts.append(stmt)
++                    for child in ast.iter_child_nodes(stmt):
++                        if isinstance(child, ast.expr):
++                            _walk_expr(child)
++
++            return eff_stmts, calls, False
++
++        def infer_scope_types(stmts, cur_fname):
++            types = {}
++            for s in ast.walk(ast.Module(body=stmts, type_ignores=[])):
++                if isinstance(s, ast.Assign):
++                    for tgt in s.targets:
++                        if isinstance(tgt, ast.Name):
++                            if isinstance(s.value, ast.Call) and isinstance(s.value.func, ast.Name):
++                                cname = s.value.func.id
++                                if cname in file_classes.get(cur_fname, {}):
++                                    types[tgt.id] = cname
++            return types
++
++        def resolve_call_target(call_node, cur_fname, caller_scope_stmts=None):
++            func = call_node.func
++            if isinstance(func, ast.Name):
++                name = func.id
++                if name in file_aliases.get(cur_fname, {}):
++                    name = file_aliases[cur_fname][name]
++                if name in file_functions.get(cur_fname, {}):
++                    return (cur_fname, file_functions[cur_fname][name])
++                if name in file_imports.get(cur_fname, {}):
++                    imp = file_imports[cur_fname][name]
++                    if imp[0] == "SYMBOL":
++                        tf, ts = imp[1], imp[2]
++                        if ts in file_functions.get(tf, {}):
++                            return (tf, file_functions[tf][ts])
++            elif isinstance(func, ast.Attribute):
++                attr_name = func.attr
++                cls_name = None
++                if isinstance(func.value, ast.Call) and isinstance(func.value.func, ast.Name):
++                    cls_name = func.value.func.id
++                elif isinstance(func.value, ast.Name):
++                    if caller_scope_stmts:
++                        types = infer_scope_types(caller_scope_stmts, cur_fname)
++                        cls_name = types.get(func.value.id)
++                    if not cls_name:
++                        mod_alias = func.value.id
++                        if mod_alias in file_imports.get(cur_fname, {}):
++                            imp = file_imports[cur_fname][mod_alias]
++                            if imp[0] == "MODULE":
++                                tf = imp[1]
++                                if func.attr in file_functions.get(tf, {}):
++                                    return (tf, file_functions[tf][func.attr])
++                if cls_name and cls_name in file_classes.get(cur_fname, {}):
++                    m_key = f"{cls_name}.{attr_name}"
++                    if m_key in file_functions.get(cur_fname, {}):
++                        return (cur_fname, file_functions[cur_fname][m_key])
++            return None
++
++        # Compute production-reachable functions from the single primary CLI root
++        visited_functions = set()
++        reachable_queue = list(cli_roots)
++        for r in reachable_queue:
++            visited_functions.add((r[0], r[1]))
++
++        while reachable_queue:
++            cur_fname, cur_func_node = reachable_queue.pop(0)
++            _, reachable_calls, _ = get_reachable_calls_and_stmts(cur_func_node.body, cur_fname)
++            for call in reachable_calls:
++                target = resolve_call_target(call, cur_fname, cur_func_node.body)
++                if target:
++                    tf, t_node = target
++                    t_key = (tf, t_node)
++                    if t_key not in visited_functions:
++                        visited_functions.add(t_key)
++                        reachable_queue.append((tf, t_node))
++
++        monolith_functions = []
++        prep_functions = []
++        emit_functions = []
++
++        for fname, node in visited_functions:
++            local_aliases = set(file_archive_aliases.get(fname, set()))
++            eff_stmts, reachable_calls, _ = get_reachable_calls_and_stmts(node.body, fname)
++
++            for stmt in eff_stmts:
++                if isinstance(stmt, ast.Assign):
++                    for target in stmt.targets:
++                        if isinstance(target, ast.Name):
++                            if is_archive_expr(stmt.value, fname, local_aliases):
++                                local_aliases.add(target.id)
++
++            call_strs = [ast.unparse(c.func) for c in reachable_calls]
++            s = " ".join(call_strs)
++
++            has_archive_call = any(is_archive_expr(c.func, fname, local_aliases) for c in reachable_calls)
++            has_pip_call = any(is_pip_call(c) for c in reachable_calls)
++
++            if has_archive_call and has_pip_call:
++                monolith_functions.append((fname, node.name))
++            else:
++                if has_archive_call:
++                    emit_functions.append((fname, node))
++                if has_pip_call or any(x in s for x in ("TemporaryDirectory", "copytree")):
++                    if node.name not in ("copytree", "main"):
++                        prep_functions.append((fname, node))
++
++        assert not monolith_functions, (
++            f"E1 refactoring boundary violation: monolith function detected performing both "
++            f"preparation and archive emission directly: {monolith_functions}"
++        )
++        assert prep_functions, "E1 refactoring boundary violation: no preparation function found on reachable CLI path"
++        assert emit_functions, "E1 refactoring boundary violation: no archive emission function found on reachable CLI path"
++
++        # Expand emit_functions transitively to cover any emission helpers
++        emit_boundary_functions = list(emit_functions)
++        emit_keys = {(f, n.name) for f, n in emit_boundary_functions}
++        expanded_emit = True
++        while expanded_emit:
++            expanded_emit = False
++            for ef_name, ef_node in list(emit_boundary_functions):
++                for vf_name, vf_node in visited_functions:
++                    if vf_node.name in ("main", "copytree"):
++                        continue
++                    _, v_calls, _ = get_reachable_calls_and_stmts(vf_node.body, vf_name)
++                    for c in v_calls:
++                        target = resolve_call_target(c, vf_name, vf_node.body)
++                        if target and (target[0], target[1].name) == (ef_name, ef_node.name):
++                            if (vf_name, vf_node.name) not in emit_keys:
++                                emit_keys.add((vf_name, vf_node.name))
++                                emit_boundary_functions.append((vf_name, vf_node))
++                                expanded_emit = True
++
++        # Verify that actual emission functions do not transitively invoke staging helpers
++        def transitively_calls_staging(fn_node, fn_fname, visited_callees=None):
++            if visited_callees is None:
++                visited_callees = set()
++            key = (fn_fname, fn_node.name)
++            if key in visited_callees:
++                return False
++            visited_callees.add(key)
++            _, c_calls, _ = get_reachable_calls_and_stmts(fn_node.body, fn_fname)
++            for c in c_calls:
++                t = resolve_call_target(c, fn_fname, fn_node.body)
++                if t:
++                    if any((t[0], t[1].name) == (pf[0], pf[1].name) for pf in prep_functions):
++                        return True
++                    if transitively_calls_staging(t[1], t[0], visited_callees):
++                        return True
++            return False
++
++        for ef_fname, ef_node in emit_functions:
++            assert not transitively_calls_staging(ef_node, ef_fname), (
++                f"E1 refactoring boundary violation: emission function '{ef_node.name}' "
++                f"transitively calls preparation staging helper, violating phase separation."
++            )
++
++        # Expand prep_functions upwards through caller graph to include preparation boundaries,
++        # strictly excluding main, copytree, and ALL emission functions.
++        prep_boundary_functions = list(prep_functions)
++        prep_set = {(f, n.name) for f, n in prep_boundary_functions}
++        expanded = True
++        while expanded:
++            expanded = False
++            for pf_name, pf_node in list(prep_boundary_functions):
++                for vf_name, vf_node in visited_functions:
++                    if vf_node.name in ("main", "copytree") or (vf_name, vf_node.name) in emit_keys:
++                        continue
++                    _, v_calls, _ = get_reachable_calls_and_stmts(vf_node.body, vf_name)
++                    for c in v_calls:
++                        target = resolve_call_target(c, vf_name, vf_node.body)
++                        if target and (target[0], target[1].name) == (pf_name, pf_node.name):
++                            if (vf_name, vf_node.name) not in prep_set:
++                                prep_set.add((vf_name, vf_node.name))
++                                prep_boundary_functions.append((vf_name, vf_node))
++                                expanded = True
++
++        prep_names = {fn.name for _, fn in prep_boundary_functions}
++        emit_names = {fn.name for _, fn in emit_boundary_functions}
++
++        prep_returns_val = False
++        for pf_name, fn in prep_boundary_functions:
++            eff_stmts, _, _ = get_reachable_calls_and_stmts(fn.body, pf_name)
++            returns = [
++                s.value if isinstance(s, ast.Expr) else s
++                for s in eff_stmts
++                if isinstance(s, (ast.Return, ast.Yield, ast.YieldFrom))
++                or (isinstance(s, ast.Expr) and isinstance(s.value, (ast.Yield, ast.YieldFrom)))
++            ]
++            if any(r.value is not None for r in returns):
++                prep_returns_val = True
++                break
++        assert prep_returns_val, (
++            "E1 refactoring boundary violation: preparation phase must return an explicit intermediate representation"
++        )
++
++        def is_prep_call(call_node, fname):
++            func = call_node.func
++            if isinstance(func, ast.Name):
++                if func.id in prep_names:
++                    return True
++                if func.id in file_aliases.get(fname, {}):
++                    if file_aliases[fname][func.id] in prep_names:
++                        return True
++            elif isinstance(func, ast.Attribute):
++                if func.attr in prep_names:
++                    return True
++            return False
++
++        def is_direct_emit(call_node, fname):
++            func = call_node.func
++            if isinstance(func, ast.Name):
++                if func.id in file_archive_aliases.get(fname, set()) or func.id in ("create_archive", "write_to_zipapp", "ZipFile"):
++                    return True
++            elif isinstance(func, ast.Attribute):
++                if func.attr in ("create_archive", "write_to_zipapp", "ZipFile"):
++                    return True
++                if isinstance(func.value, ast.Name) and func.value.id in file_builder_aliases.get(fname, set()):
++                    if func.attr in file_archive_aliases.get(fname, set()):
++                        return True
++            return False
++
++        # Support heterogeneous explicit IR dataflow: names, attributes, subscripts, mappings, unpacked tuples
++        def _expr_matches_prep(expr, prep_vars):
++            if expr is None:
++                return False
++            if isinstance(expr, ast.Name):
++                return expr.id in prep_vars
++            if isinstance(expr, ast.Attribute):
++                if isinstance(expr.value, ast.Name):
++                    if (expr.value.id, expr.attr) in prep_vars or f"{expr.value.id}.{expr.attr}" in prep_vars:
++                        return True
++                return _expr_matches_prep(expr.value, prep_vars)
++            if isinstance(expr, ast.Subscript):
++                return _expr_matches_prep(expr.value, prep_vars)
++            if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
++                return any(_expr_matches_prep(elt, prep_vars) for elt in expr.elts)
++            if isinstance(expr, ast.Dict):
++                return any(_expr_matches_prep(v, prep_vars) for v in expr.values)
++            if isinstance(expr, ast.Call):
++                return any(_expr_matches_prep(a, prep_vars) for a in expr.args) or any(_expr_matches_prep(kw.value, prep_vars) for kw in expr.keywords)
++            return False
++
++        def check_call(call_node, cur_fname, prep_vars, visited, caller_stmts=None):
++            if is_direct_emit(call_node, cur_fname):
++                def matches_prep(expr):
++                    if _expr_matches_prep(expr, prep_vars):
++                        return True
++                    if isinstance(expr, ast.Call) and is_prep_call(expr, cur_fname):
++                        return True
++                    return False
++
++                for a in call_node.args:
++                    if matches_prep(a):
++                        return True
++                for kw in call_node.keywords:
++                    if matches_prep(kw.value):
++                        return True
++                return False
++
++            resolved = resolve_call_target(call_node, cur_fname, caller_stmts)
++            if resolved:
++                target_fname, target_func_node = resolved
++                helper_key = f"{target_fname}:{target_func_node.name}"
++                if helper_key not in visited:
++                    target_params = [a.arg for a in target_func_node.args.args]
++                    bound_params = set()
++                    shift = 0
++                    if isinstance(call_node.func, ast.Attribute) and target_params and target_params[0] == "self":
++                        if isinstance(call_node.func.value, ast.Name):
++                            rec_name = call_node.func.value.id
++                            for pv in prep_vars:
++                                if isinstance(pv, tuple) and pv[0] == rec_name:
++                                    bound_params.add(("self", pv[1]))
++                                    bound_params.add(f"self.{pv[1]}")
++                                elif pv == rec_name:
++                                    bound_params.add("self")
++                        shift = 1
++
++                    for i, a in enumerate(call_node.args):
++                        param_idx = i + shift
++                        if param_idx < len(target_params) and _expr_matches_prep(a, prep_vars):
++                            bound_params.add(target_params[param_idx])
++                    for kw in call_node.keywords:
++                        if _expr_matches_prep(kw.value, prep_vars):
++                            bound_params.add(kw.arg)
++                    if bound_params:
++                        consumed, _ = check_stmts(target_func_node.body, target_fname, bound_params, visited | {helper_key})
++                        if consumed:
++                            return True
++            return False
++
++        def check_expr(expr, cur_fname, prep_vars, visited, caller_stmts=None):
++            if isinstance(expr, ast.Call):
++                for a in expr.args:
++                    if check_expr(a, cur_fname, prep_vars, visited, caller_stmts):
++                        return True
++                for kw in expr.keywords:
++                    if check_expr(kw.value, cur_fname, prep_vars, visited, caller_stmts):
++                        return True
++                if check_call(expr, cur_fname, prep_vars, visited, caller_stmts):
++                    return True
++            return False
++
++        def _extract_assigned_vars(target_node):
++            res = set()
++            if isinstance(target_node, ast.Name):
++                res.add(target_node.id)
++            elif isinstance(target_node, ast.Attribute) and isinstance(target_node.value, ast.Name):
++                res.add((target_node.value.id, target_node.attr))
++                res.add(f"{target_node.value.id}.{target_node.attr}")
++            elif isinstance(target_node, (ast.Tuple, ast.List)):
++                for elt in target_node.elts:
++                    res.update(_extract_assigned_vars(elt))
++            return res
++
++        def check_stmts(stmts, cur_fname, prep_vars, visited=None):
++            if visited is None:
++                visited = set()
++            prep_vars = set(prep_vars)
++
++            for stmt in stmts:
++                if isinstance(stmt, (ast.Return, ast.Raise)):
++                    val = stmt.value if isinstance(stmt, ast.Return) else stmt.exc
++                    if val and check_expr(val, cur_fname, prep_vars, visited, stmts):
++                        return True, True
++                    return False, True
++                elif isinstance(stmt, ast.Assign):
++                    if check_expr(stmt.value, cur_fname, prep_vars, visited, stmts):
++                        return True, False
++                    if (isinstance(stmt.value, ast.Call) and is_prep_call(stmt.value, cur_fname)) or _expr_matches_prep(stmt.value, prep_vars):
++                        for tgt in stmt.targets:
++                            prep_vars.update(_extract_assigned_vars(tgt))
++                elif isinstance(stmt, ast.Expr):
++                    if check_expr(stmt.value, cur_fname, prep_vars, visited, stmts):
++                        return True, False
++                elif isinstance(stmt, ast.With):
++                    suppress_info = [_is_suppress_context(it.context_expr, cur_fname) for it in stmt.items]
++                    is_suppress = any(si[0] for si in suppress_info)
++                    suppressed_types = set()
++                    for si in suppress_info:
++                        if si[0]:
++                            suppressed_types.update(si[1])
++                    for item in stmt.items:
++                        if check_expr(item.context_expr, cur_fname, prep_vars, visited, stmts):
++                            return True, False
++                    inner_prep = set(prep_vars)
++                    for item in stmt.items:
++                        if isinstance(item.context_expr, ast.Call) and is_prep_call(item.context_expr, cur_fname):
++                            if item.optional_vars:
++                                inner_prep.update(_extract_assigned_vars(item.optional_vars))
++                    consumed, term = check_stmts(stmt.body, cur_fname, inner_prep, visited)
++                    if consumed:
++                        return True, term
++                    if term:
++                        if not is_suppress:
++                            return False, True
++                        last_stmt = stmt.body[-1] if stmt.body else None
++                        if isinstance(last_stmt, ast.Return):
++                            return False, True
++                        elif isinstance(last_stmt, ast.Raise):
++                            raised_types = _get_raised_types(last_stmt.exc)
++                            if not raised_types or not raised_types.issubset(suppressed_types):
++                                return False, True
++                elif isinstance(stmt, ast.If):
++                    if _is_statically_false(stmt.test):
++                        if stmt.orelse:
++                            consumed, term = check_stmts(stmt.orelse, cur_fname, set(prep_vars), visited)
++                            if consumed:
++                                return True, term
++                            if term:
++                                return False, True
++                    elif _is_statically_true(stmt.test):
++                        consumed, term = check_stmts(stmt.body, cur_fname, set(prep_vars), visited)
++                        if consumed:
++                            return True, term
++                        if term:
++                            return False, True
++                    else:
++                        c_b, t_b = check_stmts(stmt.body, cur_fname, set(prep_vars), visited)
++                        if c_b:
++                            return True, False
++                        c_o, t_o = False, False
++                        if stmt.orelse:
++                            c_o, t_o = check_stmts(stmt.orelse, cur_fname, set(prep_vars), visited)
++                            if c_o:
++                                return True, False
++                        if t_b and t_o:
++                            return False, True
++                elif isinstance(stmt, ast.Try):
++                    c_b, t_b = check_stmts(stmt.body, cur_fname, set(prep_vars), visited)
++                    if c_b:
++                        return True, False
++                    handlers_term = bool(stmt.handlers)
++                    for h in stmt.handlers:
++                        c_h, t_h = check_stmts(h.body, cur_fname, set(prep_vars), visited)
++                        if c_h:
++                            return True, False
++                        if not t_h:
++                            handlers_term = False
++                    term_else = False
++                    if stmt.orelse:
++                        c_o, t_o = check_stmts(stmt.orelse, cur_fname, set(prep_vars), visited)
++                        if c_o:
++                            return True, False
++                        term_else = t_o
++                    term_final = False
++                    if stmt.finalbody:
++                        c_f, t_f = check_stmts(stmt.finalbody, cur_fname, set(prep_vars), visited)
++                        if c_f:
++                            return True, False
++                        term_final = t_f
++                    if term_final:
++                        return False, True
++                    if t_b and (term_else or not stmt.orelse):
++                        if not stmt.handlers or handlers_term:
++                            return False, True
++                elif isinstance(stmt, (ast.For, ast.While)):
++                    if isinstance(stmt, ast.While) and _is_statically_false(stmt.test):
++                        continue
++                    c_b, t_b = check_stmts(stmt.body, cur_fname, set(prep_vars), visited)
++                    if c_b:
++                        return True, False
++                    if stmt.orelse:
++                        c_o, t_o = check_stmts(stmt.orelse, cur_fname, set(prep_vars), visited)
++                        if c_o:
++                            return True, False
++
++            return False, False
++
++        handoff_consumed = False
++        for fname, node in visited_functions:
++            consumed, _ = check_stmts(node.body, fname, set())
++            if consumed:
++                handoff_consumed = True
++                break
++
++        assert handoff_consumed, (
++            "E1 refactoring boundary violation: preparation intermediate representation was not consumed by archive emission on reachable CLI path."
++        )
++
++        # Bounded Process Runner helper with finite cleanup and infrastructure error isolation
++        def run_bounded_cli(cmd, cwd_path, env_dict, timeout_sec=30):
++            p = subprocess.Popen(
++                cmd,
++                cwd=str(cwd_path),
++                env=env_dict,
++                stdout=subprocess.PIPE,
++                stderr=subprocess.PIPE,
++                text=True,
++                start_new_session=True,
++            )
++            timed_out = False
++            out_txt = ""
++            err_txt = ""
++            try:
++                out_txt, err_txt = p.communicate(timeout=timeout_sec)
++            except subprocess.TimeoutExpired:
++                timed_out = True
++                try:
++                    os.killpg(p.pid, signal.SIGKILL)
++                except OSError:
++                    pass
++                try:
++                    p.stdout.close()
++                except Exception:
++                    pass
++                try:
++                    p.stderr.close()
++                except Exception:
++                    pass
++                try:
++                    p.wait(timeout=2.0)
++                except subprocess.TimeoutExpired:
++                    pass
++            return timed_out, p.returncode, out_txt, err_txt
++
++        # Stage 1: Preparation failure provenance & archive sentinel protection (M7)
++        # When console_script symbol lookup fails during preparation, execution must halt
++        # with a non-zero exit code BEFORE emission, and MUST NOT overwrite or create target archive.
++        with tempfile.TemporaryDirectory() as td_sentinel:
++            stg_s = Path(td_sentinel)
++            sp_s = stg_s / "site_packages"
++            sp_s.mkdir()
++            (sp_s / "entry_points.txt").write_text("[console_scripts]\nvalid_tool = mypkg.mod:main\n", encoding="utf-8")
++            sentinel_pyz = stg_s / "sentinel.pyz"
++            sentinel_pyz.write_bytes(b"SENTINEL_UNTOUCHED_BYTES\n")
++
++            entry_mod, entry_fn = primary_entry_target
++            py_code_fail = (
++                f"import sys\n"
++                f"from {entry_mod} import {entry_fn}\n"
++                f"sys.argv = ['shiv', '--site-packages', sys.argv[1], '--console-script', 'missing_tool', '-o', sys.argv[2]]\n"
++                f"try:\n"
++                f"    {entry_fn}()\n"
++                f"except SystemExit as e:\n"
++                f"    sys.exit(e.code if e.code is not None else 0)\n"
++                f"sys.exit(0)\n"
++            )
++            cmd_fail = [sys.executable, "-B", "-c", py_code_fail, str(sp_s), str(sentinel_pyz)]
++            env_fail = os.environ.copy()
++            env_fail["PYTHONPATH"] = str(repo_root / "src") + os.pathsep + env_fail.get("PYTHONPATH", "")
++
++            timed_out_f, ret_code_f, out_f, err_f = run_bounded_cli(cmd_fail, repo_root, env_fail, 30)
++            assert not timed_out_f, "E1 infrastructure error: preparation failure check timed out"
++            assert ret_code_f != 0, f"E1 refactoring boundary violation: preparation failure did not exit non-zero (exit={ret_code_f})"
++            assert "No entry point 'missing_tool' found" in err_f, (
++                f"E1 refactoring boundary violation: expected preparation console_script failure message, got:\n{err_f}"
++            )
++            assert sentinel_pyz.read_bytes() == b"SENTINEL_UNTOUCHED_BYTES\n", (
++                "E1 refactoring boundary violation: target archive was overwritten despite preparation failure"
++            )
++
++        # Stage 2: M6 Observable Causal Handoff & Differential Emission Effect
++        # To prove that emission consumes the actual intermediate representation assembled by preparation,
++        # we provide staged package metadata with two selectable console script entry points.
++        # Building with tool_alpha produces an archive whose environment metadata specifies tool_alpha's entry point,
++        # while building with tool_beta produces an archive reflecting tool_beta's entry point.
++        # This establishes an undeniable, non-accidental causal link from preparation staging into the final archive.
++        with tempfile.TemporaryDirectory() as td_diff:
++            stg_d = Path(td_diff)
++            sp_d = stg_d / "site_packages"
++            sp_d.mkdir()
++            (sp_d / "entry_points.txt").write_text(
++                "[console_scripts]\ntool_alpha = pkg.alpha:main\ntool_beta = pkg.beta:main\n",
++                encoding="utf-8"
++            )
++            (sp_d / "pkg").mkdir()
++            (sp_d / "pkg" / "__init__.py").write_text("", encoding="utf-8")
++            (sp_d / "pkg" / "alpha.py").write_text("def main(): return 'alpha_run'\n", encoding="utf-8")
++            (sp_d / "pkg" / "beta.py").write_text("def main(): return 'beta_run'\n", encoding="utf-8")
++
++            out_alpha = stg_d / "out_alpha.pyz"
++            out_beta = stg_d / "out_beta.pyz"
++            out_beta.write_bytes(b"EXISTING_ARCHIVE_SENTINEL")
++
++            entry_mod, entry_fn = primary_entry_target
++            py_runner_code = (
++                f"import sys\n"
++                f"from pathlib import Path\n"
++                f"from {entry_mod} import {entry_fn}\n"
++                f"target = Path(sys.argv[3])\n"
++                f"before = target.read_bytes() if target.exists() else None\n"
++                f"boundary_events = []\n"
++                f"def profile(frame, event, value):\n"
++                f"    if event == 'return' and frame.f_code.co_name in {prep_names!r} and value is not None and Path(frame.f_code.co_filename).resolve().is_relative_to(Path({str(src_shiv)!r})):\n"
++                f"        after = target.read_bytes() if target.exists() else None\n"
++                f"        assert after == before, 'preparation wrote the output before returning its handoff'\n"
++                f"        def paths(obj, seen=None):\n"
++                f"            seen = set() if seen is None else seen\n"
++                f"            if id(obj) in seen: return []\n"
++                f"            seen.add(id(obj))\n"
++                f"            if isinstance(obj, Path): return [obj] if obj != target else []\n"
++                f"            if isinstance(obj, dict): values = obj.values()\n"
++                f"            elif isinstance(obj, (list, tuple)): values = obj\n"
++                f"            elif hasattr(obj, '__dict__'): values = vars(obj).values()\n"
++                f"            else: return []\n"
++                f"            return [p for v in values for p in paths(v, seen)]\n"
++                f"        inputs = paths(value)\n"
++                f"        if inputs:\n"
++                f"            assert all(p.exists() for p in inputs), 'staged handoff inputs expired before emission'\n"
++                f"        boundary_events.append(frame.f_code.co_name)\n"
++                f"sys.setprofile(profile)\n"
++                f"sys.argv = ['shiv', '--site-packages', sys.argv[1], '--console-script', sys.argv[2], '-o', sys.argv[3]]\n"
++                f"try:\n"
++                f"    {entry_fn}()\n"
++                f"except SystemExit as e:\n"
++                f"    assert boundary_events, 'no preparation return was observed'\n"
++                f"    sys.exit(e.code if e.code is not None else 0)\n"
++                f"assert boundary_events, 'no preparation return was observed'\n"
++                f"sys.exit(0)\n"
++            )
++
++            env_diff = os.environ.copy()
++            env_diff["PYTHONPATH"] = str(repo_root / "src") + os.pathsep + env_diff.get("PYTHONPATH", "")
++
++            # Build A
++            cmd_a = [sys.executable, "-B", "-c", py_runner_code, str(sp_d), "tool_alpha", str(out_alpha)]
++            timed_out_a, ret_code_a, out_a_txt, err_a_txt = run_bounded_cli(cmd_a, repo_root, env_diff, 30)
++            assert not timed_out_a, "E1 infrastructure error: Build A timed out"
++            assert ret_code_a == 0, f"E1 CLI build A failed: exit={ret_code_a}\nstdout:\n{out_a_txt}\nstderr:\n{err_a_txt}"
++            assert out_alpha.is_file(), "E1 refactoring boundary violation: Build A produced no archive"
++
++            # Build B
++            cmd_b = [sys.executable, "-B", "-c", py_runner_code, str(sp_d), "tool_beta", str(out_beta)]
++            timed_out_b, ret_code_b, out_b_txt, err_b_txt = run_bounded_cli(cmd_b, repo_root, env_diff, 30)
++            assert not timed_out_b, "E1 infrastructure error: Build B timed out"
++            assert ret_code_b == 0, f"E1 CLI build B failed: exit={ret_code_b}\nstdout:\n{out_b_txt}\nstderr:\n{err_b_txt}"
++            assert out_beta.is_file(), "E1 refactoring boundary violation: Build B produced no archive"
++
++            with zipfile.ZipFile(out_alpha, "r") as za:
++                meta_a = json.loads(za.read("environment.json").decode("utf-8"))
++                names_a = za.namelist()
++                assert any("pkg" in n for n in names_a), "E1 violation: staged dependencies missing from archive A"
++                assert meta_a.get("entry_point") == "pkg.alpha:main", (
++                    f"E1 refactoring boundary violation: archive A failed to reflect preparation resolution: {meta_a.get('entry_point')}"
++                )
++
++            with zipfile.ZipFile(out_beta, "r") as zb:
++                meta_b = json.loads(zb.read("environment.json").decode("utf-8"))
++                names_b = zb.namelist()
++                assert any("pkg" in n for n in names_b), "E1 violation: staged dependencies missing from archive B"
++                assert meta_b.get("entry_point") == "pkg.beta:main", (
++                    f"E1 refactoring boundary violation: archive B failed to reflect preparation resolution: {meta_b.get('entry_point')}"
++                )
++
++# Behavior Node 2 (BN-2 / E2): Cache Materialization Lifecycle Ownership
++# ---------------------------------------------------------------------------
++E2_REQUIRED_EFFECTS = ("lock", "extract", "chmod", "compile", "place")
++
++
++class LifecycleWitness:
++    REQUIRED = E2_REQUIRED_EFFECTS
++
++    def __init__(self, source_root: Path, cache_root: Path):
++        self.source_root = Path(source_root).resolve()
++        self.cache_root = Path(cache_root).resolve()
++        self.target_path = None
++        self.effects = []
++
++    def in_source_tree(self, filename) -> bool:
++        try:
++            return Path(filename).resolve().is_relative_to(self.source_root)
++        except (OSError, ValueError):
++            return False
++
++    def under_cache_root(self, value) -> bool:
++        if not isinstance(value, (str, os.PathLike)):
++            return False
++        try:
++            return Path(value).resolve().is_relative_to(self.cache_root)
++        except (OSError, ValueError):
++            return False
++
++    @staticmethod
++    def _method_codes(cls):
++        codes = []
++        for klass in getattr(cls, "__mro__", (cls,)):
++            for value in vars(klass).values():
++                for candidate in (value, getattr(value, "fget", None), getattr(value, "__func__", None)):
++                    code_obj = getattr(candidate, "__code__", None)
++                    if code_obj is not None:
++                        codes.append(code_obj)
++        return codes
++
++    def bound_instance(self, frame):
++        code_obj = frame.f_code
++        if code_obj.co_argcount < 1 or not code_obj.co_varnames:
++            return None
++        receiver = frame.f_locals.get(code_obj.co_varnames[0])
++        if receiver is None:
++            return None
++        receiver_type = receiver if isinstance(receiver, type) else type(receiver)
++        module = sys.modules.get(getattr(receiver_type, "__module__", None))
++        filename = getattr(module, "__file__", None)
++        if not filename or not self.in_source_tree(filename):
++            return None
++        if not any(member is code_obj for member in self._method_codes(receiver_type)):
++            return None
++        return receiver
++
++    @staticmethod
++    def _argument(args, kwargs, names, index=0):
++        for name in names:
++            if name in kwargs:
++                return kwargs[name]
++        if len(args) > index:
++            return args[index]
++        return None
++
++    def _stack(self, frame):
++        frames = []
++        while frame is not None:
++            if self.in_source_tree(frame.f_code.co_filename):
++                frames.append(frame)
++            frame = frame.f_back
++        return frames
++
++    def effect(self, kind, frame):
++        chain = []
++        owners = []
++        for fr in self._stack(frame):
++            instance = self.bound_instance(fr)
++            chain.append({
++                "qualname": fr.f_code.co_qualname,
++                "instance": instance,
++                "is_method": instance is not None,
++                "frame": fr,
++            })
++            if instance is not None and not any(instance is prior for prior in owners):
++                owners.append(instance)
++        self.effects.append({
++            "kind": kind,
++            "chain": chain,
++            "owners": owners,
++        })
++
++    def is_placement_target(self, path) -> bool:
++        if self.target_path is None or not isinstance(path, (str, os.PathLike)):
++            return False
++        try:
++            p = Path(path).resolve()
++            return p == self.target_path.resolve() or p.parent == self.target_path.resolve()
++        except (OSError, ValueError):
++            return False
++
++    @contextlib.contextmanager
++    def observing(self, target_path, lock_class, allow_external_target: bool = True):
++        self.target_path = Path(target_path).resolve()
++        self.allow_external_target = allow_external_target
++        self.external_target_passed = False
++        self.effects.clear()
++
++        old_profile = sys.getprofile()
++        def profile_hook(frame, event, arg):
++            if event == "call" and not self.allow_external_target:
++                if self.in_source_tree(frame.f_code.co_filename):
++                    inst = self.bound_instance(frame)
++                    if inst is not None:
++                        caller = frame.f_back
++                        caller_inst = self.bound_instance(caller) if caller else None
++                        # Paths may flow between active lifecycle collaborators. Only an
++                        # externally supplied production target bypasses path ownership.
++                        active_lifecycle = any(self.bound_instance(fr) is not None
++                                               for fr in self._stack(caller))
++                        if caller_inst is not inst and not active_lifecycle:
++                            for k, val in frame.f_locals.items():
++                                if k == "self":
++                                    continue
++                                if self.is_placement_target(val):
++                                    self.external_target_passed = True
++                                elif isinstance(val, (tuple, list)):
++                                    for item in val:
++                                        if self.is_placement_target(item):
++                                            self.external_target_passed = True
++                                elif isinstance(val, dict):
++                                    for item in val.values():
++                                        if self.is_placement_target(item):
++                                            self.external_target_passed = True
++        sys.setprofile(profile_hook)
++
++        replaced = []
++
++        def replace(owner, name, wrapper):
++            if hasattr(owner, name):
++                replaced.append((owner, name, getattr(owner, name)))
++                setattr(owner, name, wrapper)
++
++        def lock_enter(original):
++            def wrapper(lock_self, *args, **kwargs):
++                lock_path = getattr(lock_self, "lock_file", None) or getattr(lock_self, "path", None)
++                if lock_path is None or self.under_cache_root(lock_path):
++                    self.effect("lock", sys._getframe(1))
++                return original(lock_self, *args, **kwargs)
++            return wrapper
++
++        def archive_extract(original):
++            def wrapper(arc_self, *args, **kwargs):
++                target = None
++                if "path" in kwargs:
++                    target = kwargs["path"]
++                elif len(args) > 1:
++                    target = args[1]
++                if self.under_cache_root(target):
++                    self.effect("extract", sys._getframe(1))
++                return original(arc_self, *args, **kwargs)
++            return wrapper
++
++        def archive_extractall(original):
++            def wrapper(arc_self, *args, **kwargs):
++                target = None
++                if "path" in kwargs:
++                    target = kwargs["path"]
++                elif len(args) > 0:
++                    target = args[0]
++                if self.under_cache_root(target):
++                    self.effect("extract", sys._getframe(1))
++                return original(arc_self, *args, **kwargs)
++            return wrapper
++
++        def archive_open(original):
++            def wrapper(arc_self, name_or_info, *args, **kwargs):
++                fn = name_or_info.filename if isinstance(name_or_info, zipfile.ZipInfo) else str(name_or_info)
++                if fn.startswith("site-packages"):
++                    self.effect("extract", sys._getframe(1))
++                return original(arc_self, name_or_info, *args, **kwargs)
++            return wrapper
++
++        def path_call(kind, names, original):
++            def wrapper(*args, **kwargs):
++                target = self._argument(args, kwargs, names, index=0)
++                if self.under_cache_root(target):
++                    self.effect(kind, sys._getframe(1))
++                return original(*args, **kwargs)
++            return wrapper
++
++        def method_call(kind, original):
++            def wrapper(inst, *args, **kwargs):
++                if self.under_cache_root(inst):
++                    self.effect(kind, sys._getframe(1))
++                return original(inst, *args, **kwargs)
++            return wrapper
++
++        def placement(original):
++            def wrapper(*args, **kwargs):
++                target = self._argument(args, kwargs, ("dst", "destination", "target"), index=1)
++                if self.is_placement_target(target):
++                    self.effect("place", sys._getframe(1))
++                return original(*args, **kwargs)
++            return wrapper
++
++        def method_placement(original):
++            def wrapper(inst, target, *args, **kwargs):
++                if self.is_placement_target(target):
++                    self.effect("place", sys._getframe(1))
++                return original(inst, target, *args, **kwargs)
++            return wrapper
++
++        replace(lock_class, "__enter__", lock_enter(lock_class.__enter__))
++        replace(zipfile.ZipFile, "extract", archive_extract(zipfile.ZipFile.extract))
++        replace(zipfile.ZipFile, "extractall", archive_extractall(zipfile.ZipFile.extractall))
++        replace(zipfile.ZipFile, "open", archive_open(zipfile.ZipFile.open))
++        replace(os, "chmod", path_call("chmod", ("path",), os.chmod))
++        replace(Path, "chmod", method_call("chmod", Path.chmod))
++        replace(compileall, "compile_dir", path_call("compile", ("dir",), compileall.compile_dir))
++        replace(compileall, "compile_file", path_call("compile", ("fullname",), compileall.compile_file))
++        replace(py_compile, "compile", path_call("compile", ("file",), py_compile.compile))
++        replace(shutil, "move", placement(shutil.move))
++        replace(os, "replace", placement(os.replace))
++        replace(os, "rename", placement(os.rename))
++        replace(Path, "rename", method_placement(Path.rename))
++        replace(Path, "replace", method_placement(Path.replace))
++        replace(shutil, "copytree", placement(shutil.copytree))
++
++        try:
++            yield
++        finally:
++            sys.setprofile(old_profile)
++            for owner, name, original in reversed(replaced):
++                setattr(owner, name, original)
++
++    def lifecycle_scope(self):
++        # Observe one live coordination invocation enclosing every required effect.
++        # Effect implementations may belong to different collaborating objects.
++        scopes = [entry for effect in self.effects if effect["kind"] == "lock"
++                  for entry in effect["chain"] if entry["is_method"]]
++        for scope in scopes:
++            if all(any(any(entry["frame"] is scope["frame"] for entry in effect["chain"])
++                       for effect in self.effects if effect["kind"] == kind)
++                   for kind in self.REQUIRED):
++                return scope
++        return None
++
++    def verify(self):
++        if not getattr(self, "allow_external_target", True) and getattr(self, "external_target_passed", False):
++            return False
++        scope = self.lifecycle_scope()
++        if scope is None:
++            return False
++
++        # Keep the anti-wrapper guard: a module-level monolith underneath the
++        # lifecycle cannot own synchronization, extraction and placement together.
++        proc_kinds = {}
++        for effect in self.effects:
++            for entry in effect["chain"]:
++                if entry["frame"] is scope["frame"]:
++                    break
++                if not entry["is_method"]:
++                    proc_kinds.setdefault(entry["qualname"], set()).add(effect["kind"])
++        if any({"lock", "extract", "place"}.issubset(kinds) for kinds in proc_kinds.values()):
++            return False
++        return True
++
++
++def run_e2_lifecycle_case(repo_root: Path, work_dir: Path, entrypoint: str = "extract_site_packages") -> bool:
++    src_dir = str((repo_root / "src").resolve())
++    if src_dir not in sys.path:
++        sys.path.insert(0, src_dir)
++
++    import shiv.bootstrap as b
++    from shiv.bootstrap.filelock import FileLock
++    from shiv.bootstrap.environment import Environment
++    os.environ["SHIV_COMPILE_WORKERS"] = "1"
++
++    cache_root = work_dir / "cache"
++    cache_root.mkdir(parents=True, exist_ok=True)
++    archive_name = "app.pyz"
++    archive_path = work_dir / archive_name
++    build_id = "probe"
++
++    env = Environment(
++        built_at="2020-09-13 12:26:40",
++        shiv_version="probe",
++        build_id=build_id,
++        root=str(cache_root),
++        compile_pyc=True,
++        entry_point="_probe:main",
++    )
++
++    with zipfile.ZipFile(str(archive_path), "w") as blob:
++        blob.writestr("environment.json", env.to_json())
++        blob.writestr("site-packages/probe_pkg/__init__.py", "PROBE_VALUE = 1\n")
++        blob.writestr("site-packages/bin/probe-script", "#!/usr/bin/env python3\n")
++
++    target = cache_root / f"{archive_name}_{build_id}"
++
++    witness = LifecycleWitness(repo_root / "src", cache_root)
++    with witness.observing(target, FileLock, allow_external_target=(entrypoint == "extract_site_packages")):
++        if entrypoint == "extract_site_packages":
++            with zipfile.ZipFile(str(archive_path)) as archive:
++                b.extract_site_packages(archive, target, compile_pyc=True, compile_workers=1, force=True)
++        elif entrypoint == "bootstrap":
++            class MockArchive:
++                filename = str(archive_path)
++                def read(self, n):
++                    return env.to_json().encode()
++                def infolist(self):
++                    with zipfile.ZipFile(str(archive_path)) as zf:
++                        return zf.infolist()
++                def extract(self, *a, **kw):
++                    with zipfile.ZipFile(str(archive_path)) as zf:
++                        return zf.extract(*a, **kw)
++                def extractall(self, *a, **kw):
++                    with zipfile.ZipFile(str(archive_path)) as zf:
++                        return zf.extractall(*a, **kw)
++                def open(self, *a, **kw):
++                    with zipfile.ZipFile(str(archive_path)) as zf:
++                        return zf.open(*a, **kw)
++
++            @contextlib.contextmanager
++            def arc():
++                yield MockArchive()
++
++            class SafeHalt(Exception):
++                pass
++
++            def halt_after_cache(*a, **kw):
++                raise SafeHalt()
++
++            with contextlib.ExitStack() as stack:
++                stack.enter_context(patch.object(b, "current_zipfile", arc))
++                stack.enter_context(patch.object(Environment, "from_json", lambda x: env))
++                stack.enter_context(patch.object(b.site, "addsitedir", halt_after_cache))
++                try:
++                    b.bootstrap()
++                except (SystemExit, SafeHalt):
++                    pass
++
++    materialized = (target / "site-packages" / "probe_pkg" / "__init__.py").is_file()
++    return materialized and witness.verify()
++
++
++class TestF2P03E2CacheMaterializationLifecycle:
++    def test_e2_cache_materialization_lifecycle_ownership(self, tmp_path):
++        """BN-2: Cache materialization lifecycle (synchronization, extraction, permission
++        restoration, bytecode compilation, and cache directory placement) is owned and executed
++        by an active lifecycle boundary, including cooperating objects, rather than a procedural monolith."""
++        repo_root = Path(__file__).resolve().parent.parent
++        # Both the compatibility entrypoint and production bootstrap must use the dedicated lifecycle owner
++        res_extract = run_e2_lifecycle_case(repo_root, tmp_path / "extract", entrypoint="extract_site_packages")
++        assert res_extract, (
++            "E2 refactoring boundary violation: extract_site_packages procedurally bypassed the dedicated lifecycle component."
++        )
++        res_bootstrap = run_e2_lifecycle_case(repo_root, tmp_path / "bootstrap", entrypoint="bootstrap")
++        assert res_bootstrap, (
++            "E2 refactoring boundary violation: production bootstrap procedurally bypassed the dedicated lifecycle component or delegated target ownership externally."
++        )
++
++
++# ---------------------------------------------------------------------------
++# Runtime Tracing Witness for BN-3 / E3 Selection -> Deferred Intent -> Execution
++# ---------------------------------------------------------------------------
++class RuntimeWitness:
++    def __init__(self, source_root: Path):
++        self.source_root = source_root.resolve()
++        self.seq = 0
++        self.selectors = {}
++        self.effects = []
++        self.active_selector_codes = set()
++        self.active_invocations = []
++        self.coupled = False
++        self.request_reads = {}
++        self.instructions = {}
++        self.candidate_codes = {}
++        # The public dotted-name resolver is target lookup, not runtime selection.
++        lookup = getattr(sys.modules.get('shiv.bootstrap'), 'import_string', None)
++        self.lookup_codes = {getattr(lookup, '__code__', None)}
++
++    def candidate(self, frame):
++        code = frame.f_code
++        if code in self.candidate_codes:
++            return self.candidate_codes[code]
++        try:
++            result = Path(code.co_filename).resolve().is_relative_to(self.source_root)
++        except (OSError, ValueError):
++            result = False
++        self.candidate_codes[code] = result
++        return result
++
++    @staticmethod
++    def get_args(frame):
++        c = frame.f_code
++        n = c.co_argcount + c.co_kwonlyargcount + bool(c.co_flags & 4) + bool(c.co_flags & 8)
++        return [frame.f_locals.get(x) for x in c.co_varnames[:n]]
++
++    def is_request_like(self, val):
++        if val is None or isinstance(val, (int, float, bool, str, bytes, Path, os.PathLike)):
++            return False
++        tname = type(val).__name__
++        if tname in ("Environment", "MockArchive", "ZipFile"):
++            return False
++        if hasattr(val, "execute") or hasattr(val, "run"):
++            return True
++        if callable(val) and getattr(val, "__code__", None) is not None and not isinstance(val, type):
++            return True
++        # Data requests may be mappings, tuples, or ordinary candidate objects.
++        # Recognition must not depend on a Command base class or private type name.
++        if isinstance(val, (dict, tuple, list)):
++            return bool(val)
++        if hasattr(val, "__dict__") or hasattr(type(val), "__slots__"):
++            return True
++        return False
++
++    def profile(self, frame, event, arg):
++        if not self.candidate(frame):
++            return
++        frame_id = id(frame)
++        qualname = frame.f_code.co_qualname.lower()
++        # A selector is a planning/selection function that decides what to execute
++        is_sel = (
++            (
++                any(k in qualname for k in ("plan_", "select_", "dispatch_", "_plan", "_select"))
++                or qualname in ("plan_execution", "select_execution_request", "plan_interpreter", "select_interpreter_request", "select_execution_target")
++            )
++            and ".<locals>." not in qualname
++            and frame.f_code.co_name != "<lambda>"
++            and not any(k in qualname for k in (".execute", ".run", ".cleanup", "materialize", "create_archive", "install"))
++        )
++        if event == "call":
++            self.active_invocations.append((frame_id, []))
++            if is_sel:
++                self.active_selector_codes.add(frame.f_code)
++        elif event == "return":
++            matching_effects = None
++            while self.active_invocations:
++                fid, effs = self.active_invocations.pop()
++                if fid == frame_id:
++                    matching_effects = effs
++                    break
++            self.active_selector_codes.discard(frame.f_code)
++            self.seq += 1
++            if self.is_request_like(arg) and frame.f_code not in self.lookup_codes:
++                req_id = id(arg)
++                self.selectors[req_id] = {
++                    "request": arg,
++                    "return_seq": self.seq,
++                    "selector": frame.f_code.co_qualname,
++                    "selector_code": frame.f_code,
++                    "effects_before_return": bool(matching_effects),
++                }
++
++    @contextlib.contextmanager
++    def active(self):
++        old = sys.getprofile()
++        old_trace = sys.gettrace()
++        frame = sys._getframe()
++        old_opcodes = frame.f_trace_opcodes
++        # Python 3.12 requires an opcode-enabled frame before settrace is called.
++        frame.f_trace_opcodes = True
++        sys.setprofile(self.profile)
++        sys.settrace(self.trace)
++        try:
++            yield
++        finally:
++            sys.setprofile(old)
++            sys.settrace(old_trace)
++            frame.f_trace_opcodes = old_opcodes
++
++    def trace(self, frame, event, arg):
++        if not self.candidate(frame):
++            return None
++        if event == 'call':
++            frame.f_trace_opcodes = True
++            self.request_reads[id(frame)] = set()
++        elif event == 'opcode':
++            instructions = self.instructions.get(frame.f_code)
++            if instructions is None:
++                instructions = {ins.offset: ins for ins in dis.get_instructions(frame.f_code)}
++                self.instructions[frame.f_code] = instructions
++            ins = instructions.get(frame.f_lasti)
++            if ins and ins.opname in ('LOAD_FAST', 'LOAD_DEREF', 'LOAD_NAME'):
++                value = frame.f_locals.get(ins.argval)
++                if id(value) in self.selectors:
++                    following = next((instructions[offset] for offset in sorted(instructions)
++                                      if offset > frame.f_lasti), None)
++                    if following is None or following.opname != 'POP_TOP':
++                        self.request_reads.setdefault(id(frame), set()).add(id(value))
++        return self.trace
++
++    def effect(self, kind, **detail):
++        self.seq += 1
++        stack = []
++        f = sys._getframe(1)
++        while f:
++            if self.candidate(f):
++                stack.append(f)
++            f = f.f_back
++
++        stack_codes = [fr.f_code for fr in stack]
++        stack_instances = [fr.f_locals.get("self") for fr in stack if "self" in fr.f_locals]
++        if any(sc in self.active_selector_codes for sc in stack_codes):
++            self.coupled = True
++
++        valid_witnesses = []
++        for req_id, sel in list(self.selectors.items()):
++            req = sel["request"]
++            consumed = False
++            if any(req is instance for instance in stack_instances):
++                consumed = True
++            # An external executor must receive the returned object as an argument;
++            # merely keeping an unused request in a caller's locals is insufficient.
++            elif any(req_id in self.request_reads.get(id(fr), set())
++                     and any(req is argument for argument in self.get_args(fr)) for fr in stack):
++                consumed = True
++            elif callable(req) and getattr(req, "__code__", None) in stack_codes:
++                consumed = True
++            elif any(callable(getattr(req, attr, None)) and getattr(getattr(req, attr, None), "__code__", None) in stack_codes for attr in dir(req) if not attr.startswith("__")):
++                consumed = True
++
++            if consumed:
++                if sel["effects_before_return"]:
++                    self.coupled = True
++                    continue
++                # Decoupling check: selector must NOT be active on call stack during execution
++                is_coupled = sel["selector_code"] in stack_codes
++                # Sequence check: execution must be strictly after selector returned
++                is_after = self.seq > sel["return_seq"]
++                if not is_coupled and is_after:
++                    valid_witnesses.append({
++                        "selector": sel["selector"],
++                        "request": req,
++                        "consumed": True,
++                    })
++
++        item = {
++            "kind": kind,
++            "seq": self.seq,
++            "witnesses": valid_witnesses,
++            "detail": detail,
++        }
++        for _, effs in self.active_invocations:
++            effs.append(item)
++        self.effects.append(item)
++        return item
++
++
++@contextlib.contextmanager
++def clean_env():
++    old = (list(sys.argv), list(sys.path), dict(os.environ))
++    for k in list(os.environ):
++        if k.startswith("SHIV_") or k == "SOURCE_DATE_EPOCH":
++            os.environ.pop(k)
++    try:
++        yield
++    finally:
++        sys.argv[:] = old[0]
++        sys.path[:] = old[1]
++        os.environ.clear()
++        os.environ.update(old[2])
++
++
++def run_e3_witness_case(repo_root: Path, kind: str, work_dir: Path, witness=None) -> bool:
++    src_dir = str((repo_root / "src").resolve())
++    if src_dir not in sys.path:
++        sys.path.insert(0, src_dir)
++
++    import shiv.bootstrap as b
++    import shiv.bootstrap.interpreter as i
++    from shiv.bootstrap.environment import Environment
++
++    w = witness if witness is not None else RuntimeWitness(repo_root / "src")
++    archive_name = "app.pyz"
++    build_id = "probe"
++    cache_root = work_dir / "cache"
++    sp = cache_root / f"{archive_name}_{build_id}" / "site-packages"
++    (sp / "bin").mkdir(parents=True, exist_ok=True)
++
++    env = Environment(
++        built_at="2020-09-13 12:26:40",
++        shiv_version="probe",
++        build_id=build_id,
++        root=str(cache_root),
++        compile_pyc=False,
++        entry_point="_probe:main" if kind == "app" else None,
++        script="fixture_script" if kind == "app_script" else None,
++        preamble="pre.py" if kind == "pre" else None,
++    )
++
++    mod = types.ModuleType("_probe")
++    def target():
++        w.effect("APP")
++        return 7
++    mod.main = target
++    sys.modules["_probe"] = mod
++
++    class MockArchive:
++        filename = str(work_dir / archive_name)
++        def read(self, n):
++            return env.to_json().encode()
++
++    @contextlib.contextmanager
++    def arc():
++        yield MockArchive()
++
++    def rp(path, **kw):
++        if str(path).endswith("pre.py"):
++            context = kw.get("init_globals", {})
++            w.effect(
++                "PRE", path=str(path), archive=context.get("archive"),
++                site_packages=str(context.get("site_packages")),
++                environment_is_runtime=context.get("env") is env,
++            )
++        else:
++            w.effect("SCRIPT", path=str(path))
++        return {}
++
++    def ec(name, val, argv0=None):
++        w.effect("CONTENT", argv=list(sys.argv), name=name, content=val)
++        return None
++
++    def rm(name, **kw):
++        w.effect("MODULE", module=name, argv=list(sys.argv))
++
++    def interactive(*a, **kw):
++        w.effect("INTERACTIVE", argv=list(sys.argv))
++
++    real_exec = exec
++    def hooked_exec(code_obj, *args, **kwargs):
++        w.effect("CONTENT", argv=list(sys.argv))
++        return real_exec(code_obj, *args, **kwargs)
++
++    if kind in ("app", "app_script"):
++        argv = ["app.pyz"]
++    elif kind == "pre":
++        argv = ["app.pyz", "-c", "pass", "arg"]
++    elif kind == "interp_c":
++        argv = ["app.pyz", "-c", "x = 1", "arg"]
++    elif kind == "interp_m":
++        argv = ["app.pyz", "-m", "fixture_module", "arg"]
++    elif kind == "interp_script":
++        script_file = work_dir / "probe_script.py"
++        script_file.write_text("PROBE_SCRIPT_VAL = 1\n")
++        argv = ["app.pyz", str(script_file), "arg"]
++    elif kind == "interp_stdin":
++        argv = ["app.pyz", "-", "arg"]
++    elif kind == "interp_interactive":
++        argv = ["app.pyz"]
++    else:
++        argv = ["app.pyz"]
++
++    orig_run_path = runpy.run_path
++    orig_run_module = runpy.run_module
++    orig_interact = code.interact
++    orig_console_interact = getattr(code.InteractiveConsole, "interact", None)
++    orig_execute_content = getattr(i, "execute_content", None)
++
++    with clean_env(), contextlib.ExitStack() as stack:
++        sys.argv[:] = list(argv)
++        stack.enter_context(patch.object(b, "current_zipfile", arc))
++        stack.enter_context(patch.object(Environment, "from_json", lambda x: env))
++        stack.enter_context(patch.object(b.site, "addsitedir", lambda *a: None))
++        stack.enter_context(patch.object(runpy, "run_path", rp))
++        stack.enter_context(patch.object(runpy, "run_module", rm))
++        stack.enter_context(patch.object(code, "interact", interactive))
++        stack.enter_context(patch.object(code.InteractiveConsole, "interact", interactive))
++        stack.enter_context(patch("builtins.exec", side_effect=hooked_exec))
++        if hasattr(i, "execute_content"):
++            stack.enter_context(patch.object(i, "execute_content", ec))
++        if kind == "interp_stdin":
++            stack.enter_context(patch.object(sys, "stdin", io.StringIO("PROBE_STDIN_VAL = 1\n")))
++
++        for mname, mval in list(sys.modules.items()):
++            if mval and mname.startswith("shiv.bootstrap"):
++                for attr_name, attr_val in list(vars(mval).items()):
++                    if attr_val is orig_run_path or (hasattr(attr_val, "__wrapped__") and getattr(attr_val, "__wrapped__") is orig_run_path):
++                        stack.enter_context(patch.object(mval, attr_name, rp))
++                    elif attr_val is orig_run_module or (hasattr(attr_val, "__wrapped__") and getattr(attr_val, "__wrapped__") is orig_run_module):
++                        stack.enter_context(patch.object(mval, attr_name, rm))
++                    elif attr_val is orig_interact or attr_val is orig_console_interact:
++                        stack.enter_context(patch.object(mval, attr_name, interactive))
++                    elif orig_execute_content is not None and attr_val is orig_execute_content:
++                        stack.enter_context(patch.object(mval, attr_name, ec))
++                if hasattr(mval, "run_path"):
++                    stack.enter_context(patch.object(mval, "run_path", rp))
++                if hasattr(mval, "run_module"):
++                    stack.enter_context(patch.object(mval, "run_module", rm))
++                if hasattr(mval, "interact"):
++                    stack.enter_context(patch.object(mval, "interact", interactive))
++                if hasattr(mval, "execute_content"):
++                    stack.enter_context(patch.object(mval, "execute_content", ec))
++
++        with w.active():
++            try:
++                # Exercise selection through production bootstrap for every mode.
++                # execute_interpreter may remain an executor; the contract does not
++                # require the compatibility helper itself to return a request.
++                b.bootstrap()
++            except SystemExit:
++                pass
++
++    if w.coupled:
++        return False
++    out = w.effects
++
++    pre_effects = [e for e in out if e["kind"] == "PRE"]
++    primary_effects = [e for e in out if e["kind"] in ("APP", "SCRIPT", "CONTENT", "MODULE", "INTERACTIVE")]
++
++    if kind != "pre" and pre_effects:
++        return False
++
++    if kind == "app":
++        if not primary_effects or any(e["kind"] != "APP" for e in primary_effects):
++            return False
++        return bool(primary_effects[-1]["witnesses"]) and len(primary_effects) == 1
++    elif kind == "app_script":
++        if not primary_effects or any(e["kind"] != "SCRIPT" for e in primary_effects):
++            return False
++        if any(not str(e["detail"].get("path", "")).endswith("fixture_script") for e in primary_effects):
++            return False
++        return bool(primary_effects[-1]["witnesses"]) and len(primary_effects) == 1
++    elif kind == "pre":
++        if not pre_effects or not primary_effects:
++            return False
++        if any(e["kind"] != "CONTENT" for e in primary_effects):
++            return False
++        return (
++            bool(pre_effects[0]["witnesses"])
++            and bool(primary_effects[0]["witnesses"])
++            and pre_effects[0]["seq"] < primary_effects[0]["seq"]
++            and len(pre_effects) == 1
++        )
++    elif kind == "interp_c":
++        if not primary_effects or any(e["kind"] != "CONTENT" for e in primary_effects):
++            return False
++        c_with_content = [e for e in primary_effects if "content" in e["detail"]]
++        if c_with_content and any(e["detail"]["content"] != "x = 1" for e in c_with_content):
++            return False
++        return bool(primary_effects[-1]["witnesses"]) and len(c_with_content or primary_effects) == 1
++    elif kind == "interp_m":
++        if not primary_effects or any(e["kind"] != "MODULE" for e in primary_effects):
++            return False
++        if any(e["detail"].get("module") != "fixture_module" for e in primary_effects):
++            return False
++        return bool(primary_effects[-1]["witnesses"]) and len(primary_effects) == 1
++    elif kind == "interp_script":
++        if not primary_effects or any(e["kind"] not in ("CONTENT", "SCRIPT") for e in primary_effects):
++            return False
++        c_spurious = [e for e in primary_effects if e["kind"] == "CONTENT" and e["detail"].get("content") != "PROBE_SCRIPT_VAL = 1\n"]
++        if c_spurious:
++            return False
++        return bool(primary_effects[-1]["witnesses"])
++    elif kind == "interp_stdin":
++        if not primary_effects or any(e["kind"] != "CONTENT" for e in primary_effects):
++            return False
++        return bool(primary_effects[-1]["witnesses"]) and len(primary_effects) >= 1
++    elif kind == "interp_interactive":
++        if not primary_effects or any(e["kind"] != "INTERACTIVE" for e in primary_effects):
++            return False
++        return bool(primary_effects[-1]["witnesses"]) and len(primary_effects) == 1
++
++    return False
++
++
++# ---------------------------------------------------------------------------
++# Behavior Node 3 (BN-3 / E3): Selection -> Deferred Intent -> Execution
++# ---------------------------------------------------------------------------
++class TestF2P05E3ApplicationDeferredIntent:
++    def test_e3_application_target_deferred_intent(self, tmp_path):
++        """BN-3: Application callable and console script selection formulates a deferred execution
++        request before target invocation."""
++        repo_root = Path(__file__).resolve().parent.parent
++        res_callable = run_e3_witness_case(repo_root, "app", tmp_path / "app")
++        assert res_callable, "E3 callable selection failed to produce a deferred intent before execution"
++        res_script = run_e3_witness_case(repo_root, "app_script", tmp_path / "script")
++        assert res_script, "E3 console-script selection failed to produce a deferred intent before execution"
++
++
++class TestF2P06E3InterpreterDeferredIntent:
++    def test_e3_interpreter_cmd_and_module_deferred_intent(self, tmp_path):
++        """BN-3: Interpreter command (-c) and module (-m) selection formulates a deferred execution
++        request before execution."""
++        repo_root = Path(__file__).resolve().parent.parent
++        # Evaluate every existing mode before asserting so one failure cannot hide another.
++        results = {
++            mode: run_e3_witness_case(repo_root, kind, tmp_path / directory)
++            for mode, kind, directory in (("-c", "interp_c", "c"), ("-m", "interp_m", "m"))
++        }
++        assert all(results.values()), f"E3 interpreter deferred-intent results: {results}"
++
++
++class TestF2P07E3PreambleDeferredIntent:
++    def test_e3_preamble_deferred_intent_and_ordering(self, tmp_path):
++        """BN-3: Preamble selection formulates a deferred execution request, and preamble executes
++        prior to primary target execution."""
++        repo_root = Path(__file__).resolve().parent.parent
++        res_pre = run_e3_witness_case(repo_root, "pre", tmp_path / "pre")
++        assert res_pre, "E3 preamble failed to produce a deferred intent or execute before target"
++
++
++class TestF2P08E3InterpreterScriptStdinInteractive:
++    def test_e3_interpreter_script_stdin_interactive_deferred_intent(self, tmp_path):
++        """BN-3: Interpreter script-path, stdin (-), and interactive selection formulate a deferred execution
++        request before target execution."""
++        repo_root = Path(__file__).resolve().parent.parent
++        # Preserve the same conjunction of checks while reporting all three outcomes.
++        results = {
++            mode: run_e3_witness_case(repo_root, kind, tmp_path / directory)
++            for mode, kind, directory in (
++                ("script-path", "interp_script", "script"),
++                ("stdin (-)", "interp_stdin", "stdin"),
++                ("interactive", "interp_interactive", "interactive"),
++            )
++        }
++        assert all(results.values()), f"E3 interpreter deferred-intent results: {results}"
++
++
++class ArgumentChangeWitness(RuntimeWitness):
++    """Change ambient arguments immediately after an observed request returns."""
++
++    def __init__(self, source_root, boundary, replacement_argv=None):
++        super().__init__(source_root)
++        self.boundary = boundary
++        self.changed = False
++        self.replacement_argv = list(replacement_argv) if replacement_argv is not None else [
++            "app.pyz", "-c", "CHANGED_SELECTION = 1", "changed-argument",
++        ]
++
++    def profile(self, frame, event, arg):
++        super().profile(frame, event, arg)
++        if (event == "return" and frame.f_code is self.boundary
++                and self.is_request_like(arg) and not self.changed):
++            self.changed = True
++            sys.argv[:] = self.replacement_argv
++
++
++def test_preamble_request_preserves_selected_archive_context(tmp_path):
++    """A consumed preamble request owns its archive identifier across argv changes."""
++    repo_root = Path(__file__).resolve().parent.parent
++    work_dir = tmp_path / "preamble"
++    baseline = RuntimeWitness(repo_root / "src")
++    assert run_e3_witness_case(repo_root, "pre", work_dir, witness=baseline)
++    preambles = [effect for effect in baseline.effects if effect["kind"] == "PRE"]
++    assert len(preambles) == 1
++    expected = preambles[0]["detail"]
++    assert expected["archive"] == "app.pyz"
++    assert expected["site_packages"] == str(
++        work_dir / "cache" / "app.pyz_probe" / "site-packages"
++    )
++    assert expected["environment_is_runtime"], "preamble must receive the runtime environment object"
++    boundaries = {
++        baseline.selectors[id(item["request"])]["selector_code"]
++        for item in preambles[0]["witnesses"]
++    }
++    preserved = []
++    for boundary in sorted(boundaries, key=lambda code: code.co_qualname):
++        # Only the archive identifier changes; primary mode and arguments stay valid.
++        replay = ArgumentChangeWitness(
++            repo_root / "src", boundary,
++            replacement_argv=["different-archive.pyz", "-c", "pass", "arg"],
++        )
++        normal = run_e3_witness_case(repo_root, "pre", work_dir, witness=replay)
++        actual = [effect for effect in replay.effects if effect["kind"] == "PRE"]
++        preserved.append(
++            replay.changed and normal and len(actual) == 1 and actual[0]["detail"] == expected
++        )
++    assert any(preserved), (
++        "selected preamble archive context remained dependent on ambient argv: "
++        f"{preserved}"
++    )
++
++
++class IncompleteInvocationWitness(RuntimeWitness):
++    """Supply a missing operand while observing the same production boundaries."""
++
++    def __init__(self, source_root, flag):
++        super().__init__(source_root)
++        self.flag = flag
++        self.called_codes = set()
++
++    def profile(self, frame, event, arg):
++        super().profile(frame, event, arg)
++        if event == "call" and self.candidate(frame):
++            self.called_codes.add(frame.f_code)
++
++    @contextlib.contextmanager
++    def active(self):
++        sys.argv[:] = ["app.pyz", self.flag]
++        with super().active():
++            yield
++
++
++def test_interpreter_primary_request_preserves_selected_arguments(tmp_path):
++    """An independently selected command/module request owns its target and argv.
++
++    Discover boundaries from requests consumed by real bootstrap, then repeat the
++    same runtime call with an argument change just after each observed return.
++    An outer request may still defer primary selection until after a preamble;
++    at least one consumed primary request must preserve the selected intent.
++    Object, callable, and data requests use the same production execution path.
++    """
++    repo_root = Path(__file__).resolve().parent.parent
++    results = {}
++    for mode in ("interp_c", "interp_m"):
++        baseline = RuntimeWitness(repo_root / "src")
++        normal = run_e3_witness_case(
++            repo_root, mode, tmp_path / mode / "baseline", witness=baseline,
++        )
++        assert normal, f"ordinary deferred selection failed for {mode}"
++        boundaries = {
++            baseline.selectors[id(item["request"])]["selector_code"]
++            for effect in baseline.effects for item in effect["witnesses"]
++        }
++        expected = [(effect["kind"], effect["detail"]) for effect in baseline.effects]
++        preserved = []
++        for index, boundary in enumerate(sorted(boundaries, key=lambda c: c.co_qualname)):
++            replay = ArgumentChangeWitness(repo_root / "src", boundary)
++            normal = run_e3_witness_case(
++                repo_root, mode, tmp_path / mode / str(index), witness=replay,
++            )
++            actual = [(effect["kind"], effect["detail"]) for effect in replay.effects]
++            preserved.append(replay.changed and normal and actual == expected)
++        results[mode] = any(preserved)
++        incomplete = IncompleteInvocationWitness(
++            repo_root / "src", "-c" if mode == "interp_c" else "-m",
++        )
++        with pytest.raises(IndexError):
++            run_e3_witness_case(
++                repo_root, mode, tmp_path / mode / "missing-operand", witness=incomplete,
++            )
++        returned_codes = {item["selector_code"] for item in incomplete.selectors.values()}
++        # An outer request may defer primary selection. Require a consumed primary
++        # boundary reached in this replay to reject the incomplete invocation.
++        rejected = (boundaries & incomplete.called_codes) - returned_codes
++        results[mode + "_missing_operand"] = bool(rejected) and not incomplete.effects
++    assert all(results.values()), (
++        "primary interpreter selection left mode/arguments dependent on ambient argv "
++        "or returned a request with a missing operand: "
++        f"{results}"
++    )
+diff --git a/test/test_fresh8_runtime.py b/test/test_fresh8_runtime.py
+new file mode 100644
+index 0000000..07bd48e
+--- /dev/null
++++ b/test/test_fresh8_runtime.py
+@@ -0,0 +1,50 @@
++def test_preserved_preparation_and_real_runtime(tmp_path):
++    import json, os, subprocess, sys, tempfile, hashlib
++    from pathlib import Path
++    from unittest.mock import patch
++    from click.testing import CliRunner
++    from shiv.cli import main
++    import shiv.cli as cli
++    
++    out=[]
++    def record(name,ok,**details):
++     out.append(dict(name=name,passed=bool(ok),**details))
++    def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None
++    with tempfile.TemporaryDirectory() as tmp:
++     t=Path(tmp);sp=t/'sp';sp.mkdir();(sp/'probe.py').write_text('print("archive-marker")\n')
++     runner=CliRunner()
++     for failure in ['pip','copy']:
++      for existing in [False,True]:
++       target=t/f'{failure}-{existing}.pyz'
++       if existing:target.write_bytes(b'SENTINEL')
++       before=sha(target)
++       mock_target=cli.pip if failure=='pip' else cli
++       attr='install' if failure=='pip' else 'copytree'
++       args=['-o',str(target),'offline-nonexistent-dependency']
++       if failure=='copy':args+=['--site-packages',str(sp)]
++       with patch.object(mock_target,attr,side_effect=RuntimeError('isolated preparation failure')):
++        r=runner.invoke(main,args)
++       record('R06_'+failure+'_'+str(existing),r.exit_code!=0 and sha(target)==before,exit_code=r.exit_code,before_sha=before,after_sha=sha(target))
++     archive=t/'app.pyz'
++     r=runner.invoke(main,['--site-packages',str(sp),'-o',str(archive),'-p','/usr/bin/env python3','--no-modify'])
++     assert r.exit_code==0,repr(r.exception)
++     env={k:v for k,v in os.environ.items() if not k.startswith('SHIV_')};env['SHIV_ROOT']=str(t/'cache')
++     code='import sys,json;print(json.dumps(sys.argv))'
++     r=subprocess.run([sys.executable,str(archive),'-c',code,'tail-one','tail with space'],env=env,capture_output=True,text=True)
++     got=json.loads(r.stdout) if r.returncode==0 else None
++     record('R07_real_zipapp_argv',got==['-c','tail-one','tail with space'],returncode=r.returncode,argv=got,stderr=r.stderr)
++     env['SHIV_NO_MODIFY']='1'
++     r=subprocess.run([sys.executable,str(archive),'-c','print("clean")'],env=env,capture_output=True,text=True)
++     record('R09_clean',r.returncode==0,returncode=r.returncode,stdout=r.stdout,stderr=r.stderr)
++     unpacked=next((t/'cache').rglob('probe.py'));before=sha(unpacked);unpacked.write_text('print("tampered-marker")\n')
++     r=subprocess.run([sys.executable,str(archive),'-c','print("clean")'],env=env,capture_output=True,text=True)
++     record('R09_tamper_real_bootstrap',r.returncode!=0 and 'modified' in r.stderr,returncode=r.returncode,stderr=r.stderr,before_sha=before,after_sha=sha(unpacked))
++     env.pop('SHIV_NO_MODIFY');env['SHIV_ROOT']=str(t/'cache-order')
++     # An external directory with site-packages name gives baseline reorder a real competing module.
++     external=t/'external'/'site-packages';external.mkdir(parents=True);(external/'probe.py').write_text('print("external-marker")\n')
++     env['PYTHONPATH']=str(external)
++     r=subprocess.run([sys.executable,str(archive),'-c','import probe;print(probe.__file__)'],env=env,capture_output=True,text=True)
++     record('R10_real_import_precedence',r.returncode==0 and r.stdout.startswith('archive-marker'),returncode=r.returncode,stdout=r.stdout,stderr=r.stderr)
++    (tmp_path / 'probe-results.json').write_text(json.dumps(out,indent=2))
++    print(json.dumps(out,indent=2))
++    assert all(x['passed'] for x in out), out
+diff --git a/test/test_p2p_regression.py b/test/test_p2p_regression.py
+new file mode 100644
+index 0000000..bfb8a85
+--- /dev/null
++++ b/test/test_p2p_regression.py
+@@ -0,0 +1,352 @@
++import os
++import stat
++import subprocess
++import sys
++import tempfile
++import zipfile
++from pathlib import Path
++from unittest import mock
++
++import pytest
++from click.testing import CliRunner
++
++from shiv.bootstrap import (
++    current_zipfile,
++    extract_site_packages,
++    import_string,
++    run,
++)
++from shiv.bootstrap.interpreter import (
++    execute_content,
++    execute_interpreter,
++    execute_module,
++)
++from shiv.cli import main
++from shiv.pip import install
++
++
++# ==============================================================================
++# Group 1: E1 CLI Build Orchestration (test/test_p2p_cli.py)
++# ==============================================================================
++
++class TestP2PCLIBuildOrchestration:
++    @pytest.fixture
++    def runner(self):
++        def invoke(args, env=None):
++            cmd_args = list(args)
++            if "-p" not in cmd_args and "--python" not in cmd_args:
++                cmd_args.extend(["-p", "/usr/bin/env python3"])
++            return CliRunner().invoke(main, cmd_args, env=env)
++        return invoke
++
++    @pytest.fixture
++    def staged_sp(self, tmp_path):
++        sp_dir = tmp_path / "sp"
++        pkg_dir = Path(__file__).parent / "package"
++        install(["-t", str(sp_dir), str(pkg_dir)])
++        return sp_dir
++
++    def test_cli_both_entry_point_and_console_script(self, runner, staged_sp, tmp_path):
++        # Distinct markers make persisted metadata insufficient as an oracle.
++        (staged_sp / "bin" / "hello").write_text("import sys\nprint('CONSOLE_SCRIPT_MARKER')\nsys.exit(0)\n")
++        target = tmp_path / "app_both.pyz"
++        res = runner([
++            "-o", str(target),
++            "--site-packages", str(staged_sp),
++            "--entry-point", "hello.say_hello",
++            "--console-script", "hello",
++        ])
++        assert res.exit_code == 0
++        assert target.exists()
++        with zipfile.ZipFile(str(target)) as zf:
++            env_content = zf.read("environment.json").decode()
++            assert "hello.say_hello" in env_content
++            assert '"script": "hello"' in env_content
++
++        runtime_env = {k: v for k, v in os.environ.items() if not k.startswith("SHIV_")}
++        runtime_env["SHIV_ROOT"] = str(tmp_path / "runtime-cache")
++        executed = subprocess.run(
++            [sys.executable, str(target)], env=runtime_env,
++            capture_output=True, text=True, timeout=15,
++        )
++        assert executed.returncode == 0, executed.stderr
++        assert executed.stdout.strip() == "CONSOLE_SCRIPT_MARKER", (
++            "Both entry flags must preserve frozen baseline console-script dispatch",
++            executed.stdout, executed.stderr,
++        )
++
++    def test_cli_custom_build_id_warning_and_persistence(self, runner, staged_sp, tmp_path):
++        target = tmp_path / "app_custom_id.pyz"
++        res = runner([
++            "-o", str(target),
++            "--site-packages", str(staged_sp),
++            "--build-id", "custom-build-id-123",
++        ])
++        assert res.exit_code == 0
++        assert "Warning! You have overridden the default build-id behavior" in res.output
++        with zipfile.ZipFile(str(target)) as zf:
++            env_content = zf.read("environment.json").decode()
++            assert "custom-build-id-123" in env_content
++
++    def test_cli_uncompressed_zip_storage(self, runner, staged_sp, tmp_path):
++        target = tmp_path / "app_uncompressed.pyz"
++        res = runner([
++            "-o", str(target),
++            "--site-packages", str(staged_sp),
++            "--uncompressed",
++        ])
++        assert res.exit_code == 0
++        with zipfile.ZipFile(str(target)) as zf:
++            info = zf.getinfo("environment.json")
++            assert info.compress_type == zipfile.ZIP_STORED
++
++    def test_cli_custom_python_shebang(self, runner, staged_sp, tmp_path):
++        target = tmp_path / "app_shebang.pyz"
++        res = runner([
++            "-p", "/custom/bin/python3 -sE",
++            "-o", str(target),
++            "--site-packages", str(staged_sp),
++        ])
++        assert res.exit_code == 0
++        with open(str(target), "rb") as f:
++            first_line = f.readline()
++            assert first_line == b"#!/custom/bin/python3 -sE\n"
++
++    def test_cli_extend_pythonpath_flag_metadata(self, runner, staged_sp, tmp_path):
++        target = tmp_path / "app_extend_pythonpath.pyz"
++        res = runner([
++            "-o", str(target),
++            "--site-packages", str(staged_sp),
++            "-E",
++        ])
++        assert res.exit_code == 0
++        with zipfile.ZipFile(str(target)) as zf:
++            env_content = zf.read("environment.json").decode()
++            assert '"extend_pythonpath": true' in env_content.lower()
++
++    def test_cli_compile_pyc_flag_metadata(self, runner, staged_sp, tmp_path):
++        target = tmp_path / "app_compile_pyc.pyz"
++        res = runner([
++            "-o", str(target),
++            "--site-packages", str(staged_sp),
++            "--compile-pyc",
++        ])
++        assert res.exit_code == 0
++        with zipfile.ZipFile(str(target)) as zf:
++            env_content = zf.read("environment.json").decode()
++            assert '"compile_pyc": true' in env_content.lower()
++
++    def test_cli_reproducible_source_date_epoch(self, runner, staged_sp, tmp_path):
++        target = tmp_path / "app_reproducible.pyz"
++        res = runner(
++            [
++                "-o", str(target),
++                "--site-packages", str(staged_sp),
++                "--reproducible",
++            ],
++            env={"SOURCE_DATE_EPOCH": "1600000000"},
++        )
++        assert res.exit_code == 0
++        with zipfile.ZipFile(str(target)) as zf:
++            env_content = zf.read("environment.json").decode()
++            assert '"reproducible": true' in env_content.lower()
++            assert "2020-09-13 12:26:40" in env_content
++
++    def test_cli_custom_root_metadata(self, runner, staged_sp, tmp_path):
++        target = tmp_path / "app_root.pyz"
++        res = runner([
++            "-o", str(target),
++            "--site-packages", str(staged_sp),
++            "--root", "/custom/cache/directory",
++        ])
++        assert res.exit_code == 0
++        with zipfile.ZipFile(str(target)) as zf:
++            env_content = zf.read("environment.json").decode()
++            assert '"root": "/custom/cache/directory"' in env_content
++
++    def test_cli_nonexistent_console_script_failure(self, runner, staged_sp, tmp_path):
++        target = tmp_path / "app_no_script.pyz"
++        res = runner([
++            "-o", str(target),
++            "--site-packages", str(staged_sp),
++            "-c", "nonexistent_binary_xyz",
++        ])
++        assert res.exit_code != 0
++        assert not target.exists()
++
++    def test_cli_output_file_is_executable(self, runner, staged_sp, tmp_path):
++        target = tmp_path / "app_exec_mode.pyz"
++        res = runner([
++            "-o", str(target),
++            "--site-packages", str(staged_sp),
++        ])
++        assert res.exit_code == 0
++        assert target.exists()
++        ugox = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
++        assert target.stat().st_mode & ugox == ugox
++
++    def test_cli_help_flag_displays_usage(self, runner):
++        res = runner(["--help"])
++        assert res.exit_code == 0
++        assert "Usage:" in res.output
++        assert "--entry-point" in res.output
++        assert "--console-script" in res.output
++
++    def test_cli_preamble_script_staged_in_archive(self, runner, staged_sp, tmp_path):
++        preamble_file = tmp_path / "my_preamble.py"
++        preamble_file.write_text("#!/usr/bin/env python3\nprint('preamble_test')\n")
++        target = tmp_path / "app_preamble.pyz"
++        res = runner([
++            "-o", str(target),
++            "--site-packages", str(staged_sp),
++            "--preamble", str(preamble_file),
++        ])
++        assert res.exit_code == 0
++        with zipfile.ZipFile(str(target)) as zf:
++            names = zf.namelist()
++            assert any(name.endswith("bin/my_preamble.py") for name in names)
++
++
++# ==============================================================================
++# Group 2: E2 Cache Materialization Lifecycle (test/test_p2p_bootstrap.py)
++# ==============================================================================
++
++class TestP2PCacheMaterialization:
++    @pytest.fixture
++    def sample_archive(self, tmp_path):
++        zip_path = tmp_path / "sample.zip"
++        with zipfile.ZipFile(zip_path, "w") as zf:
++            zinfo_script = zipfile.ZipInfo("site-packages/bin/sample_cmd")
++            zinfo_script.external_attr = 0o755 << 16
++            zf.writestr(zinfo_script, b"#!/bin/sh\necho sample\n")
++
++            zinfo_module = zipfile.ZipInfo("site-packages/sample_pkg/app.py")
++            zinfo_module.external_attr = 0o644 << 16
++            zf.writestr(zinfo_module, b"def hello():\n    return 'hello'\n")
++
++            zf.writestr("site-packages/sample_pkg/__init__.py", b"")
++            zf.writestr("other_folder/ignored.txt", b"should not be extracted")
++        return zip_path
++
++    def test_extract_site_packages_idempotent_bypass(self, sample_archive, tmp_path):
++        target = tmp_path / "cache_target"
++        with zipfile.ZipFile(sample_archive) as zf:
++            extract_site_packages(zf, target, compile_pyc=False, force=False)
++            app_py = target / "site-packages" / "sample_pkg" / "app.py"
++            assert app_py.exists()
++            mtime_initial = app_py.stat().st_mtime
++
++            extract_site_packages(zf, target, compile_pyc=False, force=False)
++            mtime_after = app_py.stat().st_mtime
++            assert mtime_initial == mtime_after
++
++    def test_extract_site_packages_force_overwrite(self, sample_archive, tmp_path):
++        target = tmp_path / "cache_target_force"
++        with zipfile.ZipFile(sample_archive) as zf:
++            extract_site_packages(zf, target, compile_pyc=False, force=False)
++            app_py = target / "site-packages" / "sample_pkg" / "app.py"
++            app_py.write_text("tampered content")
++            assert app_py.read_text() == "tampered content"
++
++            extract_site_packages(zf, target, compile_pyc=False, force=True)
++            assert "tampered" not in app_py.read_text()
++            assert "def hello():" in app_py.read_text()
++
++    def test_extract_site_packages_only_site_packages_prefix(self, sample_archive, tmp_path):
++        target = tmp_path / "cache_prefix_check"
++        with zipfile.ZipFile(sample_archive) as zf:
++            extract_site_packages(zf, target, compile_pyc=False, force=False)
++            assert (target / "site-packages").exists()
++            assert not (target / "other_folder").exists()
++
++    def test_extract_site_packages_file_permissions_restored(self, sample_archive, tmp_path):
++        target = tmp_path / "cache_perm_check"
++        with zipfile.ZipFile(sample_archive) as zf:
++            extract_site_packages(zf, target, compile_pyc=False, force=False)
++            script = target / "site-packages" / "bin" / "sample_cmd"
++            assert script.exists()
++            assert script.stat().st_mode & 0o777 == 0o755
++
++    def test_extract_site_packages_compile_pyc_generates_bytecode(self, sample_archive, tmp_path):
++        target = tmp_path / "cache_compile_check"
++        with zipfile.ZipFile(sample_archive) as zf:
++            extract_site_packages(zf, target, compile_pyc=True, force=False)
++            pyc_files = list(target.rglob("*.pyc"))
++            assert len(pyc_files) > 0
++
++    def test_extract_site_packages_creates_intermediate_parent_directories(self, sample_archive, tmp_path):
++        target = tmp_path / "deep" / "nested" / "path" / "cache"
++        assert not target.parent.exists()
++        with zipfile.ZipFile(sample_archive) as zf:
++            extract_site_packages(zf, target, compile_pyc=False, force=False)
++            assert (target / "site-packages").exists()
++
++    def test_extract_site_packages_subdirectories_preserved(self, sample_archive, tmp_path):
++        target = tmp_path / "cache_subdirs"
++        with zipfile.ZipFile(sample_archive) as zf:
++            extract_site_packages(zf, target, compile_pyc=False, force=False)
++            subpkg = target / "site-packages" / "sample_pkg"
++            assert subpkg.is_dir()
++            assert (subpkg / "__init__.py").is_file()
++
++
++# ==============================================================================
++# Group 3: E3 Runtime Execution Dispatch (test/test_p2p_interpreter.py)
++# ==============================================================================
++
++class TestP2PRuntimeExecutionDispatch:
++    def test_execute_content_inline_code(self, tmp_path):
++        out_file = tmp_path / "inline_out.txt"
++        code_str = f"from pathlib import Path\nPath(r'{out_file}').write_text('inline_ok')\n"
++        execute_content("test_snippet", code_str)
++        assert out_file.read_text() == "inline_ok"
++
++    def test_execute_interpreter_cmd_option(self, monkeypatch, tmp_path):
++        test_file = tmp_path / "cmd_out.txt"
++        cmd = f"from pathlib import Path; Path(r'{test_file}').write_text('executed_c')"
++        monkeypatch.setattr(sys, "argv", ["shiv_app", "-c", cmd])
++        execute_interpreter()
++        assert test_file.read_text() == "executed_c"
++
++    def test_execute_interpreter_script_file_argument(self, monkeypatch, tmp_path):
++        target_marker = tmp_path / "marker.txt"
++        script_file = tmp_path / "myscript.py"
++        script_file.write_text(
++            f"import sys\nfrom pathlib import Path\nPath(r'{target_marker}').write_text('args:' + ','.join(sys.argv[1:]))\n"
++        )
++        monkeypatch.setattr(sys, "argv", ["shiv_app", str(script_file), "hello", "world"])
++        execute_interpreter()
++        assert target_marker.read_text() == "args:hello,world"
++
++    def test_execute_module_dispatch(self):
++        with mock.patch("runpy.run_module") as mock_run_module:
++            execute_module("dummy_target_module")
++            mock_run_module.assert_called_once_with("dummy_target_module", run_name="__main__")
++
++    def test_run_scrubs_shiv_environment_variables(self, monkeypatch):
++        monkeypatch.setenv("SHIV_ENTRY_POINT", "dummy_entry_point")
++        monkeypatch.setenv("SHIV_CONSOLE_SCRIPT", "dummy_console_script")
++        monkeypatch.setenv("SHIV_MODULE", "dummy_module")
++
++        def dummy_target():
++            assert "SHIV_ENTRY_POINT" not in os.environ
++            assert "SHIV_CONSOLE_SCRIPT" not in os.environ
++            assert "SHIV_MODULE" not in os.environ
++            return 0
++
++        with pytest.raises(SystemExit) as exc_info:
++            run(dummy_target)
++        assert exc_info.value.code == 0
++
++    def test_execute_interpreter_nonexistent_script_file_raises(self, monkeypatch, tmp_path):
++        nonexistent = tmp_path / "no_such_script.py"
++        monkeypatch.setattr(sys, "argv", ["shiv_app", str(nonexistent)])
++        with pytest.raises(RuntimeError) as exc_info:
++            execute_interpreter()
++        assert "Could not open" in str(exc_info.value)
++
++    def test_execute_content_syntax_error_raises_runtime_error(self):
++        bad_syntax = "def syntax_error(:"
++        with pytest.raises(RuntimeError) as exc_info:
++            execute_content("bad_snippet.py", bad_syntax)
++        assert "Unable to parse bad_snippet.py" in str(exc_info.value)
+diff --git a/test/test_runtime_compatibility.py b/test/test_runtime_compatibility.py
+new file mode 100644
+index 0000000..e350e3c
+--- /dev/null
++++ b/test/test_runtime_compatibility.py
+@@ -0,0 +1,32 @@
++"""Preserve the original import location and behavior of interpreter callers."""
++import json
++import sys
++
++import pytest
++
++
++def test_bootstrap_interpreter_compatibility_entry_point(monkeypatch, capsys):
++    import shiv.bootstrap as bootstrap
++
++    invoke = getattr(bootstrap, "execute_interpreter", None)
++    assert callable(invoke), "the original bootstrap interpreter entry point must remain callable"
++    content = (
++        "import json,sys\n"
++        "print(json.dumps({'argv':sys.argv,'name':__name__,'file':__file__}))\n"
++        "print('compatibility stderr',file=sys.stderr)\n"
++        "sys.exit(9)\n"
++    )
++    monkeypatch.setattr(sys, "argv", ["app.pyz", "-c", content, "tail with space"])
++    with pytest.raises(SystemExit) as result:
++        invoke()
++    assert result.value.code == 9, "the compatibility call must execute and propagate the exit code"
++    captured = capsys.readouterr()
++    assert json.loads(captured.out) == {
++        "argv": ["-c", "tail with space"], "name": "__main__", "file": "-c <cmd>",
++    }
++    assert captured.err == "compatibility stderr\n"
++
++    for option in ("-c", "-m"):
++        monkeypatch.setattr(sys, "argv", ["app.pyz", option])
++        with pytest.raises(IndexError):
++            invoke()

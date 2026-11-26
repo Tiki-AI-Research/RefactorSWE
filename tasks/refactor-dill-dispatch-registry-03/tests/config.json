@@ -1,0 +1,823 @@
+{
+  "base_commit": "50d93fe52c84cdbfd81c39f5adba68f627fd330b",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "python",
+    "dill/tests/f2p_runner.py",
+    "--p2p-select",
+    "{p2p_select}",
+    "--junit",
+    "{report}"
+  ],
+  "evaluation_files": {
+    "dill/tests/f2p_runner.py": "f2a4c034afc3af2f39dac0013c7b36c6cf3662700bbdc6362839c673fc87c86c",
+    "dill/tests/p2p_runner.py": "6ec1735577d40fc33c5e2b3ccd7dfb9d55425b051401c017eea3b98e8fd2b5f3",
+    "dill/tests/test_f2p_registry.py": "e6a87bc9bda37f06c44d321ccd8f86bebb932b820b7ce1cf6415d37f18487ec1",
+    "dill/tests/test_p2p_registry.py": "6af85e09a72ba968d54e1c6971941e659cdfd0d4d5971cfce580d0b4be63102e",
+    "dill/tests/test_registry_ownership.py": "9fdfa875cb5bbe712ebb3053c45f205153366bf9670a504df96318c7c4e17892"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "core_schedule": {
+      "admission": "remaining-deadline",
+      "order": [
+        "baseline",
+        "solution",
+        "focused",
+        "package",
+        "advisory"
+      ],
+      "schema_version": "grader-verifier-core-flow/v1"
+    },
+    "estimated_total_seconds": 960.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 120.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 480.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 120.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 120.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 120.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 120.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_extendpickle.py::test_extend"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_extendpickle.py::test_isdill"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_register_decorator_positional"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_register_decorator_keyword"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_pickle_direct_positional"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_pickle_direct_keyword"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_dispatch_mapping_mutability"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_extend_true_uses_current_registration"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_extend_false_removes_dill_handler"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_import_default_extension_visible"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_external_handler_survives_disable"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_registered_serializer_immediately_serializes"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_registration_views_are_coherent"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_toggle_does_not_erase_dill_dispatch"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_external_replacement_survives_disable"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_register_decorator_serializes_instances"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_register_decorator_returns_original_serializer"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_pickle_keyword_updates_dispatch"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_pickle_keyword_returns_none"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_direct_dispatch_mutation_controls_dill_serializer"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_dispatch_delete_exposes_original_reduction"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_extend_uses_latest_registration_for_stock_pickler"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_disable_keeps_dill_dispatch_and_serializer"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_external_stock_handler_survives_disable"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_external_dill_registration_survives_disable"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_external_replacement_is_not_restored"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_metaclass_lookup_uses_type_serializer_without_inserting_key"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_extend_false_restores_standard_entry"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_import_auto_extension_in_fresh_interpreter"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_extend_return_and_default_flag"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_serializer_exception_propagates_from_dumps"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_safe_pickles_reports_failed_serializer"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_direct_dispatch_external_handler_survives_cycles"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_integration_preserves_other_stock_entrypoints"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_serialized_format_remains_compatible"
+      },
+      {
+        "role": "P2P",
+        "selector": "dill/tests/test_p2p_registry.py::test_global_protocol_and_call_override_are_effective"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_registry_ownership.py::test_registry_lifecycle_has_one_owner"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disable_without_module"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disabled_stock_dispatch_keeps_handler"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disabled_stock_roundtrip"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_enabled_stock_roundtrip"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disable_without_module"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disabled_stock_dispatch_keeps_handler"
+      },
+      {
+        "role": "F2P",
+        "selector": "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disabled_stock_roundtrip"
+      }
+    ],
+    "selector_timeout_seconds": 120.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "dill/tests/test_extendpickle.py::test_extend",
+          "dill/tests/test_extendpickle.py::test_isdill",
+          "dill/tests/test_p2p_registry.py::test_register_decorator_positional",
+          "dill/tests/test_p2p_registry.py::test_register_decorator_keyword",
+          "dill/tests/test_p2p_registry.py::test_pickle_direct_positional",
+          "dill/tests/test_p2p_registry.py::test_pickle_direct_keyword",
+          "dill/tests/test_p2p_registry.py::test_dispatch_mapping_mutability",
+          "dill/tests/test_p2p_registry.py::test_extend_true_uses_current_registration",
+          "dill/tests/test_p2p_registry.py::test_extend_false_removes_dill_handler",
+          "dill/tests/test_p2p_registry.py::test_import_default_extension_visible",
+          "dill/tests/test_p2p_registry.py::test_external_handler_survives_disable",
+          "dill/tests/test_p2p_registry.py::test_registered_serializer_immediately_serializes",
+          "dill/tests/test_p2p_registry.py::test_registration_views_are_coherent",
+          "dill/tests/test_p2p_registry.py::test_toggle_does_not_erase_dill_dispatch",
+          "dill/tests/test_p2p_registry.py::test_external_replacement_survives_disable",
+          "dill/tests/test_f2p_registry.py::test_f2p_register_decorator_serializes_instances",
+          "dill/tests/test_f2p_registry.py::test_f2p_register_decorator_returns_original_serializer",
+          "dill/tests/test_f2p_registry.py::test_f2p_pickle_keyword_updates_dispatch",
+          "dill/tests/test_f2p_registry.py::test_f2p_pickle_keyword_returns_none",
+          "dill/tests/test_f2p_registry.py::test_f2p_direct_dispatch_mutation_controls_dill_serializer",
+          "dill/tests/test_f2p_registry.py::test_f2p_dispatch_delete_exposes_original_reduction",
+          "dill/tests/test_f2p_registry.py::test_f2p_extend_uses_latest_registration_for_stock_pickler",
+          "dill/tests/test_f2p_registry.py::test_f2p_disable_keeps_dill_dispatch_and_serializer",
+          "dill/tests/test_f2p_registry.py::test_f2p_external_stock_handler_survives_disable",
+          "dill/tests/test_f2p_registry.py::test_f2p_external_dill_registration_survives_disable",
+          "dill/tests/test_f2p_registry.py::test_f2p_external_replacement_is_not_restored",
+          "dill/tests/test_f2p_registry.py::test_f2p_metaclass_lookup_uses_type_serializer_without_inserting_key",
+          "dill/tests/test_f2p_registry.py::test_f2p_extend_false_restores_standard_entry",
+          "dill/tests/test_f2p_registry.py::test_f2p_import_auto_extension_in_fresh_interpreter",
+          "dill/tests/test_f2p_registry.py::test_f2p_extend_return_and_default_flag",
+          "dill/tests/test_f2p_registry.py::test_f2p_serializer_exception_propagates_from_dumps",
+          "dill/tests/test_f2p_registry.py::test_f2p_safe_pickles_reports_failed_serializer",
+          "dill/tests/test_p2p_registry.py::test_direct_dispatch_external_handler_survives_cycles",
+          "dill/tests/test_p2p_registry.py::test_integration_preserves_other_stock_entrypoints",
+          "dill/tests/test_p2p_registry.py::test_serialized_format_remains_compatible",
+          "dill/tests/test_p2p_registry.py::test_global_protocol_and_call_override_are_effective",
+          "dill/tests/test_registry_ownership.py::test_registry_lifecycle_has_one_owner",
+          "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disable_without_module",
+          "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disabled_stock_dispatch_keeps_handler",
+          "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disabled_stock_roundtrip",
+          "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_enabled_stock_roundtrip",
+          "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disable_without_module",
+          "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disabled_stock_dispatch_keeps_handler",
+          "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disabled_stock_roundtrip"
+        ],
+        "timeout_seconds": 120.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "dill/tests/test_registry_ownership.py::test_registry_lifecycle_has_one_owner",
+    "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disable_without_module",
+    "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disabled_stock_dispatch_keeps_handler",
+    "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disabled_stock_roundtrip",
+    "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_enabled_stock_roundtrip",
+    "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disable_without_module",
+    "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disabled_stock_dispatch_keeps_handler",
+    "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disabled_stock_roundtrip"
+  ],
+  "gates": [
+    {
+      "id": "P2P-ORIG-1",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B4"
+      ],
+      "tests": [
+        "dill/tests/test_extendpickle.py::test_extend"
+      ]
+    },
+    {
+      "id": "P2P-ORIG-2",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C3"
+      ],
+      "tests": [
+        "dill/tests/test_extendpickle.py::test_isdill"
+      ]
+    },
+    {
+      "id": "P2P-REGISTER_DECORATOR_POSITIONAL",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C1",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_register_decorator_positional"
+      ]
+    },
+    {
+      "id": "P2P-REGISTER_DECORATOR_KEYWORD",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C1",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_register_decorator_keyword"
+      ]
+    },
+    {
+      "id": "P2P-PICKLE_DIRECT_POSITIONAL",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C2",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_pickle_direct_positional"
+      ]
+    },
+    {
+      "id": "P2P-PICKLE_DIRECT_KEYWORD",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C2",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_pickle_direct_keyword"
+      ]
+    },
+    {
+      "id": "P2P-DISPATCH_MAPPING_MUTABILITY",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C3",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_dispatch_mapping_mutability"
+      ]
+    },
+    {
+      "id": "P2P-EXTEND_TRUE_USES_CURRENT_REGISTRATION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C4",
+        "REQ-BEH-T2:B5",
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_extend_true_uses_current_registration"
+      ]
+    },
+    {
+      "id": "P2P-EXTEND_FALSE_REMOVES_DILL_HANDLER",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C4",
+        "REQ-BEH-T2:B2",
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-003",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_extend_false_removes_dill_handler"
+      ]
+    },
+    {
+      "id": "P2P-IMPORT_DEFAULT_EXTENSION_VISIBLE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C5",
+        "REQ-BEH-T2:B1",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_import_default_extension_visible"
+      ]
+    },
+    {
+      "id": "P2P-EXTERNAL_HANDLER_SURVIVES_DISABLE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C4",
+        "REQ-BEH-T2:B3",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_external_handler_survives_disable"
+      ]
+    },
+    {
+      "id": "P2P-REGISTERED_SERIALIZER_IMMEDIATELY_SERIALIZES",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B4",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_registered_serializer_immediately_serializes"
+      ]
+    },
+    {
+      "id": "P2P-REGISTRATION_VIEWS_ARE_COHERENT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B5",
+        "REQ-BEH-T2:B4",
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_registration_views_are_coherent"
+      ]
+    },
+    {
+      "id": "P2P-TOGGLE_DOES_NOT_ERASE_DILL_DISPATCH",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B6",
+        "REQ-STRUCT-001",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_toggle_does_not_erase_dill_dispatch"
+      ]
+    },
+    {
+      "id": "P2P-EXTERNAL_REPLACEMENT_SURVIVES_DISABLE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C4",
+        "REQ-BEH-T2:B3",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_external_replacement_survives_disable"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-REGISTER_DECORATOR_SERIALIZES_INSTANCES",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B4"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_register_decorator_serializes_instances"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-REGISTER_DECORATOR_RETURNS_ORIGINAL_SERIALIZER",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C1",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_register_decorator_returns_original_serializer"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-PICKLE_KEYWORD_UPDATES_DISPATCH",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C2",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_pickle_keyword_updates_dispatch"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-PICKLE_KEYWORD_RETURNS_NONE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C2",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_pickle_keyword_returns_none"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-DIRECT_DISPATCH_MUTATION_CONTROLS_DILL_SERIALIZER",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C3",
+        "REQ-BEH-T2:B5"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_direct_dispatch_mutation_controls_dill_serializer"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-DISPATCH_DELETE_EXPOSES_ORIGINAL_REDUCTION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C3",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_dispatch_delete_exposes_original_reduction"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-EXTEND_USES_LATEST_REGISTRATION_FOR_STOCK_PICKLER",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C4",
+        "REQ-BEH-T2:B5"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_extend_uses_latest_registration_for_stock_pickler"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-DISABLE_KEEPS_DILL_DISPATCH_AND_SERIALIZER",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B6"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_disable_keeps_dill_dispatch_and_serializer"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-EXTERNAL_STOCK_HANDLER_SURVIVES_DISABLE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B3"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_external_stock_handler_survives_disable"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-EXTERNAL_DILL_REGISTRATION_SURVIVES_DISABLE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B3"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_external_dill_registration_survives_disable"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-EXTERNAL_REPLACEMENT_IS_NOT_RESTORED",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B3",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_external_replacement_is_not_restored"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-METACLASS_LOOKUP_USES_TYPE_SERIALIZER_WITHOUT_INSERTING_KEY",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C3"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_metaclass_lookup_uses_type_serializer_without_inserting_key"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-EXTEND_FALSE_RESTORES_STANDARD_ENTRY",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B2",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_extend_false_restores_standard_entry"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-IMPORT_AUTO_EXTENSION_IN_FRESH_INTERPRETER",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C5",
+        "REQ-BEH-T2:B1"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_import_auto_extension_in_fresh_interpreter"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-EXTEND_RETURN_AND_DEFAULT_FLAG",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C4",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_extend_return_and_default_flag"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-SERIALIZER_EXCEPTION_PROPAGATES_FROM_DUMPS",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_serializer_exception_propagates_from_dumps"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-SAFE_PICKLES_REPORTS_FAILED_SERIALIZER",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_safe_pickles_reports_failed_serializer"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-TEST_DIRECT_DISPATCH_EXTERNAL_HANDLER_SURVIVES_CYCLES",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:B3"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_direct_dispatch_external_handler_survives_cycles"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-TEST_INTEGRATION_PRESERVES_OTHER_STOCK_ENTRYPOINTS",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T2:C4"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_integration_preserves_other_stock_entrypoints"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-TEST_SERIALIZED_FORMAT_REMAINS_COMPATIBLE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_serialized_format_remains_compatible"
+      ]
+    },
+    {
+      "id": "P2P-PRESERVED-TEST_GLOBAL_PROTOCOL_AND_CALL_OVERRIDE_ARE_EFFECTIVE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "dill/tests/test_p2p_registry.py::test_global_protocol_and_call_override_are_effective"
+      ]
+    },
+    {
+      "id": "F2P-LIFECYCLE-OWNERSHIP",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "dill/tests/test_registry_ownership.py::test_registry_lifecycle_has_one_owner"
+      ]
+    },
+    {
+      "id": "F2P-EXTERNAL-CALLABLE-PRESERVATION",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T2:B3"
+      ],
+      "tests": [
+        "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disable_without_module",
+        "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disabled_stock_dispatch_keeps_handler",
+        "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle1_disabled_stock_roundtrip",
+        "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_enabled_stock_roundtrip",
+        "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disable_without_module",
+        "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disabled_stock_dispatch_keeps_handler",
+        "dill/tests/test_f2p_registry.py::test_f2p_external_callable_without_module_survives_cycles__cycle2_disabled_stock_roundtrip"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "5a1e09bc652094c3217f5e88d9f7d91001d98c077a9a842db924d1c4c952490b",
+    "test_patch_sha256": "b1b3b8c42216aa0da570129c0af7072c1b8e9cdb8248e79c327488004c93a569"
+  },
+  "node_relations": [],
+  "p2p": [
+    "dill/tests/test_extendpickle.py::test_extend",
+    "dill/tests/test_extendpickle.py::test_isdill",
+    "dill/tests/test_p2p_registry.py::test_register_decorator_positional",
+    "dill/tests/test_p2p_registry.py::test_register_decorator_keyword",
+    "dill/tests/test_p2p_registry.py::test_pickle_direct_positional",
+    "dill/tests/test_p2p_registry.py::test_pickle_direct_keyword",
+    "dill/tests/test_p2p_registry.py::test_dispatch_mapping_mutability",
+    "dill/tests/test_p2p_registry.py::test_extend_true_uses_current_registration",
+    "dill/tests/test_p2p_registry.py::test_extend_false_removes_dill_handler",
+    "dill/tests/test_p2p_registry.py::test_import_default_extension_visible",
+    "dill/tests/test_p2p_registry.py::test_external_handler_survives_disable",
+    "dill/tests/test_p2p_registry.py::test_registered_serializer_immediately_serializes",
+    "dill/tests/test_p2p_registry.py::test_registration_views_are_coherent",
+    "dill/tests/test_p2p_registry.py::test_toggle_does_not_erase_dill_dispatch",
+    "dill/tests/test_p2p_registry.py::test_external_replacement_survives_disable",
+    "dill/tests/test_f2p_registry.py::test_f2p_register_decorator_serializes_instances",
+    "dill/tests/test_f2p_registry.py::test_f2p_register_decorator_returns_original_serializer",
+    "dill/tests/test_f2p_registry.py::test_f2p_pickle_keyword_updates_dispatch",
+    "dill/tests/test_f2p_registry.py::test_f2p_pickle_keyword_returns_none",
+    "dill/tests/test_f2p_registry.py::test_f2p_direct_dispatch_mutation_controls_dill_serializer",
+    "dill/tests/test_f2p_registry.py::test_f2p_dispatch_delete_exposes_original_reduction",
+    "dill/tests/test_f2p_registry.py::test_f2p_extend_uses_latest_registration_for_stock_pickler",
+    "dill/tests/test_f2p_registry.py::test_f2p_disable_keeps_dill_dispatch_and_serializer",
+    "dill/tests/test_f2p_registry.py::test_f2p_external_stock_handler_survives_disable",
+    "dill/tests/test_f2p_registry.py::test_f2p_external_dill_registration_survives_disable",
+    "dill/tests/test_f2p_registry.py::test_f2p_external_replacement_is_not_restored",
+    "dill/tests/test_f2p_registry.py::test_f2p_metaclass_lookup_uses_type_serializer_without_inserting_key",
+    "dill/tests/test_f2p_registry.py::test_f2p_extend_false_restores_standard_entry",
+    "dill/tests/test_f2p_registry.py::test_f2p_import_auto_extension_in_fresh_interpreter",
+    "dill/tests/test_f2p_registry.py::test_f2p_extend_return_and_default_flag",
+    "dill/tests/test_f2p_registry.py::test_f2p_serializer_exception_propagates_from_dumps",
+    "dill/tests/test_f2p_registry.py::test_f2p_safe_pickles_reports_failed_serializer",
+    "dill/tests/test_p2p_registry.py::test_direct_dispatch_external_handler_survives_cycles",
+    "dill/tests/test_p2p_registry.py::test_integration_preserves_other_stock_entrypoints",
+    "dill/tests/test_p2p_registry.py::test_serialized_format_remains_compatible",
+    "dill/tests/test_p2p_registry.py::test_global_protocol_and_call_override_are_effective"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": false,
+  "restoration_paths": [
+    "dill/tests/test_extendpickle.py"
+  ],
+  "reward_mode": "VERIFIER_ONLY",
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-dill-dispatch-6e36ea10",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "dill/tests/f2p_runner.py",
+    "dill/tests/p2p_runner.py",
+    "dill/tests/test_f2p_registry.py",
+    "dill/tests/test_p2p_registry.py",
+    "dill/tests/test_registry_ownership.py"
+  ],
+  "timeout_seconds": 120,
+  "verifier": "/tests/verifier/verifier.py"
+}

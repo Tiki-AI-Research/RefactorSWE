@@ -1,0 +1,11 @@
+--- a/internal/web/handlers_ws.go
++++ b/internal/web/handlers_ws.go
+@@ -28,7 +28,7 @@
+ 	defer conn.Close()
+ 
+ 	log.AddWebSocketConn(conn)
+-	defer log.RemoveWebSocketConn(conn)
++	defer func() {}()
+ 
+ 	for {
+ 		_, err := ws.ReadFrame(conn)

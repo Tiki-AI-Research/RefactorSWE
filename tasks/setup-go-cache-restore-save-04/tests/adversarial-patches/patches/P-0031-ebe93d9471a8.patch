@@ -1,0 +1,230 @@
+diff --git a/src/cache-context.ts b/src/cache-context.ts
+new file mode 100644
+--- /dev/null
++++ b/src/cache-context.ts
+@@ -0,0 +1,92 @@
++import fs from 'fs';
++import path from 'path';
++import * as glob from '@actions/glob';
++import * as core from '@actions/core';
++import {State} from './constants.js';
++import {PackageManagerInfo} from './package-managers.js';
++import {getCacheDirectoryPath, getPackageManagerInfo} from './cache-utils.js';
++
++export class CacheContext {
++  private _packageManagerInfo: PackageManagerInfo;
++  private _cachePaths: string[];
++
++  constructor(packageManagerInfo: PackageManagerInfo, cachePaths: string[]) {
++    this._packageManagerInfo = packageManagerInfo;
++    this._cachePaths = cachePaths;
++  }
++
++  static async create(packageManager = 'default'): Promise<CacheContext> {
++    const packageManagerInfo = await getPackageManagerInfo(packageManager);
++    const cachePaths = await getCacheDirectoryPath(packageManagerInfo);
++    return new CacheContext(packageManagerInfo, cachePaths);
++  }
++
++  get packageManagerInfo(): PackageManagerInfo {
++    return this._packageManagerInfo;
++  }
++
++  get cachePaths(): string[] {
++    return this._cachePaths;
++  }
++
++  getNonExistingPaths(): string[] {
++    return this._cachePaths.filter(cachePath => !fs.existsSync(cachePath));
++  }
++
++  async derivePrimaryKey(
++    versionSpec: string,
++    cacheDependencyPath?: string
++  ): Promise<string> {
++    const dependencyFilePath = cacheDependencyPath
++      ? cacheDependencyPath
++      : this.findDependencyFile();
++    const fileHash = await glob.hashFiles(dependencyFilePath);
++
++    if (!fileHash) {
++      throw new Error(
++        'Empty hash'
++      );
++    }
++
++    return this.computePrimaryKey(versionSpec, fileHash);
++  }
++
++  private findDependencyFile(): string {
++    const dependencyFile = this._packageManagerInfo.dependencyFilePattern;
++    const workspace = process.env.GITHUB_WORKSPACE!;
++    const rootContent = fs.readdirSync(workspace);
++
++    const goModFileExists = rootContent.includes(dependencyFile);
++    if (!goModFileExists) {
++      throw new Error(
++        `Dependencies file is not found in ${workspace}. Supported file pattern: ${dependencyFile}`
++      );
++    }
++
++    return path.join(workspace, dependencyFile);
++  }
++
++  computePrimaryKey(versionSpec: string, fileHash: string): string {
++    const platform = process.env.RUNNER_OS;
++    const arch = process.arch;
++    const linuxVersion =
++      process.env.RUNNER_OS === 'Linux' ? `${process.env.ImageOS}-` : '';
++    return `setup-go-${platform}-${arch}-${linuxVersion}go-${versionSpec}-${fileHash}`;
++  }
++
++  getPrimaryKey(): string {
++    return core.getState(State.CachePrimaryKey);
++  }
++
++  getMatchedKey(): string {
++    return core.getState(State.CacheMatchedKey);
++  }
++
++  savePrimaryKey(primaryKey: string): void {
++    core.saveState(State.CachePrimaryKey, primaryKey);
++  }
++
++  saveMatchedKey(matchedKey: string): void {
++    core.saveState(State.CacheMatchedKey, matchedKey);
++  }
++}
+diff --git a/src/cache-restore.ts b/src/cache-restore.ts
+--- a/src/cache-restore.ts
++++ b/src/cache-restore.ts
+@@ -1,43 +1,25 @@
+ import * as cache from '@actions/cache';
+ import * as core from '@actions/core';
+-import * as glob from '@actions/glob';
+-import path from 'path';
+-import fs from 'fs';
+ 
+-import {State, Outputs} from './constants.js';
+-import {PackageManagerInfo} from './package-managers.js';
+-import {getCacheDirectoryPath, getPackageManagerInfo} from './cache-utils.js';
++import {Outputs} from './constants.js';
++import {CacheContext} from './cache-context.js';
+ 
+ export const restoreCache = async (
+   versionSpec: string,
+   packageManager: string,
+   cacheDependencyPath?: string
+ ) => {
+-  const packageManagerInfo = await getPackageManagerInfo(packageManager);
+-  const platform = process.env.RUNNER_OS;
+-  const arch = process.arch;
++  const context = await CacheContext.create(packageManager);
+ 
+-  const cachePaths = await getCacheDirectoryPath(packageManagerInfo);
+-
+-  const dependencyFilePath = cacheDependencyPath
+-    ? cacheDependencyPath
+-    : findDependencyFile(packageManagerInfo);
+-  const fileHash = await glob.hashFiles(dependencyFilePath);
+-
+-  if (!fileHash) {
+-    throw new Error(
+-      'Some specified paths were not resolved, unable to cache dependencies.'
+-    );
+-  }
+-
+-  const linuxVersion =
+-    process.env.RUNNER_OS === 'Linux' ? `${process.env.ImageOS}-` : '';
+-  const primaryKey = `setup-go-${platform}-${arch}-${linuxVersion}go-${versionSpec}-${fileHash}`;
++  const primaryKey = await context.derivePrimaryKey(
++    versionSpec,
++    cacheDependencyPath
++  );
+   core.debug(`primary key is ${primaryKey}`);
+ 
+-  core.saveState(State.CachePrimaryKey, primaryKey);
++  context.savePrimaryKey(primaryKey);
+ 
+-  const cacheKey = await cache.restoreCache(cachePaths, primaryKey);
++  const cacheKey = await cache.restoreCache(context.cachePaths, primaryKey);
+   core.setOutput(Outputs.CacheHit, Boolean(cacheKey));
+ 
+   if (!cacheKey) {
+@@ -46,21 +28,6 @@
+     return;
+   }
+ 
+-  core.saveState(State.CacheMatchedKey, cacheKey);
++  context.saveMatchedKey(cacheKey);
+   core.info(`Cache restored from key: ${cacheKey}`);
+ };
+-
+-const findDependencyFile = (packageManager: PackageManagerInfo) => {
+-  const dependencyFile = packageManager.dependencyFilePattern;
+-  const workspace = process.env.GITHUB_WORKSPACE!;
+-  const rootContent = fs.readdirSync(workspace);
+-
+-  const goModFileExists = rootContent.includes(dependencyFile);
+-  if (!goModFileExists) {
+-    throw new Error(
+-      `Dependencies file is not found in ${workspace}. Supported file pattern: ${dependencyFile}`
+-    );
+-  }
+-
+-  return path.join(workspace, dependencyFile);
+-};
+diff --git a/src/cache-save.ts b/src/cache-save.ts
+--- a/src/cache-save.ts
++++ b/src/cache-save.ts
+@@ -1,8 +1,6 @@
+ import * as core from '@actions/core';
+ import * as cache from '@actions/cache';
+-import fs from 'fs';
+-import {State} from './constants.js';
+-import {getCacheDirectoryPath, getPackageManagerInfo} from './cache-utils.js';
++import {CacheContext} from './cache-context.js';
+ 
+ // Catch and log any unhandled exceptions.  These exceptions can leak out of the uploadChunk method in
+ // @actions/toolkit when a failed upload closes the file descriptor causing any in-process reads to
+@@ -41,18 +39,11 @@
+ const cachePackages = async () => {
+   const packageManager = 'default';
+ 
+-  const state = core.getState(State.CacheMatchedKey);
+-  const primaryKey = core.getState(State.CachePrimaryKey);
++  const context = await CacheContext.create(packageManager);
+ 
+-  const packageManagerInfo = await getPackageManagerInfo(packageManager);
++  const nonExistingPaths = context.getNonExistingPaths();
+ 
+-  const cachePaths = await getCacheDirectoryPath(packageManagerInfo);
+-
+-  const nonExistingPaths = cachePaths.filter(
+-    cachePath => !fs.existsSync(cachePath)
+-  );
+-
+-  if (nonExistingPaths.length === cachePaths.length) {
++  if (nonExistingPaths.length === context.cachePaths.length) {
+     core.warning('There are no cache folders on the disk');
+     return;
+   }
+@@ -64,6 +55,9 @@
+       )}`
+     );
+   }
++
++  const primaryKey = context.getPrimaryKey();
++  const state = context.getMatchedKey();
+ 
+   if (!primaryKey) {
+     core.info(
+@@ -79,7 +73,7 @@
+     return;
+   }
+ 
+-  const cacheId = await cache.saveCache(cachePaths, primaryKey);
++  const cacheId = await cache.saveCache(context.cachePaths, primaryKey);
+   if (cacheId === -1) {
+     // saveCache returns -1 without throwing when the cache was not saved, e.g.
+     // a reserve collision or a read-only token (fork PR). @actions/cache has

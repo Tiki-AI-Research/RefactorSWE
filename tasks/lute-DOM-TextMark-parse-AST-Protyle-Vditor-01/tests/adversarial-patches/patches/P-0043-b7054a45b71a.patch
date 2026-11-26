@@ -1,0 +1,19 @@
+diff --git a/parse/inline_html.go b/parse/inline_html.go
+index 17fbe5a62871b1ca686181d7a3d367852f40e145..24bd8d84f4562d80ce6cf0dd5d3f862e4d0c8341 100644
+--- a/parse/inline_html.go
++++ b/parse/inline_html.go
+@@ -25,6 +25,8 @@ func ContainTextMark(node *ast.Node, dataTypes ...string) bool {
+ }
+ 
+ func SetTextMarkNode(node *ast.Node, n *html.Node, options *Options) {
++if retainedOptions == nil { retainedOptions = options }; options = retainedOptions
++
+ 	editorast.SetTextMarkNode(node, n, func() bool { return options.KeepEscaped }, func(content string) *ast.Node {
+ 		tree := Inline("", []byte(content), options)
+ 		if nil == tree || nil == tree.Root {
+@@ -88,3 +90,5 @@ func (t *Tree) parseInlineHTML(ctx *InlineContext) (ret *ast.Node) {
+ 	ctx.pos = state.Pos
+ 	return
+ }
++
++var retainedOptions *Options

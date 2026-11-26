@@ -1,0 +1,2170 @@
+diff --git a/tests/f2p_selectors_runner.py b/tests/f2p_selectors_runner.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..aa9497749cde96b7137b033c56b15831289bd761
+--- /dev/null
++++ b/tests/f2p_selectors_runner.py
+@@ -0,0 +1,122 @@
++#!/usr/bin/env python3
++"""Aggregate runner for the frozen P2P + F2P verification plan.
++
++The runner never guesses a selection set from test files, directory patterns or the
++original inventory.  It reads the frozen exact selectors from the canonical
++``config.json`` that the pipeline materialises from the merged plan (the ``p2p`` and
++``f2p`` arrays, falling back to the frozen ``p2p``/``f2p`` gate rows) and executes
++exactly those selectors with a real pytest producer.  The complete JUnit report for the
++run is written to the path given via ``--report``.
++
++Usage:
++    python3 tests/f2p_selectors_runner.py --config {config} --report {report}
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import subprocess
++import sys
++from pathlib import Path
++
++_SELECTOR_KEYS = ("selectors", "tests", "test", "selector", "node", "id")
++_ARRAY_KEYS = ("p2p", "f2p")
++_GATE_KINDS = ("P2P", "F2P")
++
++
++def _selector_strings(value) -> list[str]:
++    """Collect exact selector strings from a config value of any supported shape."""
++    if isinstance(value, str):
++        return [value]
++    if isinstance(value, dict):
++        for key in _SELECTOR_KEYS:
++            item = value.get(key)
++            if isinstance(item, str):
++                return [item]
++            if isinstance(item, (list, tuple)):
++                result = []
++                for entry in item:
++                    result.extend(_selector_strings(entry))
++                return result
++        return []
++    if isinstance(value, (list, tuple)):
++        result = []
++        for entry in value:
++            result.extend(_selector_strings(entry))
++        return result
++    return []
++
++
++def collect_selectors(config: dict) -> list[str]:
++    selectors: list[str] = []
++    for key in _ARRAY_KEYS:
++        if key in config:
++            for selector in _selector_strings(config[key]):
++                if selector not in selectors:
++                    selectors.append(selector)
++    if not selectors:
++        for gate in config.get("gates") or []:
++            if not isinstance(gate, dict) or gate.get("kind") not in _GATE_KINDS:
++                continue
++            for selector in _selector_strings(gate.get("tests")):
++                if selector not in selectors:
++                    selectors.append(selector)
++    return selectors
++
++
++def _locate_config(candidate: Path, repository_root: Path) -> Path | None:
++    """Return the first existing config path, searching only when the declared one is missing."""
++    if candidate.is_file():
++        return candidate
++    search_roots = [Path.cwd(), repository_root, repository_root.parent]
++    search_roots.extend(repository_root.parents[:3])
++    seen: list[Path] = []
++    for root in search_roots:
++        for probe in (root / "config.json", root / "verifier" / "config.json"):
++            if probe not in seen:
++                seen.append(probe)
++                if probe.is_file():
++                    return probe
++    return None
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--config", required=True, help="canonical config.json with the frozen selectors")
++    parser.add_argument("--report", required=True, help="path of the JUnit report to write")
++    args = parser.parse_args(argv)
++
++    repository_root = Path(__file__).resolve().parent.parent
++    config_path = _locate_config(Path(args.config).expanduser(), repository_root)
++    if config_path is None:
++        print("config not found: %s" % (args.config,), file=sys.stderr)
++        return 2
++    config = json.loads(config_path.read_text(encoding="utf-8"))
++    if not isinstance(config, dict):
++        print("config must be a JSON object", file=sys.stderr)
++        return 2
++
++    selectors = collect_selectors(config)
++    if not selectors:
++        print("no frozen P2P/F2P exact selectors found in %s" % (config_path,), file=sys.stderr)
++        return 2
++
++    report_path = Path(args.report).expanduser()
++    if not report_path.is_absolute():
++        report_path = Path.cwd() / report_path
++    command = [
++        sys.executable,
++        "-m",
++        "pytest",
++        *selectors,
++        "--junit-xml",
++        str(report_path),
++        "-p",
++        "no:cacheprovider",
++        "-q",
++    ]
++    return subprocess.run(command, cwd=str(repository_root)).returncode
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tests/p2p_baseline_manifest.json b/tests/p2p_baseline_manifest.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..aea236335be12968e0be632cca1787233033246d
+--- /dev/null
++++ b/tests/p2p_baseline_manifest.json
+@@ -0,0 +1,402 @@
++{
++  "generator_count": 195,
++  "module_count": 188,
++  "groups": [
++    ["Box", "Boxes", "", "UniversalBox.jpg", "UniversalBox-thumb.jpg"],
++    ["FlexBox", "Boxes with flex", "", "RoundedBox.jpg", "RoundedBox-thumb.jpg"],
++    ["Tray", "Trays and Drawer Inserts", "", "TypeTray.jpg", "TypeTray-thumb.jpg"],
++    ["Shelf", "Shelves", "", "DisplayShelf.jpg", "DisplayShelf-thumb.jpg"],
++    ["WallMounted", "WallMounted", "", "WallTypeTray.jpg", "WallTypeTray-thumb.jpg"],
++    ["Holes", "Hole patterns", "", "", ""],
++    ["Part", "Parts and Samples", "", "BurnTest.jpg", "BurnTest-thumb.jpg"],
++    ["Misc", "Misc", "", "TrafficLight.jpg", "TrafficLight-thumb.jpg"],
++    ["Unstable", "Unstable", "Generators are still untested or need manual adjustment to be useful.", "", ""]
++  ],
++  "generators": {
++    "boxes.generators.abox.ABox": [true, "Box"],
++    "boxes.generators.agricolainsert.AgricolaInsert": [true, "Misc"],
++    "boxes.generators.airpurifier.AirPurifier": [true, "Misc"],
++    "boxes.generators.alledges.AllEdges": [true, "Misc"],
++    "boxes.generators.angledbox.AngledBox": [true, "Box"],
++    "boxes.generators.angledcutjig.AngledCutJig": [true, "Misc"],
++    "boxes.generators.arcade.Arcade": [true, "Misc"],
++    "boxes.generators.atreus21.Atreus21": [true, "Misc"],
++    "boxes.generators.basedbox.BasedBox": [true, "Box"],
++    "boxes.generators.bayonetbox.BayonetBox": [true, "Box"],
++    "boxes.generators.beequeencage.BeeQueenCage": [true, "Beekeeping"],
++    "boxes.generators.beequeentransportbox.BeeQueenTransportBox": [true, "Beekeeping"],
++    "boxes.generators.bintray.BinTray": [true, "Shelf"],
++    "boxes.generators.birdhouse.BirdHouse": [true, "Misc"],
++    "boxes.generators.bookholder.BookHolder": [true, "Misc"],
++    "boxes.generators.bottlestack.BottleStack": [true, "Misc"],
++    "boxes.generators.bottletag.BottleTag": [true, "Misc"],
++    "boxes.generators.breadbox.BreadBox": [true, "FlexBox"],
++    "boxes.generators.brick_sorter.BrickSorter": [true, "Box"],
++    "boxes.generators.burntest.BurnTest": [true, "Part"],
++    "boxes.generators.can_storage.CanStorage": [true, "Misc"],
++    "boxes.generators.carbonfilter.CarbonFilter": [true, "Misc"],
++    "boxes.generators.cardbox.CardBox": [true, "Box"],
++    "boxes.generators.cardholder.CardHolder": [true, "Shelf"],
++    "boxes.generators.castle.Castle": [true, "Unstable"],
++    "boxes.generators.clock.Clock": [true, "Misc"],
++    "boxes.generators.closedbox.ClosedBox": [true, "Box"],
++    "boxes.generators.coffeecapsulesholder.CoffeeCapsuleHolder": [true, "Misc"],
++    "boxes.generators.coinbanksafe.CoinBankSafe": [true, "Misc"],
++    "boxes.generators.coindisplay.CoinDisplay": [true, "Misc"],
++    "boxes.generators.compartmentbox.CompartmentBox": [true, "Tray"],
++    "boxes.generators.compartmentbox.TypeTray": [true, "Tray"],
++    "boxes.generators.concaveknob.ConcaveKnob": [true, "Part"],
++    "boxes.generators.console.Console": [true, "Box"],
++    "boxes.generators.console2.Console2": [true, "Box"],
++    "boxes.generators.crate.Crate": [true, "Box"],
++    "boxes.generators.desksign.Desksign": [true, "Misc"],
++    "boxes.generators.dicebox.DiceBox": [true, "Box"],
++    "boxes.generators.dicetower.DiceTower": [true, "Misc"],
++    "boxes.generators.dinrailbox.DinRailBox": [true, "WallMounted"],
++    "boxes.generators.discrack.DiscRack": [true, "Shelf"],
++    "boxes.generators.dispenser.Dispenser": [true, "Misc"],
++    "boxes.generators.display.Display": [true, "Misc"],
++    "boxes.generators.displaycase.DisplayCase": [true, "Box"],
++    "boxes.generators.displayshelf.DisplayShelf": [true, "Shelf"],
++    "boxes.generators.dividertray.DividerTray": [true, "Tray"],
++    "boxes.generators.doubleflexdoorbox.DoubleFlexDoorBox": [true, "FlexBox"],
++    "boxes.generators.drillbox.DrillBox": [true, "Tray"],
++    "boxes.generators.drillgauge.DrillGauge": [true, "Misc"],
++    "boxes.generators.drillstand.DrillStand": [true, "Misc"],
++    "boxes.generators.edges.Edges": [false, "Misc"],
++    "boxes.generators.electronicsbox.ElectronicsBox": [true, "Box"],
++    "boxes.generators.engravingframe.EngravingFrame": [true, "Box"],
++    "boxes.generators.eurorackskiff.EuroRackSkiff": [true, "Box"],
++    "boxes.generators.fanhole.FanHole": [true, "Holes"],
++    "boxes.generators.fatballdispenser.FatBallDispenser": [true, "Misc"],
++    "boxes.generators.filamentspool.BayonetBox": [true, "Box"],
++    "boxes.generators.filamentspool.FilamentSpool": [true, "Misc"],
++    "boxes.generators.filltest.FillTest": [true, "Part"],
++    "boxes.generators.flexbook.FlexBook": [true, "FlexBox"],
++    "boxes.generators.flexbox.FlexBox": [true, "FlexBox"],
++    "boxes.generators.flexbox2.FlexBox2": [true, "FlexBox"],
++    "boxes.generators.flexbox3.FlexBox3": [true, "FlexBox"],
++    "boxes.generators.flexbox4.FlexBox4": [true, "FlexBox"],
++    "boxes.generators.flexbox5.FlexBox5": [true, "FlexBox"],
++    "boxes.generators.flextest.FlexTest": [true, "Part"],
++    "boxes.generators.flextest2.FlexTest2": [true, "Part"],
++    "boxes.generators.folder.Folder": [true, "Misc"],
++    "boxes.generators.frameloom.FrameLoom": [true, "Misc"],
++    "boxes.generators.frontpanel.FrontPanel": [true, "Holes"],
++    "boxes.generators.gear.Gears": [true, "Part"],
++    "boxes.generators.gearbox.GearBox": [true, "Part"],
++    "boxes.generators.gridfinitybase.GridfinityBase": [true, "Tray"],
++    "boxes.generators.gridfinitydrillbox.GridfinityDrillBox": [true, "Tray"],
++    "boxes.generators.gridfinitydrillbox.GridfinityTrayLayout": [true, "Tray"],
++    "boxes.generators.gridfinitytraylayout.GridfinityTrayLayout": [true, "Tray"],
++    "boxes.generators.gridfinitytraylayout.TrayLayout": [true, "Tray"],
++    "boxes.generators.halfbox.HalfBox": [true, "Box"],
++    "boxes.generators.heart.HeartBox": [true, "FlexBox"],
++    "boxes.generators.hingebox.HingeBox": [true, "Box"],
++    "boxes.generators.hobbycase.HobbyCase": [true, "Tray"],
++    "boxes.generators.holepattern.HolePattern": [true, "Holes"],
++    "boxes.generators.hooks.Hook": [true, "Misc"],
++    "boxes.generators.integratedhingebox.IntegratedHingeBox": [true, "Box"],
++    "boxes.generators.jigsaw.JigsawPuzzle": [false, "Misc"],
++    "boxes.generators.jointpanel.JointPanel": [true, "Misc"],
++    "boxes.generators.kamishibai.Kamishibai": [true, "Misc"],
++    "boxes.generators.keyholder.KeyHolder": [true, "WallMounted"],
++    "boxes.generators.keypad.Keypad": [true, "Box"],
++    "boxes.generators.lamp.Lamp": [false, "Misc"],
++    "boxes.generators.laptopstand.LaptopStand": [true, "Misc"],
++    "boxes.generators.laserclamp.LaserClamp": [true, "Misc"],
++    "boxes.generators.laserholdfast.LaserHoldfast": [true, "Part"],
++    "boxes.generators.lbeam.LBeam": [true, "Part"],
++    "boxes.generators.linkage.Linkage": [true, "Part"],
++    "boxes.generators.magazinefile.MagazineFile": [true, "Misc"],
++    "boxes.generators.makitapowersupply.MakitaPowerSupply": [true, "Misc"],
++    "boxes.generators.matrix.Matrix": [true, "Misc"],
++    "boxes.generators.microrack.SBCMicroRack": [true, "Shelf"],
++    "boxes.generators.nemamount.NemaMount": [true, "Part"],
++    "boxes.generators.nemapattern.NemaPattern": [true, "Holes"],
++    "boxes.generators.nightlightbox.NightLightBox": [true, "Misc"],
++    "boxes.generators.notesholder.NotesHolder": [true, "Box"],
++    "boxes.generators.openbox.OpenBox": [true, "Box"],
++    "boxes.generators.organpipe.OrganPipe": [true, "Unstable"],
++    "boxes.generators.ottobody.OttoBody": [true, "Misc"],
++    "boxes.generators.ottolegs.OttoLegs": [true, "Misc"],
++    "boxes.generators.ottosoles.OttoSoles": [true, "Misc"],
++    "boxes.generators.paintbox.PaintStorage": [true, "Shelf"],
++    "boxes.generators.paperbox.PaperBox": [true, "Misc"],
++    "boxes.generators.penholderbox.PenHolderBox": [true, "Tray"],
++    "boxes.generators.phoneholder.PhoneHolder": [true, "Misc"],
++    "boxes.generators.photoframe.PhotoFrame": [true, "Misc"],
++    "boxes.generators.piratechest.PirateChest": [true, "Box"],
++    "boxes.generators.pizzashovel.PizzaShovel": [true, "Misc"],
++    "boxes.generators.planetary.Planetary": [true, "Part"],
++    "boxes.generators.planetary2.Planetary2": [true, "Unstable"],
++    "boxes.generators.platonic.Platonic": [true, "Unstable"],
++    "boxes.generators.polehook.PoleHook": [true, "Misc"],
++    "boxes.generators.pulley.Pulley": [true, "Part"],
++    "boxes.generators.rack10box.Rack10Box": [true, "Box"],
++    "boxes.generators.rack10box.Rack19Box": [true, "Box"],
++    "boxes.generators.rack19box.Rack19Box": [true, "Box"],
++    "boxes.generators.rack19halfwidth.Rack19HalfWidth": [true, "Box"],
++    "boxes.generators.rackbox.RackBox": [true, "Box"],
++    "boxes.generators.ramp.Ramp": [true, "Misc"],
++    "boxes.generators.rectangularWall.RectangularWall": [true, "Part"],
++    "boxes.generators.regularbox.BayonetBox": [true, "Box"],
++    "boxes.generators.regularbox.RegularBox": [true, "Box"],
++    "boxes.generators.regularstarbox.RegularStarBox": [true, "Box"],
++    "boxes.generators.robotarm.RobotArm": [true, "Part"],
++    "boxes.generators.rollholder.RollHolder": [true, "WallMounted"],
++    "boxes.generators.rotary.Rotary": [true, "Unstable"],
++    "boxes.generators.roundedbox.RoundedBox": [true, "FlexBox"],
++    "boxes.generators.roundedregularbox.RoundedRegularBox": [true, "FlexBox"],
++    "boxes.generators.roundedtrapezoidbox.RoundedTrapezoidBox": [true, "Unstable"],
++    "boxes.generators.royalgame.RoyalGame": [true, "Misc"],
++    "boxes.generators.sevensegment.SevenSegmentPattern": [true, "Holes"],
++    "boxes.generators.sevensegmentclock.SevenSegmentClock": [true, "Misc"],
++    "boxes.generators.sevensegmentclock.SevenSegmentPattern": [true, "Holes"],
++    "boxes.generators.shadowbox.Shadowbox": [true, "Misc"],
++    "boxes.generators.shoe.Shoe": [true, "Misc"],
++    "boxes.generators.shutterbox.ShutterBox": [true, "FlexBox"],
++    "boxes.generators.sidedoorhousing.Console2": [true, "Box"],
++    "boxes.generators.sidedoorhousing.SideDoorHousing": [true, "Box"],
++    "boxes.generators.sidehingebox.SideHingeBox": [true, "Box"],
++    "boxes.generators.silverwarebox.Silverware": [true, "Unstable"],
++    "boxes.generators.skadis.SkadisBoard": [true, "WallMounted"],
++    "boxes.generators.skadisstand.SkadisStand": [true, "WallMounted"],
++    "boxes.generators.slantedtray.SlantedTray": [true, "Tray"],
++    "boxes.generators.slidingdrawer.SlidingDrawer": [true, "Box"],
++    "boxes.generators.slidinglidbox.SlidingLidBox": [true, "Box"],
++    "boxes.generators.smallpartstray.SmallPartsTray": [true, "Tray"],
++    "boxes.generators.smallpartstray2.SmallPartsTray2": [true, "Tray"],
++    "boxes.generators.sphere.Sphere": [true, "Misc"],
++    "boxes.generators.spicesrack.SpicesRack": [true, "Shelf"],
++    "boxes.generators.spool.Spool": [true, "Misc"],
++    "boxes.generators.stachel.Stachel": [true, "Misc"],
++    "boxes.generators.stackablebin.StackableBin": [true, "Shelf"],
++    "boxes.generators.stevensonscreenbox.StevensonScreenBox": [true, "Box"],
++    "boxes.generators.storagerack.StorageRack": [true, "Shelf"],
++    "boxes.generators.storageshelf.StorageShelf": [true, "Shelf"],
++    "boxes.generators.tetris.Tetris": [true, "Misc"],
++    "boxes.generators.trafficlight.TrafficLight": [true, "Misc"],
++    "boxes.generators.trayinsert.TrayInsert": [true, "Tray"],
++    "boxes.generators.traylayout.TrayLayout": [true, "Tray"],
++    "boxes.generators.traylayout.TrayLayoutFile": [false, "Tray"],
++    "boxes.generators.trianglelamp.TriangleLamp": [true, "Misc"],
++    "boxes.generators.triangularwall.TriangularWall": [true, "Part"],
++    "boxes.generators.two_piece.TwoPiece": [true, "Box"],
++    "boxes.generators.typetray.TypeTray": [true, "Tray"],
++    "boxes.generators.ubox.UBox": [true, "FlexBox"],
++    "boxes.generators.unevenheightbox.UnevenHeightBox": [true, "Box"],
++    "boxes.generators.universalbox.UniversalBox": [true, "Box"],
++    "boxes.generators.wallcaliperholder.WallCaliper": [true, "WallMounted"],
++    "boxes.generators.wallchiselholder.WallChiselHolder": [true, "WallMounted"],
++    "boxes.generators.wallconsole.WallConsole": [true, "WallMounted"],
++    "boxes.generators.walldrillbox.DrillStand": [true, "Misc"],
++    "boxes.generators.walldrillbox.WallDrillBox": [true, "WallMounted"],
++    "boxes.generators.walledges.WallEdges": [true, "WallMounted"],
++    "boxes.generators.wallhook.WallHook": [true, "WallMounted"],
++    "boxes.generators.wallhopper.WallHopper": [true, "WallMounted"],
++    "boxes.generators.wallpinrow.WallPinRow": [true, "WallMounted"],
++    "boxes.generators.wallplaneholder.WallPlaneHolder": [true, "WallMounted"],
++    "boxes.generators.wallpliersholder.WallPliersHolder": [true, "WallMounted"],
++    "boxes.generators.wallrack.WallRack": [true, "WallMounted"],
++    "boxes.generators.wallrollholder.WallRollHolder": [true, "WallMounted"],
++    "boxes.generators.wallslottedholder.WallSlottedHolder": [true, "WallMounted"],
++    "boxes.generators.wallstackablebin.WallStackableBin": [true, "WallMounted"],
++    "boxes.generators.wallstairs.WallStairs": [true, "WallMounted"],
++    "boxes.generators.walltypetray.WallTypeTray": [true, "WallMounted"],
++    "boxes.generators.wallwrenchholder.WallWrenchHolder": [true, "WallMounted"],
++    "boxes.generators.wavyknob.WavyKnob": [true, "Part"],
++    "boxes.generators.winerack.WineRack": [true, "Shelf"],
++    "boxes.generators.zbeam.ZBeam": [true, "Part"]
++  },
++  "generator_source_sha256": {
++    "boxes/generators/_template.py": "7cbd06c4f8112a4d86cf6affe9796089afbb3a1ee582dcc8ebeeaec06775327f",
++    "boxes/generators/_walltemplate.py": "4fa2a83e295cf2897104c99d8c7c7d9e81ecd283e4b0ad2bbf6a7978d06c7a21",
++    "boxes/generators/abox.py": "087063d4d3cea62b773754d1833161cbad9a8410b2cdc4c15347a70a05837456",
++    "boxes/generators/agricolainsert.py": "5a2043ee0204737d27ee9660f899566c5189ae9655580bba32fd7ef5834c89bd",
++    "boxes/generators/airpurifier.py": "b81239f61026b58e76bf4d331593f066a6ab97876c1f3daf52dad439880a96e0",
++    "boxes/generators/alledges.py": "23de8c2aa9ddf8bdf0b9bf444a15976492a4b6df1c88c5dd6c5a66e3022f3917",
++    "boxes/generators/angledbox.py": "6d7b92c9ef588fd8c4852f2fd947a8566c8e18dbcf9e977aee07a52303e35a3d",
++    "boxes/generators/angledcutjig.py": "a48033f7d1cdcf9ee61790d661b095d94d25b8b6cf248eff7b7322d8c959206a",
++    "boxes/generators/arcade.py": "cc1da4bb548832f1b2e8ac7d2110927cee584e1252ca09e3f28638f256cb6b1f",
++    "boxes/generators/atreus21.py": "0122869e8635baf637c546ad1c9d4ee7080eaeaa7b0678996293aa108219b628",
++    "boxes/generators/basedbox.py": "b6d6981beea04ac933bc67610867bf8b33f74cc2b5b9b4636fc8ba01b81cd410",
++    "boxes/generators/bayonetbox.py": "f3b81994f46b8cc3ff2b90b706b74aaef92cdb768a9d0c1fac0edb49d296fef5",
++    "boxes/generators/beequeencage.py": "3bbb7c58054ab3437ffed708d94cacbcf73182b7cad13616d42dff321bc68b9e",
++    "boxes/generators/beequeentransportbox.py": "512897b236932dc0a8cb603bfc329eb2a8f5e891e7dd17d77c2a4fdd8c6b3ea7",
++    "boxes/generators/bintray.py": "66603f7e25fc637e18b7f1a898b88468c8ad1f41eb634b18687841d968d8d2ee",
++    "boxes/generators/birdhouse.py": "e7cfe534e335a7a5dfc52927adf576eea85240cfeb3ee0d73a9236b2e0744088",
++    "boxes/generators/bookholder.py": "5bacb53a4f3ee73e0345f7b9f502f3829f7098e57b33af83a347a3b56b87dcc7",
++    "boxes/generators/bottlestack.py": "2d5fb4f4c7e0d11a6a2f8c3cedced273aca13243291d578a0038ed07f77a8d36",
++    "boxes/generators/bottletag.py": "0fb8abc1627cb12fc9e4018d872e5842c7901c6ff2e4b97dea3d5bf77febe4b5",
++    "boxes/generators/breadbox.py": "94f505fe9220f568fb0e183b489c3d464d67c9802fcb3dd1bad001757a5ec6b3",
++    "boxes/generators/brick_sorter.py": "e71fd562fcc539e18c742800a8ed73cb2045da4a80b48f5b4f6c61a27e3caeb2",
++    "boxes/generators/burntest.py": "8ed18188fb2f3d2124d1b87bce73d488004aad1e2e2001644a00800b5f6c84d0",
++    "boxes/generators/can_storage.py": "e797c3dd151773e43150d22ef50a359716252bd9323c1e68460efa8e482182dd",
++    "boxes/generators/carbonfilter.py": "9d72c7f8f36e4e0b95bc7ff28ffe1d72f49cc3b9a5fc45256860f663e8890a90",
++    "boxes/generators/cardbox.py": "9c0e11c5e3a5a317929fc2031be0372b2def0a91f83dcb622d4eda80425ae19d",
++    "boxes/generators/cardholder.py": "f0ae0a2e2fcae7e72ee2b0e8f183eb95ab2c757f8c8004175c882173fc0920b0",
++    "boxes/generators/castle.py": "936688d2886aa99bd0b7c6216be75b90f944c362725cc581bed2d84866e7b7b1",
++    "boxes/generators/clock.py": "b17ad40961210a9c4062675f0c412add3f7cca9bfdf8a041f0bd4a0cd1374dff",
++    "boxes/generators/closedbox.py": "48023c403eb4068db6c5c2d531e037bde79dcea66aae52be9a63ef1ae58ff7c7",
++    "boxes/generators/coffeecapsulesholder.py": "d791f13b5f22cd815dbc0c27c944e91f0db24d42c24e3977a939c13808984bd0",
++    "boxes/generators/coinbanksafe.py": "feb9f004b7f2eed99e0a34561cf8ace81deec6c1ddfb2641ee077eef1faf6384",
++    "boxes/generators/coindisplay.py": "3e0aa73be20ce70e38df4cbb95a919d7ced897b7ab96e5a928d54d7dbf206b7f",
++    "boxes/generators/compartmentbox.py": "fd0a72f121caa291265d6f8029ea1711d713c2e2bf7727b4b9e8e0a191477a41",
++    "boxes/generators/concaveknob.py": "b02cf4b9737098a5c5cbc427ccbd44397d85e471afd9354bf8670751d62362e3",
++    "boxes/generators/console.py": "518069890a58a86cbe863fc6d1ee7e91434e2eca0f0d86d756c954f4f5502cee",
++    "boxes/generators/console2.py": "fe56d9432b4d0b0a7c16ccc5588344ac6c65ad220ae2397dba5269620aa05efe",
++    "boxes/generators/crate.py": "7cd90875054d353b6d7bb59853fc92e9c2d7562450da3fd6cff965fd8f5f472a",
++    "boxes/generators/desksign.py": "e4099c5e5e4b307f6c040fa596acdfc89a38235f71b8dbe396955812e1319f26",
++    "boxes/generators/dicebox.py": "cdbb17b6ede330008e1d9052b4e199bd63c335a87cf34f3c707030fea4ee56fc",
++    "boxes/generators/dicetower.py": "a8ff9fc1a829ece6f1802862c9bb33856d8bba74a28c3c64d4f04ca518385dfb",
++    "boxes/generators/dinrailbox.py": "2f2b2012f90bab56f6679e8d5b3b4b8fbfc2b9604afe0c9f943877106b2050ed",
++    "boxes/generators/discrack.py": "cde3f3d55ee83db09ca3b84392cccedebe9a1385a4658304d521e9008076fe63",
++    "boxes/generators/dispenser.py": "6e7d6ce0564a92481fabe52573a2b6e936367c1c3081e794319e98919e6de834",
++    "boxes/generators/display.py": "30f92f9e7f643b52a4a0b8b9f8cb66c9f75b32fd66de1468ea11d31c096b5568",
++    "boxes/generators/displaycase.py": "ea8fc93877924e93f58397b93fb4c6a8e6436273b182a515589025181f839b35",
++    "boxes/generators/displayshelf.py": "e9c10165ba59b6a4ee6dda704d259b321aa77e6358a8100b24a2726b2036b67f",
++    "boxes/generators/dividertray.py": "bd04e6dd14c0556116f9c108dfa7b125a29aa201ac4fa955cb93061fd4325895",
++    "boxes/generators/doubleflexdoorbox.py": "d180df51101e376a37bf5a95077e2c2299e5a0afab6c5033ff6f188dc23c6dab",
++    "boxes/generators/drillbox.py": "2844119f1f2122517a79d21cbbc231cee3edd29cb974f1aa7a4cde6505c91563",
++    "boxes/generators/drillgauge.py": "53f04c78e754279740fd7963ba125788261263e7dfca76e4b10ffdb1857a4123",
++    "boxes/generators/drillstand.py": "4e8b38d4d160cacc1352541038a5bab472913a052175a21be6d529c1b38104b9",
++    "boxes/generators/edges.py": "8e73fcdb75622785e9d81fa900f56d21f09e7f0a014e12bc59c8fcab01ec1750",
++    "boxes/generators/electronicsbox.py": "fa72aa62e9ea3047fea9e86900b41b21280846e86cf5bde3b8c3aaa4e090b519",
++    "boxes/generators/engravingframe.py": "41c38ad6fd464e68905a5d9e0954430d3bb40712c0d70d3dfb6f7aaba6a8e73a",
++    "boxes/generators/eurorackskiff.py": "e4fab37d8fa1a69d9136eafc13bf2175722dc8e42652a3d3b59d2a2d1dd093cc",
++    "boxes/generators/fanhole.py": "663d0003e13714ff9cc13b24ab2586d25211ebbcd9afbcbf8b06be34fff368a5",
++    "boxes/generators/fatballdispenser.py": "035d464bf83a098b2a961defda73333e3da709db169df003fdd5f040a0950c24",
++    "boxes/generators/filamentspool.py": "9d8cf9e6f977c33becf131c745c633d0c54863a4a07c6b0c57d047d61755abb9",
++    "boxes/generators/filltest.py": "f4012e50907094abfd0272a3acbb99b93c93f5562320f98ea1268aa2161e84f6",
++    "boxes/generators/flexbook.py": "bac245eceb1cd13dc942c650338b10485bb8bb9e02e6fddc9cbbf5332ed1a3be",
++    "boxes/generators/flexbox.py": "f24537dde65f3fe6e210fa51736890b492eac15fa2a0dbe6f55e721ad4251a3e",
++    "boxes/generators/flexbox2.py": "5a24bbd6819a43d10bd0133cb5d90d97e55ce57e6ae99a43bafbee413d1475ca",
++    "boxes/generators/flexbox3.py": "beca4c659353deaf9cd422a0f2a614c00dacb653c8a1334817f6774326cf1ffa",
++    "boxes/generators/flexbox4.py": "f454614d4257a1572f7c0e76928f3b59e73dd1f95f58137e6729e23d04ed937d",
++    "boxes/generators/flexbox5.py": "45879571e359fc93978e551bc8a560fc41693214ef8f2483a86060096b3b40de",
++    "boxes/generators/flextest.py": "a780a21d32d44f5afd42a0c42938b6d7dcf22adbffd8cdc9b7ea15433ea67320",
++    "boxes/generators/flextest2.py": "50dfdc0085ff696fc3e2e63ba6c4849fe900342b2394de6c13d37d59f2f01b01",
++    "boxes/generators/folder.py": "b783e55c52d9cfa3cd3ec8c5dd7663f0e425e1afc0280032ff7b9981d4c9c172",
++    "boxes/generators/frameloom.py": "2309aaac2ed670dc4e9c04d6779bfd40dcbbb934b7d8b438e8493b1eb61197a4",
++    "boxes/generators/frontpanel.py": "d4a6fd840cc2032b58549f25d0d9801b2435a8e474aa9d1c3b3bb3487e2c8b5c",
++    "boxes/generators/gear.py": "63094ae126e1194d75a845d551974499a7d9190e257e51dc8f48858075d04083",
++    "boxes/generators/gearbox.py": "7ecb8ccb6d5e451ac7c575800cdbcaedc0eef0ce71bbffd6bacf31567cf3e054",
++    "boxes/generators/gridfinitybase.py": "448e648f4a4ddcb7a7f4ad86b820f90d124ee1ac735c87556a43d5bcc7dac91c",
++    "boxes/generators/gridfinitydrillbox.py": "cf7796920236e4213aeaabc08070f87c916f0a8cd461c43391ddbbb0e60f00e3",
++    "boxes/generators/gridfinitytraylayout.py": "4191de5a4cd0d14f5e87827c4779b7ff3806921f5ac6735711def7d388e6d800",
++    "boxes/generators/halfbox.py": "dacf36e0a38669febc83d48727b4e2658c6caab9b24466034f7d1a44ae2e40eb",
++    "boxes/generators/heart.py": "8e32ef2f1307e7488d3ee6f2eeebf9067be8d33f954d6882d2b08317ef2e44e7",
++    "boxes/generators/hingebox.py": "059d4d79668318eb5fed37de39da58f5a191fef15b2cab85aea5e683973b1d12",
++    "boxes/generators/hobbycase.py": "563633b9f5cab9c5c2faac93611f6095769cefbdd8e1cbf9837b20d79b5b8444",
++    "boxes/generators/holepattern.py": "8cf08193e18f6869bbb8fadc4caed958e8c92843b165708bbb5861fa7fe50cb3",
++    "boxes/generators/hooks.py": "abf9bc85e05268901dda50d66d2240526ab25e9aa2d28e37441293a6114fe9ef",
++    "boxes/generators/integratedhingebox.py": "20bb4c2cba7aa67b076f83fa1d5ff7f79b30384bd6b7b3d68bb0e71a32b5ad97",
++    "boxes/generators/jigsaw.py": "ebfaa05ddda801ea748d7e61fc80a76a3f829ddc4b05cb171e1b7691da05d183",
++    "boxes/generators/jointpanel.py": "179d750cf2ec73f7861feae7595f44337376bcaa2f802ba1f7f658bff0b88a56",
++    "boxes/generators/kamishibai.py": "02437680eb059b6ecf488d4ee513bbcb6e7df0be43977093d80f65787f5153c9",
++    "boxes/generators/keyboard.py": "63ea5b327ac574131a5146a0a3eaa125d83ac1d0b641d54dcd9a8add46ea0004",
++    "boxes/generators/keyholder.py": "fcd4910b9628f326f4c49354952a918daa1ddea3766d0fc57a3aaf3235479eb3",
++    "boxes/generators/keypad.py": "0f4dafdb5d689b47ee6c8e2991c143ece6b027221c19e3aa4bed2321620ac640",
++    "boxes/generators/lamp.py": "61d0c9b17bb924eee5cb101e5dedf4ab407f41a915878a80598b70eb689a877a",
++    "boxes/generators/laptopstand.py": "da3e5f39ea1311f07d8b9413b5bd98fd171032067e7fa899c8dbc34e12854eb6",
++    "boxes/generators/laserclamp.py": "55ba9eababbac4e65870402d8555d3bc1b9263d80ef1fca4141128fd522eccb3",
++    "boxes/generators/laserholdfast.py": "04fc412a952233ed2599136655f322e0e98916f25c2c122fb7ac75ad242444b0",
++    "boxes/generators/lbeam.py": "bd0a7c5cbb6f3edb176099aacd0c1349babd3877f993d76715da0303e4812ab0",
++    "boxes/generators/linkage.py": "28f3ecec5bb2222d31822f6684c44802535a21cf2f4a9e69445a8bca5479e224",
++    "boxes/generators/magazinefile.py": "5547dc068ef4bb3366aa418ed5c4dd55cc3c8081dda60cb98365e90abcdd727a",
++    "boxes/generators/makitapowersupply.py": "026fe9c4fe17928e6ec8d563b913b42ba0afa4a38d8f847cdbbf9dd3894558f9",
++    "boxes/generators/matrix.py": "525b57970089597fde577725977cc6b8c49bd56782991ceaf218243832033fbc",
++    "boxes/generators/microrack.py": "f0280b38397b852883b2f9f9c7f90fbbcf39d09474a650711a41bcc1a5b2f58a",
++    "boxes/generators/nemamount.py": "c8aa281c245eac330a12b67578f9de70f33d2b1e8c975f75c052988a9ba806d0",
++    "boxes/generators/nemapattern.py": "4a175712f854faed86b47314b459a0b896362e1d03dadcadb12465e014cf65cf",
++    "boxes/generators/nightlightbox.py": "f9e89e93b208656e94acacd5304835a9fc11501041e763752583098524f01a45",
++    "boxes/generators/notesholder.py": "b72f0f8deb96cb7b6b68c7c36614858ff8659d74bc427c48f048837cb662489d",
++    "boxes/generators/openbox.py": "28c5c5f935c988ee25f7c66ddd669114bcf6e6521d574b1cbdf2f05fac452d20",
++    "boxes/generators/organpipe.py": "8b650d0779f93e47e2556164633313210886d754088d59678bbafb3a8b346464",
++    "boxes/generators/ottobody.py": "bb5d7f7c611489f53462732c9995ff1f5f15fe3505eaff0c836e3810b4b88802",
++    "boxes/generators/ottolegs.py": "8bd9ae989ac6031cce6c0055cd88230a34f7b2ab1c5ed7107c475ff7b710b42e",
++    "boxes/generators/ottosoles.py": "2eb3377fcc9fb52772391a6a284eb44798c221bbdf82d82a765d76d13301712a",
++    "boxes/generators/paintbox.py": "4fef4b4c2f758c51a5d1e3df0fd10861c8fdbf2617bdea9878b0aca557f24947",
++    "boxes/generators/paperbox.py": "06ded463241c6852a216f3828ed1ea7943eccf68ffbb8c25c3dc1d1fca6dd731",
++    "boxes/generators/penholderbox.py": "b7b77c4308dfc3fce48d7f247f9ecb143e22233a5d27c8b03620468daa148205",
++    "boxes/generators/phoneholder.py": "482f49bbffb2d580c451a34e73bc01304793efb2892816157069b07710947c72",
++    "boxes/generators/photoframe.py": "d6f895430b15173e645d050ff299f86c962fb3340e651b27be2914b770a0e3a6",
++    "boxes/generators/piratechest.py": "9112f0bc3ab67d08229a9c5f04f55667874c754535804709e3de1462055c40ea",
++    "boxes/generators/pizzashovel.py": "a74d49c6c1859be7c1d791dec145c6508b2e09ef108e200c0aa779a39011491a",
++    "boxes/generators/planetary.py": "d700cad389dc12b130294efa1998376b262d028908851ad16836462904229619",
++    "boxes/generators/planetary2.py": "10158c67382609d66ab1bb357f662a197962dd630dc1e60787e9c63eff057256",
++    "boxes/generators/platonic.py": "0790da4e4d47c6d1c666f3582479930dd025615541d0fb79816d9bb80ad2d807",
++    "boxes/generators/polehook.py": "8d909a95fd770a7ac8a699a01b939477a60981e1c042251c7e0e37a2abe2f5b8",
++    "boxes/generators/pulley.py": "080d99934f7aa3cb93b706c6c4bd38ea6a6fca58f9d7150c7b11c7087ec9650c",
++    "boxes/generators/rack10box.py": "c97663b2b85638ebb35eb167876a4c96b8a25f02505458daa72bd27b84829168",
++    "boxes/generators/rack19box.py": "45dd7b9d47c03cb924aae1d0a54630e645f9f4581ff17e6b2d41e2d8b8664175",
++    "boxes/generators/rack19halfwidth.py": "682ac9d7e68fbcb73f087c14aa4ed46b9762601b54c2bc704ec15421cb779cb6",
++    "boxes/generators/rackbox.py": "6abea2f1135578c27be389d4489ef241d04b8116e84bcd5546a83163d453e1e8",
++    "boxes/generators/ramp.py": "1a9d0bbf7cc5e97e57d37e561ca82e731daf7be45672ac70c8d3f02dbac3d0d2",
++    "boxes/generators/rectangularWall.py": "28436a705397694c9bfab78ce9cec64e0452bf8ed55d43210205c461d75b454c",
++    "boxes/generators/regularbox.py": "6378e558cb74431296d12f480e50d849b821214e1453bcadcff2522ac7d8c6ea",
++    "boxes/generators/regularstarbox.py": "c9a5dac64480fce70937d4693a8bd3421d7c633ec9542cbfdea633f0e8ba6df7",
++    "boxes/generators/robotarm.py": "8da4858a9c6a0d9f1753b7aa2a1640a69fed8807156d86a46cd3852e24e6fc9f",
++    "boxes/generators/rollholder.py": "b188c875daeaee396f30395534a93540b67b58674aad99660d74b9c6b031a452",
++    "boxes/generators/rotary.py": "3d03affbc74b389ee0c69c711ff8394f06dc584fc20550acd0571435d9ad6388",
++    "boxes/generators/roundedbox.py": "8b34151d2eb761d0244bad7028b730727786379f97ca9c43632c853424fc084e",
++    "boxes/generators/roundedregularbox.py": "3eaa557134fcc90fc58b18bc28109383a6640180456f7d48790c2d637fd2f4f2",
++    "boxes/generators/roundedtrapezoidbox.py": "96058fdf9e58a61e82bebd7c4a7bf345e9912db8a777ac53f087d53d45ea6a10",
++    "boxes/generators/royalgame.py": "2bedc5f79c1a480230f1c6f73b0f4216b96e20d92427cfa8371319c98a6185d5",
++    "boxes/generators/sevensegment.py": "019efa4b5713e6fbd643434065d8dc0e3bb1e0eb31c060af059ae155f3b72f7c",
++    "boxes/generators/sevensegmentclock.py": "6c7a14623342002fab81c691d8fb5d050bdfe16699bc2e376c66180d4d0854aa",
++    "boxes/generators/shadowbox.py": "36792e81e75d9ed161a929e378c9131a0c199b7342ec4dadb62c1f268c3fff84",
++    "boxes/generators/shoe.py": "9a624c0069594c35b4c742480980d940fb1867167633d52139658e2be4d82be2",
++    "boxes/generators/shutterbox.py": "13aac5accd0476c1478588d2ceb678425428986c278f5fcb54cbbc53107c51d1",
++    "boxes/generators/sidedoorhousing.py": "e1bce81b873a6e8d192c7ab746f1c7a30d1542e46a3220a4f2d2b4419526a5ab",
++    "boxes/generators/sidehingebox.py": "4872a99864d31cdb70dd1478d6f08d4502cbb2f8f94aa94e5b0b60006543efaf",
++    "boxes/generators/silverwarebox.py": "a1e5a5676ed9d296fc4e6c1491e72302b8259a8e668a0ef36403cde28f7ccd59",
++    "boxes/generators/skadis.py": "738758ec4fa05fdaa4e018962674473cd9f2fb195df23fefb0377618955b7260",
++    "boxes/generators/skadisstand.py": "74ce79a748fc6169f6b99c09c8783e1aff13ddac78e2f2d0e3c5d481338b7b87",
++    "boxes/generators/slantedtray.py": "24fa6cf8eb66f2374db5bd4e74b555b18423e5bf20ab20ad5f384333ef3cfb89",
++    "boxes/generators/slidingdrawer.py": "93418efc0a12ab17025fded88a0c6593ed3ed8375fd481884d1aa0c9e7e3afb9",
++    "boxes/generators/slidinglidbox.py": "cf6b04549902efa97ec1fe9f5c023d21c749dba673d87d852caa8c1ae1ebeb9d",
++    "boxes/generators/smallpartstray.py": "4949cd9ff157d118dd65912f8040593e1a183eb6aabf5b4b38db33ce35fbfb81",
++    "boxes/generators/smallpartstray2.py": "5d60f4d93e62098e7f5acd27dd926922a9e82c9e6b6d4277d8a1e94c688a7658",
++    "boxes/generators/sphere.py": "f66a2c2b9876f9e0bc932cc3caa59740c78d47c7420b918e9bad071269fdbc86",
++    "boxes/generators/spicesrack.py": "9eea34d7930467803a23e446aa459f11b6f5a9e30037750d22592f3187fdd6ea",
++    "boxes/generators/spool.py": "4eef4d410a593d0c54a6535075cbe7d119dffeb8590def23032bdb3b0061c473",
++    "boxes/generators/stachel.py": "0c4e90c7eebd31f8676d72e7f1e2dea814b999d338af9bbff19ce2a72c434b33",
++    "boxes/generators/stackablebin.py": "b4176bb32d75910642fb87f9f80d5e5fee958a12feb4b7cb72ddd026c485e1b3",
++    "boxes/generators/stevensonscreenbox.py": "d785fdcb5616b4b56d9908b9f07f9111bcb6e0c7f2dd987eb92857aedd3d4630",
++    "boxes/generators/storagerack.py": "c5e3130586250b90d8daf50ef413404ace399166ea2e00cbddc1527d7422f03e",
++    "boxes/generators/storageshelf.py": "f83620e98f6b654f0326a6aff54db2babd802eb7b28f5c185cdf2a56b706b6d9",
++    "boxes/generators/tetris.py": "93a0617b77c846bd1c977a49c67d5a8ad2b5ef0bf3a66bbf431725de5ddae2de",
++    "boxes/generators/trafficlight.py": "08acf1d49e59b8830b6c309ec9fb8365d87784f6379e782d44825a49b1afdc30",
++    "boxes/generators/trayinsert.py": "2833d828fa10f613ded3ca745fc99164fc9a79d5bbe659fe5c29164c82df63c0",
++    "boxes/generators/traylayout.py": "187acecd0a675e7567aa721685c78307f0187587a1e9e11f0b8f42d7725be3ad",
++    "boxes/generators/trianglelamp.py": "1cba3ec4998ae5bb79fbebccef2f8cf374ad8fc2d5c2aff0ba6c36e189024902",
++    "boxes/generators/triangularwall.py": "54e9b865c18fdab05df7c35b74aaf68c2cdf8091755e94558fb94d754c2a42df",
++    "boxes/generators/two_piece.py": "067893394011334894fba9f6eba381ac4857c6deaf1c6ffe6b5886a8a45723db",
++    "boxes/generators/typetray.py": "72c30c82366ea85774ae162b520e01738f4744a82f0f01e043603a0fd6cdd3e7",
++    "boxes/generators/ubox.py": "dde0ceb752128008da64dab3f37bc9622b78c50ff63b1aea0e9daa894a8e80ad",
++    "boxes/generators/unevenheightbox.py": "569535bb7d773f9efb4e1dbd26a57bd899222919906f2dc38a468fdce8d93743",
++    "boxes/generators/universalbox.py": "6349568b5063bc17107730ac0697472c2d527e9cf2977b26e2d569d44266f12f",
++    "boxes/generators/wallcaliperholder.py": "3f41a91fb9929dc15315257259a500a5166f50510e4b4e0c1b7fe4782c56dcc3",
++    "boxes/generators/wallchiselholder.py": "a062707404ffb935b2cbc7440e547597e8def7913c2cf950eef7a46e0cd0f42c",
++    "boxes/generators/wallconsole.py": "526b4d85629f35e23ffca55ae6dbf75f516dc23d0a73b81fd7b9b81f15bd1080",
++    "boxes/generators/walldrillbox.py": "852e5e2f6e39b724bab18d1c547ec4ae7456ddbfe1592024b9710891f10977c9",
++    "boxes/generators/walledges.py": "3864489873795abf8bbb73e169995756ef01b39c98715d7baf489ee40609a9df",
++    "boxes/generators/wallhook.py": "a280ddbfde644ea83926b15cd88f9ed5a4ff7c64e1ad3a2bee4c4f39de001f2a",
++    "boxes/generators/wallhopper.py": "5ec59c973aa0823e6722b5c67834755b1913b2356950e57fe3c477526d5df820",
++    "boxes/generators/wallpinrow.py": "7633fce0f840e09ef8c99b46ccb235acb363d73800d758167dcbded15ac7323b",
++    "boxes/generators/wallplaneholder.py": "75299cf8921e2ed4264a531c651f9d3310e0a0817c7c156dd5647141484a0381",
++    "boxes/generators/wallpliersholder.py": "a9495367b9a83b8b54ed8621bacfa3eda02f362ec6d058abba8baa8dcffef3fa",
++    "boxes/generators/wallrack.py": "30cf20e6282eca49279333be0f56d6e6f1f9d85eaeb2a208df06484c6fff03c8",
++    "boxes/generators/wallrollholder.py": "51317339744ce2e127cca2f6bac59b20e122a9f3b8ea2984a5f760315eaa101b",
++    "boxes/generators/wallslottedholder.py": "5047cb8c4f0f0c15316983961292ea53ca9da6b55dc863c91e47c5ec2e247afd",
++    "boxes/generators/wallstackablebin.py": "ae8c104f3e7d9536558501f851d87f57115b21c54c44c44d4449601ffef22916",
++    "boxes/generators/wallstairs.py": "145eaeabeb316eded04ef1757753f7286f94b7de47337f3ba1daf611af05c340",
++    "boxes/generators/walltypetray.py": "c80578f56917e5b40dbf49f82d266bad7077ef6e8d4e257c40350497d9aea5af",
++    "boxes/generators/wallwrenchholder.py": "0da2f5d70af6ae0e7aad40bdba3fd64e39d94923f364a752a97a48f1bc149800",
++    "boxes/generators/wavyknob.py": "7014a845f11eb0858c47df06d697d92bea564804a935678a528721836c75c82f",
++    "boxes/generators/winerack.py": "681511ab4999289d968e85afec399b577f0d19dcebddc3c70364a1eb6a037e6f",
++    "boxes/generators/zbeam.py": "ad729a779f74ab53057518cdd8524b33408d1d80d7c64bcbab995bc19276feb7"
++  }
++}
+diff --git a/tests/test_f2p_generator_catalog.py b/tests/test_f2p_generator_catalog.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4bcd9365042abc96fbd9fcac28147f5d7df5d5b7
+--- /dev/null
++++ b/tests/test_f2p_generator_catalog.py
+@@ -0,0 +1,573 @@
++"""Supplemental fail-to-pass (F2P) checks for the generator discovery consolidation.
++
++Every check in this module observes an externally visible acceptance surface that the
++frozen Baseline checkout violates and that the consolidated generator catalog has to
++satisfy:
++
++* repeated CLI listings, web server constructions and gallery renders must not grow any
++  group's generator collection with duplicates,
++* the ``BOXES_GENERATOR_PATH`` extension directories must keep being discovered without
++  permanently mutating the generator package search path,
++* a generator whose ``ui_group`` is not registered must keep falling back to ``Misc``.
++
++Each check runs its scenario in a fresh interpreter against the repository copy that is
++under test, so module-level state cannot leak between checks and every selector below can
++be executed and graded on its own.
++"""
++from __future__ import annotations
++
++import json
++import os
++import subprocess
++import sys
++import tempfile
++import textwrap
++from pathlib import Path
++
++REPO_ROOT = Path(__file__).resolve().parent.parent
++
++_PREAMBLE = r'''
++import json
++from pathlib import Path
++
++import boxes
++
++_REPO_ROOT = Path(__REPO_ROOT__).resolve()
++assert Path(boxes.__file__).resolve().is_relative_to(_REPO_ROOT), (
++    "the repository copy under test must be imported, got %s" % (boxes.__file__,)
++)
++'''
++
++_LISTING_HELPERS = r'''
++import contextlib
++import io
++import re
++
++import boxes.generators as generators
++from boxes.scripts.boxes_main import print_grouped_generators
++
++_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
++_ENTRY_RE = re.compile(r"^ \*  (\S+) +- \x1b\[3m(.*)\x1b\[0m$")
++
++
++def run_listing():
++    buffer = io.StringIO()
++    with contextlib.redirect_stdout(buffer):
++        print_grouped_generators()
++    return buffer.getvalue()
++
++
++def parse_listing(text):
++    payload = {"headers": [], "entries": [], "invalid": [], "sections": {}, "lines": text.split("\n")}
++    current = None
++    for line in payload["lines"]:
++        if line.startswith(" *  "):
++            match = _ENTRY_RE.match(line)
++            if match is None or line != (
++                f" *  {match.group(1):<15} - \x1b[3m{match.group(2)}\x1b[0m"
++            ):
++                payload["invalid"].append(line)
++                continue
++            payload["entries"].append([match.group(1), match.group(2)])
++            if current is not None:
++                payload["sections"][current].append(match.group(1))
++        elif "\x1b[4m" in line:
++            current = _ANSI_RE.sub("", line)
++            payload["headers"].append(current)
++            payload["sections"][current] = []
++    return payload
++
++
++def generator_class_names():
++    return sorted({value.__name__ for value in generators.getAllBoxGenerators().values()})
++
++
++def listing_summary(payload):
++    names = [entry[0] for entry in payload["entries"]]
++    classes = generator_class_names()
++    return {
++        "headers": payload["headers"],
++        "sections": payload["sections"],
++        "invalid": payload["invalid"],
++        "duplicates": sorted({name for name in names if names.count(name) > 1}),
++        "missing": sorted(set(classes) - set(names)),
++        "extra": sorted(set(names) - set(classes)),
++        "entry_count": len(names),
++        "class_count": len(classes),
++        "hole_pattern_count": names.count("HolePattern"),
++    }
++'''
++
++_SERVER_HELPERS = r'''
++import boxes.generators as generators
++from boxes.scripts.boxesserver import BServer
++
++
++def web_generator_names():
++    return sorted(
++        {value.__name__ for value in generators.getAllBoxGenerators().values() if value.webinterface}
++    )
++
++
++def server_group_payload(server):
++    members = [box.__name__ for group in server.groups for box in group.generators]
++    return {
++        "members": members,
++        "duplicates": sorted({name for name in members if members.count(name) > 1}),
++        "groups": {group.name: [box.__name__ for box in group.generators] for group in server.groups},
++        "group_names": [group.name for group in server.groups],
++        "box_names": sorted(server.boxes),
++    }
++'''
++
++_GALLERY_HELPERS = r'''
++import re
++
++
++def render_gallery(server):
++    captured = {}
++
++    def start_response(status, headers):
++        captured["status"] = status
++
++    environ = {
++        "PATH_INFO": "/",
++        "QUERY_STRING": "",
++        "HTTP_ACCEPT_LANGUAGE": "en",
++        "REQUEST_METHOD": "GET",
++        "SCRIPT_NAME": "",
++        "SERVER_NAME": "localhost",
++        "HTTP_HOST": "localhost",
++    }
++    parts = server.serve(dict(environ), start_response)
++    return captured.get("status"), b"".join(parts).decode("utf-8")
++
++
++def gallery_entry_names(html):
++    return re.findall(r'id="search_id_([^"]+)"', html)
++'''
++
++_PROBE_GENERATOR_SOURCE = '''"""Generator module written into a temporary directory by the F2P checks."""
++
++from __future__ import annotations
++
++from boxes import Boxes
++
++
++class {class_name}(Boxes):
++    """F2P probe generator"""
++
++    ui_group = {ui_group!r}
++    webinterface = {webinterface!r}
++'''
++
++
++def _run_probe(snippet: str, env_extra: dict[str, str] | None = None) -> dict:
++    """Run a snippet in a fresh interpreter against the repository copy under test."""
++    environment = dict(os.environ)
++    environment.pop("BOXES_GENERATOR_PATH", None)
++    environment["PYTHONPATH"] = os.pathsep.join(
++        part for part in (str(REPO_ROOT), environment.get("PYTHONPATH", "")) if part
++    )
++    environment["PYTHONDONTWRITEBYTECODE"] = "1"
++    if env_extra:
++        environment.update(env_extra)
++    program = textwrap.dedent(snippet).replace("__REPO_ROOT__", repr(str(REPO_ROOT)))
++    completed = subprocess.run(
++        [sys.executable, "-c", program],
++        cwd=str(REPO_ROOT),
++        env=environment,
++        capture_output=True,
++        text=True,
++        timeout=300,
++    )
++    assert completed.returncode == 0, (
++        "probe process failed with exit code %d:\n%s"
++        % (completed.returncode, completed.stderr[-4000:])
++    )
++    lines = [line for line in completed.stdout.splitlines() if line.strip()]
++    assert lines, "probe process produced no output:\n%s" % (completed.stderr[-2000:],)
++    return json.loads(lines[-1])
++
++
++def _write_probe_generator(
++    directory: Path,
++    module_name: str,
++    class_name: str,
++    ui_group: str,
++    webinterface: bool = False,
++) -> None:
++    (directory / (module_name + ".py")).write_text(
++        _PROBE_GENERATOR_SOURCE.format(
++            class_name=class_name, ui_group=ui_group, webinterface=webinterface
++        ),
++        encoding="utf-8",
++    )
++
++
++def test_repeated_cli_listing_emits_each_generator_once() -> None:
++    """REQ-BEH-T4:B2, REQ-BEH-T4:B3, REQ-STRUCT-002: a second listing in one process stays complete."""
++    payload = _run_probe(
++        _PREAMBLE
++        + _LISTING_HELPERS
++        + r'''
++_first = parse_listing(run_listing())
++_second = parse_listing(run_listing())
++_summary = listing_summary(_second)
++print(json.dumps({
++    "first_entry_count": len(_first["entries"]),
++    "invalid": _summary["invalid"],
++    "duplicates": _summary["duplicates"],
++    "missing": _summary["missing"],
++    "extra": _summary["extra"],
++    "hole_pattern_count": _summary["hole_pattern_count"],
++    "entry_count": _summary["entry_count"],
++    "class_count": _summary["class_count"],
++}))
++'''
++    )
++    assert payload["invalid"] == []
++    assert payload["duplicates"] == []
++    assert payload["missing"] == []
++    assert payload["extra"] == []
++    assert payload["hole_pattern_count"] == 1
++    assert payload["class_count"] > 100
++    assert payload["first_entry_count"] == payload["class_count"]
++    assert payload["entry_count"] == payload["class_count"]
++
++
++def test_cli_listing_after_webserver_construction_is_not_duplicated() -> None:
++    """REQ-BEH-T4:B2, REQ-BEH-T4:B3, REQ-STRUCT-004: the listing stays complete after a server was built."""
++    payload = _run_probe(
++        _PREAMBLE
++        + _LISTING_HELPERS
++        + r'''
++from boxes.scripts.boxesserver import BServer
++
++_server = BServer()
++_summary = listing_summary(parse_listing(run_listing()))
++print(json.dumps({
++    "invalid": _summary["invalid"],
++    "duplicates": _summary["duplicates"],
++    "missing": _summary["missing"],
++    "extra": _summary["extra"],
++    "entry_count": _summary["entry_count"],
++    "class_count": _summary["class_count"],
++}))
++'''
++    )
++    assert payload["invalid"] == []
++    assert payload["duplicates"] == []
++    assert payload["missing"] == []
++    assert payload["extra"] == []
++    assert payload["class_count"] > 100
++    assert payload["entry_count"] == payload["class_count"]
++
++
++def test_repeated_webserver_construction_keeps_group_members_unique() -> None:
++    """REQ-BEH-T4:B3, REQ-STRUCT-001, REQ-STRUCT-002: two server objects share one stable group view."""
++    payload = _run_probe(
++        _PREAMBLE
++        + _SERVER_HELPERS
++        + r'''
++_first = BServer()
++_second = BServer()
++_web = web_generator_names()
++_payload = server_group_payload(_second)
++print(json.dumps({
++    "web": _web,
++    "members": _payload["members"],
++    "duplicates": _payload["duplicates"],
++    "group_names": _payload["group_names"],
++    "box_names": _payload["box_names"],
++}))
++'''
++    )
++    assert payload["web"] and len(payload["web"]) > 100
++    assert payload["duplicates"] == []
++    assert set(payload["members"]) == set(payload["web"])
++    assert len(payload["members"]) == len(payload["web"])
++    assert payload["box_names"] == payload["web"]
++    assert payload["group_names"]
++
++
++def test_gallery_of_earlier_server_stays_unique_after_second_construction() -> None:
++    """REQ-BEH-T4:C6, REQ-BEH-T4:B3: an earlier server handle is not corrupted by a later server."""
++    payload = _run_probe(
++        _PREAMBLE
++        + _SERVER_HELPERS
++        + _GALLERY_HELPERS
++        + r'''
++_first = BServer()
++_second = BServer()
++_status, _html = render_gallery(_first)
++_entries = gallery_entry_names(_html)
++_web = web_generator_names()
++print(json.dumps({
++    "status": _status,
++    "web": _web,
++    "entries": _entries,
++    "entry_duplicates": sorted({name for name in _entries if _entries.count(name) > 1}),
++}))
++'''
++    )
++    assert payload["status"] == "200 OK"
++    assert payload["web"] and len(payload["web"]) > 100
++    assert payload["entry_duplicates"] == []
++    assert set(payload["entries"]) == set(payload["web"])
++    assert len(payload["entries"]) == len(payload["web"])
++
++
++def test_webserver_after_listing_exposes_web_generators_once() -> None:
++    """REQ-BEH-T4:C6, REQ-BEH-T4:B3, REQ-STRUCT-004: the server view stays web-only after a listing."""
++    payload = _run_probe(
++        _PREAMBLE
++        + _LISTING_HELPERS
++        + _SERVER_HELPERS
++        + r'''
++run_listing()
++_server = BServer()
++_payload = server_group_payload(_server)
++_web = web_generator_names()
++print(json.dumps({
++    "web": _web,
++    "members": _payload["members"],
++    "duplicates": _payload["duplicates"],
++}))
++'''
++    )
++    assert payload["web"] and len(payload["web"]) > 100
++    assert payload["duplicates"] == []
++    assert set(payload["members"]) == set(payload["web"])
++    assert len(payload["members"]) == len(payload["web"])
++
++
++def test_gallery_after_listing_has_one_entry_per_web_generator() -> None:
++    """REQ-BEH-T4:C6, REQ-BEH-T4:B3, REQ-STRUCT-004: the rendered gallery stays web-only after a listing."""
++    payload = _run_probe(
++        _PREAMBLE
++        + _LISTING_HELPERS
++        + _SERVER_HELPERS
++        + _GALLERY_HELPERS
++        + r'''
++run_listing()
++_server = BServer()
++_status, _html = render_gallery(_server)
++_entries = gallery_entry_names(_html)
++_web = web_generator_names()
++print(json.dumps({
++    "status": _status,
++    "web": _web,
++    "entries": _entries,
++    "entry_duplicates": sorted({name for name in _entries if _entries.count(name) > 1}),
++}))
++'''
++    )
++    assert payload["status"] == "200 OK"
++    assert payload["web"] and len(payload["web"]) > 100
++    assert payload["entry_duplicates"] == []
++    assert set(payload["entries"]) == set(payload["web"])
++    assert len(payload["entries"]) == len(payload["web"])
++
++
++def test_extension_path_generator_listed_once_across_repeated_listings() -> None:
++    """REQ-BEH-T4:C4, REQ-BEH-T4:B5, REQ-BEH-T4:B3: an extension generator is listed once, not per run."""
++    with tempfile.TemporaryDirectory() as temporary_directory:
++        _write_probe_generator(Path(temporary_directory), "f2p_probe_misc", "F2PProbeMisc", "Misc")
++        payload = _run_probe(
++            _PREAMBLE
++            + _LISTING_HELPERS
++            + r'''
++parse_listing(run_listing())
++_second = parse_listing(run_listing())
++_summary = listing_summary(_second)
++print(json.dumps({
++    "headers": _summary["headers"],
++    "misc_names": _summary["sections"].get("Misc", []),
++    "invalid": _summary["invalid"],
++    "duplicates": _summary["duplicates"],
++    "missing": _summary["missing"],
++    "extra": _summary["extra"],
++    "entry_count": _summary["entry_count"],
++    "class_count": _summary["class_count"],
++}))
++''',
++            {"BOXES_GENERATOR_PATH": temporary_directory},
++        )
++    assert payload["invalid"] == []
++    assert payload["misc_names"].count("F2PProbeMisc") == 1
++    assert payload["duplicates"] == []
++    assert payload["missing"] == []
++    assert payload["extra"] == []
++    assert payload["class_count"] > 100
++    assert payload["entry_count"] == payload["class_count"]
++
++
++def test_extension_path_generator_exposed_once_by_repeated_webserver_construction() -> None:
++    """REQ-BEH-T4:C4, REQ-BEH-T4:B5, REQ-BEH-T4:B3: extension web generators stay single in server views."""
++    with tempfile.TemporaryDirectory() as temporary_directory:
++        _write_probe_generator(
++            Path(temporary_directory), "f2p_probe_web", "F2PProbeWeb", "Misc", webinterface=True
++        )
++        payload = _run_probe(
++            _PREAMBLE
++            + _SERVER_HELPERS
++            + r'''
++_first = BServer()
++_second = BServer()
++_payload = server_group_payload(_second)
++_web = web_generator_names()
++print(json.dumps({
++    "web": _web,
++    "members": _payload["members"],
++    "duplicates": _payload["duplicates"],
++    "box_names": _payload["box_names"],
++}))
++''',
++            {"BOXES_GENERATOR_PATH": temporary_directory},
++        )
++    assert "F2PProbeWeb" in payload["web"]
++    assert payload["members"].count("F2PProbeWeb") == 1
++    assert payload["duplicates"] == []
++    assert set(payload["members"]) == set(payload["web"])
++    assert payload["box_names"] == payload["web"]
++
++
++def test_unregistered_group_generator_listed_once_in_misc_across_repeated_listings() -> None:
++    """REQ-BEH-T4:B4, REQ-STRUCT-005: the Misc fallback stays single across repeated listings."""
++    with tempfile.TemporaryDirectory() as temporary_directory:
++        _write_probe_generator(
++            Path(temporary_directory), "f2p_probe_fallback", "F2PProbeFallback", "F2PFallbackGroup"
++        )
++        payload = _run_probe(
++            _PREAMBLE
++            + _LISTING_HELPERS
++            + r'''
++parse_listing(run_listing())
++_second = parse_listing(run_listing())
++_summary = listing_summary(_second)
++print(json.dumps({
++    "headers": _summary["headers"],
++    "sections": _summary["sections"],
++    "invalid": _summary["invalid"],
++    "duplicates": _summary["duplicates"],
++}))
++''',
++            {"BOXES_GENERATOR_PATH": temporary_directory},
++        )
++    assert payload["invalid"] == []
++    assert "F2PFallbackGroup" not in payload["headers"]
++    assert payload["sections"].get("Misc", []).count("F2PProbeFallback") == 1
++    placed_in = [
++        title for title, names in payload["sections"].items() if "F2PProbeFallback" in names
++    ]
++    assert placed_in == ["Misc"]
++    assert payload["duplicates"] == []
++
++
++def test_unregistered_group_generator_stays_single_in_repeated_webserver_views() -> None:
++    """REQ-BEH-T4:B4, REQ-BEH-T4:C6, REQ-STRUCT-002: the Misc fallback is idempotent in server views."""
++    with tempfile.TemporaryDirectory() as temporary_directory:
++        _write_probe_generator(
++            Path(temporary_directory),
++            "f2p_probe_fallback_web",
++            "F2PProbeFallbackWeb",
++            "F2PFallbackGroup",
++            webinterface=True,
++        )
++        payload = _run_probe(
++            _PREAMBLE
++            + _SERVER_HELPERS
++            + r'''
++_first = BServer()
++_second = BServer()
++_payload = server_group_payload(_second)
++_web = web_generator_names()
++print(json.dumps({
++    "web": _web,
++    "members": _payload["members"],
++    "duplicates": _payload["duplicates"],
++    "groups": _payload["groups"],
++    "group_names": _payload["group_names"],
++}))
++''',
++            {"BOXES_GENERATOR_PATH": temporary_directory},
++        )
++    assert "F2PProbeFallbackWeb" in payload["web"]
++    assert "F2PFallbackGroup" not in payload["group_names"]
++    assert payload["members"].count("F2PProbeFallbackWeb") == 1
++    assert payload["groups"].get("Misc", []).count("F2PProbeFallbackWeb") == 1
++    assert payload["duplicates"] == []
++    assert set(payload["members"]) == set(payload["web"])
++
++
++def test_box_generator_discovery_does_not_mutate_package_search_path() -> None:
++    """REQ-STRUCT-003, REQ-BEH-T4:C4: getAllBoxGenerators() must not permanently extend __path__."""
++    with tempfile.TemporaryDirectory() as temporary_directory:
++        _write_probe_generator(Path(temporary_directory), "f2p_probe_path", "F2PProbePath", "Misc")
++        payload = _run_probe(
++            _PREAMBLE
++            + r'''
++import boxes.generators as generators
++
++_extra_key = "boxes.generators.f2p_probe_path.F2PProbePath"
++_before = list(generators.__path__)
++_first = generators.getAllBoxGenerators()
++_middle = list(generators.__path__)
++_second = generators.getAllBoxGenerators()
++_after = list(generators.__path__)
++print(json.dumps({
++    "before": _before,
++    "middle": _middle,
++    "after": _after,
++    "added_after_first": [path for path in _middle if path not in _before],
++    "added_after_second": [path for path in _after if path not in _before],
++    "first_count": len(_first),
++    "second_count": len(_second),
++    "extra_present": _extra_key in _second,
++}))
++''',
++            {"BOXES_GENERATOR_PATH": temporary_directory},
++        )
++    assert payload["extra_present"] is True
++    assert payload["first_count"] == payload["second_count"]
++    assert payload["first_count"] > 100
++    assert payload["added_after_first"] == []
++    assert payload["added_after_second"] == []
++    assert payload["middle"] == payload["before"]
++    assert payload["after"] == payload["before"]
++
++
++def test_generator_module_discovery_does_not_mutate_package_search_path() -> None:
++    """REQ-STRUCT-003, REQ-BEH-T4:C2: getAllGeneratorModules() must not permanently extend __path__."""
++    with tempfile.TemporaryDirectory() as temporary_directory:
++        _write_probe_generator(Path(temporary_directory), "f2p_probe_modules", "F2PProbeModules", "Misc")
++        payload = _run_probe(
++            _PREAMBLE
++            + r'''
++import types
++
++import boxes.generators as generators
++
++_before = list(generators.__path__)
++_modules = generators.getAllGeneratorModules()
++_after = list(generators.__path__)
++_bad_type = sorted(
++    key for key, value in _modules.items() if not isinstance(value, types.ModuleType)
++)
++print(json.dumps({
++    "before": _before,
++    "after": _after,
++    "added": [path for path in _after if path not in _before],
++    "module_count": len(_modules),
++    "extra_module_present": "f2p_probe_modules" in _modules,
++    "bad_type": _bad_type,
++}))
++''',
++            {"BOXES_GENERATOR_PATH": temporary_directory},
++        )
++    assert payload["extra_module_present"] is True
++    assert payload["module_count"] > 100
++    assert payload["bad_type"] == []
++    assert payload["added"] == []
++    assert payload["after"] == payload["before"]
+diff --git a/tests/test_p2p_discovery.py b/tests/test_p2p_discovery.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..166302b627c70924b32bdf42177e59de1fc24b7d
+--- /dev/null
++++ b/tests/test_p2p_discovery.py
+@@ -0,0 +1,680 @@
++"""Supplemental pass-to-pass (P2P) regression checks for the generator discovery refactor.
++
++Every assertion in this module already holds on the frozen Baseline checkout.  The
++module freezes the externally observable behaviour of the discovery entry points,
++the UI group registry, the ``--list`` CLI output and the web server catalog and
++checks that none of it shrinks or changes.  Each check runs in a fresh interpreter
++so that module level state of the package under test (discovery paths, UI group
++membership, ...) cannot leak between checks.
++
++The expected values in ``p2p_baseline_manifest.json`` were collected from the
++Baseline checkout before this refactor.
++"""
++from __future__ import annotations
++
++import json
++import os
++import subprocess
++import sys
++import tempfile
++import textwrap
++from pathlib import Path
++
++REPO_ROOT = Path(__file__).resolve().parent.parent
++MANIFEST = json.loads(
++    (Path(__file__).resolve().parent / "p2p_baseline_manifest.json").read_text(encoding="utf-8")
++)
++
++EXPECTED_GENERATOR_KEYS = sorted(MANIFEST["generators"])
++EXPECTED_WEB_NAMES = sorted(
++    {key.rsplit(".", 1)[-1] for key, flags in MANIFEST["generators"].items() if flags[0]}
++)
++EXPECTED_GROUP_NAMES = [group[0] for group in MANIFEST["groups"]]
++
++_PREAMBLE = r'''
++import json
++import re
++from pathlib import Path
++
++import boxes
++
++_REPO_ROOT = Path(__REPO_ROOT__).resolve()
++assert Path(boxes.__file__).resolve().is_relative_to(_REPO_ROOT), (
++    "the repository copy under test must be imported, got %s" % (boxes.__file__,)
++)
++'''
++
++_PROBE_GENERATOR_SOURCE = '''"""Generator module written into a temporary directory by the P2P checks."""
++
++from __future__ import annotations
++
++from boxes import Boxes
++
++
++class {class_name}(Boxes):
++    """P2P probe generator"""
++
++    ui_group = {ui_group!r}
++    webinterface = False
++'''
++
++_LISTING_SCRIPT = r'''
++import contextlib
++import io
++import sys
++
++import boxes.generators as generators
++from boxes.scripts.boxes_main import main
++
++_buffer = io.StringIO()
++_argv = sys.argv
++sys.argv = ["boxes", "--list"]
++try:
++    with contextlib.redirect_stdout(_buffer):
++        main()
++finally:
++    sys.argv = _argv
++
++_lines = _buffer.getvalue().split("\n")
++_ansi = re.compile(r"\x1b\[[0-9;]*m")
++_entry_re = re.compile(r"^ \*  (\S+) +- \x1b\[3m(.*)\x1b\[0m$")
++
++_header_positions = [
++    index for index, line in enumerate(_lines)
++    if "\x1b[4m" in line and not line.startswith(" *  ")
++]
++_entries = []
++_invalid_entries = []
++for _line in _lines:
++    if not _line.startswith(" *  "):
++        continue
++    _match = _entry_re.match(_line)
++    if _match is None or _line != (
++        f" *  {_match.group(1):<15} - \x1b[3m{_match.group(2)}\x1b[0m"
++    ):
++        _invalid_entries.append(_line)
++    else:
++        _entries.append([_match.group(1), _match.group(2)])
++
++_sections = []
++for _position, _next_position in zip(_header_positions, _header_positions[1:] + [len(_lines)]):
++    _section_lines = _lines[_position:_next_position]
++    _names = []
++    for _line in _section_lines[1:]:
++        _match = _entry_re.match(_line)
++        if _match:
++            _names.append(_match.group(1))
++    _description = ""
++    if len(_section_lines) > 2 and not _section_lines[2].startswith(" *  "):
++        _description = _section_lines[2]
++    _sections.append(
++        {"title": _ansi.sub("", _section_lines[0]), "description": _description, "names": _names}
++    )
++
++_all_generators = generators.getAllBoxGenerators()
++_class_names = sorted({value.__name__ for value in _all_generators.values()})
++_docs_by_name = {}
++for _value in _all_generators.values():
++    _docs_by_name.setdefault(_value.__name__, []).append(
++        (_value.__doc__ or "").replace("\n", "").replace("\r", "").strip()
++    )
++_entry_names = [entry[0] for entry in _entries]
++
++listing_payload = {
++    "first_line": _lines[0],
++    "second_line": _lines[1],
++    "headers": [_ansi.sub("", _lines[_position]) for _position in _header_positions],
++    "sections": _sections,
++    "entries": _entries,
++    "invalid_entries": _invalid_entries,
++    "class_names": _class_names,
++    "duplicate_names": sorted({name for name in _entry_names if _entry_names.count(name) > 1}),
++    "unknown_names": sorted(set(_entry_names) - set(_class_names)),
++    "missing_names": sorted(set(_class_names) - set(_entry_names)),
++    "hole_pattern_count": _entry_names.count("HolePattern"),
++    "description_mismatches": sorted(
++        {name for name, description in _entries if description not in _docs_by_name.get(name, [])}
++    ),
++}
++'''
++
++
++def _run_probe(snippet: str, env_extra: dict[str, str] | None = None) -> dict:
++    """Run a snippet in a fresh interpreter against the repository copy of the package."""
++    environment = dict(os.environ)
++    environment.pop("BOXES_GENERATOR_PATH", None)
++    environment["PYTHONPATH"] = os.pathsep.join(
++        part for part in (str(REPO_ROOT), environment.get("PYTHONPATH", "")) if part
++    )
++    environment["PYTHONDONTWRITEBYTECODE"] = "1"
++    if env_extra:
++        environment.update(env_extra)
++    program = textwrap.dedent(snippet).replace("__REPO_ROOT__", repr(str(REPO_ROOT)))
++    completed = subprocess.run(
++        [sys.executable, "-c", program],
++        cwd=str(REPO_ROOT),
++        env=environment,
++        capture_output=True,
++        text=True,
++        timeout=300,
++    )
++    assert completed.returncode == 0, (
++        "probe process failed with exit code %d:\n%s"
++        % (completed.returncode, completed.stderr[-4000:])
++    )
++    lines = [line for line in completed.stdout.splitlines() if line.strip()]
++    assert lines, "probe process produced no output:\n%s" % (completed.stderr[-2000:],)
++    return json.loads(lines[-1])
++
++
++def _listing_payload(env_extra: dict[str, str] | None = None) -> dict:
++    return _run_probe(
++        _PREAMBLE + _LISTING_SCRIPT + "\nprint(json.dumps(listing_payload))\n", env_extra
++    )
++
++
++def _write_probe_generator(directory: Path, module_name: str, class_name: str, ui_group: str) -> None:
++    (directory / (module_name + ".py")).write_text(
++        _PROBE_GENERATOR_SOURCE.format(class_name=class_name, ui_group=ui_group),
++        encoding="utf-8",
++    )
++
++
++def test_entry_point_signatures_accept_no_arguments() -> None:
++    """REQ-BEH-T4:C1, REQ-BEH-T4:C2, REQ-INTEGRITY-001: entry points stay callable without arguments."""
++    payload = _run_probe(
++        _PREAMBLE
++        + r'''
++import inspect
++
++import boxes.generators as generators
++
++
++def _required_parameters(signature):
++    return [
++        parameter.name
++        for parameter in signature.parameters.values()
++        if parameter.kind
++        in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD, parameter.KEYWORD_ONLY)
++        and parameter.default is inspect.Parameter.empty
++    ]
++
++
++_all_box = generators.getAllBoxGenerators()
++_modules = generators.getAllGeneratorModules()
++print(json.dumps({
++    "required_all_box": _required_parameters(inspect.signature(generators.getAllBoxGenerators)),
++    "required_modules": _required_parameters(inspect.signature(generators.getAllGeneratorModules)),
++    "all_box_is_dict": isinstance(_all_box, dict),
++    "modules_is_dict": isinstance(_modules, dict),
++    "all_box_count": len(_all_box),
++    "module_count": len(_modules),
++}))
++'''
++    )
++    assert payload["required_all_box"] == []
++    assert payload["required_modules"] == []
++    assert payload["all_box_is_dict"] is True
++    assert payload["modules_is_dict"] is True
++    assert payload["all_box_count"] == MANIFEST["generator_count"]
++    assert payload["module_count"] >= MANIFEST["module_count"]
++
++
++def test_box_generators_mapping_shape() -> None:
++    """REQ-BEH-T4:C1: mapping is keyed by module.ClassName and holds generator classes."""
++    payload = _run_probe(
++        _PREAMBLE
++        + r'''
++import inspect
++
++import boxes
++import boxes.generators as generators
++
++_all_box = generators.getAllBoxGenerators()
++_not_a_class = []
++_name_suffix_mismatch = []
++_key_pattern_mismatch = []
++for _key, _value in _all_box.items():
++    if not (inspect.isclass(_value) and issubclass(_value, boxes.Boxes)):
++        _not_a_class.append(_key)
++    if _key.rsplit(".", 1)[-1] != getattr(_value, "__name__", None):
++        _name_suffix_mismatch.append(_key)
++    if not re.match(r"^boxes\.generators(\.[A-Za-z_][A-Za-z0-9_]*)+\.\w+$", _key):
++        _key_pattern_mismatch.append(_key)
++print(json.dumps({
++    "count": len(_all_box),
++    "not_a_class": sorted(_not_a_class),
++    "name_suffix_mismatch": sorted(_name_suffix_mismatch),
++    "key_pattern_mismatch": sorted(_key_pattern_mismatch),
++    "sample_present": "boxes.generators.abox.ABox" in _all_box,
++}))
++'''
++    )
++    assert payload["count"] == MANIFEST["generator_count"]
++    assert payload["not_a_class"] == []
++    assert payload["name_suffix_mismatch"] == []
++    assert payload["key_pattern_mismatch"] == []
++    assert payload["sample_present"] is True
++
++
++def test_box_generators_repeat_calls_identical_key_sets() -> None:
++    """REQ-BEH-T4:B1: repeated discovery returns identical, complete key sets."""
++    payload = _run_probe(
++        _PREAMBLE
++        + r'''
++import boxes.generators as generators
++
++_first = generators.getAllBoxGenerators()
++_second = generators.getAllBoxGenerators()
++generators.getAllGeneratorModules()
++_third = generators.getAllBoxGenerators()
++print(json.dumps({
++    "keys": sorted(_first),
++    "counts": [len(_first), len(_second), len(_third)],
++    "first_equals_second": set(_first) == set(_second),
++    "first_equals_third": set(_first) == set(_third),
++    "missing_from_second": sorted(set(_first) - set(_second)),
++    "extra_in_second": sorted(set(_second) - set(_first)),
++    "missing_from_third": sorted(set(_first) - set(_third)),
++}))
++'''
++    )
++    assert payload["keys"] == EXPECTED_GENERATOR_KEYS
++    assert payload["counts"] == [MANIFEST["generator_count"]] * 3
++    assert payload["first_equals_second"] is True
++    assert payload["first_equals_third"] is True
++    assert payload["missing_from_second"] == []
++    assert payload["extra_in_second"] == []
++    assert payload["missing_from_third"] == []
++
++    payload = _run_probe(
++        _PREAMBLE
++        + r'''
++import boxes.generators as generators
++
++first_classes = generators.getAllBoxGenerators()
++first_modules = generators.getAllGeneratorModules()
++module_keys = set(first_modules)
++first_classes.pop("boxes.generators.abox.ABox")
++first_modules.pop("abox")
++print(json.dumps({
++    "class_keys": sorted(generators.getAllBoxGenerators()),
++    "module_keys_unchanged": set(generators.getAllGeneratorModules()) == module_keys,
++}))
++'''
++    )
++    assert payload["class_keys"] == EXPECTED_GENERATOR_KEYS
++    assert payload["module_keys_unchanged"] is True
++
++
++def test_box_generator_manifest_classification_unchanged() -> None:
++    """REQ-INTEGRITY-002: bundled generators and their webinterface/ui_group classification do not change."""
++    payload = _run_probe(
++        _PREAMBLE
++        + r'''
++import boxes.generators as generators
++
++_all_box = generators.getAllBoxGenerators()
++print(json.dumps({
++    "count": len(_all_box),
++    "manifest": {key: [bool(value.webinterface), value.ui_group] for key, value in _all_box.items()},
++}))
++'''
++    )
++    expected = {key: [bool(flags[0]), flags[1]] for key, flags in MANIFEST["generators"].items()}
++    assert payload["count"] == MANIFEST["generator_count"]
++    assert payload["manifest"] == expected
++
++
++def test_generator_modules_mapping() -> None:
++    """REQ-BEH-T4:C2: module short name to imported module object, without shrinking."""
++    payload = _run_probe(
++        _PREAMBLE
++        + r'''
++import types
++
++import boxes.generators as generators
++
++_modules = generators.getAllGeneratorModules()
++_bad_type = []
++_bad_key = []
++for _key, _value in _modules.items():
++    if not isinstance(_value, types.ModuleType):
++        _bad_type.append(_key)
++    if _key != _value.__name__.split(".")[-1]:
++        _bad_key.append(_key)
++print(json.dumps({
++    "count": len(_modules),
++    "keys": sorted(_modules),
++    "bad_type": sorted(_bad_type),
++    "bad_key": sorted(_bad_key),
++}))
++'''
++    )
++    assert payload["bad_type"] == []
++    assert payload["bad_key"] == []
++    assert payload["count"] >= MANIFEST["module_count"]
++    expected_modules = {key.rsplit(".", 1)[0].split(".")[-1] for key in MANIFEST["generators"]}
++    assert expected_modules <= set(payload["keys"])
++
++
++def test_ui_groups_definitions_and_registry_unchanged() -> None:
++    """REQ-BEH-T4:C3, REQ-STRUCT-005: ui_groups and ui_groups_by_name keep their definitions and order."""
++    payload = _run_probe(
++        _PREAMBLE
++        + r'''
++import boxes.generators as generators
++
++_groups = generators.ui_groups
++_by_name = generators.ui_groups_by_name
++print(json.dumps({
++    "count": len(_groups),
++    "definitions": [[g.name, g.title, g.description, g.image, g.thumbnail] for g in _groups],
++    "by_name_keys": sorted(_by_name),
++    "identity": all(_by_name.get(g.name) is g for g in _groups),
++    "generators_is_list": all(isinstance(g.generators, list) for g in _groups),
++}))
++'''
++    )
++    assert payload["count"] == len(MANIFEST["groups"])
++    assert payload["definitions"] == MANIFEST["groups"]
++    assert payload["by_name_keys"] == sorted(EXPECTED_GROUP_NAMES)
++    assert payload["identity"] is True
++    assert payload["generators_is_list"] is True
++
++
++def test_ui_group_attributes_and_properties() -> None:
++    """REQ-BEH-T4:C3: UIGroup keeps name/title/description/image, its generators collection and properties."""
++    payload = _run_probe(
++        _PREAMBLE
++        + r'''
++import boxes.generators as generators
++
++_group_type = generators.UIGroup
++_probe = _group_type(
++    "P2PProbeGroup", "P2P Probe Title", description="probe description", image="ProbeImage"
++)
++_default_title = _group_type("P2PProbeGroupDefault")
++_without_image = _group_type("P2PProbeGroupNoImage", image="")
++print(json.dumps({
++    "name": _probe.name,
++    "title": _probe.title,
++    "description": _probe.description,
++    "image": _probe.image,
++    "thumbnail": _probe.thumbnail,
++    "generators": _probe.generators,
++    "default_title": _default_title.title,
++    "default_description": _default_title.description,
++    "empty_image": _without_image.image,
++    "empty_thumbnail": _without_image.thumbnail,
++}))
++'''
++    )
++    assert payload["name"] == "P2PProbeGroup"
++    assert payload["title"] == "P2P Probe Title"
++    assert payload["description"] == "probe description"
++    assert payload["image"] == "ProbeImage.jpg"
++    assert payload["thumbnail"] == "ProbeImage-thumb.jpg"
++    assert payload["generators"] == []
++    assert payload["default_title"] == "P2PProbeGroupDefault"
++    assert payload["default_description"] == ""
++    assert payload["empty_image"] == ""
++    assert payload["empty_thumbnail"] == ""
++
++
++def test_cli_listing_header_and_group_sections() -> None:
++    """REQ-BEH-T4:C5, REQ-BEH-T4:B2, REQ-STRUCT-005: listing header, group order and descriptions."""
++    payload = _listing_payload()
++    assert payload["first_line"] == "Available generators:"
++    assert payload["second_line"] == ""
++    assert payload["headers"] == [group[1] for group in MANIFEST["groups"]]
++    assert len(payload["sections"]) == len(MANIFEST["groups"])
++    for section, group in zip(payload["sections"], MANIFEST["groups"]):
++        assert section["title"] == group[1]
++        assert section["description"] == group[2]
++        assert section["names"], "group %s must not be empty in the listing" % (group[0],)
++
++
++def test_cli_listing_entry_format_and_names() -> None:
++    """REQ-BEH-T4:C5, REQ-BEH-T4:B2: entry formatting and one listing entry per generator name."""
++    payload = _listing_payload()
++    assert payload["invalid_entries"] == []
++    assert payload["duplicate_names"] == []
++    assert payload["unknown_names"] == []
++    assert payload["missing_names"] == []
++    assert payload["description_mismatches"] == []
++    assert payload["hole_pattern_count"] == 1
++
++
++def test_cli_listing_sorted_within_groups() -> None:
++    """REQ-BEH-T4:B7: generators within a group stay sorted by name."""
++    payload = _listing_payload()
++    assert payload["sections"]
++    for section in payload["sections"]:
++        assert section["names"] == sorted(section["names"]), section["title"]
++
++
++def test_cli_listing_unknown_group_falls_back_to_misc() -> None:
++    """REQ-BEH-T4:B4: a generator with an unregistered ui_group is listed in Misc."""
++    with tempfile.TemporaryDirectory() as temporary_directory:
++        _write_probe_generator(
++            Path(temporary_directory), "p2p_probe_generator", "P2PProbeGenerator", "P2PUnregisteredGroup"
++        )
++        payload = _listing_payload({"BOXES_GENERATOR_PATH": temporary_directory})
++
++    sections = {section["title"]: section for section in payload["sections"]}
++    assert "P2PUnregisteredGroup" not in payload["headers"]
++    assert sections["Misc"]["names"].count("P2PProbeGenerator") == 1
++    for title, section in sections.items():
++        if title != "Misc":
++            assert "P2PProbeGenerator" not in section["names"], title
++    assert "BeeQueenCage" in sections["Misc"]["names"]
++    assert "BeeQueenTransportBox" in sections["Misc"]["names"]
++
++
++def test_webserver_exposes_webinterface_subset() -> None:
++    """REQ-BEH-T4:C6, REQ-BEH-T4:B3: the web server object keeps its catalog views and filters by webinterface."""
++    payload = _run_probe(
++        _PREAMBLE
++        + r'''
++import boxes.generators as generators
++from boxes.scripts.boxesserver import BServer
++
++_all_box = generators.getAllBoxGenerators()
++_expected = sorted({value.__name__ for value in _all_box.values() if value.webinterface})
++
++_server = BServer()
++print(json.dumps({
++    "box_count": len(_server.boxes),
++    "names": sorted(_server.boxes),
++    "expected_names": _expected,
++    "only_webinterface": all(bool(value.webinterface) for value in _server.boxes.values()),
++    "group_names": [group.name for group in _server.groups],
++    "group_names_by_name": sorted(_server.groups_by_name),
++    "group_members": [
++        [group.name, [box.__name__ for box in group.generators]] for group in _server.groups
++    ],
++}))
++'''
++    )
++    assert payload["only_webinterface"] is True
++    assert payload["names"] == EXPECTED_WEB_NAMES
++    assert payload["box_count"] == len(EXPECTED_WEB_NAMES)
++    assert payload["group_names"] == EXPECTED_GROUP_NAMES
++    assert payload["group_names_by_name"] == sorted(EXPECTED_GROUP_NAMES)
++    members = [name for _, names in payload["group_members"] for name in names]
++    assert set(members) == set(EXPECTED_WEB_NAMES)
++    for group_name, names in payload["group_members"]:
++        assert names == sorted(names), group_name
++
++
++def test_webserver_gallery_renders_entry_per_generator() -> None:
++    """REQ-BEH-T4:C6: the web server gallery has an entry for every web generator."""
++    payload = _run_probe(
++        _PREAMBLE
++        + r'''
++import boxes.generators as generators
++from boxes.scripts.boxesserver import BServer
++
++_all_box = generators.getAllBoxGenerators()
++_expected = sorted({value.__name__ for value in _all_box.values() if value.webinterface})
++
++_server = BServer()
++_captured = {}
++
++
++def _start_response(status, headers):
++    _captured["status"] = status
++
++
++_environ = {
++    "PATH_INFO": "/",
++    "QUERY_STRING": "",
++    "HTTP_ACCEPT_LANGUAGE": "en",
++    "REQUEST_METHOD": "GET",
++    "SCRIPT_NAME": "",
++    "SERVER_NAME": "localhost",
++    "HTTP_HOST": "localhost",
++}
++_parts = _server.serve(dict(_environ), _start_response)
++_html = b"".join(_parts).decode("utf-8")
++_entries = re.findall(r'id="search_id_([^"]+)"', _html)
++print(json.dumps({
++    "status": _captured.get("status"),
++    "expected": _expected,
++    "entries": sorted(set(_entries)),
++    "entry_count": len(_entries),
++}))
++'''
++    )
++    assert payload["status"] == "200 OK"
++    assert payload["entries"] == EXPECTED_WEB_NAMES
++    assert payload["entry_count"] >= len(EXPECTED_WEB_NAMES)
++
++
++def test_views_consistent_within_process() -> None:
++    """REQ-STRUCT-001, REQ-STRUCT-004: listing, discovery and web server views agree in one process."""
++    payload = _run_probe(
++        _PREAMBLE
++        + _LISTING_SCRIPT
++        + r'''
++import boxes.generators as generators
++from boxes.scripts.boxesserver import BServer
++
++_all_box = generators.getAllBoxGenerators()
++_class_names = sorted({value.__name__ for value in _all_box.values()})
++_web_names = sorted({value.__name__ for value in _all_box.values() if value.webinterface})
++_server = BServer()
++print(json.dumps({
++    "listing": listing_payload,
++    "class_names": _class_names,
++    "web_names": _web_names,
++    "server_names": sorted(_server.boxes),
++    "server_only_webinterface": all(bool(value.webinterface) for value in _server.boxes.values()),
++}))
++'''
++    )
++    listing_names = sorted(name for name, _ in payload["listing"]["entries"])
++    assert listing_names == payload["class_names"]
++    assert payload["server_names"] == payload["web_names"]
++    assert set(payload["web_names"]) <= set(listing_names)
++    assert payload["server_only_webinterface"] is True
++
++
++def test_env_path_discovers_extra_generator() -> None:
++    """REQ-BEH-T4:C4, REQ-BEH-T4:B5: BOXES_GENERATOR_PATH directories are discovered like bundled ones."""
++    with tempfile.TemporaryDirectory() as temporary_directory:
++        _write_probe_generator(
++            Path(temporary_directory), "p2p_probe_generator", "P2PProbeGenerator", "P2PUnregisteredGroup"
++        )
++        directory = Path(temporary_directory)
++        (directory / "zzz_p2p_helper.py").write_text("VALUE = 42\n", encoding="utf-8")
++        probe = directory / "p2p_probe_generator.py"
++        probe.write_text(probe.read_text(encoding="utf-8") + "\nfrom .zzz_p2p_helper import VALUE\nP2PProbeGenerator.marker = VALUE\n", encoding="utf-8")
++        payload = _run_probe(
++            _PREAMBLE
++            + r'''
++import boxes.generators as generators
++
++_all_box = generators.getAllBoxGenerators()
++_modules = generators.getAllGeneratorModules()
++_extra_key = "boxes.generators.p2p_probe_generator.P2PProbeGenerator"
++print(json.dumps({
++    "count": len(_all_box),
++    "keys": sorted(_all_box),
++    "extra_present": _extra_key in _all_box,
++    "extra_module_present": "p2p_probe_generator" in _modules,
++    "helper_imported": _all_box[_extra_key].marker == 42,
++}))
++''',
++            {"BOXES_GENERATOR_PATH": temporary_directory},
++        )
++    assert payload["extra_present"] is True
++    assert payload["extra_module_present"] is True
++    assert payload["helper_imported"] is True
++    assert payload["count"] == MANIFEST["generator_count"] + 1
++    assert set(EXPECTED_GENERATOR_KEYS) <= set(payload["keys"])
++
++
++def test_env_path_colon_separated_multiple_directories() -> None:
++    """REQ-BEH-T4:C4, REQ-INTEGRITY-004: the extension path stays colon separated."""
++    with tempfile.TemporaryDirectory() as temporary_directory:
++        first = Path(temporary_directory) / "first"
++        second = Path(temporary_directory) / "second"
++        first.mkdir()
++        second.mkdir()
++        _write_probe_generator(first, "p2p_probe_alpha", "P2PProbeAlpha", "P2PUnregisteredGroup")
++        _write_probe_generator(second, "p2p_probe_beta", "P2PProbeBeta", "Misc")
++        payload = _run_probe(
++            _PREAMBLE
++            + r'''
++import boxes.generators as generators
++
++_all_box = generators.getAllBoxGenerators()
++print(json.dumps({
++    "count": len(_all_box),
++    "keys": sorted(_all_box),
++    "alpha_present": "boxes.generators.p2p_probe_alpha.P2PProbeAlpha" in _all_box,
++    "beta_present": "boxes.generators.p2p_probe_beta.P2PProbeBeta" in _all_box,
++}))
++''',
++            {"BOXES_GENERATOR_PATH": os.pathsep.join([str(first), str(second)])},
++        )
++    assert payload["alpha_present"] is True
++    assert payload["beta_present"] is True
++    assert payload["count"] == MANIFEST["generator_count"] + 2
++    assert set(EXPECTED_GENERATOR_KEYS) <= set(payload["keys"])
++
++
++def test_env_path_reachability_across_calls() -> None:
++    """REQ-BEH-T4:B6: generators found through BOXES_GENERATOR_PATH stay reachable in later calls."""
++    with tempfile.TemporaryDirectory() as temporary_directory:
++        _write_probe_generator(
++            Path(temporary_directory), "p2p_probe_generator", "P2PProbeGenerator", "P2PUnregisteredGroup"
++        )
++        payload = _run_probe(
++            _PREAMBLE
++            + r'''
++import boxes.generators as generators
++
++_extra_key = "boxes.generators.p2p_probe_generator.P2PProbeGenerator"
++_first = generators.getAllBoxGenerators()
++_modules = generators.getAllGeneratorModules()
++_second = generators.getAllBoxGenerators()
++print(json.dumps({
++    "first_count": len(_first),
++    "second_count": len(_second),
++    "first_extra": _extra_key in _first,
++    "second_extra": _extra_key in _second,
++    "extra_module_present": "p2p_probe_generator" in _modules,
++    "missing_from_second": sorted(set(_first) - set(_second)),
++}))
++''',
++            {"BOXES_GENERATOR_PATH": temporary_directory},
++        )
++    assert payload["first_extra"] is True
++    assert payload["second_extra"] is True
++    assert payload["extra_module_present"] is True
++    assert payload["first_count"] == MANIFEST["generator_count"] + 1
++    assert payload["second_count"] == payload["first_count"]
++    assert payload["missing_from_second"] == []
+diff --git a/tests/test_catalog_contract.py b/tests/test_catalog_contract.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f7a6e2dece32c71494a4f6378274a7b2f718f394
+--- /dev/null
++++ b/tests/test_catalog_contract.py
+@@ -0,0 +1,363 @@
++"""Task-contract regressions for the independently audited catalog omissions.
++
++Each selector runs a real public consumer in a fresh process. Private catalog
++names and cache container shapes are deliberately not prescribed.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import textwrap
++
++REPO_ROOT = Path(__file__).resolve().parent.parent
++MANIFEST = json.loads((Path(__file__).parent / "p2p_baseline_manifest.json").read_text())
++WEB_NAMES = sorted({key.rsplit(".", 1)[1] for key, flags in MANIFEST["generators"].items() if flags[0]})
++
++
++def _probe(program: str) -> dict:
++    environment = dict(os.environ)
++    environment.pop("BOXES_GENERATOR_PATH", None)
++    environment["PYTHONPATH"] = str(REPO_ROOT)
++    environment["PYTHONDONTWRITEBYTECODE"] = "1"
++    prefix = "import json, os, sys\nfrom pathlib import Path\n"
++    prefix += f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
++    prefix += "import boxes.generators as generators\n"
++    prefix += f"assert Path(generators.__file__).resolve().is_relative_to(Path({str(REPO_ROOT)!r}))\n"
++    completed = subprocess.run(
++        [sys.executable, "-B", "-c", prefix + textwrap.dedent(program)],
++        cwd=REPO_ROOT, env=environment, capture_output=True, text=True, timeout=300,
++    )
++    assert completed.returncode == 0, completed.stderr[-4000:]
++    return json.loads(completed.stdout.splitlines()[-1])
++
++
++_SCAN_TRACE = r'''
++import pkgutil
++
++scans = []
++metadata_reads = []
++_walk_code = pkgutil.walk_packages.__code__
++_generator_root = Path(generators.__file__).resolve().parent
++
++
++def _profile(frame, event, argument):
++    if event == "call" and frame.f_code is _walk_code:
++        if frame.f_locals.get("prefix", "").startswith("boxes.generators."):
++            scans.append("walk_packages")
++
++
++def _audit(event, arguments):
++    if event in {"os.listdir", "os.scandir"} and arguments:
++        path = arguments[0]
++        if isinstance(path, (str, bytes, os.PathLike)):
++            if isinstance(path, bytes):
++                path = os.fsdecode(path)
++            if Path(path).resolve().is_relative_to(_generator_root):
++                metadata_reads.append(event)
++
++
++sys.setprofile(_profile)
++sys.addaudithook(_audit)
++'''
++
++_SERVER = r'''
++from boxes.scripts.boxesserver import BServer
++
++
++def group_members(groups=None):
++    source = generators.ui_groups if groups is None else groups
++    return [[group.name, [cls.__module__ + "." + cls.__name__ for cls in group.generators]]
++            for group in source]
++
++
++def gallery(server):
++    captured = {}
++
++    def start_response(status, headers):
++        captured["status"] = status
++
++    environ = {"PATH_INFO": "/", "QUERY_STRING": "", "HTTP_ACCEPT_LANGUAGE": "en",
++               "REQUEST_METHOD": "GET", "SCRIPT_NAME": "", "SERVER_NAME": "localhost",
++               "HTTP_HOST": "localhost"}
++    html = b"".join(server.serve(environ, start_response)).decode("utf-8")
++    return captured.get("status"), html
++'''
++
++
++def test_cached_discovery_views_share_scan() -> None:
++    """F-CATALOG: module/full views reuse the warmed class discovery source."""
++    result = _probe(_SCAN_TRACE + r'''
++first = generators.getAllBoxGenerators()
++before = len(scans)
++modules = generators.getAllGeneratorModules()
++second = generators.getAllBoxGenerators()
++again = generators.getAllGeneratorModules()
++print(json.dumps({"new_scans": scans[before:], "keys_equal": set(first) == set(second),
++                  "modules_equal": set(modules) == set(again), "count": len(second)}))
++''')
++    assert result["new_scans"] == []
++    assert result["keys_equal"] and result["modules_equal"]
++    assert result["count"] == MANIFEST["generator_count"]
++
++
++def test_cli_listing_uses_warmed_catalog() -> None:
++    """F-CATALOG: real CLI listing cannot independently rescan discovery."""
++    result = _probe(_SCAN_TRACE + r'''
++import contextlib, io
++from boxes.scripts.boxes_main import print_grouped_generators
++generators.getAllBoxGenerators()
++before = len(scans)
++buffer = io.StringIO()
++with contextlib.redirect_stdout(buffer):
++    print_grouped_generators()
++print(json.dumps({"new_scans": scans[before:], "output": buffer.getvalue()}))
++''')
++    assert result["new_scans"] == []
++    assert result["output"].startswith("Available generators:")
++
++
++def test_generator_snapshot_uses_warmed_catalog() -> None:
++    """F-CATALOG: importing the snapshot consumes warmed catalog discovery."""
++    result = _probe(_SCAN_TRACE + r'''
++generators.getAllBoxGenerators()
++before = len(scans)
++from boxes.scripts.boxes_generator import GENERATORS
++names = sorted(GENERATORS)
++print(json.dumps({"new_scans": scans[before:], "names": names}))
++''')
++    assert result["new_scans"] == []
++    assert result["names"] == WEB_NAMES
++
++
++def test_server_construction_uses_warmed_catalog() -> None:
++    """F-CATALOG: server construction uses the already discovered Web view."""
++    result = _probe(_SERVER + _SCAN_TRACE + r'''
++generators.getAllBoxGenerators()
++before = len(scans)
++server = BServer()
++print(json.dumps({"new_scans": scans[before:], "names": sorted(server.boxes)}))
++''')
++    assert result["new_scans"] == []
++    assert result["names"] == WEB_NAMES
++
++
++def test_gallery_uses_warmed_catalog() -> None:
++    """F-CATALOG: both cold and repeated gallery requests avoid discovery scans."""
++    result = _probe(_SERVER + _SCAN_TRACE + r'''
++import re
++server = BServer()
++generators.getAllBoxGenerators()
++before = len(scans)
++first_status, first = gallery(server)
++second_status, second = gallery(server)
++print(json.dumps({"new_scans": scans[before:], "statuses": [first_status, second_status],
++                  "first": sorted(re.findall(r'id="search_id_([^"]+)"', first)),
++                  "second": sorted(re.findall(r'id="search_id_([^"]+)"', second))}))
++''')
++    assert result["new_scans"] == []
++    assert result["statuses"] == ["200 OK", "200 OK"]
++    assert result["first"] == WEB_NAMES
++    assert result["second"] == WEB_NAMES
++
++
++_EXTENSIONS = r'''
++import importlib, tempfile
++
++
++def extension(directory, module_name, class_name):
++    (directory / (module_name + ".py")).write_text(
++        "import boxes\nclass " + class_name + "(boxes.Boxes):\n"
++        "    webinterface = True\n    ui_group = 'Misc'\n")
++'''
++
++
++def test_module_discovery_reads_all_extension_directories() -> None:
++    """F-EXT-MODULE-PATH: independently verify both module paths and objects."""
++    result = _probe(_EXTENSIONS + r'''
++import types
++bundled = set(generators.getAllGeneratorModules())
++with tempfile.TemporaryDirectory() as temporary:
++    first, second = Path(temporary) / "first", Path(temporary) / "second"
++    first.mkdir(); second.mkdir()
++    extension(first, "audit_alpha", "AuditAlpha")
++    extension(second, "audit_beta", "AuditBeta")
++    os.environ["BOXES_GENERATOR_PATH"] = str(first) + ":" + str(second)
++    importlib.invalidate_caches()
++    modules = generators.getAllGeneratorModules()
++    print(json.dumps({"retained": bundled <= set(modules),
++                      "present": [name in modules for name in ["audit_alpha", "audit_beta"]],
++                      "objects": [isinstance(modules.get(name), types.ModuleType)
++                                  and modules[name].__name__ == "boxes.generators." + name
++                                  for name in ["audit_alpha", "audit_beta"]]}))
++''')
++    assert result["retained"]
++    assert result["present"] == [True, True]
++    assert result["objects"] == [True, True]
++
++
++def test_class_discovery_reaches_extension_added_after_warmup() -> None:
++    """F-LATE-EXTENSION: the class entry itself refreshes after warmup."""
++    result = _probe(_EXTENSIONS + r'''
++bundled = set(generators.getAllBoxGenerators())
++with tempfile.TemporaryDirectory() as temporary:
++    extension(Path(temporary), "audit_late_class", "AuditLateClass")
++    os.environ["BOXES_GENERATOR_PATH"] = temporary
++    importlib.invalidate_caches()
++    second = generators.getAllBoxGenerators()
++    third = generators.getAllBoxGenerators()
++    key = "boxes.generators.audit_late_class.AuditLateClass"
++    cls = second.get(key)
++    print(json.dumps({"retained": bundled <= set(second) and bundled <= set(third),
++                      "counts": [len(second), len(third)],
++                      "present": key in second and third.get(key) is cls,
++                      "class_matches": isinstance(cls, type) and cls.__module__ == "boxes.generators.audit_late_class"
++                                       and cls.__name__ == "AuditLateClass"}))
++''')
++    assert result["retained"] and result["present"] and result["class_matches"]
++    assert result["counts"] == [MANIFEST["generator_count"] + 1] * 2
++
++
++def test_module_discovery_reaches_extension_added_after_warmup() -> None:
++    """F-LATE-EXTENSION: do not let class discovery refresh this module test."""
++    result = _probe(_EXTENSIONS + r'''
++import types
++bundled = set(generators.getAllGeneratorModules())
++with tempfile.TemporaryDirectory() as temporary:
++    extension(Path(temporary), "audit_late_module", "AuditLateModule")
++    os.environ["BOXES_GENERATOR_PATH"] = temporary
++    importlib.invalidate_caches()
++    second = generators.getAllGeneratorModules()
++    third = generators.getAllGeneratorModules()
++    module = second.get("audit_late_module")
++    print(json.dumps({"retained": bundled <= set(second) and bundled <= set(third),
++                      "present": isinstance(module, types.ModuleType)
++                                 and module.__name__ == "boxes.generators.audit_late_module"
++                                 and third.get("audit_late_module") is module}))
++''')
++    assert result["retained"] and result["present"]
++
++
++def test_lookup_queries_do_not_grow_global_groups() -> None:
++    """F-GROUP-QUERY: repeated lookup is checked separately from CLI listing."""
++    result = _probe(_SERVER + r'''
++from boxes.scripts.boxes_main import generators_by_name
++first = generators_by_name()
++before = group_members()
++second = generators_by_name()
++third = generators_by_name()
++print(json.dumps({"before": before, "after": group_members(),
++                  "keys_equal": set(first) == set(second) == set(third),
++                  "hole_pattern": second.get("holepattern").__name__}))
++''')
++    assert result["after"] == result["before"]
++    assert result["keys_equal"] and result["hole_pattern"] == "HolePattern"
++
++
++def test_web_catalog_queries_do_not_grow_global_groups() -> None:
++    """F-GROUP-QUERY: Web view consumers must not append global memberships."""
++    result = _probe(_SERVER + r'''
++first = BServer()
++before = group_members()
++second, third = BServer(), BServer()
++print(json.dumps({"before": before, "after": group_members(),
++                  "names": [sorted(first.boxes), sorted(second.boxes), sorted(third.boxes)]}))
++''')
++    assert result["after"] == result["before"]
++    assert result["names"] == [WEB_NAMES] * 3
++
++
++def test_repeated_gallery_queries_do_not_grow_global_groups() -> None:
++    """F-GROUP-QUERY: enter a repeated request on the same server/language."""
++    result = _probe(_SERVER + r'''
++import re
++server = BServer()
++status, first = gallery(server)
++before = group_members()
++server_before = group_members(server.groups)
++second_status, second = gallery(server)
++third_status, third = gallery(server)
++print(json.dumps({"before": before, "after": group_members(),
++                  "server_before": server_before, "server_after": group_members(server.groups),
++                  "statuses": [status, second_status, third_status],
++                  "names": [sorted(re.findall(r'id="search_id_([^"]+)"', html))
++                            for html in [first, second, third]]}))
++''')
++    assert result["after"] == result["before"]
++    assert result["server_after"] == result["server_before"]
++    assert result["statuses"] == ["200 OK"] * 3
++    assert result["names"] == [WEB_NAMES] * 3
++
++
++def test_bundled_generator_sources_unchanged() -> None:
++    """F-GENERATOR-BODY: protect bundled bodies, excluding catalog __init__.py."""
++    expected = MANIFEST["generator_source_sha256"]
++    assert expected
++    for relative, digest in expected.items():
++        source = REPO_ROOT / relative
++        assert source.is_file(), relative
++        assert hashlib.sha256(source.read_bytes()).hexdigest() == digest, relative
++
++
++def test_web_snapshot_contains_complete_class_mapping() -> None:
++    """F-SNAPSHOT: validate the independent public snapshot without a server."""
++    result = _probe(r'''
++from boxes.scripts.boxes_generator import GENERATORS
++from boxes import Boxes
++all_classes = generators.getAllBoxGenerators()
++print(json.dumps({"names": sorted(GENERATORS),
++                  "valid_classes": all(isinstance(cls, type) and issubclass(cls, Boxes)
++                                       and cls.webinterface and name == cls.__name__
++                                       and all_classes.get(cls.__module__ + "." + cls.__name__) is cls
++                                       for name, cls in GENERATORS.items())}))
++''')
++    assert result["names"] == WEB_NAMES
++    assert result["valid_classes"]
++
++
++def test_server_preserves_four_positional_arguments() -> None:
++    """F-SERVER-API: test the existing positional call, not just its default."""
++    result = _probe(_SERVER + r'''
++server = BServer("/audit-prefix", "audit-static", "/audit/static-root", "https://example.invalid/legal")
++print(json.dumps({"url_prefix": server.url_prefix, "static_url": server.static_url,
++                  "staticdir": server.staticdir, "legal_url": server.legal_url,
++                  "names": sorted(server.boxes), "groups": [group.name for group in server.groups],
++                  "by_name": sorted(server.groups_by_name)}))
++''')
++    assert result["url_prefix"] == "/audit-prefix"
++    assert result["static_url"] == "audit-static"
++    assert result["staticdir"] == "/audit/static-root"
++    assert result["legal_url"] == "https://example.invalid/legal"
++    assert result["names"] == WEB_NAMES
++    assert result["groups"] == [row[0] for row in MANIFEST["groups"]]
++    assert result["by_name"] == sorted(row[0] for row in MANIFEST["groups"])
++
++
++def test_late_extension_reaches_existing_generator_consumer() -> None:
++    """A previously imported consumer uses the current shared web catalog."""
++    result = _probe(r'''
++import importlib, tempfile
++from boxes.scripts import boxes_generator as consumer
++bundled = set(generators.getAllBoxGenerators())
++with tempfile.TemporaryDirectory() as temporary:
++    directory = Path(temporary)
++    (directory / "late_contract_generator.py").write_text(
++        "import boxes\nclass LateContractGenerator(boxes.Boxes):\n"
++        "    webinterface = True\n    ui_group = 'Misc'\n"
++        "    def render(self): self.rectangularWall(13, 17, 'eeee')\n")
++    os.environ["BOXES_GENERATOR_PATH"] = temporary
++    importlib.invalidate_caches()
++    classes = generators.getAllBoxGenerators()
++    key = "boxes.generators.late_contract_generator.LateContractGenerator"
++    current = classes.get(key)
++    snapshot = consumer.GENERATORS
++    files = consumer.generate({"Boxes": [{"box_type": "LateContractGenerator"}]}, str(directory / "rendered"))
++    print(json.dumps({"retained": bundled <= set(classes), "count": len(classes),
++                      "snapshot_matches": current is not None and snapshot.get("LateContractGenerator") is current,
++                      "rendered": bool(files) and all(Path(f).is_file() and Path(f).stat().st_size > 0 for f in files)}))
++''')
++    assert result["retained"] and result["count"] == MANIFEST["generator_count"] + 1
++    assert result["snapshot_matches"] and result["rendered"]

@@ -1,0 +1,5430 @@
+diff --git a/__tests__/f2p/cache-context-restore-f2p.test.mjs b/__tests__/f2p/cache-context-restore-f2p.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4319cefd1a8b5c54d61594031b57e9ff1ec4427
+--- /dev/null
++++ b/__tests__/f2p/cache-context-restore-f2p.test.mjs
+@@ -0,0 +1,106 @@
++// F2P structural nodes for the restore consumer of the consolidated cache
++// context.
++//
++// The consolidation must not change what restore observes, so these nodes do
++// not re-assert the frozen behaviour (the P2P nodes own that). They assert
++// *who performs each responsibility* on the restore path: package manager
++// resolution, cache folder discovery, dependency-file hashing and the
++// cross-step cache state have to be delegated to one shared module that the
++// save flow consumes as well.
++import assert from 'node:assert/strict';
++
++import {test} from './harness.mjs';
++import {RESTORE_ENTRY, formatChains, intersection} from './ownership.mjs';
++import {
++  captureRestoreDiscovery,
++  captureRestoreEmptyHash,
++  captureRestoreHash,
++  captureRestoreKeyWrite,
++  captureRestoreMatchedWrite,
++  captureRestoreMissingDependencyFile,
++  captureRestorePackageManagerRejection
++} from './scenarios.mjs';
++
++test('restore derives the primary key and writes CACHE_KEY through one shared module', async () => {
++  const hash = await captureRestoreHash();
++  const keyWrite = await captureRestoreKeyWrite();
++
++  const shared = intersection(hash.nonEntry, keyWrite.nonEntry);
++  assert.ok(
++    shared.length > 0,
++    `expected the dependency-file hash and the CACHE_KEY write to be delegated to one shared module; observed ${formatChains({hash: hash.nonEntry, cacheKey: keyWrite.nonEntry})}`
++  );
++});
++
++test('restore writes the matched CACHE_RESULT through the same shared module as CACHE_KEY', async () => {
++  const matchedWrite = await captureRestoreMatchedWrite();
++  const keyWrite = await captureRestoreKeyWrite();
++
++  const shared = intersection(matchedWrite.nonEntry, keyWrite.nonEntry);
++  assert.ok(
++    shared.length > 0,
++    `expected the CACHE_RESULT and CACHE_KEY writes to be delegated to one shared module; observed ${formatChains({cacheResult: matchedWrite.nonEntry, cacheKey: keyWrite.nonEntry})}`
++  );
++});
++
++test('restore obtains the discovered cache folder paths through the shared module that writes CACHE_KEY', async () => {
++  const discovery = await captureRestoreDiscovery();
++  const keyWrite = await captureRestoreKeyWrite();
++
++  const shared = intersection(discovery.nonEntry, keyWrite.nonEntry);
++  assert.ok(
++    shared.length > 0,
++    `expected cache folder discovery and the CACHE_KEY write to be delegated to one shared module; observed ${formatChains({discovery: discovery.nonEntry, cacheKey: keyWrite.nonEntry})}`
++  );
++});
++
++test('restore rejects an unknown package manager through the shared module that writes CACHE_KEY', async () => {
++  const rejection = await captureRestorePackageManagerRejection();
++  const keyWrite = await captureRestoreKeyWrite();
++
++  const shared = intersection(rejection.nonEntry, keyWrite.nonEntry);
++  assert.ok(
++    shared.length > 0,
++    `expected package manager resolution and the CACHE_KEY write to be delegated to one shared module; observed ${formatChains({packageManager: rejection.nonEntry, cacheKey: keyWrite.nonEntry})}`
++  );
++});
++
++test('restore reports a missing dependency file through the shared module that derives the primary key', async () => {
++  const missingFile = await captureRestoreMissingDependencyFile();
++  const hash = await captureRestoreHash();
++
++  const shared = intersection(missingFile.nonEntry, hash.nonEntry);
++  assert.ok(
++    shared.length > 0,
++    `expected the dependency-file lookup failure and the dependency-file hash to be delegated to one shared module; observed ${formatChains({missingDependencyFile: missingFile.nonEntry, hash: hash.nonEntry})}`
++  );
++});
++
++test('restore raises the empty dependency hash error through the shared module that derives the primary key', async () => {
++  const emptyHash = await captureRestoreEmptyHash();
++  const hash = await captureRestoreHash();
++
++  const shared = intersection(emptyHash.nonEntry, hash.nonEntry);
++  assert.ok(
++    shared.length > 0,
++    `expected the empty-hash failure and the dependency-file hash to be delegated to one shared module; observed ${formatChains({emptyHash: emptyHash.nonEntry, hash: hash.nonEntry})}`
++  );
++});
++
++test('restore does not write the primary key inside the restore entry module', async () => {
++  const keyWrite = await captureRestoreKeyWrite();
++
++  assert.ok(
++    keyWrite.innermost !== null && keyWrite.innermost !== RESTORE_ENTRY,
++    `expected the CACHE_KEY write to be delegated away from ${RESTORE_ENTRY}; observed innermost=${keyWrite.innermost} chain=[${keyWrite.chain.join(', ')}]`
++  );
++});
++
++test('restore does not hash the dependency file inside the restore entry module', async () => {
++  const hash = await captureRestoreHash();
++
++  assert.ok(
++    hash.innermost !== null && hash.innermost !== RESTORE_ENTRY,
++    `expected the dependency-file hash to be delegated away from ${RESTORE_ENTRY}; observed innermost=${hash.innermost} chain=[${hash.chain.join(', ')}]`
++  );
++});
+diff --git a/__tests__/f2p/cache-context-save-f2p.test.mjs b/__tests__/f2p/cache-context-save-f2p.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..be36197faa387c9904af9d3f2d22bf78198c0245
+--- /dev/null
++++ b/__tests__/f2p/cache-context-save-f2p.test.mjs
+@@ -0,0 +1,78 @@
++// F2P structural nodes for the save (post step) consumer of the consolidated
++// cache context.
++//
++// Save must keep its frozen observable behaviour (the P2P nodes own that) while
++// obtaining its cache folder paths, its on-disk existence information and its
++// cross-step cache state from the same shared module the restore flow uses.
++import assert from 'node:assert/strict';
++
++import {test} from './harness.mjs';
++import {SAVE_ENTRY, formatChains, intersection} from './ownership.mjs';
++import {
++  captureSaveDiscovery,
++  captureSaveExistence,
++  captureSaveKeyRead,
++  captureSaveMatchedRead,
++  captureSavePrimaryStateFailure
++} from './scenarios.mjs';
++
++test('save reads CACHE_KEY and CACHE_RESULT through one shared module', async () => {
++  const keyRead = await captureSaveKeyRead();
++  const matchedRead = await captureSaveMatchedRead();
++
++  const shared = intersection(keyRead.nonEntry, matchedRead.nonEntry);
++  assert.ok(
++    shared.length > 0,
++    `expected the CACHE_KEY and CACHE_RESULT reads to be delegated to one shared module; observed ${formatChains({cacheKey: keyRead.nonEntry, cacheResult: matchedRead.nonEntry})}`
++  );
++
++  for (const matchedStateFails of [false, true]) {
++    const failure = await captureSavePrimaryStateFailure(matchedStateFails);
++    assert.deepEqual(failure.warnings, ['cache identity unavailable'],
++      'save must report the primary-state failure, not a secondary metadata failure');
++    assert.deepEqual(failure.reads, ['CACHE_KEY'],
++      'a failed primary-state prerequisite must not request restore-match metadata');
++    assert.equal(failure.saves, 0);
++    assert.equal(failure.failures, 0, 'state retrieval errors must remain non-fatal');
++  }
++});
++
++test('save reports on-disk folder existence through the shared module that reads CACHE_KEY', async () => {
++  const existence = await captureSaveExistence();
++  const keyRead = await captureSaveKeyRead();
++
++  const shared = intersection(existence.nonEntry, keyRead.nonEntry);
++  assert.ok(
++    shared.length > 0,
++    `expected on-disk existence reporting and the CACHE_KEY read to be delegated to one shared module; observed ${formatChains({existence: existence.nonEntry, cacheKey: keyRead.nonEntry})}`
++  );
++});
++
++test('save obtains the discovered cache folder paths through the shared module that reads CACHE_KEY', async () => {
++  const discovery = await captureSaveDiscovery();
++  const keyRead = await captureSaveKeyRead();
++
++  const shared = intersection(discovery.nonEntry, keyRead.nonEntry);
++  assert.ok(
++    shared.length > 0,
++    `expected cache folder discovery and the CACHE_KEY read to be delegated to one shared module; observed ${formatChains({discovery: discovery.nonEntry, cacheKey: keyRead.nonEntry})}`
++  );
++});
++
++test('save does not read the primary key state inside the save entry module', async () => {
++  const keyRead = await captureSaveKeyRead();
++
++  assert.ok(
++    keyRead.innermost !== null && keyRead.innermost !== SAVE_ENTRY,
++    `expected the CACHE_KEY read to be delegated away from ${SAVE_ENTRY}; observed innermost=${keyRead.innermost} chain=[${keyRead.chain.join(', ')}]`
++  );
++});
++
++test('save does not perform the on-disk existence check inside the save entry module', async () => {
++  const existence = await captureSaveExistence();
++
++  assert.ok(
++    existence.innermost !== null && existence.innermost !== SAVE_ENTRY,
++    `expected on-disk existence reporting to be delegated away from ${SAVE_ENTRY}; observed innermost=${existence.innermost} chain=[${existence.chain.join(', ')}]`
++  );
++});
+diff --git a/__tests__/f2p/cache-context-shared-f2p.test.mjs b/__tests__/f2p/cache-context-shared-f2p.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b855699c2055c90eec7fa5ead2ebf1d051e3d8dd
+--- /dev/null
++++ b/__tests__/f2p/cache-context-shared-f2p.test.mjs
+@@ -0,0 +1,91 @@
++// F2P structural nodes for the cross-consumer obligation of the consolidated
++// cache context.
++//
++// The consolidation is only real when restore and save consume the *same*
++// cohesive context instead of two parallel implementations. These nodes drive
++// both public entry points and require the responsibilities of both flows to
++// be owned by one shared module.
++import assert from 'node:assert/strict';
++
++import {test} from './harness.mjs';
++import {formatChains, intersection} from './ownership.mjs';
++import {
++  captureRestoreDiscovery,
++  captureRestoreHash,
++  captureRestoreKeyWrite,
++  captureRestorePackageManagerRejection,
++  captureSaveDiscovery,
++  captureSaveExistence,
++  captureSaveKeyRead,
++  RESTORED_KEY
++} from './scenarios.mjs';
++
++test('restore and save reach the cross-step cache key through the same shared module', async () => {
++  const saveKeyRead = await captureSaveKeyRead();
++  for (const restoredKey of ['', RESTORED_KEY]) {
++    const restoreHash = await captureRestoreHash(restoredKey);
++    const shared = intersection(restoreHash.nonEntry, saveKeyRead.nonEntry);
++    assert.ok(
++      shared.length > 0,
++      `expected restore primary key derivation and save cache state reading to be owned by one shared module; observed ${formatChains({restoreHash: restoreHash.nonEntry, saveCacheKey: saveKeyRead.nonEntry})}`
++    );
++    // The context owns metadata/state, not action reporting. Preserve the
++    // reports themselves while checking their owner on both a hit and a miss.
++    assert.equal(restoreHash.reporting.filter(item => item.name === 'debug').length, 1,
++      'restore must retain the existing primary-key diagnostic');
++    for (const report of restoreHash.reporting) {
++      assert.ok(report.innermost && !shared.includes(report.innermost),
++        `shared cache metadata/state access must not publish ${report.name} ${JSON.stringify(report.args)}; observed reporter=${report.innermost}, metadata/state owner=[${shared.join(', ')}]`);
++    }
++  }
++});
++
++test('the primary key written by restore and read by save is owned by the same shared module', async () => {
++  const restoreKeyWrite = await captureRestoreKeyWrite();
++  const saveKeyRead = await captureSaveKeyRead();
++
++  const shared = intersection(
++    restoreKeyWrite.nonEntry,
++    saveKeyRead.nonEntry
++  );
++  assert.ok(
++    shared.length > 0,
++    `expected the CACHE_KEY write of restore and the CACHE_KEY read of save to be owned by one shared module; observed ${formatChains({restoreCacheKey: restoreKeyWrite.nonEntry, saveCacheKey: saveKeyRead.nonEntry})}`
++  );
++});
++
++test('restore cache folder discovery and save existence reporting go through the same shared module', async () => {
++  const restoreDiscovery = await captureRestoreDiscovery();
++  const saveExistence = await captureSaveExistence();
++
++  const shared = intersection(
++    restoreDiscovery.nonEntry,
++    saveExistence.nonEntry
++  );
++  assert.ok(
++    shared.length > 0,
++    `expected restore cache folder discovery and save existence reporting to be owned by one shared module; observed ${formatChains({restoreDiscovery: restoreDiscovery.nonEntry, saveExistence: saveExistence.nonEntry})}`
++  );
++});
++
++test('save cache folder discovery and restore primary key derivation go through the same shared module', async () => {
++  const saveDiscovery = await captureSaveDiscovery();
++  const restoreHash = await captureRestoreHash();
++
++  const shared = intersection(saveDiscovery.nonEntry, restoreHash.nonEntry);
++  assert.ok(
++    shared.length > 0,
++    `expected save cache folder discovery and restore primary key derivation to be owned by one shared module; observed ${formatChains({saveDiscovery: saveDiscovery.nonEntry, restoreHash: restoreHash.nonEntry})}`
++  );
++});
++
++test('the package manager rejection module and save cache state read are the same shared module', async () => {
++  const rejection = await captureRestorePackageManagerRejection();
++  const saveKeyRead = await captureSaveKeyRead();
++
++  const shared = intersection(rejection.nonEntry, saveKeyRead.nonEntry);
++  assert.ok(
++    shared.length > 0,
++    `expected package manager resolution and the save cache state read to be owned by one shared module; observed ${formatChains({packageManager: rejection.nonEntry, saveCacheKey: saveKeyRead.nonEntry})}`
++  );
++});
+diff --git a/__tests__/f2p/harness.mjs b/__tests__/f2p/harness.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..72ef1cba54ed668c089205682fe3b606db9975db
+--- /dev/null
++++ b/__tests__/f2p/harness.mjs
+@@ -0,0 +1,250 @@
++// Minimal dependency-free harness for the F2P nodes.
++//
++// It registers exact-leaf nodes, executes them with a per-node timeout and
++// emits a regular JUnit report. Assertions use the Node.js built-in
++// `node:assert/strict` module, so failures are tagged as AssertionError in the
++// report and no third-party test framework is required in the replay image.
++/* global setTimeout, clearTimeout */
++import fs from 'node:fs';
++import path from 'node:path';
++
++const registry = new Map();
++let currentFile = null;
++let ignoreUncaught = false;
++let pendingUncaught = null;
++
++export function setCurrentFile(file) {
++  currentFile = file;
++}
++
++export function test(name, fn) {
++  if (!currentFile) {
++    throw new Error('setCurrentFile() must be called before test()');
++  }
++  if (!registry.has(currentFile)) {
++    registry.set(currentFile, []);
++  }
++  registry.get(currentFile).push({file: currentFile, name, fn});
++}
++
++export function registeredNodes() {
++  return registry;
++}
++
++export function setIgnoreUncaught(value) {
++  ignoreUncaught = value;
++}
++
++export function recordUncaught(error) {
++  if (ignoreUncaught) {
++    return;
++  }
++  pendingUncaught = error;
++}
++
++function describeError(error) {
++  if (error instanceof Error) {
++    return {
++      message: error.message,
++      details: error.stack ?? `${error.name}: ${error.message}`,
++      type: error.name || 'Error'
++    };
++  }
++  const message = typeof error === 'string' ? error : JSON.stringify(error);
++  return {message, details: message, type: 'Error'};
++}
++
++async function withTimeout(promise, timeoutMs, name) {
++  let timer = null;
++  try {
++    return await Promise.race([
++      promise,
++      new Promise((_resolve, reject) => {
++        timer = setTimeout(() => {
++          const error = new Error(`F2P node timed out after ${timeoutMs}ms: ${name}`);
++          error.name = 'HarnessTimeoutError';
++          reject(error);
++        }, timeoutMs);
++      })
++    ]);
++  } finally {
++    if (timer) {
++      clearTimeout(timer);
++    }
++  }
++}
++
++export async function runNode(node, timeoutMs) {
++  const startedAt = Date.now();
++  const result = {
++    file: node.file,
++    name: node.name,
++    status: 'passed',
++    message: '',
++    details: '',
++    type: '',
++    durationMs: 0
++  };
++
++  pendingUncaught = null;
++  try {
++    await withTimeout(
++      Promise.resolve().then(() => node.fn()),
++      timeoutMs,
++      node.name
++    );
++    if (pendingUncaught) {
++      const described = describeError(pendingUncaught);
++      result.status = 'failed';
++      result.message = `uncaught exception: ${described.message}`;
++      result.details = described.details;
++      result.type = described.type;
++    }
++  } catch (error) {
++    const described = describeError(error);
++    result.status = 'failed';
++    result.message = described.message;
++    result.details = described.details;
++    result.type = described.type;
++  } finally {
++    pendingUncaught = null;
++  }
++
++  result.durationMs = Date.now() - startedAt;
++  return result;
++}
++
++export function errorResult(file, name, error) {
++  const described = describeError(error);
++  return {
++    file,
++    name,
++    status: 'failed',
++    message: described.message,
++    details: described.details,
++    type: described.type,
++    durationMs: 0
++  };
++}
++
++function xmlEscape(value) {
++  return String(value)
++    .replace(/&/g, '&amp;')
++    .replace(/</g, '&lt;')
++    .replace(/>/g, '&gt;')
++    .replace(/"/g, '&quot;')
++    .replace(/'/g, '&apos;');
++}
++
++function xmlUnescape(value) {
++  return String(value)
++    .replace(/&lt;/g, '<')
++    .replace(/&gt;/g, '>')
++    .replace(/&quot;/g, '"')
++    .replace(/&apos;/g, "'")
++    .replace(/&amp;/g, '&');
++}
++
++function seconds(milliseconds) {
++  return (milliseconds / 1000).toFixed(3);
++}
++
++function testcaseXml(result) {
++  const attributes = [
++    `classname="${xmlEscape(result.file)}"`,
++    `name="${xmlEscape(result.name)}"`,
++    `file="${xmlEscape(result.file)}"`,
++    `time="${seconds(result.durationMs)}"`
++  ].join(' ');
++
++  if (result.status === 'passed') {
++    return `    <testcase ${attributes}/>`;
++  }
++
++  const failureAttributes = [
++    `message="${xmlEscape(result.message)}"`,
++    `type="${xmlEscape(result.type || 'Error')}"`
++  ].join(' ');
++  const details = xmlEscape(result.details || result.message);
++  return `    <testcase ${attributes}>\n      <failure ${failureAttributes}>${details}</failure>\n    </testcase>`;
++}
++
++export function writeJUnit(reportPath, results, name = 'setup-go-f2p') {
++  const byFile = new Map();
++  for (const result of results) {
++    if (!byFile.has(result.file)) {
++      byFile.set(result.file, []);
++    }
++    byFile.get(result.file).push(result);
++  }
++
++  const failures = results.filter(result => result.status !== 'passed').length;
++  const totalTime = results.reduce((sum, result) => sum + result.durationMs, 0);
++  const lines = [
++    '<?xml version="1.0" encoding="UTF-8"?>',
++    `<testsuites name="${xmlEscape(name)}" tests="${results.length}" failures="${failures}" errors="0" skipped="0" time="${seconds(totalTime)}">`
++  ];
++
++  for (const [file, fileResults] of byFile) {
++    const fileFailures = fileResults.filter(
++      result => result.status !== 'passed'
++    ).length;
++    const fileTime = fileResults.reduce(
++      (sum, result) => sum + result.durationMs,
++      0
++    );
++    lines.push(
++      `  <testsuite name="${xmlEscape(file)}" file="${xmlEscape(file)}" tests="${fileResults.length}" failures="${fileFailures}" errors="0" skipped="0" time="${seconds(fileTime)}">`
++    );
++    for (const result of fileResults) {
++      lines.push(testcaseXml(result));
++    }
++    lines.push('  </testsuite>');
++  }
++
++  lines.push('</testsuites>');
++  fs.mkdirSync(path.dirname(reportPath), {recursive: true});
++  fs.writeFileSync(reportPath, `${lines.join('\n')}\n`, 'utf8');
++}
++
++const TESTCASE = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g;
++const ATTRIBUTE = /([A-Za-z_][\w.-]*)="([^"]*)"/g;
++const FAILURE = /<(failure|error)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/;
++
++function attributes(text) {
++  const values = {};
++  for (const match of String(text).matchAll(ATTRIBUTE)) {
++    values[match[1]] = xmlUnescape(match[2]);
++  }
++  return values;
++}
++
++// Parses a regular JUnit report produced by another runner (the frozen P2P
++// runner) into the same result rows this harness emits, so the aggregate
++// report can carry the frozen P2P and the F2P nodes in one file.
++export function parseJUnit(reportPath) {
++  const text = fs.readFileSync(reportPath, 'utf8');
++  const results = [];
++  for (const match of text.matchAll(TESTCASE)) {
++    const attrs = attributes(match[1]);
++    const body = match[2] ?? '';
++    const failure = FAILURE.exec(body);
++    const result = {
++      file: attrs.file ?? attrs.classname ?? 'unknown',
++      name: attrs.name ?? 'unknown',
++      status: failure ? 'failed' : 'passed',
++      message: '',
++      details: '',
++      type: '',
++      durationMs: Math.round(Number(attrs.time ?? 0) * 1000)
++    };
++    if (failure) {
++      const failureAttributes = attributes(failure[2]);
++      result.message = failureAttributes.message ?? '';
++      result.type = failureAttributes.type ?? 'Error';
++      result.details = xmlUnescape(failure[3] ?? '');
++    }
++    results.push(result);
++  }
++  return results;
++}
+diff --git a/__tests__/f2p/loader-hooks.mjs b/__tests__/f2p/loader-hooks.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..5299bd460186e7ccd53881f6d81ce9b15e19a243
+--- /dev/null
++++ b/__tests__/f2p/loader-hooks.mjs
+@@ -0,0 +1,61 @@
++// Node module customization hooks used by the F2P harness.
++//
++// The F2P nodes execute the production TypeScript sources in a replay image
++// that only ships the Node.js runtime (no node_modules, no network):
++//   1. `@actions/*` packages are redirected to the F2P stubs in ./stubs so the
++//      delegation chain of every cache responsibility can be observed;
++//   2. relative `./x.js` specifiers are redirected to `./x.ts` when only the
++//      TypeScript file exists;
++//   3. type-only imports get a runtime placeholder export so Node's
++//      syntax-only transform can link the modules.
++/* global URL, Buffer */
++import {
++  patchTypeOnlyImports,
++  resolveTypeScriptSpecifier
++} from './typescript-compat.mjs';
++
++const ACTIONS_STUBS = new Map([
++  ['@actions/cache', new URL('./stubs/actions-cache.mjs', import.meta.url).href],
++  ['@actions/core', new URL('./stubs/actions-core.mjs', import.meta.url).href],
++  ['@actions/exec', new URL('./stubs/actions-exec.mjs', import.meta.url).href],
++  ['@actions/glob', new URL('./stubs/actions-glob.mjs', import.meta.url).href],
++  [
++    '@actions/http-client',
++    new URL('./stubs/actions-http-client.mjs', import.meta.url).href
++  ],
++  ['@actions/io', new URL('./stubs/actions-io.mjs', import.meta.url).href],
++  [
++    '@actions/tool-cache',
++    new URL('./stubs/actions-tool-cache.mjs', import.meta.url).href
++  ]
++]);
++
++export async function resolve(specifier, context, nextResolve) {
++  const stub = ACTIONS_STUBS.get(specifier);
++  if (stub) {
++    return {url: stub, shortCircuit: true};
++  }
++
++  const typescript = resolveTypeScriptSpecifier(specifier, context.parentURL);
++  if (typescript) {
++    return {url: typescript, shortCircuit: true};
++  }
++
++  return nextResolve(specifier, context);
++}
++
++export async function load(url, context, nextLoad) {
++  const result = await nextLoad(url, context);
++  if (!url.endsWith('.ts')) {
++    return result;
++  }
++  const source =
++    typeof result.source === 'string'
++      ? result.source
++      : Buffer.from(result.source ?? '').toString('utf8');
++  const patched = patchTypeOnlyImports(source);
++  if (patched === source) {
++    return result;
++  }
++  return {...result, source: patched};
++}
+diff --git a/__tests__/f2p/manifest.mjs b/__tests__/f2p/manifest.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9b51cfcea1322c6936469e2b36065e39e0f7d267
+--- /dev/null
++++ b/__tests__/f2p/manifest.mjs
+@@ -0,0 +1,45 @@
++// Declared F2P files and exact leaf selectors.
++//
++// The runner uses this manifest to import the F2P test files and to reject
++// selections that are not declared here; the plan declaration mirrors it.
++export const TEST_FILES = [
++  {
++    path: '__tests__/f2p/cache-context-restore-f2p.test.mjs',
++    nodes: [
++      'restore derives the primary key and writes CACHE_KEY through one shared module',
++      'restore writes the matched CACHE_RESULT through the same shared module as CACHE_KEY',
++      'restore obtains the discovered cache folder paths through the shared module that writes CACHE_KEY',
++      'restore rejects an unknown package manager through the shared module that writes CACHE_KEY',
++      'restore reports a missing dependency file through the shared module that derives the primary key',
++      'restore raises the empty dependency hash error through the shared module that derives the primary key',
++      'restore does not write the primary key inside the restore entry module',
++      'restore does not hash the dependency file inside the restore entry module'
++    ]
++  },
++  {
++    path: '__tests__/f2p/cache-context-save-f2p.test.mjs',
++    nodes: [
++      'save reads CACHE_KEY and CACHE_RESULT through one shared module',
++      'save reports on-disk folder existence through the shared module that reads CACHE_KEY',
++      'save obtains the discovered cache folder paths through the shared module that reads CACHE_KEY',
++      'save does not read the primary key state inside the save entry module',
++      'save does not perform the on-disk existence check inside the save entry module'
++    ]
++  },
++  {
++    path: '__tests__/f2p/cache-context-shared-f2p.test.mjs',
++    nodes: [
++      'restore and save reach the cross-step cache key through the same shared module',
++      'the primary key written by restore and read by save is owned by the same shared module',
++      'restore cache folder discovery and save existence reporting go through the same shared module',
++      'save cache folder discovery and restore primary key derivation go through the same shared module',
++      'the package manager rejection module and save cache state read are the same shared module'
++    ]
++  }
++];
++
++export const F2P_SELECTORS = TEST_FILES.flatMap(file =>
++  file.nodes.map(leaf => `${file.path}::${leaf}`)
++);
++
++export const FROZEN_P2P_RUNNER = '__tests__/p2p/run-p2p.mjs';
+diff --git a/__tests__/f2p/ownership.mjs b/__tests__/f2p/ownership.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..5b7c209297d3124ccc8a38e11caa1c9cf0fb15df
+--- /dev/null
++++ b/__tests__/f2p/ownership.mjs
+@@ -0,0 +1,94 @@
++// Runtime delegation-chain helpers for the F2P cache-context nodes.
++//
++// The consolidation obligations are structural: one cohesive cache context has
++// to own package manager resolution, cache folder discovery, on-disk existence
++// reporting, primary key derivation and the cross-step cache state, and both
++// consumers have to route those responsibilities through it. The public
++// entry-point behaviour is unchanged by the consolidation, so the F2P nodes
++// observe *who performs each responsibility* by capturing the call stack at
++// the toolkit boundary (the stubs in ./stubs) and reading the production
++// modules out of the delegation chain. No production module name is assumed:
++// the nodes only compare the modules that the recorded chains actually prove.
++/* global process, URL */
++import path from 'node:path';
++import {fileURLToPath} from 'node:url';
++
++const MODULE_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
++
++export const REPO_ROOT = path.resolve(MODULE_DIRECTORY, '..', '..');
++
++export const RESTORE_ENTRY = 'src/cache-restore.ts';
++export const SAVE_ENTRY = 'src/cache-save.ts';
++
++const NON_PRODUCTION_SEGMENTS = [
++  '/__tests__/',
++  '/node_modules/',
++  '/dist/',
++  '/.git/'
++];
++
++const FRAME_LOCATION = /\(?((?:file:\/\/)?\/[^()\s]+?):(\d+):(\d+)\)?\s*$/;
++
++function framePath(line) {
++  const match = FRAME_LOCATION.exec(String(line).trim());
++  if (!match) {
++    return null;
++  }
++  const location = match[1];
++  if (location.startsWith('file://')) {
++    try {
++      return fileURLToPath(location);
++    } catch {
++      return null;
++    }
++  }
++  return location;
++}
++
++function toRepositoryPath(absolutePath) {
++  const relative = path.relative(REPO_ROOT, absolutePath);
++  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
++    return null;
++  }
++  return relative.split(path.sep).join('/');
++}
++
++// Ordered, de-duplicated list of production modules in a captured stack. Test
++// fixtures, stubs, node_modules and build output are ignored so only the
++// modules that own production responsibilities remain.
++export function productionChain(stack) {
++  const chain = [];
++  for (const line of String(stack ?? '').split('\n')) {
++    const absolute = framePath(line);
++    if (!absolute) {
++      continue;
++    }
++    const repositoryPath = toRepositoryPath(absolute);
++    if (!repositoryPath) {
++      continue;
++    }
++    const normalizedPath = `/${repositoryPath}`;
++    if (
++      NON_PRODUCTION_SEGMENTS.some(segment =>
++        normalizedPath.includes(segment)
++      )
++    ) {
++      continue;
++    }
++    if (!chain.includes(repositoryPath)) {
++      chain.push(repositoryPath);
++    }
++  }
++  return chain;
++}
++
++
++export function intersection(left, right) {
++  return left.filter(module => right.includes(module));
++}
++
++export function formatChains(chains) {
++  return Object.entries(chains)
++    .map(([label, chain]) => `${label}=[${chain.join(', ')}]`)
++    .join('; ');
++}
+diff --git a/__tests__/f2p/run-f2p.mjs b/__tests__/f2p/run-f2p.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f9a9a36aab0a75b0bef57ddbda8c86bd7fc6efdb
+--- /dev/null
++++ b/__tests__/f2p/run-f2p.mjs
+@@ -0,0 +1,420 @@
++// Aggregate F2P runner for the cache-context consolidation task.
++//
++// Usage (the pipeline substitutes the placeholders):
++//   node --experimental-transform-types --no-warnings __tests__/f2p/run-f2p.mjs \
++//     --report {report} --select {p2p_select} --config {config}
++//
++// The runner executes the frozen P2P selection through the frozen P2P runner
++// and the F2P nodes through the dependency-free F2P harness in this directory,
++// then writes one regular JUnit report that carries both sets of exact
++// selectors. It only uses the Node.js runtime, files inside this repository and
++// the dependencies already present in the image: no network, no installation.
++/* global process, console, URL */
++import fs from 'node:fs';
++import os from 'node:os';
++import path from 'node:path';
++import {spawnSync} from 'node:child_process';
++import {register} from 'node:module';
++import {fileURLToPath, pathToFileURL} from 'node:url';
++
++import {FROZEN_P2P_RUNNER, TEST_FILES} from './manifest.mjs';
++import {
++  errorResult,
++  parseJUnit,
++  recordUncaught,
++  registeredNodes,
++  runNode,
++  setCurrentFile,
++  writeJUnit
++} from './harness.mjs';
++
++const DEFAULT_NODE_TIMEOUT_MS = 10000;
++const DEFAULT_P2P_TIMEOUT_MS = 240000;
++const PLACEHOLDER = /\{[a-zA-Z0-9_]+\}/;
++
++function parseArguments(argv) {
++  const options = {report: null, select: null, config: null, selector: null};
++  const names = {
++    report: 'report',
++    select: 'select',
++    config: 'config',
++    selector: 'selector'
++  };
++  for (let index = 0; index < argv.length; index += 1) {
++    const argument = argv[index];
++    const withEquals = /^--(report|select|config|selector)=(.*)$/.exec(
++      argument
++    );
++    if (withEquals) {
++      options[names[withEquals[1]]] = withEquals[2];
++      continue;
++    }
++    const name = argument.startsWith('--') ? argument.slice(2) : null;
++    if (name && Object.prototype.hasOwnProperty.call(names, name)) {
++      options[names[name]] = argv[index + 1] ?? null;
++      index += 1;
++    }
++  }
++  return options;
++}
++
++function resolvePath(value, fallback) {
++  if (!value || PLACEHOLDER.test(value)) {
++    return fallback;
++  }
++  return path.isAbsolute(value) ? value : path.resolve(process.cwd(), value);
++}
++
++// Resolves a possibly relative placeholder value against the current working
++// directory first and the repository root second, matching how the frozen
++// runner resolves the materialized plan files.
++function resolveExistingPath(value, repoRoot) {
++  if (!value || PLACEHOLDER.test(value)) {
++    return null;
++  }
++  const candidates = path.isAbsolute(value)
++    ? [value]
++    : [path.resolve(process.cwd(), value), path.resolve(repoRoot, value)];
++  for (const resolved of candidates) {
++    try {
++      if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
++        return resolved;
++      }
++    } catch {
++      // try the next candidate
++    }
++  }
++  return null;
++}
++
++function readTextFile(filePath, repoRoot) {
++  if (!filePath || PLACEHOLDER.test(filePath)) {
++    return null;
++  }
++  const candidates = path.isAbsolute(filePath)
++    ? [filePath]
++    : [path.resolve(process.cwd(), filePath), path.resolve(repoRoot, filePath)];
++  for (const resolved of candidates) {
++    try {
++      if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
++        return fs.readFileSync(resolved, 'utf8');
++      }
++    } catch {
++      // try the next candidate
++    }
++  }
++  return null;
++}
++
++function selectorsFromText(text) {
++  const trimmed = String(text ?? '').trim();
++  if (!trimmed) {
++    return [];
++  }
++  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
++    try {
++      return collectSelectors(JSON.parse(trimmed));
++    } catch {
++      // fall through to line based parsing
++    }
++  }
++  return trimmed
++    .split(/\r?\n/)
++    .map(line => line.trim())
++    .filter(line => line && !line.startsWith('#'))
++    .map(line => line.replace(/\s+#.*$/, '').trim())
++    .filter(line => line.includes('::'));
++}
++
++function collectSelectors(value, rows = []) {
++  if (Array.isArray(value)) {
++    for (const item of value) {
++      collectSelectors(item, rows);
++    }
++    return rows;
++  }
++  if (value && typeof value === 'object') {
++    if (typeof value.selector === 'string' && value.selector.includes('::')) {
++      rows.push(value.selector);
++    }
++    for (const item of Object.values(value)) {
++      collectSelectors(item, rows);
++    }
++  }
++  return rows;
++}
++
++// The frozen P2P runner declares its own supplemental and restored original
++// nodes; anything else has to stay out of its selection so the merged report
++// never gains a spurious "not declared" failure for an F2P selector.
++function frozenDeclaredSelectors(repoRoot) {
++  const declared = new Set();
++  try {
++    const manifestPath = path.join(
++      repoRoot,
++      '__tests__',
++      'p2p',
++      'manifest.mjs'
++    );
++    const text = fs.readFileSync(manifestPath, 'utf8');
++    for (const match of text.matchAll(/path:\s*['\"]([^'\"]+)['\"]/g)) {
++      declared.add(match[1]);
++    }
++    const inventoryPath = path.join(
++      repoRoot,
++      '__tests__',
++      'p2p',
++      'original-inventory.mjs'
++    );
++    const inventory = fs.readFileSync(inventoryPath, 'utf8');
++    for (const match of inventory.matchAll(/path:\s*['\"]([^'\"]+)['\"]/g)) {
++      declared.add(match[1]);
++    }
++  } catch {
++    // without the frozen manifests the selection is passed through unchanged
++    return null;
++  }
++  return declared;
++}
++
++function temporaryDirectory(reportPath) {
++  const candidates = [process.env.TMPDIR, os.tmpdir(), path.dirname(reportPath)];
++  for (const candidate of candidates) {
++    if (!candidate) {
++      continue;
++    }
++    try {
++      fs.accessSync(candidate, fs.constants.W_OK);
++      return candidate;
++    } catch {
++      // try the next candidate
++    }
++  }
++  return path.dirname(reportPath);
++}
++
++function runFrozenP2P(repoRoot, options, reportPath, declared) {
++  const runnerPath = path.join(repoRoot, FROZEN_P2P_RUNNER);
++  if (!fs.existsSync(runnerPath)) {
++    return {
++      results: [],
++      infrastructureError: new Error(
++        `frozen P2P runner is not available: ${FROZEN_P2P_RUNNER}`
++      )
++    };
++  }
++
++  const selectText = readTextFile(options.select, repoRoot);
++  const configText = readTextFile(options.config, repoRoot);
++  let selected = selectText !== null ? selectorsFromText(selectText) : [];
++  if (!selected.length && configText !== null) {
++    selected = selectorsFromText(configText);
++  }
++  if (options.selector) {
++    selected = selected.includes(options.selector) ? [options.selector] : [];
++  }
++  if (declared) {
++    selected = selected.filter(selector =>
++      declared.has(selector.split('::')[0])
++    );
++  }
++
++  const temporary = temporaryDirectory(reportPath);
++  const childReport = path.join(
++    temporary,
++    `setup-go-f2p-p2p-${process.pid}-${Date.now()}.xml`
++  );
++  const args = [
++    '--experimental-transform-types',
++    '--no-warnings',
++    FROZEN_P2P_RUNNER,
++    '--report',
++    childReport
++  ];
++
++  let selectFile = null;
++  if (selected.length) {
++    selectFile = path.join(
++      temporary,
++      `setup-go-f2p-select-${process.pid}-${Date.now()}.txt`
++    );
++    fs.writeFileSync(selectFile, `${selected.join('\n')}\n`, 'utf8');
++    args.push('--select', selectFile);
++  }
++  const resolvedConfig = resolveExistingPath(options.config, repoRoot);
++  if (resolvedConfig) {
++    args.push('--config', resolvedConfig);
++  }
++
++  const completed = spawnSync(process.execPath, args, {
++    cwd: repoRoot,
++    env: {...process.env},
++    encoding: 'utf8',
++    timeout: DEFAULT_P2P_TIMEOUT_MS,
++    maxBuffer: 64 * 1024 * 1024
++  });
++  const log = `${completed.stdout ?? ''}${completed.stderr ?? ''}`.trim();
++  if (log) {
++    console.log(log);
++  }
++
++  if (!fs.existsSync(childReport)) {
++    return {
++      results: [],
++      infrastructureError:
++        completed.error ??
++        new Error(
++          `the frozen P2P runner did not write a report (exit code ${completed.status})`
++        )
++    };
++  }
++
++  let results = parseJUnit(childReport);
++  try {
++    fs.unlinkSync(childReport);
++  } catch {
++    // leaving the temporary report behind is harmless
++  }
++  if (selectFile) {
++    try {
++      fs.unlinkSync(selectFile);
++    } catch {
++      // leaving the temporary selection behind is harmless
++    }
++  }
++  if (options.selector) {
++    results = results.filter(
++      result => `${result.file}::${result.name}` === options.selector
++    );
++  }
++  if (!results.length && !options.selector) {
++    return {
++      results,
++      infrastructureError: new Error(
++        'the frozen P2P runner wrote an empty report'
++      )
++    };
++  }
++  return {results, infrastructureError: null};
++}
++
++async function loadF2PNodes(repoRoot) {
++  register('./loader-hooks.mjs', import.meta.url);
++  const importErrors = new Map();
++  for (const file of TEST_FILES) {
++    setCurrentFile(file.path);
++    try {
++      await import(pathToFileURL(path.join(repoRoot, file.path)).href);
++    } catch (error) {
++      importErrors.set(file.path, error);
++    }
++  }
++  return importErrors;
++}
++
++function expectedF2PNodes(importErrors) {
++  const nodes = [];
++  for (const file of TEST_FILES) {
++    const registered = registeredNodes().get(file.path) ?? [];
++    const byName = new Map(registered.map(node => [node.name, node]));
++    for (const name of file.nodes) {
++      const node = byName.get(name);
++      if (node && !importErrors.has(file.path)) {
++        nodes.push({file: file.path, name, fn: node.fn});
++      } else {
++        nodes.push({
++          file: file.path,
++          name,
++          fn: null,
++          importError:
++            importErrors.get(file.path) ??
++            new Error(`node is not registered by ${file.path}`)
++        });
++      }
++    }
++  }
++  return nodes;
++}
++
++async function main() {
++  const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
++  const repoRoot = path.resolve(scriptDirectory, '..', '..');
++  const options = parseArguments(process.argv.slice(2));
++  const reportPath = resolvePath(
++    options.report,
++    path.join(process.cwd(), 'f2p-report.xml')
++  );
++  const nodeTimeoutMs = Number(
++    process.env.F2P_NODE_TIMEOUT_MS ?? DEFAULT_NODE_TIMEOUT_MS
++  );
++
++  const declared = frozenDeclaredSelectors(repoRoot);
++  const frozenRun = runFrozenP2P(repoRoot, options, reportPath, declared);
++
++  const importErrors = await loadF2PNodes(repoRoot);
++  const nodes = expectedF2PNodes(importErrors).filter(node => {
++    if (!options.selector) {
++      return true;
++    }
++    return `${node.file}::${node.name}` === options.selector;
++  });
++
++  const results = [...frozenRun.results];
++  for (const node of nodes) {
++    if (!node.fn) {
++      results.push(errorResult(node.file, node.name, node.importError));
++      continue;
++    }
++    results.push(await runNode(node, nodeTimeoutMs));
++  }
++
++  if (options.selector && !results.length) {
++    const [file, ...leaf] = options.selector.split('::');
++    results.push(
++      errorResult(
++        file,
++        leaf.join('::') || options.selector,
++        new Error(
++          `selected node is not declared by this runner: ${options.selector}`
++        )
++      )
++    );
++  }
++
++  writeJUnit(reportPath, results);
++
++  const failed = results.filter(result => result.status !== 'passed');
++  const selectionLabel = options.selector
++    ? `selector ${options.selector}`
++    : `all ${results.length} declared node(s)`;
++  console.log(
++    `[f2p] ran ${results.length} node(s) (${selectionLabel}); ${results.length - failed.length} passed, ${failed.length} failed`
++  );
++  for (const result of failed) {
++    console.log(`[f2p] FAIL ${result.file}::${result.name}: ${result.message}`);
++  }
++  console.log(`[f2p] JUnit report written to ${reportPath}`);
++
++  if (frozenRun.infrastructureError) {
++    console.error(
++      `[f2p] frozen P2P engine unavailable: ${frozenRun.infrastructureError.message}`
++    );
++    process.exitCode = 1;
++  }
++}
++
++process.on('uncaughtException', error => {
++  recordUncaught(error);
++});
++process.on('unhandledRejection', error => {
++  recordUncaught(error instanceof Error ? error : new Error(String(error)));
++});
++
++try {
++  await main();
++} catch (error) {
++  console.error(
++    `[f2p] runner failed before writing the report: ${error?.stack ?? error}`
++  );
++  process.exitCode = 1;
++}
+diff --git a/__tests__/f2p/scenarios.mjs b/__tests__/f2p/scenarios.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..798d28f3a32482452047f54c56abe6000eb26585
+--- /dev/null
++++ b/__tests__/f2p/scenarios.mjs
+@@ -0,0 +1,298 @@
++// Reusable public-entry scenarios for the F2P cache-context nodes.
++//
++// Every scenario drives a frozen public entry point (`restoreCache` or the save
++// `run`) with the toolkit stubbed and returns the delegation chain recorded at
++// the responsibility boundary. The chain is what proves which production
++// module actually performed the responsibility; the entry points themselves
++// keep their frozen observable behaviour, so behaviour alone cannot show the
++// consolidation.
++/* global process */
++import assert from 'node:assert/strict';
++import fs from 'node:fs';
++import os from 'node:os';
++import path from 'node:path';
++
++import * as cache from './stubs/actions-cache.mjs';
++import * as core from './stubs/actions-core.mjs';
++import * as exec from './stubs/actions-exec.mjs';
++import * as glob from './stubs/actions-glob.mjs';
++import {
++  RESTORE_ENTRY,
++  SAVE_ENTRY,
++  productionChain
++} from './ownership.mjs';
++
++const {restoreCache} = await import('../../src/cache-restore.js');
++const {run} = await import('../../src/cache-save.js');
++
++export const VERSION_SPEC = '1.13.1';
++export const FILE_HASH = 'file_hash';
++export const DEPENDENCY_FILE = 'go.sum';
++export const RESTORED_KEY = 'setup-go-restored-key';
++export const PRIMARY_KEY =
++  'setup-go-Linux-x64-ubuntu-22.04-go-1.13.1-file_hash';
++export const MATCHED_KEY = 'setup-go-Linux-x64-ubuntu-22.04-go-1.13.0-other_hash';
++
++export function makeDirectory() {
++  return fs.mkdtempSync(path.join(os.tmpdir(), 'setup-go-f2p-'));
++}
++
++function summary(stack, entry) {
++  const chain = productionChain(stack);
++  return {
++    chain,
++    nonEntry: chain.filter(module => module !== entry),
++    innermost: chain[0] ?? null
++  };
++}
++
++function emptySummary() {
++  return {chain: [], nonEntry: [], innermost: null};
++}
++
++function discoverySummary(entry, service, paths) {
++  const calls = exec.__calls('getExecOutput');
++  assert.deepEqual(
++    calls.map(call => call.args[0]).sort(),
++    ['go env GOCACHE', 'go env GOMODCACHE'],
++    'each flow must discover each configured cache folder exactly once'
++  );
++  const serviceCalls = cache.__calls(service);
++  assert.equal(serviceCalls.length, 1);
++  assert.deepEqual(serviceCalls[0].args[0], paths,
++    'the cache service must consume the complete discovered paths');
++  assert.ok(calls.every(call => call.seq < serviceCalls[0].seq));
++
++  // Every discovery boundary must share an owner. A correct first stack must
++  // not hide a second independent discovery implementation.
++  const observations = calls.map(call => summary(call.stack, entry));
++  return {
++    chain: [...new Set(observations.flatMap(item => item.chain))],
++    nonEntry: observations.reduce(
++      (shared, item) => shared.filter(module => item.nonEntry.includes(module)),
++      observations[0].nonEntry
++    ),
++    innermost: observations[0].innermost
++  };
++}
++
++export function resetStubs({
++  hash = FILE_HASH,
++  discovery = ['/gomodcache', '/gocache']
++} = {}) {
++  core.__reset();
++  cache.__reset();
++  exec.__reset();
++  glob.__reset();
++  glob.__setHashFilesImpl(async () => hash);
++  const commands = ['go env GOMODCACHE', 'go env GOCACHE'];
++  exec.__setExecImpl(async commandLine => {
++    const index = commands.indexOf(commandLine);
++    if (index === -1) {
++      return {
++        exitCode: 1,
++        stdout: '',
++        stderr: `unexpected discovery command: ${commandLine}`
++      };
++    }
++    return {exitCode: 0, stdout: `${discovery[index]}\n`, stderr: ''};
++  });
++}
++
++async function withEnvironment(values, fn) {
++  const saved = {};
++  for (const [name, value] of Object.entries(values)) {
++    saved[name] = process.env[name];
++    if (value === undefined) {
++      delete process.env[name];
++    } else {
++      process.env[name] = value;
++    }
++  }
++  try {
++    return await fn();
++  } finally {
++    for (const [name, value] of Object.entries(saved)) {
++      if (value === undefined) {
++        delete process.env[name];
++      } else {
++        process.env[name] = value;
++      }
++    }
++  }
++}
++
++async function captureRejection(fn) {
++  try {
++    await fn();
++  } catch (error) {
++    return error instanceof Error ? error : new Error(String(error));
++  }
++  return null;
++}
++
++// ---- restore consumer -----------------------------------------------------
++
++export async function captureRestoreDiscovery() {
++  resetStubs();
++  await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++  return discoverySummary(RESTORE_ENTRY, 'restoreCache', ['/gomodcache', '/gocache']);
++}
++
++export async function captureRestoreHash(restoredKey = '') {
++  resetStubs();
++  cache.__setRestoreImpl(async () => restoredKey);
++  await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++  const call = glob.__calls('hashFiles').at(-1);
++  const primaryKey = core.__calls('saveState').find(
++    item => item.args[0] === 'CACHE_KEY'
++  )?.args[1];
++  // Identify action reporting at the toolkit boundary, not by any production
++  // class, method, property or module name. Keep the real event and its caller.
++  const reporting = core.__allCalls().filter(item =>
++    item.name === 'debug' && item.args[0] === `primary key is ${primaryKey}`
++  ).map(item => ({
++    name: item.name, args: item.args,
++    ...summary(item.stack, RESTORE_ENTRY)
++  }));
++  return {
++    ...(call ? summary(call.stack, RESTORE_ENTRY) : emptySummary()),
++    reporting
++  };
++}
++
++export async function captureRestoreKeyWrite() {
++  resetStubs();
++  await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++  const call = core
++    .__calls('saveState')
++    .find(entry => entry.args[0] === 'CACHE_KEY');
++  return call ? summary(call.stack, RESTORE_ENTRY) : emptySummary();
++}
++
++export async function captureRestoreMatchedWrite() {
++  resetStubs();
++  cache.__setRestoreImpl(async () => RESTORED_KEY);
++  await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++  const call = core
++    .__calls('saveState')
++    .find(entry => entry.args[0] === 'CACHE_RESULT');
++  return call ? summary(call.stack, RESTORE_ENTRY) : emptySummary();
++}
++
++export async function captureRestorePackageManagerRejection() {
++  resetStubs();
++  const error = await captureRejection(() =>
++    restoreCache(VERSION_SPEC, 'unknown-package-manager', DEPENDENCY_FILE)
++  );
++  return error ? summary(error.stack, RESTORE_ENTRY) : emptySummary();
++}
++
++export async function captureRestoreMissingDependencyFile() {
++  resetStubs();
++  const workspace = makeDirectory();
++  const error = await withEnvironment({GITHUB_WORKSPACE: workspace}, () =>
++    captureRejection(() => restoreCache(VERSION_SPEC, 'default'))
++  );
++  return error ? summary(error.stack, RESTORE_ENTRY) : emptySummary();
++}
++
++export async function captureRestoreEmptyHash() {
++  resetStubs({hash: ''});
++  const error = await captureRejection(() =>
++    restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE)
++  );
++  return error ? summary(error.stack, RESTORE_ENTRY) : emptySummary();
++}
++
++// ---- save consumer --------------------------------------------------------
++
++function prepareSave({discovery}) {
++  resetStubs({discovery});
++  core.__setBooleanInput('cache', true);
++  core.__setState('CACHE_KEY', PRIMARY_KEY);
++  core.__setState('CACHE_RESULT', MATCHED_KEY);
++  cache.__setSaveImpl(async () => 0);
++}
++
++async function runSave() {
++  const originalExit = process.exit;
++  process.exit = () => {};
++  try {
++    await run(false);
++  } finally {
++    process.exit = originalExit;
++  }
++}
++
++export async function captureSaveDiscovery() {
++  const discovery = [makeDirectory(), makeDirectory()];
++  prepareSave({discovery});
++  await runSave();
++  return discoverySummary(SAVE_ENTRY, 'saveCache', discovery);
++}
++
++export async function captureSaveKeyRead() {
++  const discovery = [makeDirectory(), makeDirectory()];
++  prepareSave({discovery});
++  await runSave();
++  const call = core
++    .__calls('getState')
++    .find(entry => entry.args[0] === 'CACHE_KEY');
++  return call ? summary(call.stack, SAVE_ENTRY) : emptySummary();
++}
++
++export async function captureSaveMatchedRead() {
++  const discovery = [makeDirectory(), makeDirectory()];
++  prepareSave({discovery});
++  await runSave();
++  const call = core
++    .__calls('getState')
++    .find(entry => entry.args[0] === 'CACHE_RESULT');
++  return call ? summary(call.stack, SAVE_ENTRY) : emptySummary();
++}
++
++export async function captureSaveExistence() {
++  const discovery = [makeDirectory(), makeDirectory()];
++  prepareSave({discovery});
++  const realExistsSync = fs.existsSync;
++  const observed = [];
++  fs.existsSync = function existsSync(target, ...rest) {
++    observed.push({
++      target: String(target),
++      stack: new Error('f2p:existsSync').stack ?? ''
++    });
++    return realExistsSync.call(this, target, ...rest);
++  };
++  try {
++    await runSave();
++  } finally {
++    fs.existsSync = realExistsSync;
++  }
++  const call = observed.find(entry => discovery.includes(entry.target));
++  return call ? summary(call.stack, SAVE_ENTRY) : emptySummary();
++}
++
++// A primary-state failure is a failed prerequisite, not an invitation to read
++// restore-match metadata. Exercise the real save entry with either one or both
++// state sources unavailable; a secondary error must not mask the primary one.
++export async function captureSavePrimaryStateFailure(matchedStateFails = false) {
++  const discovery = [makeDirectory(), makeDirectory()];
++  prepareSave({discovery});
++  core.__setGetStateImpl(name => {
++    if (name === 'CACHE_KEY') {
++      throw new Error('cache identity unavailable');
++    }
++    if (name === 'CACHE_RESULT' && matchedStateFails) {
++      throw new Error('restore match unavailable');
++    }
++    return MATCHED_KEY;
++  });
++  await runSave();
++  return {
++    reads: core.__calls('getState').map(call => call.args[0]),
++    warnings: core.__messages('warning'),
++    saves: cache.__calls('saveCache').length,
++    failures: core.__calls('setFailed').length
++  };
++}
+diff --git a/__tests__/f2p/stubs/actions-cache.mjs b/__tests__/f2p/stubs/actions-cache.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c980aed81943083e260f15e44d97e5ed5c334de8
+--- /dev/null
++++ b/__tests__/f2p/stubs/actions-cache.mjs
+@@ -0,0 +1,57 @@
++// Dependency-free stand-in for @actions/cache used by the F2P harness. Each
++// recorded call keeps the stack captured inside the stub so the F2P nodes can
++// attribute the cache-service request to its caller.
++import {nextSeq} from './call-log.mjs';
++
++const state = {
++  restoreImpl: async () => '',
++  saveImpl: async () => 0,
++  featureAvailable: true,
++  calls: []
++};
++
++function record(name, args) {
++  state.calls.push({
++    name,
++    args,
++    seq: nextSeq(),
++    stack: new Error(`f2p:${name}`).stack ?? ''
++  });
++}
++
++export function __reset() {
++  state.restoreImpl = async () => '';
++  state.saveImpl = async () => 0;
++  state.featureAvailable = true;
++  state.calls.length = 0;
++}
++
++export function __setRestoreImpl(fn) {
++  state.restoreImpl = fn;
++}
++
++export function __setSaveImpl(fn) {
++  state.saveImpl = fn;
++}
++
++export function __setFeatureAvailable(value) {
++  state.featureAvailable = value;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export async function restoreCache(paths, key) {
++  record('restoreCache', [paths, key]);
++  return await state.restoreImpl(paths, key);
++}
++
++export async function saveCache(paths, key) {
++  record('saveCache', [paths, key]);
++  return await state.saveImpl(paths, key);
++}
++
++export function isFeatureAvailable() {
++  return state.featureAvailable;
++}
+diff --git a/__tests__/f2p/stubs/actions-core.mjs b/__tests__/f2p/stubs/actions-core.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..356e9b01ea95937fd748b0e50386c4c3b34335b8
+--- /dev/null
++++ b/__tests__/f2p/stubs/actions-core.mjs
+@@ -0,0 +1,154 @@
++// Dependency-free stand-in for @actions/core used by the F2P harness.
++//
++// Every recorded call carries the stack captured inside the stub, so the F2P
++// nodes can prove which production module actually performs the responsibility
++// (the immediate caller frame) instead of inferring it from naming.
++import {nextSeq} from './call-log.mjs';
++
++const state = {
++  booleans: new Map(),
++  inputs: new Map(),
++  states: new Map(),
++  calls: [],
++  getStateImpl: null
++};
++
++function record(name, args) {
++  state.calls.push({
++    name,
++    args,
++    seq: nextSeq(),
++    stack: new Error(`f2p:${name}`).stack ?? ''
++  });
++}
++
++export function __reset() {
++  state.booleans.clear();
++  state.inputs.clear();
++  state.states.clear();
++  state.calls.length = 0;
++  state.getStateImpl = null;
++}
++
++export function __setBooleanInput(name, value) {
++  state.booleans.set(name, value);
++}
++
++export function __setInput(name, value) {
++  state.inputs.set(name, value);
++}
++
++export function __setState(name, value) {
++  state.states.set(name, value);
++}
++
++export function __setGetStateImpl(fn) {
++  state.getStateImpl = fn;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export function __allCalls() {
++  return state.calls;
++}
++
++export function __messages(name) {
++  return state.calls
++    .filter(call => call.name === name)
++    .map(call => String(call.args[0]));
++}
++
++export function info(...args) {
++  record('info', args);
++}
++
++export function warning(...args) {
++  record('warning', args);
++}
++
++export function debug(...args) {
++  record('debug', args);
++}
++
++export function error(...args) {
++  record('error', args);
++}
++
++export function notice(...args) {
++  record('notice', args);
++}
++
++export function setFailed(...args) {
++  record('setFailed', args);
++}
++
++export function setOutput(...args) {
++  record('setOutput', args);
++}
++
++export function saveState(...args) {
++  record('saveState', args);
++}
++
++export function exportVariable(...args) {
++  record('exportVariable', args);
++}
++
++export function addPath(...args) {
++  record('addPath', args);
++}
++
++export function setSecret(...args) {
++  record('setSecret', args);
++}
++
++export function startGroup(...args) {
++  record('startGroup', args);
++}
++
++export function endGroup(...args) {
++  record('endGroup', args);
++}
++
++export function getMultilineInput(...args) {
++  record('getMultilineInput', args);
++  return [];
++}
++
++export function getState(name) {
++  record('getState', [name]);
++  return state.getStateImpl ? state.getStateImpl(name) : state.states.get(name) ?? '';
++}
++
++export function getInput(name) {
++  record('getInput', [name]);
++  return state.inputs.get(name) ?? '';
++}
++
++export function getBooleanInput(name) {
++  record('getBooleanInput', [name]);
++  return state.booleans.get(name) ?? false;
++}
++
++export async function group(name, fn) {
++  record('group', [name]);
++  return await fn();
++}
++
++export function isDebug() {
++  return false;
++}
++
++export function toPlatformPath(value) {
++  return value;
++}
++
++export function toWin32Path(value) {
++  return value;
++}
++
++export function toPosixPath(value) {
++  return value;
++}
+diff --git a/__tests__/f2p/stubs/actions-exec.mjs b/__tests__/f2p/stubs/actions-exec.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..20b435de9c0ac02ea8f49e256ad2a093eec0bf33
+--- /dev/null
++++ b/__tests__/f2p/stubs/actions-exec.mjs
+@@ -0,0 +1,42 @@
++// Dependency-free stand-in for @actions/exec used by the F2P harness. The
++// recorded stack is captured inside the stub so the F2P nodes can see which
++// production module routed the discovery command.
++import {nextSeq} from './call-log.mjs';
++
++const state = {
++  impl: async () => ({exitCode: 0, stdout: '', stderr: ''}),
++  calls: []
++};
++
++function record(name, args) {
++  state.calls.push({
++    name,
++    args,
++    seq: nextSeq(),
++    stack: new Error(`f2p:${name}`).stack ?? ''
++  });
++}
++
++export function __reset() {
++  state.impl = async () => ({exitCode: 0, stdout: '', stderr: ''});
++  state.calls.length = 0;
++}
++
++export function __setExecImpl(fn) {
++  state.impl = fn;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export async function getExecOutput(commandLine, args, options) {
++  record('getExecOutput', [commandLine, args, options]);
++  return await state.impl(commandLine, args, options);
++}
++
++export async function exec(commandLine, args, options) {
++  record('exec', [commandLine, args, options]);
++  const result = await state.impl(commandLine, args, options);
++  return result.exitCode ?? 0;
++}
+diff --git a/__tests__/f2p/stubs/actions-glob.mjs b/__tests__/f2p/stubs/actions-glob.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d88a606893986d74ecdb6dbc9a1a1327cfdfe0fa
+--- /dev/null
++++ b/__tests__/f2p/stubs/actions-glob.mjs
+@@ -0,0 +1,43 @@
++// Dependency-free stand-in for @actions/glob used by the F2P harness. The
++// recorded stack is captured inside the stub so the F2P nodes can see which
++// production module derived the dependency-file hash.
++import {nextSeq} from './call-log.mjs';
++
++const state = {
++  hashImpl: async () => '',
++  createImpl: async () => ({glob: async () => []}),
++  calls: []
++};
++
++function record(name, args) {
++  state.calls.push({
++    name,
++    args,
++    seq: nextSeq(),
++    stack: new Error(`f2p:${name}`).stack ?? ''
++  });
++}
++
++export function __reset() {
++  state.hashImpl = async () => '';
++  state.createImpl = async () => ({glob: async () => []});
++  state.calls.length = 0;
++}
++
++export function __setHashFilesImpl(fn) {
++  state.hashImpl = fn;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export async function hashFiles(...patterns) {
++  record('hashFiles', patterns);
++  return await state.hashImpl(...patterns);
++}
++
++export async function create(...patterns) {
++  record('create', patterns);
++  return await state.createImpl(...patterns);
++}
+diff --git a/__tests__/f2p/stubs/actions-http-client.mjs b/__tests__/f2p/stubs/actions-http-client.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a24df0312a9d003e2a1e13bbefe727a75282419d
+--- /dev/null
++++ b/__tests__/f2p/stubs/actions-http-client.mjs
+@@ -0,0 +1,37 @@
++// Dependency-free stand-in for @actions/http-client used by the F2P harness.
++import {nextSeq} from './call-log.mjs';
++
++const state = {calls: []};
++
++function record(name, args) {
++  state.calls.push({name, args, seq: nextSeq()});
++}
++
++export function __reset() {
++  state.calls.length = 0;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export class HttpClient {
++  constructor(userAgent) {
++    record('constructor', [userAgent]);
++  }
++
++  async getJson(url, headers) {
++    record('getJson', [url, headers]);
++    return {result: null, statusCode: 404, headers: {}};
++  }
++
++  async get(url, headers) {
++    record('get', [url, headers]);
++    return {message: {statusCode: 404, headers: {}}};
++  }
++
++  async postJson(url, data, headers) {
++    record('postJson', [url, data, headers]);
++    return {result: null, statusCode: 404, headers: {}};
++  }
++}
+diff --git a/__tests__/f2p/stubs/actions-io.mjs b/__tests__/f2p/stubs/actions-io.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..86c1b9dd2f25a445be01023bbbefa9fae363d702
+--- /dev/null
++++ b/__tests__/f2p/stubs/actions-io.mjs
+@@ -0,0 +1,29 @@
++// Dependency-free stand-in for @actions/io used by the F2P harness.
++import {nextSeq} from './call-log.mjs';
++
++const state = {calls: []};
++
++function record(name, args) {
++  state.calls.push({name, args, seq: nextSeq()});
++}
++
++export function __reset() {
++  state.calls.length = 0;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export async function which(tool) {
++  record('which', [tool]);
++  return '';
++}
++
++export async function mkdirP(dir) {
++  record('mkdirP', [dir]);
++}
++
++export async function cp(source, dest) {
++  record('cp', [source, dest]);
++}
+diff --git a/__tests__/f2p/stubs/actions-tool-cache.mjs b/__tests__/f2p/stubs/actions-tool-cache.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a4db71027e903019159bb67d0de0b2b2d55c6785
+--- /dev/null
++++ b/__tests__/f2p/stubs/actions-tool-cache.mjs
+@@ -0,0 +1,56 @@
++// Dependency-free stand-in for @actions/tool-cache used by the F2P harness.
++import {nextSeq} from './call-log.mjs';
++
++const state = {calls: []};
++
++function record(name, args) {
++  state.calls.push({name, args, seq: nextSeq()});
++}
++
++export function __reset() {
++  state.calls.length = 0;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export async function find(toolName, versionSpec, arch) {
++  record('find', [toolName, versionSpec, arch]);
++  return '';
++}
++
++export async function downloadTool(url, dest) {
++  record('downloadTool', [url, dest]);
++  return '';
++}
++
++export async function extractZip(file, dest) {
++  record('extractZip', [file, dest]);
++  return '';
++}
++
++export async function extractTar(file, dest, flags) {
++  record('extractTar', [file, dest, flags]);
++  return '';
++}
++
++export async function cacheDir(sourceDir, tool, version, arch) {
++  record('cacheDir', [sourceDir, tool, version, arch]);
++  return '';
++}
++
++export async function cacheFile(sourceFile, targetFile, tool, version, arch) {
++  record('cacheFile', [sourceFile, targetFile, tool, version, arch]);
++  return '';
++}
++
++export async function getManifestFromRepo(owner, repo, auth, branch) {
++  record('getManifestFromRepo', [owner, repo, auth, branch]);
++  return [];
++}
++
++export async function findAllVersions(toolName, arch) {
++  record('findAllVersions', [toolName, arch]);
++  return [];
++}
+diff --git a/__tests__/f2p/stubs/call-log.mjs b/__tests__/f2p/stubs/call-log.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..42b43c700c945e5376f1e9eb63169f477fd066bd
+--- /dev/null
++++ b/__tests__/f2p/stubs/call-log.mjs
+@@ -0,0 +1,11 @@
++// Monotonic call sequence shared by the F2P stubs so ordering between
++// responsibilities can be asserted without relying on wall-clock time.
++let sequence = 0;
++
++export function nextSeq() {
++  return ++sequence;
++}
++
++export function resetSeq() {
++  sequence = 0;
++}
+diff --git a/__tests__/f2p/typescript-compat.mjs b/__tests__/f2p/typescript-compat.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f160919c621b372d6a555b5c6aa9be742ad2e54b
+--- /dev/null
++++ b/__tests__/f2p/typescript-compat.mjs
+@@ -0,0 +1,119 @@
++// F2P-local copy of the dependency-free TypeScript module helpers.
++//
++// The replay image ships the Node.js runtime only (no node_modules, no
++// network), so the production TypeScript sources are executed through Node's
++// `--experimental-transform-types` transform. Two rewrites are required:
++//   1. the repository imports its own modules with a `.js` extension while the
++//      files on disk are `.ts`, so relative `./x.js` specifiers are redirected
++//      to `./x.ts` when only the TypeScript file exists;
++//   2. Node's syntax-only transform keeps plain named imports verbatim, so a
++//      module that imports an interface with `import {X}` fails to link. The
++//      load hook appends a runtime placeholder export for every type-only
++//      declaration that has no runtime counterpart, leaving production source
++//      untouched.
++/* global URL, Buffer */
++import {existsSync} from 'node:fs';
++import {fileURLToPath} from 'node:url';
++
++// Returns the `.ts` URL for a relative `./x.js` specifier when the matching
++// JavaScript file does not exist, or null when no rewrite is required.
++export function resolveTypeScriptSpecifier(specifier, parentURL) {
++  const isRelative = specifier.startsWith('./') || specifier.startsWith('../');
++  if (!isRelative || !specifier.endsWith('.js') || !parentURL) {
++    return null;
++  }
++  const javascriptUrl = new URL(specifier, parentURL);
++  const typescriptUrl = new URL(
++    `${specifier.slice(0, -'.js'.length)}.ts`,
++    parentURL
++  );
++  if (
++    existsSync(fileURLToPath(typescriptUrl)) &&
++    !existsSync(fileURLToPath(javascriptUrl))
++  ) {
++    return typescriptUrl.href;
++  }
++  return null;
++}
++
++function collectRuntimeExports(source) {
++  const names = new Set();
++  const declaration = new RegExp(
++    '(?:^|[\\n;])\\s*export\\s+(?:declare\\s+)?(?:async\\s+)?(?:const|let|var|function|class|enum|namespace)\\s+([A-Za-z_$][\\w$]*)',
++    'g'
++  );
++  for (const match of source.matchAll(declaration)) {
++    names.add(match[1]);
++  }
++  const exportList = new RegExp(
++    '(?:^|[\\n;])\\s*export\\s*\\{([^}]*)\\}(?!\\s*from)',
++    'g'
++  );
++  for (const match of source.matchAll(exportList)) {
++    for (const entry of match[1].split(',')) {
++      const specifier = entry.trim();
++      if (!specifier || specifier.startsWith('type ')) {
++        continue;
++      }
++      const alias = /\bas\s+([A-Za-z_$][\w$]*)$/.exec(specifier);
++      names.add(alias ? alias[1] : specifier);
++    }
++  }
++  const exportFrom = new RegExp(
++    '(?:^|[\\n;])\\s*export\\s*\\{([^}]*)\\}\\s*from\\b',
++    'g'
++  );
++  for (const match of source.matchAll(exportFrom)) {
++    for (const entry of match[1].split(',')) {
++      const specifier = entry.trim();
++      if (!specifier || specifier.startsWith('type ')) {
++        continue;
++      }
++      const alias = /\bas\s+([A-Za-z_$][\w$]*)$/.exec(specifier);
++      names.add(alias ? alias[1] : specifier);
++    }
++  }
++  return names;
++}
++
++function collectTypeExports(source) {
++  const names = new Set();
++  const patterns = [
++    /(?:^|[\n;])\s*export\s+(?:declare\s+)?interface\s+([A-Za-z_$][\w$]*)/g,
++    /(?:^|[\n;])\s*export\s+(?:declare\s+)?type\s+([A-Za-z_$][\w$]*)\s*[=<]/g,
++    /(?:^|[\n;])\s*export\s+declare\s+(?:const|let|var|function|class|enum|namespace)\s+([A-Za-z_$][\w$]*)/g,
++    /(?:^|[\n;])\s*export\s+type\s*\{([^}]*)\}/g,
++    /(?:^|[\n;])\s*export\s*\{([^}]*\btype\s+[A-Za-z_$][\w$]*[^}]*)\}/g
++  ];
++  for (const pattern of patterns) {
++    for (const match of source.matchAll(pattern)) {
++      const body = match[1];
++      const candidates =
++        body.includes(',') || body.includes(' as ') ? body.split(',') : [body];
++      for (const candidate of candidates) {
++        const specifier = candidate.trim().replace(/^type\s+/, '');
++        if (!specifier) {
++          continue;
++        }
++        const alias = /\bas\s+([A-Za-z_$][\w$]*)$/.exec(specifier);
++        names.add(alias ? alias[1] : specifier.trim());
++      }
++    }
++  }
++  return names;
++}
++
++export function patchTypeOnlyImports(source) {
++  const runtimeExports = collectRuntimeExports(source);
++  const typeExports = collectTypeExports(source);
++  const missing = [...typeExports].filter(
++    name => /^[A-Za-z_$][\w$]*$/.test(name) && !runtimeExports.has(name)
++  );
++  if (!missing.length) {
++    return source;
++  }
++  const placeholders = missing
++    .map(name => `export const ${name} = undefined;`)
++    .join('\n');
++  return `${source}\n// F2P loader placeholder for type-only exports.\n${placeholders}\n`;
++}
+diff --git a/__tests__/p2p/cache-restore-p2p.test.mjs b/__tests__/p2p/cache-restore-p2p.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..92fa4944fd66d9cb4d5b2cb77f50219c2fe0cdb7
+--- /dev/null
++++ b/__tests__/p2p/cache-restore-p2p.test.mjs
+@@ -0,0 +1,382 @@
++// Supplemental P2P regression nodes for the restore side of the cache context
++// consolidation. Every node drives the public restore entry point
++// (`restoreCache`) and asserts only user-visible contract facts that must stay
++// unchanged: discovery behaviour, primary key derivation, cross-step state
++// names, the cache-hit output and the existing error/log texts.
++/* global process */
++import assert from 'node:assert/strict';
++import fs from 'node:fs';
++import {syncBuiltinESMExports} from 'node:module';
++import os from 'node:os';
++import path from 'node:path';
++
++import {test} from './harness.mjs';
++import * as cache from './stubs/actions-cache.mjs';
++import * as core from './stubs/actions-core.mjs';
++import * as exec from './stubs/actions-exec.mjs';
++import * as glob from './stubs/actions-glob.mjs';
++
++const {restoreCache} = await import('../../src/cache-restore.js');
++
++const FILE_HASH = 'file_hash';
++const VERSION_SPEC = '1.13.1';
++const DEPENDENCY_FILE = 'go.sum';
++
++function resetStubs() {
++  core.__reset();
++  cache.__reset();
++  exec.__reset();
++  glob.__reset();
++  glob.__setHashFilesImpl(async () => FILE_HASH);
++  exec.__setExecImpl(async commandLine => {
++    if (commandLine === 'go env GOMODCACHE') {
++      return {exitCode: 0, stdout: '/gomodcache\n', stderr: ''};
++    }
++    if (commandLine === 'go env GOCACHE') {
++      return {exitCode: 0, stdout: '/gocache\n', stderr: ''};
++    }
++    throw new Error(`unexpected discovery command: ${commandLine}`);
++  });
++}
++
++function setDiscovery(map) {
++  exec.__setExecImpl(async commandLine => {
++    if (!Object.prototype.hasOwnProperty.call(map, commandLine)) {
++      throw new Error(`unexpected discovery command: ${commandLine}`);
++    }
++    return map[commandLine];
++  });
++}
++
++function stateWrites() {
++  return core.__calls('saveState').map(call => call.args);
++}
++
++function cacheHitOutputs() {
++  return core
++    .__calls('setOutput')
++    .map(call => call.args)
++    .filter(args => args[0] === 'cache-hit');
++}
++
++function infoMessages() {
++  return core.__messages('info');
++}
++
++function makeDirectory() {
++  return fs.mkdtempSync(path.join(os.tmpdir(), 'setup-go-p2p-'));
++}
++
++async function withEnv(values, fn) {
++  const saved = {};
++  for (const [name, value] of Object.entries(values)) {
++    saved[name] = process.env[name];
++    if (value === undefined) {
++      delete process.env[name];
++    } else {
++      process.env[name] = value;
++    }
++  }
++  try {
++    return await fn();
++  } finally {
++    for (const [name, value] of Object.entries(saved)) {
++      if (value === undefined) {
++        delete process.env[name];
++      } else {
++        process.env[name] = value;
++      }
++    }
++  }
++}
++
++test('restore passes the unfiltered discovered cache folder paths to the cache service', async () => {
++  resetStubs();
++
++  const root = makeDirectory();
++  const paths = [path.join(root, 'module-cache'), path.join(root, 'build-cache')];
++  setDiscovery({
++    'go env GOMODCACHE': {exitCode: 0, stdout: `${paths[0]}\n`, stderr: ''},
++    'go env GOCACHE': {exitCode: 0, stdout: `${paths[1]}\n`, stderr: ''}
++  });
++  // Observe real filesystem operations without changing their results. Folder
++  // existence is relevant only to save, not to a restore into missing folders.
++  const probes = [];
++  const originals = [];
++  for (const [api, names] of [
++    [fs, ['existsSync', 'statSync', 'lstatSync', 'accessSync', 'stat', 'lstat', 'access']],
++    [fs.promises, ['stat', 'lstat', 'access']]
++  ]) {
++    for (const name of names) {
++      const original = api[name];
++      originals.push([api, name, original]);
++      api[name] = function (target, ...args) {
++        if (paths.includes(String(target))) probes.push([name, String(target)]);
++        return Reflect.apply(original, this, [target, ...args]);
++      };
++    }
++  }
++  syncBuiltinESMExports();
++  try {
++    await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++
++    const restoreCalls = cache.__calls('restoreCache');
++    assert.equal(restoreCalls.length, 1);
++    assert.deepEqual(restoreCalls[0].args[0], paths);
++    assert.equal(restoreCalls[0].args[1].endsWith(`-${FILE_HASH}`), true);
++    assert.deepEqual(probes, [],
++      'restore must not locally probe discovered cache folders for existence');
++  } finally {
++    for (const [api, name, original] of originals) api[name] = original;
++    syncBuiltinESMExports();
++    fs.rmSync(root, {recursive: true, force: true});
++  }
++});
++
++test('restore discards a failed discovery command and keeps the successful cache folder path', async () => {
++  resetStubs();
++  setDiscovery({
++    'go env GOMODCACHE': {
++      exitCode: 1,
++      stdout: '',
++      stderr: 'go env GOMODCACHE failed'
++    },
++    'go env GOCACHE': {exitCode: 0, stdout: '/gocache\n', stderr: ''}
++  });
++
++  await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++
++  const restoreCalls = cache.__calls('restoreCache');
++  assert.equal(restoreCalls.length, 1);
++  assert.deepEqual(restoreCalls[0].args[0], ['/gocache']);
++});
++
++test('restore throws Could not get cache folder paths when every discovery command fails', async () => {
++  resetStubs();
++  setDiscovery({
++    'go env GOMODCACHE': {exitCode: 1, stdout: '', stderr: 'failure one'},
++    'go env GOCACHE': {exitCode: 1, stdout: '', stderr: 'failure two'}
++  });
++
++  await assert.rejects(
++    () => restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE),
++    error =>
++      error instanceof Error && error.message === 'Could not get cache folder paths.'
++  );
++  assert.equal(cache.__calls('restoreCache').length, 0);
++});
++
++test('restore rejects an unknown package manager with the existing message', async () => {
++  resetStubs();
++
++  await assert.rejects(
++    () => restoreCache(VERSION_SPEC, 'pnpm'),
++    error =>
++      error instanceof Error &&
++      error.message ===
++        "It's not possible to use pnpm, please, check correctness of the package manager name spelling."
++  );
++  assert.equal(exec.__calls('getExecOutput').length, 0);
++  assert.equal(cache.__calls('restoreCache').length, 0);
++});
++
++test('restore throws when dependency hashing resolves nothing', async () => {
++  resetStubs();
++  glob.__setHashFilesImpl(async () => '');
++
++  await assert.rejects(
++    () => restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE),
++    error =>
++      error instanceof Error &&
++      error.message ===
++        'Some specified paths were not resolved, unable to cache dependencies.'
++  );
++  assert.equal(cache.__calls('restoreCache').length, 0);
++});
++
++test('restore reports the missing default dependency file with the workspace and supported pattern', async () => {
++  // An unset action input reaches restore as ''. Missing-file reporting must
++  // remain independent of the empty-hash error for both optional input forms.
++  for (const dependencyPath of [undefined, '']) {
++    resetStubs();
++    const workspace = makeDirectory();
++    glob.__setHashFilesImpl(async () => '');
++
++    await withEnv({GITHUB_WORKSPACE: workspace}, async () => {
++      await assert.rejects(
++        () => restoreCache(VERSION_SPEC, 'default', dependencyPath),
++        error =>
++          error instanceof Error &&
++          error.message ===
++            `Dependencies file is not found in ${workspace}. Supported file pattern: go.mod`
++      );
++    });
++  }
++});
++
++test('restore derives the primary key from platform, architecture, Linux ImageOS and hash in order', async () => {
++  resetStubs();
++
++  await withEnv({RUNNER_OS: 'Linux', ImageOS: 'ubuntu-22.04'}, async () => {
++    await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++  });
++
++  // The Linux-only component is the ImageOS environment value followed by a
++  // dash; it is present on Linux and absent everywhere else.
++  const expectedKey = `setup-go-Linux-${process.arch}-ubuntu-22.04-go-${VERSION_SPEC}-${FILE_HASH}`;
++  const primaryKeyWrites = stateWrites().filter(args => args[0] === 'CACHE_KEY');
++  assert.equal(primaryKeyWrites.length, 1);
++  assert.equal(primaryKeyWrites[0][1], expectedKey);
++  assert.equal(cache.__calls('restoreCache')[0].args[1], expectedKey);
++});
++
++test('restore omits the ImageOS component on non-Linux runners', async () => {
++  resetStubs();
++
++  await withEnv({RUNNER_OS: 'Windows', ImageOS: 'win22'}, async () => {
++    await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++  });
++
++  const expectedKey = `setup-go-Windows-${process.arch}-go-${VERSION_SPEC}-${FILE_HASH}`;
++  const primaryKeyWrites = stateWrites().filter(args => args[0] === 'CACHE_KEY');
++  assert.equal(primaryKeyWrites.length, 1);
++  assert.equal(primaryKeyWrites[0][1], expectedKey);
++});
++
++test('restore writes CACHE_KEY before requesting the restore', async () => {
++  resetStubs();
++
++  await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++
++  const keyWrite = core
++    .__allCalls()
++    .find(call => call.name === 'saveState' && call.args[0] === 'CACHE_KEY');
++  const restoreCall = cache.__calls('restoreCache')[0];
++  assert.ok(keyWrite, 'CACHE_KEY must be written');
++  assert.ok(restoreCall, 'restore must be requested');
++  assert.ok(
++    keyWrite.seq < restoreCall.seq,
++    'CACHE_KEY must be written before the restore request'
++  );
++});
++
++test('restore publishes a cache miss as cache-hit false and logs the existing message', async () => {
++  resetStubs();
++  cache.__setRestoreImpl(async () => '');
++
++  await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++
++  const outputs = cacheHitOutputs();
++  assert.ok(outputs.length >= 1, 'cache-hit must be published');
++  assert.equal(outputs[outputs.length - 1][1], false);
++  assert.equal(
++    outputs.some(args => args[1] === true),
++    false
++  );
++  assert.ok(infoMessages().includes('Cache is not found'));
++  assert.equal(stateWrites().filter(args => args[0] === 'CACHE_RESULT').length, 0);
++});
++
++test('restore publishes a cache hit as cache-hit true and saves CACHE_RESULT with the restored key', async () => {
++  resetStubs();
++  cache.__setRestoreImpl(async () => 'restored-key');
++
++  await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++
++  const outputs = cacheHitOutputs();
++  assert.ok(outputs.some(args => args[1] === true));
++  assert.equal(
++    outputs.some(args => args[1] === false),
++    false
++  );
++  const matchedKeyWrites = stateWrites().filter(
++    args => args[0] === 'CACHE_RESULT'
++  );
++  assert.equal(matchedKeyWrites.length, 1);
++  assert.equal(matchedKeyWrites[0][1], 'restored-key');
++  // Preserve the hit output's baseline publication point: after restore,
++  // but before the matched key state write (which can itself fail).
++  const hitOutput = core.__calls('setOutput').find(
++    call => call.args[0] === 'cache-hit' && call.args[1] === true
++  );
++  const matchedKeyWrite = core.__calls('saveState').find(
++    call => call.args[0] === 'CACHE_RESULT'
++  );
++  assert.ok(hitOutput.seq < matchedKeyWrite.seq,
++    'cache-hit must be published before writing CACHE_RESULT');
++  assert.ok(infoMessages().includes('Cache restored from key: restored-key'));
++});
++
++test('restore resolves to undefined without a meaningful return value', async () => {
++  for (const restoredKey of ['', 'restored-key']) {
++    resetStubs();
++    cache.__setRestoreImpl(async () => restoredKey);
++    const result = await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++    assert.equal(result, undefined,
++      `restore must resolve to undefined on a ${restoredKey ? 'hit' : 'miss'}`);
++  }
++});
++
++test('restore uses the provided dependency file path instead of the workspace default', async () => {
++  resetStubs();
++  const workspace = makeDirectory();
++  const dependencyPath = path.join(workspace, 'custom.sum');
++
++  await withEnv({GITHUB_WORKSPACE: workspace}, async () => {
++    await restoreCache(VERSION_SPEC, 'default', dependencyPath);
++  });
++
++  const hashCalls = glob.__calls('hashFiles');
++  assert.ok(hashCalls.length >= 1, 'the dependency file must be hashed');
++  for (const call of hashCalls) {
++    assert.equal(call.args[0], dependencyPath);
++  }
++});
++
++test('restore passes every line of an explicit dependency path unchanged to hashing', async () => {
++  resetStubs();
++  const dependencyPath = 'a/go.sum\nb/go.mod';
++  await restoreCache(VERSION_SPEC, 'default', dependencyPath);
++  const hashCalls = glob.__calls('hashFiles');
++  assert.equal(hashCalls.length, 1);
++  assert.deepEqual(hashCalls[0].args, [dependencyPath]);
++});
++
++test('restore hashes the existing default dependency file inside the workspace', async () => {
++  const workspace = makeDirectory();
++  const dependencyPath = path.join(workspace, 'go.mod');
++  fs.writeFileSync(dependencyPath, 'module example.test/cache\n');
++  try {
++    // An unset optional action input is returned by core.getInput as ''.
++    // Both that value and an omitted argument must select the workspace default.
++    for (const cacheDependencyPath of [undefined, '']) {
++      resetStubs();
++      await withEnv({GITHUB_WORKSPACE: workspace}, async () => {
++        await restoreCache(VERSION_SPEC, 'default', cacheDependencyPath);
++      });
++      const hashCalls = glob.__calls('hashFiles');
++      assert.equal(hashCalls.length, 1);
++      assert.deepEqual(hashCalls[0].args, [dependencyPath],
++        `default dependency path for ${JSON.stringify(cacheDependencyPath)}`);
++    }
++  } finally {
++    fs.rmSync(workspace, {recursive: true, force: true});
++  }
++});
++
++test('restore writes only the cross-step state names CACHE_KEY and CACHE_RESULT', async () => {
++  resetStubs();
++  cache.__setRestoreImpl(async () => 'restored-key');
++
++  await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++
++  const stateNames = [...new Set(stateWrites().map(args => args[0]))].sort();
++  assert.deepEqual(stateNames, ['CACHE_KEY', 'CACHE_RESULT']);
++});
++
++test('restore entry point loads with only the frozen runtime dependencies', async () => {
++  assert.equal(typeof restoreCache, 'function');
++  resetStubs();
++  const result = await restoreCache(VERSION_SPEC, 'default', DEPENDENCY_FILE);
++  assert.equal(result, undefined);
++});
+diff --git a/__tests__/p2p/cache-save-p2p.test.mjs b/__tests__/p2p/cache-save-p2p.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f9b0f8cd8bdfc767d1f164c411c5c75ecff9c2b
+--- /dev/null
++++ b/__tests__/p2p/cache-save-p2p.test.mjs
+@@ -0,0 +1,316 @@
++// Supplemental P2P regression nodes for the save (post step) side of the cache
++// context consolidation. Every node drives the public save entry point (`run`)
++// and asserts only user-visible contract facts that must stay unchanged: input
++// and state names, discovery behaviour, the complete unfiltered path list given
++// to the cache service, every early exit with its existing message, and the
++// early-exit flag semantics.
++/* global process */
++import assert from 'node:assert/strict';
++import fs from 'node:fs';
++import os from 'node:os';
++import path from 'node:path';
++
++import {test, setIgnoreUncaught} from './harness.mjs';
++import * as cache from './stubs/actions-cache.mjs';
++import * as core from './stubs/actions-core.mjs';
++import * as exec from './stubs/actions-exec.mjs';
++
++const {run} = await import('../../src/cache-save.js');
++
++const PRIMARY_KEY = 'setup-go-Linux-x64-ImageOS-ubuntu-22.04-go-1.13.1-file_hash';
++const MATCHED_KEY = 'setup-go-Linux-x64-ImageOS-ubuntu-22.04-go-1.13.0-other_hash';
++
++function resetStubs() {
++  core.__reset();
++  cache.__reset();
++  exec.__reset();
++}
++
++function makeDirectory() {
++  return fs.mkdtempSync(path.join(os.tmpdir(), 'setup-go-p2p-'));
++}
++
++function missingPath() {
++  return path.join(makeDirectory(), 'missing-folder');
++}
++
++function setDiscovery(paths) {
++  const commands = ['go env GOMODCACHE', 'go env GOCACHE'];
++  exec.__setExecImpl(async commandLine => {
++    const index = commands.indexOf(commandLine);
++    if (index === -1) {
++      throw new Error(`unexpected discovery command: ${commandLine}`);
++    }
++    return {exitCode: 0, stdout: `${paths[index]}\n`, stderr: ''};
++  });
++}
++
++function setFailingDiscovery() {
++  exec.__setExecImpl(async commandLine => {
++    return {exitCode: 1, stdout: '', stderr: `${commandLine} failed`};
++  });
++}
++
++function enableCache() {
++  core.__setBooleanInput('cache', true);
++  core.__setState('CACHE_KEY', PRIMARY_KEY);
++  core.__setState('CACHE_RESULT', MATCHED_KEY);
++}
++
++function infoMessages() {
++  return core.__messages('info');
++}
++
++function warningMessages() {
++  return core.__messages('warning');
++}
++
++function allLogMessages() {
++  return [...core.__messages('warning'), ...core.__messages('info')];
++}
++
++async function withStubbedExit(fn) {
++  const originalExit = process.exit;
++  const codes = [];
++  process.exit = code => {
++    codes.push(code);
++  };
++  try {
++    await fn();
++  } finally {
++    process.exit = originalExit;
++  }
++  return codes;
++}
++
++test('save skips discovery and saving when the cache input is disabled', async () => {
++  resetStubs();
++  core.__setBooleanInput('cache', false);
++
++  await run();
++
++  assert.deepEqual(
++    core.__calls('getBooleanInput').map(call => call.args[0]),
++    ['cache']
++  );
++  assert.equal(exec.__calls('getExecOutput').length, 0);
++  assert.equal(cache.__calls('saveCache').length, 0);
++  assert.equal(warningMessages().length, 0);
++  assert.equal(core.__calls('setFailed').length, 0);
++});
++
++test('save warns and stops when every discovered cache folder is missing on disk', async () => {
++  resetStubs();
++  enableCache();
++  setDiscovery([missingPath(), missingPath()]);
++
++  await run();
++
++  assert.ok(warningMessages().includes('There are no cache folders on the disk'));
++  assert.equal(cache.__calls('saveCache').length, 0);
++  assert.equal(core.__calls('setFailed').length, 0);
++});
++
++test('save warns about a partially missing folder and still passes the complete path list to the cache service', async () => {
++  resetStubs();
++  enableCache();
++  const existing = makeDirectory();
++  const missing = missingPath();
++  setDiscovery([existing, missing]);
++
++  await run();
++
++  assert.ok(
++    allLogMessages().includes(
++      `[warning]Cache folder path is retrieved but doesn't exist on disk: ${missing}`
++    )
++  );
++  const saveCalls = cache.__calls('saveCache');
++  assert.equal(saveCalls.length, 1);
++  assert.deepEqual(saveCalls[0].args[0], [existing, missing]);
++  assert.equal(saveCalls[0].args[1], PRIMARY_KEY);
++  assert.ok(infoMessages().includes(`Cache saved with the key: ${PRIMARY_KEY}`));
++  assert.equal(core.__calls('setFailed').length, 0);
++});
++
++test('save stops without saving when the primary key state is missing', async () => {
++  resetStubs();
++  core.__setBooleanInput('cache', true);
++  core.__setState('CACHE_KEY', '');
++  core.__setState('CACHE_RESULT', MATCHED_KEY);
++  setDiscovery([makeDirectory(), makeDirectory()]);
++
++  await run();
++
++  assert.ok(
++    infoMessages().includes(
++      'Primary key was not generated. Please check the log messages above for more errors or information'
++    )
++  );
++  assert.equal(cache.__calls('saveCache').length, 0);
++  assert.equal(core.__calls('setFailed').length, 0);
++});
++
++test('save stops without saving when the primary key matches the restored key', async () => {
++  resetStubs();
++  core.__setBooleanInput('cache', true);
++  core.__setState('CACHE_KEY', PRIMARY_KEY);
++  core.__setState('CACHE_RESULT', PRIMARY_KEY);
++  setDiscovery([makeDirectory(), makeDirectory()]);
++
++  await run();
++
++  assert.ok(
++    infoMessages().includes(
++      `Cache hit occurred on the primary key ${PRIMARY_KEY}, not saving cache.`
++    )
++  );
++  assert.equal(cache.__calls('saveCache').length, 0);
++  assert.equal(core.__calls('setFailed').length, 0);
++});
++
++test('save treats a -1 cache id as a non-failure without reporting success', async () => {
++  resetStubs();
++  enableCache();
++  setDiscovery([makeDirectory(), makeDirectory()]);
++  cache.__setSaveImpl(async () => -1);
++
++  await run();
++
++  assert.ok(
++    core
++      .__messages('debug')
++      .includes(`Cache was not saved for the key: ${PRIMARY_KEY}`)
++  );
++  assert.equal(
++    infoMessages().includes(`Cache saved with the key: ${PRIMARY_KEY}`),
++    false
++  );
++  assert.equal(warningMessages().length, 0);
++  assert.equal(core.__calls('setFailed').length, 0);
++});
++
++test('save warns about a cache service failure and keeps the workflow successful', async () => {
++  resetStubs();
++  enableCache();
++  setDiscovery([makeDirectory(), makeDirectory()]);
++  cache.__setSaveImpl(async () => {
++    throw new Error('Unable to reach the service');
++  });
++
++  await run();
++
++  assert.ok(warningMessages().includes('Unable to reach the service'));
++  assert.equal(core.__calls('setFailed').length, 0);
++});
++
++test('save warns and keeps the workflow successful when cache folder discovery fails entirely', async () => {
++  resetStubs();
++  enableCache();
++  setFailingDiscovery();
++
++  await run();
++
++  assert.ok(warningMessages().includes('Could not get cache folder paths.'));
++  assert.equal(cache.__calls('saveCache').length, 0);
++  assert.equal(core.__calls('setFailed').length, 0);
++});
++
++test('save logs the existing success message after a successful save', async () => {
++  resetStubs();
++  enableCache();
++  const paths = [makeDirectory(), makeDirectory()];
++  setDiscovery(paths);
++  cache.__setSaveImpl(async () => 0);
++
++  const result = await run();
++
++  const saveCalls = cache.__calls('saveCache');
++  assert.equal(saveCalls.length, 1);
++  assert.deepEqual(saveCalls[0].args, [paths, PRIMARY_KEY]);
++  assert.ok(infoMessages().includes(`Cache saved with the key: ${PRIMARY_KEY}`));
++  assert.equal(core.__calls('setFailed').length, 0);
++  assert.equal(result, undefined);
++});
++
++test('save reads the cross-state names CACHE_KEY and CACHE_RESULT', async () => {
++  resetStubs();
++  enableCache();
++  setDiscovery([makeDirectory(), makeDirectory()]);
++
++  await run();
++
++  const stateNames = [
++    ...new Set(core.__calls('getState').map(call => call.args[0]))
++  ].sort();
++  assert.deepEqual(stateNames, ['CACHE_KEY', 'CACHE_RESULT']);
++});
++
++test('save discovers the cache folders through the package manager command list', async () => {
++  resetStubs();
++  enableCache();
++  const goModCache = makeDirectory();
++  const goCache = makeDirectory();
++  setDiscovery([goModCache, goCache]);
++
++  await run();
++
++  assert.deepEqual(
++    exec.__calls('getExecOutput').map(call => call.args[0]),
++    ['go env GOMODCACHE', 'go env GOCACHE']
++  );
++  assert.deepEqual(cache.__calls('saveCache')[0].args[0], [goModCache, goCache]);
++});
++
++test('save terminates the post step right after a successful save decision when early exit is requested', async () => {
++  resetStubs();
++  enableCache();
++  setDiscovery([makeDirectory(), makeDirectory()]);
++  cache.__setSaveImpl(async () => 0);
++
++  const codes = await withStubbedExit(async () => {
++    await run(true);
++  });
++
++  assert.equal(cache.__calls('saveCache').length, 1);
++  assert.deepEqual(codes, [0]);
++});
++
++test('save does not terminate the process when the early-exit flag is not requested', async () => {
++  resetStubs();
++  enableCache();
++  setDiscovery([makeDirectory(), makeDirectory()]);
++  cache.__setSaveImpl(async () => 0);
++
++  const codes = await withStubbedExit(async () => {
++    await run();
++  });
++
++  assert.equal(cache.__calls('saveCache').length, 1);
++  assert.deepEqual(codes, []);
++});
++
++test('save does not terminate the process when the cache input is disabled even with the early-exit flag', async () => {
++  resetStubs();
++  core.__setBooleanInput('cache', false);
++
++  const codes = await withStubbedExit(async () => {
++    await run(true);
++  });
++
++  assert.equal(cache.__calls('saveCache').length, 0);
++  assert.deepEqual(codes, []);
++});
++
++test('save logs an unhandled toolkit exception as a warning instead of crashing', async () => {
++  resetStubs();
++
++  setIgnoreUncaught(true);
++  try {
++    process.emit('uncaughtException', new Error('toolkit leak'));
++  } finally {
++    setIgnoreUncaught(false);
++  }
++
++  assert.ok(infoMessages().includes('[warning]toolkit leak'));
++});
+diff --git a/__tests__/p2p/harness.mjs b/__tests__/p2p/harness.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..15aff4624d1d4eee6676367349b71247d9ea814b
+--- /dev/null
++++ b/__tests__/p2p/harness.mjs
+@@ -0,0 +1,205 @@
++// Minimal dependency-free test harness for the supplemental P2P nodes.
++//
++// It provides just enough machinery to register exact-leaf test nodes, execute
++// them with a per-node timeout, and emit a regular JUnit report. Assertions are
++// the Node.js built-in `node:assert/strict` module, so no third-party test
++// framework is required in the replay image.
++/* global setTimeout, clearTimeout */
++import fs from 'node:fs';
++import path from 'node:path';
++
++const registry = new Map();
++let currentFile = null;
++let ignoreUncaught = false;
++let pendingUncaught = null;
++
++export function setCurrentFile(file) {
++  currentFile = file;
++}
++
++export function test(name, fn) {
++  if (!currentFile) {
++    throw new Error('setCurrentFile() must be called before test()');
++  }
++  if (!registry.has(currentFile)) {
++    registry.set(currentFile, []);
++  }
++  registry.get(currentFile).push({file: currentFile, name, fn});
++}
++
++export function registeredNodes() {
++  return registry;
++}
++
++export function setIgnoreUncaught(value) {
++  ignoreUncaught = value;
++}
++
++export function recordUncaught(error) {
++  if (ignoreUncaught) {
++    return;
++  }
++  pendingUncaught = error;
++}
++
++function describeError(error) {
++  if (error instanceof Error) {
++    return {
++      message: error.message,
++      details: error.stack ?? `${error.name}: ${error.message}`,
++      type: error.name || 'Error'
++    };
++  }
++  const message = typeof error === 'string' ? error : JSON.stringify(error);
++  return {message, details: message, type: 'Error'};
++}
++
++async function withTimeout(promise, timeoutMs, name) {
++  let timer = null;
++  try {
++    return await Promise.race([
++      promise,
++      new Promise((_resolve, reject) => {
++        timer = setTimeout(() => {
++          const error = new Error(`P2P node timed out after ${timeoutMs}ms: ${name}`);
++          error.name = 'HarnessTimeoutError';
++          reject(error);
++        }, timeoutMs);
++      })
++    ]);
++  } finally {
++    if (timer) {
++      clearTimeout(timer);
++    }
++  }
++}
++
++export async function runNode(node, timeoutMs) {
++  const startedAt = Date.now();
++  const result = {
++    file: node.file,
++    name: node.name,
++    status: 'passed',
++    message: '',
++    details: '',
++    type: '',
++    durationMs: 0
++  };
++
++  pendingUncaught = null;
++  try {
++    await withTimeout(
++      Promise.resolve().then(() => node.fn()),
++      timeoutMs,
++      node.name
++    );
++    if (pendingUncaught) {
++      const described = describeError(pendingUncaught);
++      result.status = 'failed';
++      result.message = `uncaught exception: ${described.message}`;
++      result.details = described.details;
++      result.type = described.type;
++    }
++  } catch (error) {
++    const described = describeError(error);
++    result.status = 'failed';
++    result.message = described.message;
++    result.details = described.details;
++    result.type = described.type;
++  } finally {
++    pendingUncaught = null;
++  }
++
++  result.durationMs = Date.now() - startedAt;
++  return result;
++}
++
++export function errorResult(file, name, error) {
++  const described = describeError(error);
++  return {
++    file,
++    name,
++    status: 'failed',
++    message: described.message,
++    details: described.details,
++    type: described.type,
++    durationMs: 0
++  };
++}
++
++function xmlEscape(value) {
++  return String(value)
++    .replace(/&/g, '&amp;')
++    .replace(/</g, '&lt;')
++    .replace(/>/g, '&gt;')
++    .replace(/"/g, '&quot;')
++    .replace(/'/g, '&apos;');
++}
++
++function seconds(milliseconds) {
++  return (milliseconds / 1000).toFixed(3);
++}
++
++function testcaseXml(result) {
++  const attributes = [
++    `classname="${xmlEscape(result.file)}"`,
++    `name="${xmlEscape(result.name)}"`,
++    `file="${xmlEscape(result.file)}"`,
++    `time="${seconds(result.durationMs)}"`
++  ].join(' ');
++
++  if (result.status === 'passed') {
++    return `    <testcase ${attributes}/>`;
++  }
++
++  const tag = result.type === 'AssertionError' ? 'failure' : 'failure';
++  const failureAttributes = [
++    `message="${xmlEscape(result.message)}"`,
++    `type="${xmlEscape(result.type || 'Error')}"`
++  ].join(' ');
++  const details = xmlEscape(result.details || result.message);
++  return `    <testcase ${attributes}>\n      <${tag} ${failureAttributes}>${details}</${tag}>\n    </testcase>`;
++}
++
++export function writeJUnit(reportPath, results, name = 'setup-go-p2p') {
++  const byFile = new Map();
++  for (const result of results) {
++    if (!byFile.has(result.file)) {
++      byFile.set(result.file, []);
++    }
++    byFile.get(result.file).push(result);
++  }
++
++  const failures = results.filter(result => result.status !== 'passed').length;
++  const totalTime = results.reduce((sum, result) => sum + result.durationMs, 0);
++  const lines = [
++    '<?xml version="1.0" encoding="UTF-8"?>',
++    `<testsuites name="${xmlEscape(name)}" tests="${results.length}" failures="${failures}" errors="0" skipped="0" time="${seconds(totalTime)}">`
++  ];
++
++  for (const [file, fileResults] of byFile) {
++    const fileFailures = fileResults.filter(
++      result => result.status !== 'passed'
++    ).length;
++    const fileTime = fileResults.reduce(
++      (sum, result) => sum + result.durationMs,
++      0
++    );
++    lines.push(
++      `  <testsuite name="${xmlEscape(file)}" tests="${fileResults.length}" failures="${fileFailures}" errors="0" skipped="0" time="${seconds(fileTime)}">`
++    );
++    for (const result of fileResults) {
++      lines.push(testcaseXml(result));
++    }
++    lines.push('  </testsuite>');
++  }
++
++  lines.push('</testsuites>');
++  lines.push('');
++
++  const directory = path.dirname(reportPath);
++  if (directory && directory !== '.') {
++    fs.mkdirSync(directory, {recursive: true});
++  }
++  fs.writeFileSync(reportPath, lines.join('\n'), 'utf8');
++}
+diff --git a/__tests__/p2p/jest-engine.mjs b/__tests__/p2p/jest-engine.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e7bbb8edf455d8aaea49fcbf4c8754e1ab0f7dcd
+--- /dev/null
++++ b/__tests__/p2p/jest-engine.mjs
+@@ -0,0 +1,227 @@
++// Dependency-free engine that executes one Baseline original test file with
++// the Jest-compatible runtime in jest-runtime.mjs.
++//
++// Usage:
++//   node --experimental-transform-types --no-warnings \
++//     __tests__/p2p/jest-engine.mjs --file <repo-relative test file> \
++//     --out <json result file> [--timeout <ms>]
++//
++// The engine registers synchronous in-process module hooks so that:
++//   * `@jest/globals` resolves to the local runtime;
++//   * every module registered through `jest.unstable_mockModule` (including
++//     the `@actions/*` packages, `fs` and repository modules) resolves to a
++//     generated module whose exports are the factory result;
++//   * the production `.ts` sources load through Node's TypeScript transform
++//     with the type-only export placeholders added by typescript-compat.mjs.
++//
++// It writes one JSON document with the per-node results and exits 0 whenever
++// the document was written; the runner maps the results into the JUnit report.
++/* global process, console, Buffer */
++import fs from 'node:fs';
++import path from 'node:path';
++import {registerHooks} from 'node:module';
++import {pathToFileURL} from 'node:url';
++
++import {
++  describeError,
++  hasMock,
++  mockKeyFor,
++  mockNamespace,
++  recordUncaught,
++  runCollectedTests
++} from './jest-runtime.mjs';
++import {
++  patchTypeOnlyImports,
++  resolveTypeScriptSpecifier
++} from './typescript-compat.mjs';
++
++const MOCK_SCHEME = 'p2p-mock:';
++const RUNTIME_URL = new URL('./jest-runtime.mjs', import.meta.url).href;
++const DEFAULT_NODE_TIMEOUT_MS = 10000;
++
++// The replay image ships no node_modules, so packages the original tests do
++// not mock explicitly are served by the dependency-free local stubs. The
++// original test files exercise the cache entry points with `@actions/*`
++// mocked, so these stubs are only reached by module loading, never by a
++// code path whose observable behaviour the tests assert.
++const ACTIONS_STUBS = new Map([
++  ['@actions/cache', new URL('./stubs/actions-cache.mjs', import.meta.url).href],
++  ['@actions/core', new URL('./stubs/actions-core.mjs', import.meta.url).href],
++  ['@actions/exec', new URL('./stubs/actions-exec.mjs', import.meta.url).href],
++  ['@actions/glob', new URL('./stubs/actions-glob.mjs', import.meta.url).href],
++  [
++    '@actions/http-client',
++    new URL('./stubs/actions-http-client.mjs', import.meta.url).href
++  ],
++  ['@actions/io', new URL('./stubs/actions-io.mjs', import.meta.url).href],
++  [
++    '@actions/tool-cache',
++    new URL('./stubs/actions-tool-cache.mjs', import.meta.url).href
++  ]
++]);
++
++function parseArguments(argv) {
++  const options = {file: null, out: null, timeout: null};
++  for (let index = 0; index < argv.length; index += 1) {
++    const argument = argv[index];
++    const withEquals = /^--(file|out|timeout)=(.*)$/.exec(argument);
++    if (withEquals) {
++      options[withEquals[1]] = withEquals[2];
++      continue;
++    }
++    const name = argument.startsWith('--') ? argument.slice(2) : null;
++    if (name && Object.prototype.hasOwnProperty.call(options, name)) {
++      options[name] = argv[index + 1] ?? null;
++      index += 1;
++    }
++  }
++  return options;
++}
++
++function mockModuleSource(key, namespace) {
++  const lines = [
++    `import {mockNamespace} from ${JSON.stringify(RUNTIME_URL)};`,
++    `const ns = mockNamespace(${JSON.stringify(key)});`
++  ];
++  let anonymous = 0;
++  for (const name of Object.keys(namespace)) {
++    if (name === 'default') {
++      continue;
++    }
++    if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
++      lines.push(`export const ${name} = ns[${JSON.stringify(name)}];`);
++    } else {
++      anonymous += 1;
++      const local = `__p2pExport${anonymous}`;
++      lines.push(
++        `const ${local} = ns[${JSON.stringify(name)}];`,
++        `export {${local} as ${JSON.stringify(name)}};`
++      );
++    }
++  }
++  lines.push(
++    'export default ns.default !== undefined ? ns.default : ns;'
++  );
++  return lines.join('\n');
++}
++
++registerHooks({
++  resolve(specifier, context, nextResolve) {
++    if (specifier === '@jest/globals') {
++      return {url: RUNTIME_URL, shortCircuit: true};
++    }
++    const key = mockKeyFor(specifier, context.parentURL);
++    if (key !== null && hasMock(key)) {
++      return {
++        url: `${MOCK_SCHEME}${encodeURIComponent(key)}`,
++        shortCircuit: true
++      };
++    }
++    const stub = ACTIONS_STUBS.get(specifier);
++    if (stub) {
++      return {url: stub, shortCircuit: true};
++    }
++    const typescript = resolveTypeScriptSpecifier(specifier, context.parentURL);
++    if (typescript) {
++      return {url: typescript, shortCircuit: true};
++    }
++    return nextResolve(specifier, context);
++  },
++  load(url, context, nextLoad) {
++    if (url.startsWith(MOCK_SCHEME)) {
++      const key = decodeURIComponent(url.slice(MOCK_SCHEME.length));
++      const namespace = mockNamespace(key);
++      return {
++        format: 'module',
++        source: mockModuleSource(key, namespace),
++        shortCircuit: true
++      };
++    }
++    const result = nextLoad(url, context);
++    if (url.endsWith('.ts') && result && result.source !== undefined) {
++      const source =
++        typeof result.source === 'string'
++          ? result.source
++          : Buffer.from(result.source).toString('utf8');
++      const patched = patchTypeOnlyImports(source);
++      if (patched !== source) {
++        return {...result, source: patched};
++      }
++    }
++    return result;
++  }
++});
++
++process.on('uncaughtException', error => {
++  recordUncaught(error);
++});
++process.on('unhandledRejection', error => {
++  recordUncaught(error instanceof Error ? error : new Error(String(error)));
++});
++
++async function main() {
++  const options = parseArguments(process.argv.slice(2));
++  if (!options.file || !options.out) {
++    throw new Error('jest-engine requires --file <test file> and --out <json>');
++  }
++  const filePath = path.isAbsolute(options.file)
++    ? options.file
++    : path.resolve(process.cwd(), options.file);
++  const declaredPath = path
++    .relative(process.cwd(), filePath)
++    .split(path.sep)
++    .join('/');
++  const outPath = path.isAbsolute(options.out)
++    ? options.out
++    : path.resolve(process.cwd(), options.out);
++  const timeoutMs = Number(options.timeout ?? DEFAULT_NODE_TIMEOUT_MS);
++
++  globalThis.__P2P_JEST_TEST_FILE_URL__ = pathToFileURL(filePath).href;
++
++  const collectionErrors = [];
++  try {
++    await import(pathToFileURL(filePath).href);
++  } catch (error) {
++    collectionErrors.push(describeError(error));
++  }
++
++  const run = await runCollectedTests({file: declaredPath, timeoutMs});
++  for (const error of run.collectionErrors) {
++    collectionErrors.push(error.error ?? describeError(error));
++  }
++
++  fs.mkdirSync(path.dirname(outPath), {recursive: true});
++  fs.writeFileSync(
++    outPath,
++    JSON.stringify(
++      {
++        file: declaredPath,
++        timeoutMs,
++        collectionErrors,
++        results: run.results
++      },
++      null,
++      1
++    ),
++    'utf8'
++  );
++  const failed = run.results.filter(result => result.status !== 'passed');
++  console.log(
++    `[p2p-engine] ${declaredPath}: ${run.results.length} node(s), ${run.results.length - failed.length} passed, ${failed.length} failed`
++  );
++  for (const result of failed) {
++    console.log(`[p2p-engine] FAIL ${result.name}: ${result.message}`);
++  }
++  for (const error of collectionErrors) {
++    console.log(`[p2p-engine] collection error: ${error.message}`);
++  }
++}
++
++try {
++  await main();
++} catch (error) {
++  console.error(
++    `[p2p-engine] engine failed before writing results: ${error?.stack ?? error}`
++  );
++  process.exitCode = 1;
++}
+diff --git a/__tests__/p2p/jest-runtime.mjs b/__tests__/p2p/jest-runtime.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4dcf93090e0cce29d499003f7222e2293908fbba
+--- /dev/null
++++ b/__tests__/p2p/jest-runtime.mjs
+@@ -0,0 +1,653 @@
++// Dependency-free Jest-compatible runtime used to execute the repository's
++// Baseline original test files in the replay image (which ships the Node.js
++// runtime but no node_modules and no network).
++//
++// The cache test files only use a small, well-defined subset of the Jest API:
++// describe/it/beforeEach/afterEach/afterAll, the jest.fn/jest.spyOn mock
++// helpers, jest.unstable_mockModule and the expect matchers
++// toBe/toEqual/toThrow/toBeTruthy/toBeFalsy/toHaveBeenCalled[With]. This module
++// implements exactly that subset with real assertions, so the original test
++// bodies execute and report genuine PASS/FAIL outcomes.
++//
++// The module is imported twice: once by the engine (direct import) and once by
++// the original test file through the `@jest/globals` specifier, which the
++// engine's resolve hook redirects here. Both imports share this single module
++// instance, so the suite registry and the module-mock registry are shared.
++/* global globalThis, setTimeout, clearTimeout */
++import {inspect} from 'node:util';
++
++export class AssertionError extends Error {
++  constructor(message) {
++    super(message);
++    this.name = 'AssertionError';
++  }
++}
++
++function fail(message) {
++  throw new AssertionError(message);
++}
++
++function isObjectLike(value) {
++  return (
++    value !== null && (typeof value === 'object' || typeof value === 'function')
++  );
++}
++
++function isPromiseLike(value) {
++  return isObjectLike(value) && typeof value.then === 'function';
++}
++
++export function formatValue(value) {
++  if (typeof value === 'string') {
++    return JSON.stringify(value);
++  }
++  if (typeof value === 'function') {
++    return value.name ? `[Function: ${value.name}]` : '[Function]';
++  }
++  try {
++    return inspect(value, {depth: 4, breakLength: 100});
++  } catch {
++    return String(value);
++  }
++}
++
++export function deepEquals(left, right) {
++  if (Object.is(left, right)) {
++    return true;
++  }
++  if (!isObjectLike(left) || !isObjectLike(right)) {
++    return false;
++  }
++  if (Array.isArray(left) !== Array.isArray(right)) {
++    return false;
++  }
++  if (left instanceof Date || right instanceof Date) {
++    return (
++      left instanceof Date &&
++      right instanceof Date &&
++      left.getTime() === right.getTime()
++    );
++  }
++  if (left instanceof RegExp || right instanceof RegExp) {
++    return (
++      left instanceof RegExp && right instanceof RegExp && String(left) === String(right)
++    );
++  }
++  if (left instanceof Error || right instanceof Error) {
++    return (
++      left instanceof Error &&
++      right instanceof Error &&
++      left.name === right.name &&
++      left.message === right.message
++    );
++  }
++  const leftKeys = Object.keys(left).filter(key => left[key] !== undefined);
++  const rightKeys = Object.keys(right).filter(key => right[key] !== undefined);
++  if (leftKeys.length !== rightKeys.length) {
++    return false;
++  }
++  return leftKeys.every(
++    key =>
++      Object.prototype.hasOwnProperty.call(right, key) &&
++      deepEquals(left[key], right[key])
++  );
++}
++
++function thrownMatches(error, expected) {
++  if (expected === undefined) {
++    return true;
++  }
++  const message = error instanceof Error ? error.message : String(error);
++  if (typeof expected === 'string') {
++    return message.includes(expected);
++  }
++  if (expected instanceof RegExp) {
++    return expected.test(message);
++  }
++  if (typeof expected === 'function') {
++    return error instanceof expected;
++  }
++  if (expected instanceof Error) {
++    return (
++      error instanceof Error &&
++      error.name === expected.name &&
++      message.includes(expected.message)
++    );
++  }
++  if (isObjectLike(expected)) {
++    return Object.keys(expected).every(key =>
++      deepEquals(error?.[key], expected[key])
++    );
++  }
++  return false;
++}
++
++function requireMockFunction(value) {
++  if (!value || value._isMockFunction !== true) {
++    fail(`received value must be a mock function, but got ${formatValue(value)}`);
++  }
++  return value;
++}
++
++function makeMatchers(getActual, negated) {
++  const check = (pass, positive, negative) => {
++    const ok = negated ? !pass : pass;
++    if (!ok) {
++      fail(negated ? negative : positive);
++    }
++  };
++  return {
++    toBe(expected) {
++      const actual = getActual();
++      check(
++        Object.is(actual, expected),
++        `expected ${formatValue(actual)} to be ${formatValue(expected)}`,
++        `expected ${formatValue(actual)} not to be ${formatValue(expected)}`
++      );
++    },
++    toEqual(expected) {
++      const actual = getActual();
++      check(
++        deepEquals(actual, expected),
++        `expected ${formatValue(actual)} to equal ${formatValue(expected)}`,
++        `expected ${formatValue(actual)} not to equal ${formatValue(expected)}`
++      );
++    },
++    toBeTruthy() {
++      const actual = getActual();
++      check(
++        Boolean(actual),
++        `expected ${formatValue(actual)} to be truthy`,
++        `expected ${formatValue(actual)} to be falsy`
++      );
++    },
++    toBeFalsy() {
++      const actual = getActual();
++      check(
++        !actual,
++        `expected ${formatValue(actual)} to be falsy`,
++        `expected ${formatValue(actual)} to be truthy`
++      );
++    },
++    toThrow(expected) {
++      const actual = getActual();
++      if (typeof actual !== 'function') {
++        fail(
++          `received value must be a function, but got ${formatValue(actual)}`
++        );
++      }
++      let error = null;
++      let threw = false;
++      try {
++        actual();
++      } catch (caught) {
++        threw = true;
++        error = caught;
++      }
++      const pass = threw && thrownMatches(error, expected);
++      const description =
++        expected === undefined
++          ? 'to throw'
++          : `to throw an error matching ${formatValue(expected)}`;
++      check(
++        pass,
++        threw
++          ? `expected function not ${description}; it threw ${formatValue(error)}`
++          : `expected function ${description}, but it did not throw`,
++        `expected function not ${description}`
++      );
++    },
++    toHaveBeenCalled() {
++      const mock = requireMockFunction(getActual());
++      check(
++        mock.mock.calls.length > 0,
++        'expected mock function to have been called',
++        `expected mock ${mock._label ?? 'function'} not to have been called, calls: ${formatValue(mock.mock.calls.map(call => call.arguments))}`
++      );
++    },
++    toHaveBeenCalledTimes(count) {
++      const mock = requireMockFunction(getActual());
++      check(
++        mock.mock.calls.length === count,
++        `expected mock function to have been called ${count} times, but it was called ${mock.mock.calls.length} times`,
++        `expected mock function not to have been called ${count} times`
++      );
++    },
++    toHaveBeenCalledWith(...expectedArguments) {
++      const mock = requireMockFunction(getActual());
++      const pass = mock.mock.calls.some(call =>
++        deepEquals(call.arguments, expectedArguments)
++      );
++      check(
++        pass,
++        `expected mock function to have been called with ${formatValue(expectedArguments)}, calls: ${formatValue(mock.mock.calls.map(call => call.arguments))}`,
++        `expected mock function not to have been called with ${formatValue(expectedArguments)}`
++      );
++    }
++  };
++}
++
++function makeRejects(actual) {
++  const settled = (async () => {
++    const value = typeof actual === 'function' ? actual() : actual;
++    if (!isPromiseLike(value)) {
++      fail(
++        `expected ${formatValue(actual)} to be a promise or a function returning a promise`
++      );
++    }
++    return value;
++  })();
++  const rejection = () =>
++    settled.then(
++      resolved => {
++        fail(
++          `expected promise to reject, but it resolved with ${formatValue(resolved)}`
++        );
++      },
++      reason => reason
++    );
++  return {
++    async toThrow(expected) {
++      const reason = await rejection();
++      if (!thrownMatches(reason, expected)) {
++        fail(
++          `expected rejection ${formatValue(reason)} to match ${formatValue(expected)}`
++        );
++      }
++    },
++    async toBe(expected) {
++      const reason = await rejection();
++      if (!Object.is(reason, expected)) {
++        fail(
++          `expected rejection ${formatValue(reason)} to be ${formatValue(expected)}`
++        );
++      }
++    },
++    async toEqual(expected) {
++      const reason = await rejection();
++      if (!deepEquals(reason, expected)) {
++        fail(
++          `expected rejection ${formatValue(reason)} to equal ${formatValue(expected)}`
++        );
++      }
++    }
++  };
++}
++
++export function expect(actual) {
++  const matchers = makeMatchers(() => actual, false);
++  matchers.not = makeMatchers(() => actual, true);
++  // `.rejects` unwraps a promise (or calls a thunk); it must stay lazy so that
++  // expecting a mock function does not invoke the mock.
++  Object.defineProperty(matchers, 'rejects', {
++    configurable: true,
++    get() {
++      return makeRejects(actual);
++    }
++  });
++  return matchers;
++}
++
++// ---------------------------------------------------------------------------
++// Mock functions and spies
++// ---------------------------------------------------------------------------
++
++const allMocks = [];
++
++export function createMockFunction(implementation, name = 'jest.fn()') {
++  const state = {
++    calls: [],
++    instances: [],
++    results: [],
++    oneTime: [],
++    implementation
++  };
++  const mockFunction = function (...args) {
++    state.calls.push({arguments: args});
++    state.instances.push(this);
++    const current = state.oneTime.length
++      ? state.oneTime.shift()
++      : state.implementation;
++    let value;
++    try {
++      value = typeof current === 'function' ? current.apply(this, args) : undefined;
++    } catch (error) {
++      state.results.push({type: 'throw', value: error});
++      throw error;
++    }
++    state.results.push({type: 'return', value});
++    return value;
++  };
++  try {
++    Object.defineProperty(mockFunction, 'name', {value: name});
++  } catch {
++    // the name is cosmetic
++  }
++  mockFunction._isMockFunction = true;
++  mockFunction.mock = state;
++  mockFunction.mockImplementation = next => {
++    state.implementation = next;
++    return mockFunction;
++  };
++  mockFunction.mockImplementationOnce = next => {
++    state.oneTime.push(next);
++    return mockFunction;
++  };
++  mockFunction.mockReturnValue = value =>
++    mockFunction.mockImplementation(() => value);
++  mockFunction.mockReturnValueOnce = value =>
++    mockFunction.mockImplementationOnce(() => value);
++  mockFunction.mockClear = () => {
++    state.calls.length = 0;
++    state.instances.length = 0;
++    state.results.length = 0;
++    return mockFunction;
++  };
++  mockFunction.mockReset = () => {
++    mockFunction.mockClear();
++    state.oneTime.length = 0;
++    state.implementation = undefined;
++    return mockFunction;
++  };
++  mockFunction.mockRestore = () => {
++    if (mockFunction._restore) {
++      mockFunction._restore();
++    }
++    return mockFunction;
++  };
++  mockFunction._label = name;
++  allMocks.push(mockFunction);
++  return mockFunction;
++}
++
++function spyOn(object, key) {
++  const original = object[key];
++  const hadOwn = Object.prototype.hasOwnProperty.call(object, key);
++  const spy = createMockFunction(function (...args) {
++    return original.apply(this, args);
++  }, `spyOn(${String(key)})`);
++  spy._restore = () => {
++    if (hadOwn) {
++      object[key] = original;
++    } else {
++      delete object[key];
++    }
++  };
++  object[key] = spy;
++  return spy;
++}
++
++export const jest = {
++  fn(implementation) {
++    return createMockFunction(implementation, 'jest.fn()');
++  },
++  spyOn,
++  clearAllMocks() {
++    for (const mock of allMocks) {
++      mock.mockClear();
++    }
++  },
++  resetAllMocks() {
++    for (const mock of allMocks) {
++      mock.mockReset();
++      if (mock._restore) {
++        mock._restore();
++      }
++    }
++  },
++  restoreAllMocks() {
++    for (const mock of allMocks) {
++      if (mock._restore) {
++        mock._restore();
++      }
++    }
++  },
++  unstable_mockModule(specifier, factory) {
++    registerMock(specifier, factory);
++  },
++  mock(specifier, factory) {
++    registerMock(specifier, factory);
++  }
++};
++
++// ---------------------------------------------------------------------------
++// Module mock registry (used by the engine's resolve/load hooks)
++// ---------------------------------------------------------------------------
++
++const mockRegistry = new Map();
++
++export function mockKeyFor(specifier, parentURL) {
++  if (typeof specifier !== 'string' || !specifier) {
++    return null;
++  }
++  if (specifier.startsWith('node:')) {
++    return specifier.slice('node:'.length);
++  }
++  if (specifier.startsWith('./') || specifier.startsWith('../')) {
++    if (!parentURL) {
++      return null;
++    }
++    try {
++      return new URL(specifier, parentURL).href;
++    } catch {
++      return null;
++    }
++  }
++  return specifier;
++}
++
++export function registerMock(specifier, factory) {
++  if (typeof factory !== 'function') {
++    throw new Error(`jest.unstable_mockModule requires a factory for ${specifier}`);
++  }
++  const parentURL =
++    globalThis.__P2P_JEST_TEST_FILE_URL__ ?? import.meta.url;
++  const key = mockKeyFor(specifier, parentURL);
++  if (!key) {
++    throw new Error(`cannot resolve the module mock specifier ${specifier}`);
++  }
++  mockRegistry.set(key, {factory});
++}
++
++export function hasMock(key) {
++  return mockRegistry.has(key);
++}
++
++export function mockNamespace(key) {
++  const entry = mockRegistry.get(key);
++  if (!entry) {
++    throw new Error(`no module mock registered for ${key}`);
++  }
++  if (!entry.evaluated) {
++    const namespace = entry.factory();
++    entry.namespace = isObjectLike(namespace) ? namespace : {};
++    entry.evaluated = true;
++  }
++  return entry.namespace;
++}
++
++// ---------------------------------------------------------------------------
++// Suite collection and execution
++// ---------------------------------------------------------------------------
++
++function createSuite(name, parent) {
++  return {
++    name,
++    parent,
++    tests: [],
++    suites: [],
++    beforeEach: [],
++    afterEach: [],
++    beforeAll: [],
++    afterAll: []
++  };
++}
++
++const rootSuite = createSuite('', null);
++const collectionErrors = [];
++let currentSuite = rootSuite;
++
++export function describe(name, fn) {
++  const suite = createSuite(name, currentSuite);
++  currentSuite.suites.push(suite);
++  const previous = currentSuite;
++  currentSuite = suite;
++  try {
++    fn();
++  } catch (error) {
++    collectionErrors.push({name, error: describeError(error)});
++  } finally {
++    currentSuite = previous;
++  }
++}
++
++export function it(name, fn, timeout) {
++  currentSuite.tests.push({name, fn, timeout});
++}
++
++export const test = it;
++
++export function beforeEach(fn) {
++  currentSuite.beforeEach.push(fn);
++}
++
++export function afterEach(fn) {
++  currentSuite.afterEach.push(fn);
++}
++
++export function beforeAll(fn) {
++  currentSuite.beforeAll.push(fn);
++}
++
++export function afterAll(fn) {
++  currentSuite.afterAll.push(fn);
++}
++
++export function describeError(error) {
++  if (error instanceof Error) {
++    return {
++      message: error.message,
++      details: error.stack ?? `${error.name}: ${error.message}`,
++      type: error.name || 'Error'
++    };
++  }
++  const message = typeof error === 'string' ? error : JSON.stringify(error);
++  return {message, details: message, type: 'Error'};
++}
++
++let pendingUncaught = null;
++
++export function recordUncaught(error) {
++  pendingUncaught = error;
++}
++
++function takePendingUncaught() {
++  const error = pendingUncaught;
++  pendingUncaught = null;
++  return error;
++}
++
++async function withTimeout(promise, timeoutMs, name) {
++  let timer = null;
++  try {
++    return await Promise.race([
++      promise,
++      new Promise((_resolve, reject) => {
++        timer = setTimeout(() => {
++          const error = new Error(`test node timed out after ${timeoutMs}ms: ${name}`);
++          error.name = 'HarnessTimeoutError';
++          reject(error);
++        }, timeoutMs);
++      })
++    ]);
++  } finally {
++    if (timer) {
++      clearTimeout(timer);
++    }
++  }
++}
++
++function hookChain(suite, key) {
++  const chain = [];
++  let current = suite;
++  while (current) {
++    chain.push(...current[key]);
++    current = current.parent;
++  }
++  return chain;
++}
++
++async function runSuite(suite, results, timeoutMs) {
++  for (const hook of suite.beforeAll) {
++    try {
++      await withTimeout(Promise.resolve().then(() => hook()), timeoutMs, 'beforeAll');
++    } catch {
++      // a beforeAll failure is surfaced through the nodes that cannot run
++    }
++  }
++
++  for (const node of suite.tests) {
++    const startedAt = Date.now();
++    const result = {
++      name: node.name,
++      status: 'passed',
++      message: '',
++      details: '',
++      type: '',
++      durationMs: 0
++    };
++    const beforeHooks = hookChain(suite, 'beforeEach').reverse();
++    const afterHooks = hookChain(suite, 'afterEach');
++    try {
++      for (const hook of beforeHooks) {
++        await withTimeout(Promise.resolve().then(() => hook()), timeoutMs, 'beforeEach');
++      }
++      await withTimeout(
++        Promise.resolve().then(() => node.fn()),
++        node.timeout ?? timeoutMs,
++        node.name
++      );
++      const uncaught = takePendingUncaught();
++      if (uncaught) {
++        throw uncaught;
++      }
++    } catch (error) {
++      const described = describeError(error);
++      result.status = 'failed';
++      result.message = described.message;
++      result.details = described.details;
++      result.type = described.type;
++    } finally {
++      for (const hook of afterHooks) {
++        try {
++          await withTimeout(Promise.resolve().then(() => hook()), timeoutMs, 'afterEach');
++        } catch {
++          // afterEach failures do not change the recorded node outcome
++        }
++      }
++    }
++    result.durationMs = Date.now() - startedAt;
++    results.push(result);
++  }
++
++  for (const child of suite.suites) {
++    await runSuite(child, results, timeoutMs);
++  }
++
++  for (const hook of suite.afterAll) {
++    try {
++      await withTimeout(Promise.resolve().then(() => hook()), timeoutMs, 'afterAll');
++    } catch {
++      // afterAll failures do not change the recorded node outcomes
++    }
++  }
++}
++
++export async function runCollectedTests({file, timeoutMs = 10000} = {}) {
++  const results = [];
++  await runSuite(rootSuite, results, timeoutMs);
++  for (const result of results) {
++    result.file = file;
++  }
++  return {results, collectionErrors};
++}
+diff --git a/__tests__/p2p/loader-hooks.mjs b/__tests__/p2p/loader-hooks.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..41007a6dcdd6edb5e2db6bcd9985ac4a02b4d559
+--- /dev/null
++++ b/__tests__/p2p/loader-hooks.mjs
+@@ -0,0 +1,78 @@
++// Node module customization hooks used by the supplemental P2P harness.
++//
++// Three rewrites are required to execute the production TypeScript sources in a
++// replay image that only ships the Node.js runtime (no node_modules, no
++// network):
++//   1. the repository imports its own modules with a `.js` extension while the
++//      files on disk are `.ts`, so relative `./x.js` specifiers are redirected
++//      to `./x.ts` when only the TypeScript file exists;
++//   2. `@actions/*` packages are redirected to dependency-free stubs so the
++//      observable contract of the cache entry points can be asserted without
++//      the real toolkit being installed;
++//   3. Node's syntax-only TypeScript transform keeps plain named imports
++//      verbatim, so a module that imports an interface with `import {X}` fails
++//      to link. The load hook appends a runtime placeholder export for every
++//      type-only declaration that has no runtime counterpart, which keeps such
++//      imports linkable while leaving the production source untouched.
++/* global URL, Buffer */
++import {
++  patchTypeOnlyImports,
++  resolveTypeScriptSpecifier
++} from './typescript-compat.mjs';
++
++const ACTIONS_STUBS = new Map([
++  ['@actions/cache', new URL('./stubs/actions-cache.mjs', import.meta.url).href],
++  ['@actions/core', new URL('./stubs/actions-core.mjs', import.meta.url).href],
++  ['@actions/exec', new URL('./stubs/actions-exec.mjs', import.meta.url).href],
++  ['@actions/glob', new URL('./stubs/actions-glob.mjs', import.meta.url).href],
++  [
++    '@actions/http-client',
++    new URL('./stubs/actions-http-client.mjs', import.meta.url).href
++  ],
++  ['@actions/io', new URL('./stubs/actions-io.mjs', import.meta.url).href],
++  [
++    '@actions/tool-cache',
++    new URL('./stubs/actions-tool-cache.mjs', import.meta.url).href
++  ]
++]);
++
++export async function resolve(specifier, context, nextResolve) {
++  // Only main's unrelated installation dependencies are fixtures. The main
++  // entry, cache feature helper and restore implementation remain production
++  // code, so these tests measure the actual cache wiring and error handling.
++  if (context.parentURL?.endsWith('/src/main.ts')) {
++    const fixture = specifier === './installer.js' ? 'main-installer.mjs'
++      : specifier === 'semver' ? 'main-semver.mjs' : null;
++    if (fixture) {
++      return {url: new URL(`./stubs/${fixture}`, import.meta.url).href,
++        shortCircuit: true};
++    }
++  }
++  const stub = ACTIONS_STUBS.get(specifier);
++  if (stub) {
++    return {url: stub, shortCircuit: true};
++  }
++
++  const typescript = resolveTypeScriptSpecifier(specifier, context.parentURL);
++  if (typescript) {
++    return {url: typescript, shortCircuit: true};
++  }
++
++  return nextResolve(specifier, context);
++}
++
++export async function load(url, context, nextLoad) {
++  const result = await nextLoad(url, context);
++  if (!url.endsWith('.ts')) {
++    return result;
++  }
++  const source =
++    typeof result.source === 'string'
++      ? result.source
++      : Buffer.from(result.source ?? '').toString('utf8');
++  const patched = patchTypeOnlyImports(source);
++  if (patched === source) {
++    return result;
++  }
++  return {...result, source: patched};
++}
+diff --git a/__tests__/p2p/manifest.mjs b/__tests__/p2p/manifest.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7180b341d8a9c19f5eff10e9dc59d0b125b5db1
+--- /dev/null
++++ b/__tests__/p2p/manifest.mjs
+@@ -0,0 +1,57 @@
++// Static manifest of the supplemental P2P nodes declared by the p2p plan.
++// The runner uses it as the single source of truth for the expected
++// exact-leaf selectors so a missing node is reported instead of silently
++// dropped from the JUnit report.
++export const TEST_FILES = [
++  {
++    path: '__tests__/p2p/cache-restore-p2p.test.mjs',
++    nodes: [
++      'restore passes the unfiltered discovered cache folder paths to the cache service',
++      'restore discards a failed discovery command and keeps the successful cache folder path',
++      'restore throws Could not get cache folder paths when every discovery command fails',
++      'restore rejects an unknown package manager with the existing message',
++      'restore throws when dependency hashing resolves nothing',
++      'restore reports the missing default dependency file with the workspace and supported pattern',
++      'restore derives the primary key from platform, architecture, Linux ImageOS and hash in order',
++      'restore omits the ImageOS component on non-Linux runners',
++      'restore writes CACHE_KEY before requesting the restore',
++      'restore publishes a cache miss as cache-hit false and logs the existing message',
++      'restore publishes a cache hit as cache-hit true and saves CACHE_RESULT with the restored key',
++      'restore resolves to undefined without a meaningful return value',
++      'restore uses the provided dependency file path instead of the workspace default',
++      'restore passes every line of an explicit dependency path unchanged to hashing',
++      'restore hashes the existing default dependency file inside the workspace',
++      'restore writes only the cross-step state names CACHE_KEY and CACHE_RESULT',
++      'restore entry point loads with only the frozen runtime dependencies',
++    ]
++  },
++  {
++    path: '__tests__/p2p/cache-save-p2p.test.mjs',
++    nodes: [
++      'save skips discovery and saving when the cache input is disabled',
++      'save warns and stops when every discovered cache folder is missing on disk',
++      'save warns about a partially missing folder and still passes the complete path list to the cache service',
++      'save stops without saving when the primary key state is missing',
++      'save stops without saving when the primary key matches the restored key',
++      'save treats a -1 cache id as a non-failure without reporting success',
++      'save warns about a cache service failure and keeps the workflow successful',
++      'save warns and keeps the workflow successful when cache folder discovery fails entirely',
++      'save logs the existing success message after a successful save',
++      'save reads the cross-state names CACHE_KEY and CACHE_RESULT',
++      'save discovers the cache folders through the package manager command list',
++      'save terminates the post step right after a successful save decision when early exit is requested',
++      'save does not terminate the process when the early-exit flag is not requested',
++      'save does not terminate the process when the cache input is disabled even with the early-exit flag',
++      'save logs an unhandled toolkit exception as a warning instead of crashing',
++    ]
++  },
++  {
++    path: '__tests__/p2p/main-cache-p2p.test.mjs',
++    nodes: [
++      'main skips restore when the cache input is disabled',
++      'main skips restore when caching is enabled but the feature is unavailable',
++      'main restores only when caching is enabled and the feature is available',
++      'main warns on a restore failure and completes the workflow outputs',
++    ]
++  },
++];
+diff --git a/__tests__/p2p/original-inventory.mjs b/__tests__/p2p/original-inventory.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..27627d21171e8f517518fe5f75b92be6271cee1d
+--- /dev/null
++++ b/__tests__/p2p/original-inventory.mjs
+@@ -0,0 +1,53 @@
++// Static inventory of the Baseline original test nodes that the P2P runner
++// executes through the repository's own Jest toolchain.
++//
++// The runner merges the original_inventory declared by the materialized
++// {config} with this manifest, so every collected Baseline node stays in the
++// run even when the config file is not substituted or carries only part of
++// the declaration. Every leaf listed here must be observed in the JUnit
++// report.
++export const ORIGINAL_TEST_FILES = [
++  {
++    path: "__tests__/cache-utils.test.ts",
++    nodes: [
++      "should return trimmed stdout in case of successful exit code",
++      "should return error in case of unsuccessful exit code",
++      "should return package manager info in case of valid package manager name",
++      "should throw the error in case of invalid package manager name",
++      "should return path to the cache folders which specified package manager uses",
++      "should return path to the cache folder if one command return empty str",
++      "should throw if the both commands return empty str",
++      "should throw if the specified package name is invalid",
++      "should return true when cache feature is available",
++      "should warn when cache feature is unavailable and GHES is not used",
++      "should return false when cache feature is unavailable",
++      "should warn when cache feature is unavailable and GHES is used",
++      "returns false when the GITHUB_SERVER_URL environment variable is not defined",
++      "returns false when the GITHUB_SERVER_URL environment variable is set to github.com",
++      "returns false when the GITHUB_SERVER_URL environment variable is set to a GitHub Enterprise Cloud-style URL",
++      "returns false when the GITHUB_SERVER_URL environment variable has a .localhost suffix",
++      "returns true when the GITHUB_SERVER_URL environment variable is set to some other URL",
++    ]
++  },
++  {
++    path: "__tests__/cache-restore.test.ts",
++    nodes: [
++      "should throw if dependency file path is not valid",
++      "should inform if cache hit is not occurred",
++      "should set output if cache hit is occurred",
++      "should throw if dependency file is not found in workspace",
++    ]
++  },
++  {
++    path: "__tests__/cache-save.test.ts",
++    nodes: [
++      "does not save cache when the cache input is false",
++      "does not save cache when there are no cache folders on the disk",
++      "does not save cache when the primary key was not generated",
++      "does not save cache when a cache hit occurred on the primary key",
++      "saves cache when the primary key differs from the matched key",
++      "save with -1 cacheId , should not fail workflow",
++      "saves with error from toolkit, should not fail workflow",
++    ]
++  },
++];
+diff --git a/__tests__/p2p/run-p2p.mjs b/__tests__/p2p/run-p2p.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3c607b1017fb1e1cb67b962c6ac344b9b766dbc5
+--- /dev/null
++++ b/__tests__/p2p/run-p2p.mjs
+@@ -0,0 +1,594 @@
++// P2P runner for the cache consolidation task.
++//
++// Usage (the pipeline substitutes the placeholders):
++//   node --experimental-transform-types --no-warnings __tests__/p2p/run-p2p.mjs \
++//     --report {report} --select {p2p_select} --config {config}
++//
++// Two engines feed one regular JUnit report:
++//   * jest-engine.mjs executes the Baseline original test files restored
++//     through `restoration_paths` with the dependency-free Jest-compatible
++//     runtime in this directory, so the report carries the actual
++//     collected/executed assertion result of every `original_inventory`
++//     selector even though the replay image ships no node_modules;
++//   * the dependency-free harness in this directory executes the supplemental
++//     P2P nodes through the local module hooks (see loader-hooks.mjs).
++//
++// The runner itself only uses the Node.js runtime, files inside this
++// repository and the dependencies already present in the image: no network, no
++// package installation.
++/* global process, console, URL, setTimeout, clearTimeout */
++import fs from 'node:fs';
++import os from 'node:os';
++import path from 'node:path';
++import {spawnSync} from 'node:child_process';
++import {register} from 'node:module';
++import {fileURLToPath} from 'node:url';
++
++import {TEST_FILES} from './manifest.mjs';
++import {ORIGINAL_TEST_FILES} from './original-inventory.mjs';
++import {
++  errorResult,
++  recordUncaught,
++  registeredNodes,
++  runNode,
++  setCurrentFile,
++  writeJUnit
++} from './harness.mjs';
++
++const DEFAULT_NODE_TIMEOUT_MS = 10000;
++const DEFAULT_ORIGINAL_TIMEOUT_MS = 60000;
++const IMPORT_TIMEOUT_MS = 15000;
++const PLACEHOLDER = /\{[a-zA-Z0-9_]+\}/;
++
++function parseArguments(argv) {
++  const options = {report: null, select: null, config: null};
++  const names = {report: 'report', select: 'select', config: 'config'};
++  for (let index = 0; index < argv.length; index += 1) {
++    const argument = argv[index];
++    const withEquals = /^--(report|select|config)=(.*)$/.exec(argument);
++    if (withEquals) {
++      options[names[withEquals[1]]] = withEquals[2];
++      continue;
++    }
++    const name = argument.startsWith('--') ? argument.slice(2) : null;
++    if (name && Object.prototype.hasOwnProperty.call(names, name)) {
++      options[names[name]] = argv[index + 1] ?? null;
++      index += 1;
++    }
++  }
++  return options;
++}
++
++function resolveReportPath(value) {
++  if (!value || PLACEHOLDER.test(value)) {
++    return path.join(process.cwd(), 'p2p-report.xml');
++  }
++  return path.isAbsolute(value) ? value : path.resolve(process.cwd(), value);
++}
++
++function resolveTemporaryDirectory(reportPath) {
++  const candidates = [
++    process.env.TMPDIR,
++    os.tmpdir(),
++    path.dirname(reportPath)
++  ];
++  for (const candidate of candidates) {
++    if (!candidate) {
++      continue;
++    }
++    try {
++      fs.accessSync(candidate, fs.constants.W_OK);
++      return candidate;
++    } catch {
++      // try the next candidate
++    }
++  }
++  return path.dirname(reportPath);
++}
++
++function readJsonFile(filePath) {
++  if (!filePath || PLACEHOLDER.test(filePath)) {
++    return null;
++  }
++  try {
++    const resolved = path.isAbsolute(filePath)
++      ? filePath
++      : path.resolve(process.cwd(), filePath);
++    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
++      return null;
++    }
++    return JSON.parse(fs.readFileSync(resolved, 'utf8'));
++  } catch {
++    return null;
++  }
++}
++
++function collectSelectorRows(value, rows = []) {
++  if (Array.isArray(value)) {
++    for (const item of value) {
++      collectSelectorRows(item, rows);
++    }
++    return rows;
++  }
++  if (value && typeof value === 'object') {
++    if (typeof value.selector === 'string' && value.selector.includes('::')) {
++      rows.push(value);
++    }
++    for (const item of Object.values(value)) {
++      collectSelectorRows(item, rows);
++    }
++  }
++  return rows;
++}
++
++function collectStringArrays(value, key, matches = []) {
++  if (Array.isArray(value)) {
++    for (const item of value) {
++      collectStringArrays(item, key, matches);
++    }
++    return matches;
++  }
++  if (value && typeof value === 'object') {
++    for (const [entryKey, item] of Object.entries(value)) {
++      if (entryKey === key && Array.isArray(item)) {
++        matches.push(item);
++      }
++      collectStringArrays(item, key, matches);
++    }
++  }
++  return matches;
++}
++
++// The materialized {config} is the plan declaration; when it carries the
++// original inventory it is the source of truth for the restored original test
++// files. The static manifest keeps the same leaves available when the
++// placeholder is not substituted (for example during local runs).
++function originalFilesFromConfig(config) {
++  if (!config) {
++    return null;
++  }
++  const restorationPaths = new Set(
++    collectStringArrays(config, 'restoration_paths')
++      .flat()
++      .filter(entry => typeof entry === 'string')
++  );
++  const rows = collectSelectorRows(config).filter(row =>
++    restorationPaths.has(row.selector.split('::')[0])
++  );
++  if (!rows.length) {
++    return null;
++  }
++  const files = new Map();
++  for (const row of rows) {
++    const [filePath, leaf] = row.selector.split('::');
++    if (!filePath || !leaf) {
++      continue;
++    }
++    if (!files.has(filePath)) {
++      files.set(filePath, []);
++    }
++    if (!files.get(filePath).includes(leaf)) {
++      files.get(filePath).push(leaf);
++    }
++  }
++  if (!files.size) {
++    return null;
++  }
++  const declaredOrder = [...restorationPaths];
++  const ordered = [...files.keys()].sort((left, right) => {
++    const leftIndex = declaredOrder.indexOf(left);
++    const rightIndex = declaredOrder.indexOf(right);
++    if (leftIndex === -1 || rightIndex === -1) {
++      return left.localeCompare(right);
++    }
++    return leftIndex - rightIndex;
++  });
++  return ordered.map(filePath => ({path: filePath, nodes: files.get(filePath)}));
++}
++
++// The declared plan is the source of truth; the static inventory keeps every
++// collected Baseline node in the run even when the materialized config only
++// carries part of the declaration. Files and leaves are deduplicated, keeping
++// the declared order first and the manifest order for the remaining nodes.
++function mergeOriginalFiles(configured, declared) {
++  const files = new Map();
++  const addFile = (filePath, nodes) => {
++    if (!files.has(filePath)) {
++      files.set(filePath, []);
++    }
++    const leaves = files.get(filePath);
++    for (const leaf of nodes) {
++      if (!leaves.includes(leaf)) {
++        leaves.push(leaf);
++      }
++    }
++  };
++  for (const file of configured ?? []) {
++    addFile(file.path, file.nodes);
++  }
++  for (const file of declared) {
++    addFile(file.path, file.nodes);
++  }
++  return [...files.entries()].map(([filePath, nodes]) => ({
++    path: filePath,
++    nodes
++  }));
++}
++
++function selectorsFromText(text) {
++  const trimmed = text.trim();
++  if (!trimmed) {
++    return [];
++  }
++  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
++    try {
++      return collectSelectorRows(JSON.parse(trimmed)).map(row => row.selector);
++    } catch {
++      // fall through to line based parsing
++    }
++  }
++  return trimmed
++    .split(/\r?\n/)
++    .map(line => line.trim())
++    .filter(line => line && !line.startsWith('#'))
++    .map(line => line.replace(/\s+#.*$/, '').trim())
++    .filter(line => line.includes('::'));
++}
++
++function readSelection(selectPath) {
++  if (!selectPath || PLACEHOLDER.test(selectPath)) {
++    return {selectors: [], source: null};
++  }
++  const resolved = path.isAbsolute(selectPath)
++    ? selectPath
++    : path.resolve(process.cwd(), selectPath);
++  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
++    return {selectors: [], source: null};
++  }
++  return {
++    selectors: selectorsFromText(fs.readFileSync(resolved, 'utf8')),
++    source: resolved
++  };
++}
++
++// Executes one restored Baseline original test file through the
++// dependency-free Jest-compatible engine in this directory. The engine writes
++// one structured assertion result per exact leaf; a missing leaf, a crashed
++// engine or a timeout is surfaced as a failed node instead of being dropped
++// from the report.
++function runOriginalFile(
++  repoRoot,
++  scriptDirectory,
++  file,
++  temporaryDirectory,
++  timeoutMs
++) {
++  const enginePath = path.join(scriptDirectory, 'jest-engine.mjs');
++  const nodeTimeoutMs = Number(
++    process.env.P2P_NODE_TIMEOUT_MS ?? DEFAULT_NODE_TIMEOUT_MS
++  );
++  const resultsFile = path.join(
++    temporaryDirectory,
++    `setup-go-p2p-original-${process.pid}-${Date.now()}-${path.basename(file.path)}.json`
++  );
++  let payload = null;
++  let failureReason = null;
++  let log = '';
++
++  try {
++    const completed = spawnSync(
++      process.execPath,
++      [
++        '--experimental-transform-types',
++        '--no-warnings',
++        enginePath,
++        '--file',
++        file.path,
++        '--out',
++        resultsFile,
++        '--timeout',
++        String(nodeTimeoutMs)
++      ],
++      {
++        cwd: repoRoot,
++        env: {...process.env},
++        encoding: 'utf8',
++        timeout: timeoutMs,
++        maxBuffer: 32 * 1024 * 1024
++      }
++    );
++    log = `${completed.stdout ?? ''}${completed.stderr ?? ''}`.trim();
++    if (completed.error) {
++      failureReason = completed.error;
++    } else if (completed.status !== 0) {
++      failureReason = new Error(
++        `the original-test engine exited with code ${completed.status} for ${file.path}`
++      );
++    }
++  } catch (error) {
++    failureReason = error;
++  }
++
++  try {
++    if (fs.existsSync(resultsFile)) {
++      payload = JSON.parse(fs.readFileSync(resultsFile, 'utf8'));
++    }
++  } catch (error) {
++    failureReason = failureReason ?? error;
++  } finally {
++    try {
++      if (fs.existsSync(resultsFile)) {
++        fs.unlinkSync(resultsFile);
++      }
++    } catch {
++      // leaving the temporary file behind is harmless
++    }
++  }
++
++  const observed = new Map(
++    (payload?.results ?? [])
++      .filter(result => typeof result.name === 'string')
++      .map(result => [result.name, result])
++  );
++  const collectionError = payload?.collectionErrors?.[0];
++  const results = [];
++  for (const leaf of file.nodes) {
++    const observedResult = observed.get(leaf);
++    if (observedResult) {
++      results.push({
++        file: file.path,
++        name: leaf,
++        status: observedResult.status,
++        message: observedResult.message ?? '',
++        details: observedResult.details ?? '',
++        type: observedResult.type ?? '',
++        durationMs: observedResult.durationMs ?? 0
++      });
++      continue;
++    }
++    const reason =
++      failureReason ??
++      (collectionError
++        ? new Error(
++            `the original test file ${file.path} failed to load: ${collectionError.message}`
++          )
++        : new Error(
++            `the original-test engine did not observe the node ${file.path}::${leaf}`
++          ));
++    results.push(errorResult(file.path, leaf, reason));
++  }
++
++  const unexpected = [...observed.keys()].filter(
++    name => !file.nodes.includes(name)
++  );
++  if (unexpected.length) {
++    log = `${log}\n[p2p] engine reported unexpected nodes for ${file.path}: ${unexpected.join(', ')}`.trim();
++  }
++
++  return {
++    results,
++    infrastructureError: failureReason,
++    log
++  };
++}
++
++function runOriginalTests(repoRoot, scriptDirectory, originalFiles, reportPath) {
++  const temporaryDirectory = resolveTemporaryDirectory(reportPath);
++  const timeoutMs = Number(
++    process.env.P2P_ORIGINAL_TIMEOUT_MS ?? DEFAULT_ORIGINAL_TIMEOUT_MS
++  );
++  const results = [];
++  const logs = [];
++  let infrastructureError = null;
++
++  for (const file of originalFiles) {
++    const run = runOriginalFile(
++      repoRoot,
++      scriptDirectory,
++      file,
++      temporaryDirectory,
++      timeoutMs
++    );
++    results.push(...run.results);
++    if (run.log) {
++      logs.push(run.log);
++    }
++    if (run.infrastructureError) {
++      infrastructureError = infrastructureError ?? run.infrastructureError;
++    }
++  }
++
++  return {
++    results,
++    infrastructureError,
++    log: logs.join('\n')
++  };
++}
++
++async function loadSupplementalNodes(scriptDirectory) {
++  const errors = new Map();
++  const originalExit = process.exit;
++  // The post-step module runs itself on import. A regression can make that
++  // module-level call terminate the process before any node is collected, so
++  // exits are absorbed during the import phase and reported through the
++  // affected nodes instead of killing the runner.
++  process.exit = () => {};
++  try {
++    for (const file of TEST_FILES) {
++      setCurrentFile(file.path);
++      try {
++        await withImportTimeout(
++          import(new URL(`./${path.basename(file.path)}`, `file://${scriptDirectory}/`)),
++          file.path
++        );
++      } catch (error) {
++        errors.set(file.path, error);
++      }
++    }
++  } finally {
++    process.exit = originalExit;
++  }
++  return errors;
++}
++
++async function withImportTimeout(importPromise, file) {
++  let timer = null;
++  try {
++    return await Promise.race([
++      importPromise,
++      new Promise((_resolve, reject) => {
++        timer = setTimeout(() => {
++          reject(new Error(`import of ${file} timed out`));
++        }, IMPORT_TIMEOUT_MS);
++      })
++    ]);
++  } finally {
++    if (timer) {
++      clearTimeout(timer);
++    }
++  }
++}
++
++function expectedSupplementalNodes(importErrors) {
++  const nodes = [];
++  for (const file of TEST_FILES) {
++    const registered = registeredNodes().get(file.path) ?? [];
++    const byName = new Map(registered.map(node => [node.name, node]));
++    for (const name of file.nodes) {
++      const node = byName.get(name);
++      if (node && !importErrors.has(file.path)) {
++        nodes.push({file: file.path, name, fn: node.fn});
++      } else {
++        nodes.push({
++          file: file.path,
++          name,
++          fn: null,
++          importError:
++            importErrors.get(file.path) ??
++            new Error(`node is not registered by ${file.path}`)
++        });
++      }
++    }
++  }
++  return nodes;
++}
++
++function normalizeSelector(selector) {
++  const separator = selector.indexOf('::');
++  if (separator === -1) {
++    return {path: selector.replace(/\\/g, '/'), leaf: ''};
++  }
++  let selectorPath = selector.slice(0, separator).replace(/\\/g, '/');
++  if (selectorPath.startsWith('./')) {
++    selectorPath = selectorPath.slice(2);
++  }
++  return {path: selectorPath, leaf: selector.slice(separator + 2)};
++}
++
++async function main() {
++  const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
++  const repoRoot = path.resolve(scriptDirectory, '..', '..');
++  const options = parseArguments(process.argv.slice(2));
++  const reportPath = resolveReportPath(options.report);
++  const nodeTimeoutMs = Number(
++    process.env.P2P_NODE_TIMEOUT_MS ?? DEFAULT_NODE_TIMEOUT_MS
++  );
++
++  const config = readJsonFile(options.config);
++  const originalFiles = mergeOriginalFiles(
++    originalFilesFromConfig(config),
++    ORIGINAL_TEST_FILES
++  );
++  const selection = readSelection(options.select);
++
++  const originalRun = runOriginalTests(
++    repoRoot,
++    scriptDirectory,
++    originalFiles,
++    reportPath
++  );
++  if (originalRun.log) {
++    console.log(originalRun.log);
++  }
++
++  register('./loader-hooks.mjs', import.meta.url);
++  const importErrors = await loadSupplementalNodes(scriptDirectory);
++  const supplementalNodes = expectedSupplementalNodes(importErrors);
++
++  const results = [...originalRun.results];
++  for (const node of supplementalNodes) {
++    if (!node.fn) {
++      results.push(errorResult(node.file, node.name, node.importError));
++      continue;
++    }
++    results.push(await runNode(node, nodeTimeoutMs));
++  }
++
++  const declaredSelectors = new Set([
++    ...originalFiles.flatMap(file =>
++      file.nodes.map(leaf => `${file.path}::${leaf}`)
++    ),
++    ...TEST_FILES.flatMap(file => file.nodes.map(leaf => `${file.path}::${leaf}`))
++  ]);
++  for (const selector of selection.selectors) {
++    const normalized = normalizeSelector(selector);
++    const declared = [...declaredSelectors].some(candidate => {
++      const candidateNormalized = normalizeSelector(candidate);
++      return (
++        candidateNormalized.leaf === normalized.leaf &&
++        (candidateNormalized.path === normalized.path ||
++          normalized.path.endsWith(`/${candidateNormalized.path}`))
++      );
++    });
++    if (!declared) {
++      results.push(
++        errorResult(
++          normalized.path,
++          normalized.leaf || selector,
++          new Error(
++            `selected P2P node is not declared by this runner: ${selector}`
++          )
++        )
++      );
++    }
++  }
++
++  writeJUnit(reportPath, results);
++
++  const failed = results.filter(result => result.status !== 'passed');
++  const selectionLabel = selection.source
++    ? `${selection.selectors.length} selected from ${selection.source}`
++    : `all ${declaredSelectors.size} declared nodes`;
++  console.log(
++    `[p2p] ran ${results.length} node(s) (${selectionLabel}); ${results.length - failed.length} passed, ${failed.length} failed`
++  );
++  for (const result of failed) {
++    console.log(`[p2p] FAIL ${result.file}::${result.name}: ${result.message}`);
++  }
++  console.log(`[p2p] JUnit report written to ${reportPath}`);
++
++  if (originalRun.infrastructureError) {
++    console.error(
++      `[p2p] original-test engine unavailable: ${originalRun.infrastructureError.message}`
++    );
++    process.exitCode = 1;
++  }
++}
++
++process.on('uncaughtException', error => {
++  recordUncaught(error);
++});
++process.on('unhandledRejection', error => {
++  recordUncaught(error instanceof Error ? error : new Error(String(error)));
++});
++
++try {
++  await main();
++} catch (error) {
++  // The report is the only evidence the pipeline can consume, so a runner
++  // failure is surfaced through a non-zero exit code instead of a silent exit.
++  console.error(
++    `[p2p] runner failed before writing the report: ${error?.stack ?? error}`
++  );
++  process.exitCode = 1;
++}
+diff --git a/__tests__/p2p/stubs/actions-cache.mjs b/__tests__/p2p/stubs/actions-cache.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..cbcf73c7b9d8051a7f194c9886770593d78d0dea
+--- /dev/null
++++ b/__tests__/p2p/stubs/actions-cache.mjs
+@@ -0,0 +1,50 @@
++// Dependency-free stand-in for @actions/cache used by the P2P runner.
++import {nextSeq} from './call-log.mjs';
++
++const state = {
++  restoreImpl: async () => '',
++  saveImpl: async () => 0,
++  featureAvailable: true,
++  calls: []
++};
++
++function record(name, args) {
++  state.calls.push({name, args, seq: nextSeq()});
++}
++
++export function __reset() {
++  state.restoreImpl = async () => '';
++  state.saveImpl = async () => 0;
++  state.featureAvailable = true;
++  state.calls.length = 0;
++}
++
++export function __setRestoreImpl(fn) {
++  state.restoreImpl = fn;
++}
++
++export function __setSaveImpl(fn) {
++  state.saveImpl = fn;
++}
++
++export function __setFeatureAvailable(value) {
++  state.featureAvailable = value;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export async function restoreCache(paths, key) {
++  record('restoreCache', [paths, key]);
++  return await state.restoreImpl(paths, key);
++}
++
++export async function saveCache(paths, key) {
++  record('saveCache', [paths, key]);
++  return await state.saveImpl(paths, key);
++}
++
++export function isFeatureAvailable() {
++  return state.featureAvailable;
++}
+diff --git a/__tests__/p2p/stubs/actions-core.mjs b/__tests__/p2p/stubs/actions-core.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..2cd1420ddeb5c9387982e6839111a20aa487e806
+--- /dev/null
++++ b/__tests__/p2p/stubs/actions-core.mjs
+@@ -0,0 +1,141 @@
++// Dependency-free stand-in for @actions/core used by the P2P runner. It records
++// every call so the P2P nodes can assert on the observable contract of the
++// production cache entry points without the real toolkit being installed.
++import {nextSeq} from './call-log.mjs';
++
++const state = {
++  booleans: new Map(),
++  inputs: new Map(),
++  states: new Map(),
++  calls: []
++};
++
++function record(name, args) {
++  state.calls.push({name, args, seq: nextSeq()});
++}
++
++export function __reset() {
++  state.booleans.clear();
++  state.inputs.clear();
++  state.states.clear();
++  state.calls.length = 0;
++}
++
++export function __setBooleanInput(name, value) {
++  state.booleans.set(name, value);
++}
++
++export function __setInput(name, value) {
++  state.inputs.set(name, value);
++}
++
++export function __setState(name, value) {
++  state.states.set(name, value);
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export function __allCalls() {
++  return state.calls;
++}
++
++export function __messages(name) {
++  return state.calls
++    .filter(call => call.name === name)
++    .map(call => String(call.args[0]));
++}
++
++export function info(...args) {
++  record('info', args);
++}
++
++export function warning(...args) {
++  record('warning', args);
++}
++
++export function debug(...args) {
++  record('debug', args);
++}
++
++export function error(...args) {
++  record('error', args);
++}
++
++export function notice(...args) {
++  record('notice', args);
++}
++
++export function setFailed(...args) {
++  record('setFailed', args);
++}
++
++export function setOutput(...args) {
++  record('setOutput', args);
++}
++
++export function saveState(...args) {
++  record('saveState', args);
++}
++
++export function exportVariable(...args) {
++  record('exportVariable', args);
++}
++
++export function addPath(...args) {
++  record('addPath', args);
++}
++
++export function setSecret(...args) {
++  record('setSecret', args);
++}
++
++export function startGroup(...args) {
++  record('startGroup', args);
++}
++
++export function endGroup(...args) {
++  record('endGroup', args);
++}
++
++export function getMultilineInput(...args) {
++  record('getMultilineInput', args);
++  return [];
++}
++
++export function getState(name) {
++  record('getState', [name]);
++  return state.states.get(name) ?? '';
++}
++
++export function getInput(name) {
++  record('getInput', [name]);
++  return state.inputs.get(name) ?? '';
++}
++
++export function getBooleanInput(name) {
++  record('getBooleanInput', [name]);
++  return state.booleans.get(name) ?? false;
++}
++
++export async function group(name, fn) {
++  record('group', [name]);
++  return await fn();
++}
++
++export function isDebug() {
++  return false;
++}
++
++export function toPlatformPath(value) {
++  return value;
++}
++
++export function toWin32Path(value) {
++  return value;
++}
++
++export function toPosixPath(value) {
++  return value;
++}
+diff --git a/__tests__/p2p/stubs/actions-exec.mjs b/__tests__/p2p/stubs/actions-exec.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4404b40a27a079c804aa00b93fedd82268e3a251
+--- /dev/null
++++ b/__tests__/p2p/stubs/actions-exec.mjs
+@@ -0,0 +1,35 @@
++// Dependency-free stand-in for @actions/exec used by the P2P runner.
++import {nextSeq} from './call-log.mjs';
++
++const state = {
++  impl: async () => ({exitCode: 0, stdout: '', stderr: ''}),
++  calls: []
++};
++
++function record(name, args) {
++  state.calls.push({name, args, seq: nextSeq()});
++}
++
++export function __reset() {
++  state.impl = async () => ({exitCode: 0, stdout: '', stderr: ''});
++  state.calls.length = 0;
++}
++
++export function __setExecImpl(fn) {
++  state.impl = fn;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export async function getExecOutput(commandLine, args, options) {
++  record('getExecOutput', [commandLine, args, options]);
++  return await state.impl(commandLine, args, options);
++}
++
++export async function exec(commandLine, args, options) {
++  record('exec', [commandLine, args, options]);
++  const result = await state.impl(commandLine, args, options);
++  return result.exitCode ?? 0;
++}
+diff --git a/__tests__/p2p/stubs/actions-glob.mjs b/__tests__/p2p/stubs/actions-glob.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb547e17853a909b9fba6bb2c0c07187afc32f98
+--- /dev/null
++++ b/__tests__/p2p/stubs/actions-glob.mjs
+@@ -0,0 +1,36 @@
++// Dependency-free stand-in for @actions/glob used by the P2P runner.
++import {nextSeq} from './call-log.mjs';
++
++const state = {
++  hashImpl: async () => '',
++  createImpl: async () => ({glob: async () => []}),
++  calls: []
++};
++
++function record(name, args) {
++  state.calls.push({name, args, seq: nextSeq()});
++}
++
++export function __reset() {
++  state.hashImpl = async () => '';
++  state.createImpl = async () => ({glob: async () => []});
++  state.calls.length = 0;
++}
++
++export function __setHashFilesImpl(fn) {
++  state.hashImpl = fn;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export async function hashFiles(...patterns) {
++  record('hashFiles', patterns);
++  return await state.hashImpl(...patterns);
++}
++
++export async function create(...patterns) {
++  record('create', patterns);
++  return await state.createImpl(...patterns);
++}
+diff --git a/__tests__/p2p/stubs/actions-http-client.mjs b/__tests__/p2p/stubs/actions-http-client.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e38e6a19b5227bc604053494231fea3b349a9199
+--- /dev/null
++++ b/__tests__/p2p/stubs/actions-http-client.mjs
+@@ -0,0 +1,37 @@
++// Dependency-free stand-in for @actions/http-client used by the P2P runner.
++import {nextSeq} from './call-log.mjs';
++
++const state = {calls: []};
++
++function record(name, args) {
++  state.calls.push({name, args, seq: nextSeq()});
++}
++
++export function __reset() {
++  state.calls.length = 0;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export class HttpClient {
++  constructor(userAgent) {
++    record('constructor', [userAgent]);
++  }
++
++  async getJson(url, headers) {
++    record('getJson', [url, headers]);
++    return {result: null, statusCode: 404, headers: {}};
++  }
++
++  async get(url, headers) {
++    record('get', [url, headers]);
++    return {message: {statusCode: 404, headers: {}}};
++  }
++
++  async postJson(url, data, headers) {
++    record('postJson', [url, data, headers]);
++    return {result: null, statusCode: 404, headers: {}};
++  }
++}
+diff --git a/__tests__/p2p/stubs/actions-io.mjs b/__tests__/p2p/stubs/actions-io.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..43bdb5a1403cf123b2d504a70a14f35836275c18
+--- /dev/null
++++ b/__tests__/p2p/stubs/actions-io.mjs
+@@ -0,0 +1,34 @@
++// Dependency-free stand-in for @actions/io used by the P2P runner.
++import {nextSeq} from './call-log.mjs';
++
++const state = {calls: [], whichImpl: async () => ''};
++
++function record(name, args) {
++  state.calls.push({name, args, seq: nextSeq()});
++}
++
++export function __reset() {
++  state.calls.length = 0;
++  state.whichImpl = async () => '';
++}
++
++export function __setWhichImpl(fn) {
++  state.whichImpl = fn;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export async function which(tool) {
++  record('which', [tool]);
++  return await state.whichImpl(tool);
++}
++
++export async function mkdirP(dir) {
++  record('mkdirP', [dir]);
++}
++
++export async function cp(source, dest) {
++  record('cp', [source, dest]);
++}
+diff --git a/__tests__/p2p/stubs/actions-tool-cache.mjs b/__tests__/p2p/stubs/actions-tool-cache.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ebf1bb1f3ebc4582327f7ef229e740f7bb71be0
+--- /dev/null
++++ b/__tests__/p2p/stubs/actions-tool-cache.mjs
+@@ -0,0 +1,56 @@
++// Dependency-free stand-in for @actions/tool-cache used by the P2P runner.
++import {nextSeq} from './call-log.mjs';
++
++const state = {calls: []};
++
++function record(name, args) {
++  state.calls.push({name, args, seq: nextSeq()});
++}
++
++export function __reset() {
++  state.calls.length = 0;
++}
++
++export function __calls(name) {
++  return state.calls.filter(call => call.name === name);
++}
++
++export async function find(toolName, versionSpec, arch) {
++  record('find', [toolName, versionSpec, arch]);
++  return '';
++}
++
++export async function downloadTool(url, dest) {
++  record('downloadTool', [url, dest]);
++  return '';
++}
++
++export async function extractZip(file, dest) {
++  record('extractZip', [file, dest]);
++  return '';
++}
++
++export async function extractTar(file, dest, flags) {
++  record('extractTar', [file, dest, flags]);
++  return '';
++}
++
++export async function cacheDir(sourceDir, tool, version, arch) {
++  record('cacheDir', [sourceDir, tool, version, arch]);
++  return '';
++}
++
++export async function cacheFile(sourceFile, targetFile, tool, version, arch) {
++  record('cacheFile', [sourceFile, targetFile, tool, version, arch]);
++  return '';
++}
++
++export async function getManifestFromRepo(owner, repo, auth, branch) {
++  record('getManifestFromRepo', [owner, repo, auth, branch]);
++  return [];
++}
++
++export async function findAllVersions(toolName, arch) {
++  record('findAllVersions', [toolName, arch]);
++  return [];
++}
+diff --git a/__tests__/p2p/stubs/call-log.mjs b/__tests__/p2p/stubs/call-log.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..222178e84d0cb442b8dbc2942e08bc3b18c5a3dd
+--- /dev/null
++++ b/__tests__/p2p/stubs/call-log.mjs
+@@ -0,0 +1,9 @@
++let sequence = 0;
++
++export function nextSeq() {
++  return ++sequence;
++}
++
++export function resetSeq() {
++  sequence = 0;
++}
+diff --git a/__tests__/p2p/typescript-compat.mjs b/__tests__/p2p/typescript-compat.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..1e2b99d2f380207875c7eb2c3aa0fa8b1f762c5e
+--- /dev/null
++++ b/__tests__/p2p/typescript-compat.mjs
+@@ -0,0 +1,121 @@
++// Shared Node module-customization helpers used by the asynchronous loader
++// hooks of the supplemental harness and by the synchronous hooks of the
++// original-test engine.
++//
++// Two rewrites are required to execute the production TypeScript sources in a
++// replay image that only ships the Node.js runtime (no node_modules, no
++// network):
++//   1. the repository imports its own modules with a `.js` extension while the
++//      files on disk are `.ts`, so relative `./x.js` specifiers are redirected
++//      to `./x.ts` when only the TypeScript file exists;
++//   2. Node's syntax-only TypeScript transform keeps plain named imports
++//      verbatim, so a module that imports an interface with `import {X}` fails
++//      to link. The load hook appends a runtime placeholder export for every
++//      type-only declaration that has no runtime counterpart, which keeps such
++//      imports linkable while leaving the production source untouched.
++/* global URL, Buffer */
++import {existsSync} from 'node:fs';
++import {fileURLToPath} from 'node:url';
++
++// Returns the `.ts` URL for a relative `./x.js` specifier when the matching
++// JavaScript file does not exist, or null when no rewrite is required.
++export function resolveTypeScriptSpecifier(specifier, parentURL) {
++  const isRelative = specifier.startsWith('./') || specifier.startsWith('../');
++  if (!isRelative || !specifier.endsWith('.js') || !parentURL) {
++    return null;
++  }
++  const javascriptUrl = new URL(specifier, parentURL);
++  const typescriptUrl = new URL(
++    `${specifier.slice(0, -'.js'.length)}.ts`,
++    parentURL
++  );
++  if (
++    existsSync(fileURLToPath(typescriptUrl)) &&
++    !existsSync(fileURLToPath(javascriptUrl))
++  ) {
++    return typescriptUrl.href;
++  }
++  return null;
++}
++
++function collectRuntimeExports(source) {
++  const names = new Set();
++  const declaration = new RegExp(
++    '(?:^|[\\n;])\\s*export\\s+(?:declare\\s+)?(?:async\\s+)?(?:const|let|var|function|class|enum|namespace)\\s+([A-Za-z_$][\\w$]*)',
++    'g'
++  );
++  for (const match of source.matchAll(declaration)) {
++    names.add(match[1]);
++  }
++  const exportList = new RegExp(
++    '(?:^|[\\n;])\\s*export\\s*\\{([^}]*)\\}(?!\\s*from)',
++    'g'
++  );
++  for (const match of source.matchAll(exportList)) {
++    for (const entry of match[1].split(',')) {
++      const specifier = entry.trim();
++      if (!specifier || specifier.startsWith('type ')) {
++        continue;
++      }
++      const alias = /\bas\s+([A-Za-z_$][\w$]*)$/.exec(specifier);
++      names.add(alias ? alias[1] : specifier);
++    }
++  }
++  const exportFrom = new RegExp(
++    '(?:^|[\\n;])\\s*export\\s*\\{([^}]*)\\}\\s*from\\b',
++    'g'
++  );
++  for (const match of source.matchAll(exportFrom)) {
++    for (const entry of match[1].split(',')) {
++      const specifier = entry.trim();
++      if (!specifier || specifier.startsWith('type ')) {
++        continue;
++      }
++      const alias = /\bas\s+([A-Za-z_$][\w$]*)$/.exec(specifier);
++      names.add(alias ? alias[1] : specifier);
++    }
++  }
++  return names;
++}
++
++function collectTypeExports(source) {
++  const names = new Set();
++  const patterns = [
++    /(?:^|[\n;])\s*export\s+(?:declare\s+)?interface\s+([A-Za-z_$][\w$]*)/g,
++    /(?:^|[\n;])\s*export\s+(?:declare\s+)?type\s+([A-Za-z_$][\w$]*)\s*[=<]/g,
++    /(?:^|[\n;])\s*export\s+declare\s+(?:const|let|var|function|class|enum|namespace)\s+([A-Za-z_$][\w$]*)/g,
++    /(?:^|[\n;])\s*export\s+type\s*\{([^}]*)\}/g,
++    /(?:^|[\n;])\s*export\s*\{([^}]*\btype\s+[A-Za-z_$][\w$]*[^}]*)\}/g
++  ];
++  for (const pattern of patterns) {
++    for (const match of source.matchAll(pattern)) {
++      const body = match[1];
++      const candidates =
++        body.includes(',') || body.includes(' as ') ? body.split(',') : [body];
++      for (const candidate of candidates) {
++        const specifier = candidate.trim().replace(/^type\s+/, '');
++        if (!specifier) {
++          continue;
++        }
++        const alias = /\bas\s+([A-Za-z_$][\w$]*)$/.exec(specifier);
++        names.add(alias ? alias[1] : specifier.trim());
++      }
++    }
++  }
++  return names;
++}
++
++export function patchTypeOnlyImports(source) {
++  const runtimeExports = collectRuntimeExports(source);
++  const typeExports = collectTypeExports(source);
++  const missing = [...typeExports].filter(
++    name => /^[A-Za-z_$][\w$]*$/.test(name) && !runtimeExports.has(name)
++  );
++  if (!missing.length) {
++    return source;
++  }
++  const placeholders = missing
++    .map(name => `export const ${name} = undefined;`)
++    .join('\n');
++  return `${source}\n// P2P loader placeholder for type-only exports.\n${placeholders}\n`;
++}
+diff --git a/__tests__/p2p/main-cache-p2p.test.mjs b/__tests__/p2p/main-cache-p2p.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7bff665aea4accabcf74204927088102db3fc491
+--- /dev/null
++++ b/__tests__/p2p/main-cache-p2p.test.mjs
+@@ -0,0 +1,105 @@
++// Direct main-entry regression tests: installation is outside this task's
++// scope, but the cache feature gate, restore call and catch are real code.
++import assert from 'node:assert/strict';
++import cp from 'node:child_process';
++import fs from 'node:fs';
++import os from 'node:os';
++import path from 'node:path';
++import {syncBuiltinESMExports} from 'node:module';
++import {test} from './harness.mjs';
++import * as core from './stubs/actions-core.mjs';
++import * as cache from './stubs/actions-cache.mjs';
++import * as exec from './stubs/actions-exec.mjs';
++import * as glob from './stubs/actions-glob.mjs';
++import * as io from './stubs/actions-io.mjs';
++
++const {run} = await import('../../src/main.js');
++
++async function runMain({enabled, available, restoreError = null}) {
++  core.__reset();
++  cache.__reset();
++  exec.__reset();
++  glob.__reset();
++  io.__reset();
++  core.__setBooleanInput('cache', enabled);
++  core.__setInput('cache-dependency-path', 'explicit/go.sum');
++  cache.__setFeatureAvailable(available);
++  cache.__setRestoreImpl(async () => {
++    if (restoreError) throw new Error(restoreError);
++    return '';
++  });
++  glob.__setHashFilesImpl(async () => 'main-cache-hash');
++  exec.__setExecImpl(async command => {
++    assert.ok(['go env GOMODCACHE', 'go env GOCACHE'].includes(command));
++    return {exitCode: 0, stdout: `/cache/${command.endsWith('GOMODCACHE') ? 'mod' : 'build'}\n`, stderr: ''};
++  });
++  io.__setWhichImpl(async tool => {
++    assert.equal(tool, 'go');
++    return 'go';
++  });
++
++  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'setup-go-main-p2p-'));
++  const environment = {
++    RUNNER_OS: 'Linux', ImageOS: 'ubuntu-22.04',
++    GITHUB_WORKSPACE: workspace, GOTOOLCHAIN: undefined
++  };
++  const saved = Object.fromEntries(Object.keys(environment).map(key => [key, process.env[key]]));
++  const realExecSync = cp.execSync;
++  cp.execSync = command => {
++    if (command === 'go env GOPATH') return Buffer.from(`${workspace}\n`);
++    if (command === 'go version') return Buffer.from('go version go1.21.13 linux/amd64\n');
++    if (command === 'go env') return Buffer.from('GOCACHE="/cache/build"\n');
++    throw new Error(`unexpected process command in a cache wiring test: ${command}`);
++  };
++  syncBuiltinESMExports();
++  try {
++    for (const [key, value] of Object.entries(environment)) {
++      if (value === undefined) delete process.env[key];
++      else process.env[key] = value;
++    }
++    await run();
++    assert.equal(core.__calls('setFailed').length, 0, 'cache handling must not fail the workflow');
++    assert.ok(core.__calls('setOutput').some(call =>
++      call.args[0] === 'go-version' && call.args[1] === '1.21.13'),
++    'main must finish its normal version output after cache handling');
++    assert.equal(core.__calls('endGroup').length, 1,
++      'main must finish its normal go env output after cache handling');
++  } finally {
++    cp.execSync = realExecSync;
++    syncBuiltinESMExports();
++    for (const [key, value] of Object.entries(saved)) {
++      if (value === undefined) delete process.env[key];
++      else process.env[key] = value;
++    }
++    fs.rmSync(workspace, {recursive: true, force: true});
++  }
++}
++
++test('main skips restore when the cache input is disabled', async () => {
++  await runMain({enabled: false, available: true});
++  assert.equal(cache.__calls('restoreCache').length, 0);
++  assert.equal(exec.__calls('getExecOutput').length, 0);
++});
++
++test('main skips restore when caching is enabled but the feature is unavailable', async () => {
++  await runMain({enabled: true, available: false});
++  assert.equal(cache.__calls('restoreCache').length, 0);
++  assert.equal(exec.__calls('getExecOutput').length, 0);
++});
++
++test('main restores only when caching is enabled and the feature is available', async () => {
++  await runMain({enabled: true, available: true});
++  const calls = cache.__calls('restoreCache');
++  assert.equal(calls.length, 1);
++  assert.deepEqual(calls[0].args, [
++    ['/cache/mod', '/cache/build'],
++    `setup-go-Linux-${process.arch}-ubuntu-22.04-go-1.21.13-main-cache-hash`
++  ]);
++  assert.deepEqual(glob.__calls('hashFiles')[0].args, ['explicit/go.sum']);
++});
++
++test('main warns on a restore failure and completes the workflow outputs', async () => {
++  await runMain({enabled: true, available: true, restoreError: 'cache service unavailable'});
++  assert.equal(cache.__calls('restoreCache').length, 1);
++  assert.ok(core.__messages('warning').includes('Restore cache failed: cache service unavailable'));
++});
+diff --git a/__tests__/p2p/stubs/main-installer.mjs b/__tests__/p2p/stubs/main-installer.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7eaaee5be3fd1faf18b293bfc3ba0a76a66a5d1f
+--- /dev/null
++++ b/__tests__/p2p/stubs/main-installer.mjs
+@@ -0,0 +1,12 @@
++// main cache tests use a pre-installed Go version, never installation.
++export const GOTOOLCHAIN_ENV_VAR = 'GOTOOLCHAIN';
++export const GOTOOLCHAIN_LOCAL_VAL = 'local';
++export async function getGo() {
++  throw new Error('unexpected Go installation in a cache wiring test');
++}
++export function makeSemver() {
++  throw new Error('unexpected installed-version conversion in a cache wiring test');
++}
++export function parseGoVersionFile() {
++  throw new Error('unexpected version-file lookup in a cache wiring test');
++}
+diff --git a/__tests__/p2p/stubs/main-semver.mjs b/__tests__/p2p/stubs/main-semver.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..22f865ccea6cbdd1cdbe7f4a91b450bcafb4113b
+--- /dev/null
++++ b/__tests__/p2p/stubs/main-semver.mjs
+@@ -0,0 +1,4 @@
++// No version comparison is needed when main uses the pre-installed Go.
++export function lt() {
++  throw new Error('unexpected installation version comparison in a cache wiring test');
++}

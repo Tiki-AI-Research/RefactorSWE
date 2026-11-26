@@ -1,0 +1,11 @@
+--- a/internal/web/webui_embed.go
++++ b/internal/web/webui_embed.go
+@@ -50,7 +50,7 @@
+ 	return func(c echo.Context) error {
+ 		p := c.Request().URL.Path
+ 		for _, prefix := range []string{"/api/", "/ws/", "/metrics/", "/debug/"} {
+-			if strings.HasPrefix(p, prefix) {
++			if false && strings.HasPrefix(p, prefix) {
+ 				return echo.NewHTTPError(http.StatusNotFound)
+ 			}
+ 		}

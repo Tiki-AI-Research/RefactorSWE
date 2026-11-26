@@ -1,0 +1,2635 @@
+diff --git a/__tests__/f2p-dimension-contract.test.ts b/__tests__/f2p-dimension-contract.test.ts
+new file mode 100644
+index 0000000..23bc6bc
+--- /dev/null
++++ b/__tests__/f2p-dimension-contract.test.ts
+@@ -0,0 +1,410 @@
++/**
++ * Observe real production function ownership using test-only AST instrumentation.
++ * Function identities are source positions, not stack names or call sites.
++ * Public wrappers, aliases and bound shared drivers use the same contract.
++ */
++import {jest, describe, it, expect, beforeEach} from '@jest/globals';
++import {productionFactory, extensionKey} from './support/dimension-probe.js';
++
++jest.unstable_mockModule('@actions/core', () => ({
++  debug: jest.fn(),
++  info: jest.fn(),
++  warning: jest.fn(),
++  error: jest.fn(),
++  setFailed: jest.fn(),
++  setOutput: jest.fn()
++}));
++jest.unstable_mockModule('@actions/github', () => ({
++  context: {
++    payload: {
++      pull_request: {
++        number: 123,
++        head: {ref: 'head-branch'},
++        base: {ref: 'base-branch'}
++      }
++    },
++    repo: {owner: 'monalisa', repo: 'helloworld'}
++  },
++  getOctokit: jest.fn()
++}));
++
++const factory = await productionFactory();
++let probe = factory();
++const run = (configs: any[], files: string[] = []) => probe.run(configs, files);
++
++function innerFrames(
++  record: any,
++  entryName: 'checkAny' | 'checkAll'
++): string[] {
++  const quantifier = entryName === 'checkAny' ? 'any' : 'all';
++  const other = quantifier === 'any' ? 'all' : 'any';
++  const control = run(
++    other === 'all' ? allAllDimensionsMatch : anyAllDimensionsFail,
++    ['foo.txt']
++  );
++  const candidates = probe.frames(record, quantifier);
++  // Only owners also reached by every dimension of the other quantifier count.
++  // The outer matching entry point is excluded by the exported target boundary.
++  return candidates.filter(
++    id =>
++      control.adapters.length > 0 &&
++      control.adapters.every(call => probe.frames(call, other).includes(id)) &&
++      probe.ownsAllAdapters(id, control.adapters)
++  );
++}
++
++function commonFrameKeys(lists: Array<string[] | null>): string[] {
++  if (!lists.length || lists.some(list => !list?.length)) return [];
++  return lists[0]!.filter(id => lists.every(list => list!.includes(id)));
++}
++
++function extensionRun(quantifier: 'any' | 'all', patterns: string[][]) {
++  const extended = factory(true);
++  expect(extended.registries.size).toBeGreaterThan(0);
++  let result: ReturnType<typeof extended.run> | undefined;
++  // Executing an added dimension without throwing is part of this contract.
++  // Keep an extension error as a real Jest assertion, with its original cause.
++  expect(() => {
++    result = extended.run(
++      [
++        {
++          [quantifier]: patterns.map(pattern => ({[extensionKey]: pattern}))
++        }
++      ],
++      ['foo.txt']
++    );
++  }).not.toThrow();
++  if (!result) throw new Error('Extension probe did not produce a result');
++  // A coincidental default boolean is insufficient: the cloned adapter must run.
++  expect(result.adapters.map(call => call.args[0])).toContainEqual(patterns[0]);
++  return result;
++}
++
++const anyAllDimensionsFail: any[] = [
++  {
++    any: [
++      {
++        baseBranch: ['^base-branch-that-does-not-match$'],
++        changedFiles: [{anyGlobToAnyFile: ['*.file-that-does-not-match']}],
++        headBranch: ['^head-branch-that-does-not-match$']
++      }
++    ]
++  }
++];
++
++const allAllDimensionsMatch: any[] = [
++  {
++    all: [
++      {
++        baseBranch: ['^base-branch$'],
++        changedFiles: [{allGlobsToAllFiles: ['*.txt']}],
++        headBranch: ['^head-branch$']
++      }
++    ]
++  }
++];
++
++beforeEach(() => {
++  probe = factory();
++});
++
++describe('F2P shared quantifier contract', () => {
++  it('drives both quantifiers through one shared production function', () => {
++    const anyRun = run(anyAllDimensionsFail, ['foo.txt']);
++    const allRun = run(allAllDimensionsMatch, ['foo.txt']);
++
++    expect(anyRun.result).toBe(false);
++    expect(allRun.result).toBe(true);
++    expect(anyRun.adapters).toHaveLength(3);
++    expect(allRun.adapters).toHaveLength(3);
++
++    const anyInner = anyRun.adapters.map(record =>
++      innerFrames(record, 'checkAny')
++    );
++    const allInner = allRun.adapters.map(record =>
++      innerFrames(record, 'checkAll')
++    );
++    expect(anyInner.every(list => list !== null && list.length > 0)).toBe(true);
++    expect(allInner.every(list => list !== null && list.length > 0)).toBe(true);
++
++    const shared = commonFrameKeys([...anyInner, ...allInner]);
++    expect(shared.length).toBeGreaterThan(0);
++  });
++
++  it('shares the any entry orchestration with all', () => {
++    const anyRun = run(anyAllDimensionsFail, ['foo.txt']);
++
++    expect(anyRun.adapters.length).toBeGreaterThan(0);
++    const inner = anyRun.adapters.map(record =>
++      innerFrames(record, 'checkAny')
++    );
++    expect(inner.every(list => list !== null && list.length > 0)).toBe(true);
++  });
++
++  it('shares the all entry orchestration with any', () => {
++    const allRun = run(allAllDimensionsMatch, ['foo.txt']);
++
++    expect(allRun.adapters.length).toBeGreaterThan(0);
++    const inner = allRun.adapters.map(record =>
++      innerFrames(record, 'checkAll')
++    );
++    expect(inner.every(list => list !== null && list.length > 0)).toBe(true);
++  });
++
++  it('evaluates the base branch dimension through the shared function', () => {
++    const anyRun = run([{any: [{baseBranch: ['^no-match$']}]}], ['foo.txt']);
++    const allRun = run([{all: [{baseBranch: ['^base-branch$']}]}], ['foo.txt']);
++
++    expect(anyRun.result).toBe(false);
++    expect(allRun.result).toBe(true);
++    expect(anyRun.adapters.map(record => record.adapter)).toEqual([
++      'checkAnyBranch'
++    ]);
++    expect(allRun.adapters.map(record => record.adapter)).toEqual([
++      'checkAllBranch'
++    ]);
++
++    const anyInner = innerFrames(anyRun.adapters[0], 'checkAny');
++    const allInner = innerFrames(allRun.adapters[0], 'checkAll');
++    expect(anyInner !== null && anyInner.length > 0).toBe(true);
++    expect(allInner !== null && allInner.length > 0).toBe(true);
++
++    const shared = commonFrameKeys([anyInner, allInner]);
++    expect(shared.length).toBeGreaterThan(0);
++  });
++
++  it('evaluates the changed files dimension through the shared function', () => {
++    const anyRun = run(
++      [{any: [{changedFiles: [{anyGlobToAnyFile: ['*.txt']}]}]}],
++      ['foo.txt']
++    );
++    const allRun = run(
++      [{all: [{changedFiles: [{allGlobsToAllFiles: ['*.txt']}]}]}],
++      ['foo.txt']
++    );
++
++    expect(anyRun.result).toBe(true);
++    expect(allRun.result).toBe(true);
++    expect(anyRun.adapters.map(record => record.adapter)).toEqual([
++      'checkAnyChangedFiles'
++    ]);
++    expect(allRun.adapters.map(record => record.adapter)).toEqual([
++      'checkAllChangedFiles'
++    ]);
++
++    const anyInner = innerFrames(anyRun.adapters[0], 'checkAny');
++    const allInner = innerFrames(allRun.adapters[0], 'checkAll');
++    expect(anyInner !== null && anyInner.length > 0).toBe(true);
++    expect(allInner !== null && allInner.length > 0).toBe(true);
++
++    const shared = commonFrameKeys([anyInner, allInner]);
++    expect(shared.length).toBeGreaterThan(0);
++  });
++
++  it('evaluates the head branch dimension through the shared function', () => {
++    const anyRun = run([{any: [{headBranch: ['^head-branch$']}]}], ['foo.txt']);
++    const allRun = run([{all: [{headBranch: ['^head-branch$']}]}], ['foo.txt']);
++
++    expect(anyRun.result).toBe(true);
++    expect(allRun.result).toBe(true);
++    expect(anyRun.adapters.map(record => record.adapter)).toEqual([
++      'checkAnyBranch'
++    ]);
++    expect(allRun.adapters.map(record => record.adapter)).toEqual([
++      'checkAllBranch'
++    ]);
++
++    const anyInner = innerFrames(anyRun.adapters[0], 'checkAny');
++    const allInner = innerFrames(allRun.adapters[0], 'checkAll');
++    expect(anyInner !== null && anyInner.length > 0).toBe(true);
++    expect(allInner !== null && allInner.length > 0).toBe(true);
++
++    const shared = commonFrameKeys([anyInner, allInner]);
++    expect(shared.length).toBeGreaterThan(0);
++  });
++
++  it('evaluates all block dimensions in order through the shared function', () => {
++    const allRun = run(allAllDimensionsMatch, ['foo.txt']);
++
++    expect(allRun.result).toBe(true);
++    expect(allRun.adapters.map(record => record.adapter)).toEqual([
++      'checkAllBranch',
++      'checkAllChangedFiles',
++      'checkAllBranch'
++    ]);
++    expect(allRun.adapters[0].args[1]).toBe('base');
++    expect(allRun.adapters[2].args[1]).toBe('head');
++
++    const inner = allRun.adapters.map(record =>
++      innerFrames(record, 'checkAll')
++    );
++    expect(inner.every(list => list !== null && list.length > 0)).toBe(true);
++    const shared = commonFrameKeys(inner);
++    expect(shared.length).toBeGreaterThan(0);
++  });
++
++  it('evaluates any block dimensions in order through the shared function', () => {
++    const anyRun = run(anyAllDimensionsFail, ['foo.txt']);
++
++    expect(anyRun.result).toBe(false);
++    expect(anyRun.adapters.map(record => record.adapter)).toEqual([
++      'checkAnyBranch',
++      'checkAnyChangedFiles',
++      'checkAnyBranch'
++    ]);
++    expect(anyRun.adapters[0].args[1]).toBe('base');
++    expect(anyRun.adapters[2].args[1]).toBe('head');
++
++    const inner = anyRun.adapters.map(record =>
++      innerFrames(record, 'checkAny')
++    );
++    expect(inner.every(list => list !== null && list.length > 0)).toBe(true);
++    const shared = commonFrameKeys(inner);
++    expect(shared.length).toBeGreaterThan(0);
++  });
++
++  it('shares an orchestration owner across every adapter and both quantifiers', () => {
++    const anyRun = run(anyAllDimensionsFail, ['foo.txt']);
++    const allRun = run(allAllDimensionsMatch, ['foo.txt']);
++
++    const inner = [
++      ...anyRun.adapters.map(record => innerFrames(record, 'checkAny')),
++      ...allRun.adapters.map(record => innerFrames(record, 'checkAll'))
++    ];
++    expect(inner.every(list => list !== null && list.length > 0)).toBe(true);
++
++    expect(commonFrameKeys(inner).length).toBeGreaterThan(0);
++  });
++
++  it('enforces the empty changed files boundary through the shared function', () => {
++    const allRun = run(
++      [
++        {
++          all: [
++            {
++              baseBranch: ['^base-branch$'],
++              changedFiles: [{allGlobsToAllFiles: ['*.txt']}]
++            }
++          ]
++        }
++      ],
++      []
++    );
++
++    expect(allRun.result).toBe(false);
++    expect(allRun.adapters.map(record => record.adapter)).toEqual([
++      'checkAllBranch'
++    ]);
++
++    const baseInner = innerFrames(allRun.adapters[0], 'checkAll');
++    expect(baseInner !== null && baseInner.length > 0).toBe(true);
++
++    const guard = allRun.debug.filter(entry =>
++      entry.message.includes(
++        'no files to check "changed-files" patterns against'
++      )
++    );
++    expect(guard).toHaveLength(1);
++    const sharedKeys = new Set(baseInner!);
++    expect(guard[0].frames.some((id: string) => sharedKeys.has(id))).toBe(true);
++  });
++
++  it('short circuits an all block below the public entry point', () => {
++    const allRun = run(
++      [
++        {
++          all: [
++            {
++              baseBranch: ['^no-match$'],
++              changedFiles: [{allGlobsToAllFiles: ['*.txt']}],
++              headBranch: ['^head-branch$']
++            }
++          ]
++        }
++      ],
++      ['foo.txt']
++    );
++
++    expect(allRun.result).toBe(false);
++    expect(allRun.adapters.map(record => record.adapter)).toEqual([
++      'checkAllBranch'
++    ]);
++    const inner = innerFrames(allRun.adapters[0], 'checkAll');
++    expect(inner !== null && inner.length > 0).toBe(true);
++  });
++
++  it('short circuits an any block below the public entry point', () => {
++    const anyRun = run(
++      [
++        {
++          any: [
++            {
++              baseBranch: ['^base-branch$'],
++              changedFiles: [{anyGlobToAnyFile: ['*.txt']}],
++              headBranch: ['^head-branch$']
++            }
++          ]
++        }
++      ],
++      ['foo.txt']
++    );
++
++    expect(anyRun.result).toBe(true);
++    expect(anyRun.adapters.map(record => record.adapter)).toEqual([
++      'checkAnyBranch'
++    ]);
++    const inner = innerFrames(anyRun.adapters[0], 'checkAny');
++    expect(inner !== null && inner.length > 0).toBe(true);
++  });
++
++  it('automatically evaluates a newly registered dimension in any', () => {
++    expect(extensionRun('any', [['^base-branch$']]).result).toBe(true);
++    expect(extensionRun('any', [['^does-not-match$']]).result).toBe(false);
++  });
++
++  it('automatically evaluates a newly registered dimension in all', () => {
++    expect(extensionRun('all', [['^base-branch$']]).result).toBe(true);
++    expect(extensionRun('all', [['^does-not-match$']]).result).toBe(false);
++  });
++
++  it('extends any across entries without changing its shared driver', () => {
++    const result = extensionRun('any', [
++      ['^does-not-match$'],
++      ['^base-branch$']
++    ]);
++    expect(result.result).toBe(true);
++    expect(result.adapters).toHaveLength(2);
++  });
++
++  it('extends all across entries without changing its shared driver', () => {
++    const result = extensionRun('all', [
++      ['^base-branch$'],
++      ['^does-not-match$']
++    ]);
++    expect(result.result).toBe(false);
++    expect(result.adapters).toHaveLength(2);
++  });
++
++  it('drives every configuration through the same shared function', () => {
++    const allRun = run(
++      [
++        {all: [{baseBranch: ['^base-branch$']}]},
++        {all: [{headBranch: ['^head-branch$']}]}
++      ],
++      []
++    );
++
++    expect(allRun.result).toBe(true);
++    expect(allRun.adapters.map(record => record.adapter)).toEqual([
++      'checkAllBranch',
++      'checkAllBranch'
++    ]);
++
++    const inner = allRun.adapters.map(record =>
++      innerFrames(record, 'checkAll')
++    );
++    expect(inner.every(list => list !== null && list.length > 0)).toBe(true);
++    const shared = commonFrameKeys(inner);
++    expect(shared.length).toBeGreaterThan(0);
++  });
++});
+diff --git a/__tests__/p2p-matching-regression.test.ts b/__tests__/p2p-matching-regression.test.ts
+new file mode 100644
+index 0000000..09df3ea
+--- /dev/null
++++ b/__tests__/p2p-matching-regression.test.ts
+@@ -0,0 +1,566 @@
++import {jest, describe, it, expect, beforeEach} from '@jest/globals';
++import type {MatchConfig} from '../src/api/get-label-configs.js';
++
++jest.unstable_mockModule('@actions/core', () => ({
++  debug: jest.fn(),
++  info: jest.fn(),
++  warning: jest.fn(),
++  error: jest.fn(),
++  setFailed: jest.fn(),
++  setOutput: jest.fn()
++}));
++
++const mockGithubContext: any = {
++  payload: {
++    pull_request: {
++      number: 123,
++      head: {ref: 'head-branch'},
++      base: {ref: 'base-branch'}
++    }
++  },
++  repo: {owner: 'monalisa', repo: 'helloworld'}
++};
++
++jest.unstable_mockModule('@actions/github', () => ({
++  context: mockGithubContext,
++  getOctokit: jest.fn()
++}));
++
++const core = await import('@actions/core');
++const {checkMatchConfigs} = await import('../src/labeler.js');
++const {getLabelConfigMapFromObject, toMatchConfig} =
++  await import('../src/api/get-label-configs.js');
++
++const debugMessages = (): string[] =>
++  (core.debug as jest.Mock).mock.calls.map(call => String(call[0]));
++
++const baseBranchMessage = '   checking "branch" pattern against base-branch';
++const headBranchMessage = '   checking "branch" pattern against head-branch';
++const changedFilesMessage = '   checking "changed-files" patterns';
++const noChangedFilesMessage =
++  '  no files to check "changed-files" patterns against';
++
++const changedFilesPatterns = (patterns: string[]) => [
++  {anyGlobToAnyFile: patterns}
++];
++
++beforeEach(() => {
++  (core.debug as jest.Mock).mockClear();
++  mockGithubContext.payload.pull_request = {
++    number: 123,
++    head: {ref: 'head-branch'},
++    base: {ref: 'base-branch'}
++  };
++});
++
++describe('dimension evaluation order and short-circuiting', () => {
++  it('checks the base branch before changed files and the head branch', () => {
++    const matchConfigs: MatchConfig[] = [
++      {
++        any: [
++          {
++            baseBranch: ['^does-not-match$'],
++            changedFiles: changedFilesPatterns(['*.md']),
++            headBranch: ['^does-not-match$']
++          }
++        ]
++      }
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(false);
++
++    const messages = debugMessages();
++    const baseIndex = messages.indexOf(baseBranchMessage);
++    const changedFilesIndex = messages.indexOf(changedFilesMessage);
++    const headIndex = messages.indexOf(headBranchMessage);
++
++    expect(baseIndex).toBeGreaterThanOrEqual(0);
++    expect(changedFilesIndex).toBeGreaterThan(baseIndex);
++    expect(headIndex).toBeGreaterThan(changedFilesIndex);
++  });
++
++  it('short-circuits an any entry as soon as a dimension matches', () => {
++    const matchConfigs: MatchConfig[] = [
++      {
++        any: [
++          {
++            baseBranch: ['^base-branch$'],
++            changedFiles: changedFilesPatterns(['*.txt']),
++            headBranch: ['^head-branch$']
++          }
++        ]
++      }
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(true);
++
++    const messages = debugMessages();
++    expect(messages).toContain('  "any" patterns matched');
++    expect(messages).not.toContain(changedFilesMessage);
++    expect(messages).not.toContain(headBranchMessage);
++  });
++
++  it('short-circuits an all entry as soon as a dimension fails', () => {
++    const matchConfigs: MatchConfig[] = [
++      {
++        all: [
++          {
++            baseBranch: ['^does-not-match$'],
++            changedFiles: changedFilesPatterns(['*.txt']),
++            headBranch: ['^head-branch$']
++          }
++        ]
++      }
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(false);
++
++    const messages = debugMessages();
++    expect(messages).toContain('  "all" patterns did not match');
++    expect(messages).not.toContain(changedFilesMessage);
++    expect(messages).not.toContain(headBranchMessage);
++  });
++
++  it('does not evaluate the head branch after the changed files dimension fails', () => {
++    const matchConfigs: MatchConfig[] = [
++      {
++        all: [
++          {
++            baseBranch: ['^base-branch$'],
++            changedFiles: changedFilesPatterns(['*.md']),
++            headBranch: ['^head-branch$']
++          }
++        ]
++      }
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(false);
++
++    const messages = debugMessages();
++    expect(messages).toContain(changedFilesMessage);
++    expect(messages).not.toContain(headBranchMessage);
++  });
++
++  it('stops evaluating an all block at the first failing entry', () => {
++    const matchConfigs: MatchConfig[] = [
++      {
++        all: [
++          {headBranch: ['^head-branch$']},
++          {headBranch: ['^does-not-match$']},
++          {headBranch: ['^head-branch$']}
++        ]
++      }
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(false);
++
++    const messages = debugMessages();
++    expect(
++      messages.filter(message => message === headBranchMessage)
++    ).toHaveLength(2);
++  });
++});
++
++describe('empty changed files in an all block', () => {
++  it('fails an all entry with changed files before evaluating any file patterns', () => {
++    const matchConfigs: MatchConfig[] = [
++      {
++        all: [
++          {
++            baseBranch: ['^base-branch$'],
++            changedFiles: changedFilesPatterns(['*.txt']),
++            headBranch: ['^head-branch$']
++          }
++        ]
++      }
++    ];
++
++    expect(checkMatchConfigs([], matchConfigs, false)).toBe(false);
++
++    const messages = debugMessages();
++    expect(messages).toContain(baseBranchMessage);
++    expect(messages).toContain(noChangedFilesMessage);
++    expect(messages).not.toContain(changedFilesMessage);
++    expect(messages).not.toContain(headBranchMessage);
++  });
++
++  it('fails an all block with an empty changed files list even when branch dimensions match', () => {
++    const labelConfigs = getLabelConfigMapFromObject({
++      label: [{all: [{'changed-files': [{}]}]}]
++    });
++    const matchConfigs = labelConfigs.get('label')!;
++
++    expect(matchConfigs).toEqual([{all: [{changedFiles: []}]}]);
++    expect(checkMatchConfigs([], matchConfigs, false)).toBe(false);
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(true);
++  });
++});
++
++describe('any quantifier semantics', () => {
++  it('returns false when no entry has a present dimension', () => {
++    expect(checkMatchConfigs(['foo.txt'], [{any: [{}, {}]}], false)).toBe(
++      false
++    );
++  });
++
++  it('returns false when every present dimension fails', () => {
++    const matchConfigs: MatchConfig[] = [
++      {
++        any: [
++          {
++            baseBranch: ['^does-not-match$'],
++            changedFiles: changedFilesPatterns(['*.md'])
++          }
++        ]
++      }
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(false);
++  });
++
++  it('matches when a later entry has a matching dimension', () => {
++    const matchConfigs: MatchConfig[] = [
++      {
++        any: [
++          {headBranch: ['^does-not-match$']},
++          {changedFiles: changedFilesPatterns(['*.txt'])}
++        ]
++      }
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(true);
++  });
++});
++
++describe('all quantifier semantics', () => {
++  it('requires every present dimension of an entry to match', () => {
++    const matchConfigs: MatchConfig[] = [
++      {
++        all: [
++          {
++            baseBranch: ['^base-branch$'],
++            changedFiles: changedFilesPatterns(['*.txt']),
++            headBranch: ['^head-branch$']
++          }
++        ]
++      }
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(true);
++    expect(checkMatchConfigs(['foo.md'], matchConfigs, false)).toBe(false);
++  });
++
++  it('accepts an entry that has no present dimension', () => {
++    const matchConfigs: MatchConfig[] = [
++      {all: [{}, {headBranch: ['^head-branch$']}]}
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(true);
++  });
++
++  it('returns false when every entry is empty', () => {
++    expect(checkMatchConfigs(['foo.txt'], [{all: [{}, {}]}], false)).toBe(
++      false
++    );
++  });
++
++  it('returns false when a later entry fails', () => {
++    const matchConfigs: MatchConfig[] = [
++      {
++        all: [
++          {headBranch: ['^head-branch$']},
++          {headBranch: ['^does-not-match$']}
++        ]
++      }
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(false);
++  });
++});
++
++describe('combined any and all blocks', () => {
++  it('requires both the any block and the all block to match', () => {
++    const failingAll: MatchConfig[] = [
++      {
++        any: [{changedFiles: changedFilesPatterns(['*.txt'])}],
++        all: [{headBranch: ['^does-not-match$']}]
++      }
++    ];
++    const failingAny: MatchConfig[] = [
++      {
++        any: [{changedFiles: changedFilesPatterns(['*.md'])}],
++        all: [{headBranch: ['^head-branch$']}]
++      }
++    ];
++    const matchingBoth: MatchConfig[] = [
++      {
++        any: [{changedFiles: changedFilesPatterns(['*.txt'])}],
++        all: [{headBranch: ['^head-branch$']}]
++      }
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], failingAll, false)).toBe(false);
++    expect(checkMatchConfigs(['foo.txt'], failingAny, false)).toBe(false);
++    expect(checkMatchConfigs(['foo.txt'], matchingBoth, false)).toBe(true);
++  });
++});
++
++describe('missing branch context', () => {
++  it('fails the head branch dimension without throwing', () => {
++    mockGithubContext.payload.pull_request = undefined;
++    const matchConfigs: MatchConfig[] = [
++      {any: [{headBranch: ['^head-branch$']}]}
++    ];
++
++    expect(() =>
++      checkMatchConfigs(['foo.txt'], matchConfigs, false)
++    ).not.toThrow();
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(false);
++  });
++
++  it('fails the base branch dimension without throwing', () => {
++    mockGithubContext.payload.pull_request = undefined;
++    const matchConfigs: MatchConfig[] = [
++      {all: [{baseBranch: ['^base-branch$']}]}
++    ];
++
++    expect(() =>
++      checkMatchConfigs(['foo.txt'], matchConfigs, false)
++    ).not.toThrow();
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(false);
++  });
++
++  it('still matches the changed files dimension when branch context is missing', () => {
++    mockGithubContext.payload.pull_request = undefined;
++    const matchConfigs: MatchConfig[] = [
++      {
++        any: [
++          {
++            changedFiles: changedFilesPatterns(['*.txt']),
++            headBranch: ['^head-branch$']
++          }
++        ]
++      }
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(true);
++  });
++});
++
++describe('configuration normalization presence', () => {
++  it('treats a dimension as absent when its configuration key is missing', () => {
++    const matchConfigs: MatchConfig[] = [
++      {any: [{headBranch: ['^does-not-match$']}]}
++    ];
++
++    expect(checkMatchConfigs(['foo.txt'], matchConfigs, false)).toBe(false);
++
++    const messages = debugMessages();
++    expect(messages).not.toContain(baseBranchMessage);
++    expect(messages).not.toContain(changedFilesMessage);
++    for (const quantifier of ['any', 'all'] as const) {
++      (core.debug as jest.Mock).mockClear();
++      expect(
++        checkMatchConfigs(
++          ['foo.txt'],
++          [
++            {
++              [quantifier]: [
++                {
++                  baseBranch: undefined,
++                  changedFiles: undefined,
++                  headBranch: ['^head-branch$']
++                }
++              ]
++            }
++          ],
++          false
++        )
++      ).toBe(true);
++      expect(debugMessages()).not.toContain(baseBranchMessage);
++      expect(debugMessages()).not.toContain(changedFilesMessage);
++      expect(debugMessages()).toContain(headBranchMessage);
++      (core.debug as jest.Mock).mockClear();
++      expect(
++        checkMatchConfigs(
++          ['foo.txt'],
++          [
++            {
++              [quantifier]: [
++                {headBranch: undefined, baseBranch: ['^base-branch$']}
++              ]
++            }
++          ],
++          false
++        )
++      ).toBe(true);
++      expect(debugMessages()).toContain(baseBranchMessage);
++      expect(debugMessages()).not.toContain(headBranchMessage);
++    }
++  });
++
++  it('keeps a dimension present when its configuration key has an empty pattern array', () => {
++    for (const quantifier of ['any', 'all'] as const) {
++      (core.debug as jest.Mock).mockClear();
++      expect(
++        checkMatchConfigs(
++          ['foo.txt'],
++          [{[quantifier]: [{baseBranch: []}]}],
++          false
++        )
++      ).toBe(quantifier === 'all');
++      expect(debugMessages()).toContain(baseBranchMessage);
++      (core.debug as jest.Mock).mockClear();
++      expect(
++        checkMatchConfigs(
++          ['foo.txt'],
++          [{[quantifier]: [{changedFiles: []}]}],
++          false
++        )
++      ).toBe(quantifier === 'all');
++      expect(debugMessages()).toContain(changedFilesMessage);
++      (core.debug as jest.Mock).mockClear();
++      expect(
++        checkMatchConfigs(
++          ['foo.txt'],
++          [{[quantifier]: [{headBranch: []}]}],
++          false
++        )
++      ).toBe(quantifier === 'all');
++      expect(debugMessages()).toContain(headBranchMessage);
++    }
++  });
++
++  it('normalizes branch string patterns to one element arrays', () => {
++    expect(toMatchConfig({'base-branch': 'main'})).toEqual({
++      baseBranch: ['main']
++    });
++    expect(toMatchConfig({'head-branch': ['^dev/', '^feat/']})).toEqual({
++      headBranch: ['^dev/', '^feat/']
++    });
++    expect(toMatchConfig({'unknown-key': 'ignored'})).toEqual({});
++    expect(
++      toMatchConfig({'base-branch': 'main', 'unknown-key': 'ignored'})
++    ).toEqual({baseBranch: ['main']});
++    const labels = getLabelConfigMapFromObject({
++      unknownOnly: [{'unknown-key': 'ignored'}],
++      valid: [{'unknown-key': 'ignored', 'base-branch': 'base-branch'}]
++    });
++    expect(labels.has('unknownOnly')).toBe(false);
++    expect(labels.get('valid')).toEqual([
++      {any: [{baseBranch: ['base-branch']}]}
++    ]);
++    expect(core.info).toHaveBeenCalledWith(
++      'An unknown config option was under valid: unknown-key'
++    );
++    expect(checkMatchConfigs([], labels.get('valid')!, false)).toBe(true);
++    // Unknown changed-files mode keys retain their separate rejection rule.
++    expect(() =>
++      toMatchConfig({'changed-files': [{'unknown-mode': '*.txt'}]})
++    ).toThrow();
++  });
++
++  it('combines base branch, changed files and head branch in one entry', () => {
++    const matchConfig = toMatchConfig({
++      'base-branch': 'base-branch',
++      'changed-files': [
++        {
++          'any-glob-to-any-file': '*.txt',
++          'any-glob-to-all-files': ['foo.txt'],
++          'all-globs-to-any-file': '*.txt',
++          'all-globs-to-all-files': ['foo.txt']
++        }
++      ],
++      'head-branch': 'head-branch'
++    });
++
++    expect(matchConfig).toEqual({
++      baseBranch: ['base-branch'],
++      changedFiles: [
++        {anyGlobToAnyFile: ['*.txt']},
++        {anyGlobToAllFiles: ['foo.txt']},
++        {allGlobsToAnyFile: ['*.txt']},
++        {allGlobsToAllFiles: ['foo.txt']}
++      ],
++      headBranch: ['head-branch']
++    });
++    expect(checkMatchConfigs(['foo.txt'], [{any: [matchConfig]}], false)).toBe(
++      true
++    );
++  });
++
++  it('matches with each of the four changed files pattern modes', () => {
++    const modeConfig = (mode: string, patterns: string | string[]) =>
++      getLabelConfigMapFromObject({
++        label: [{'changed-files': [{[mode]: patterns}]}]
++      }).get('label')!;
++
++    expect(
++      checkMatchConfigs(
++        ['src/a.ts', 'src/b.ts'],
++        modeConfig('any-glob-to-any-file', 'src/*.ts'),
++        false
++      )
++    ).toBe(true);
++    expect(
++      checkMatchConfigs(
++        ['src/a.ts', 'src/b.ts'],
++        modeConfig('any-glob-to-all-files', 'src/*.ts'),
++        false
++      )
++    ).toBe(true);
++    expect(
++      checkMatchConfigs(
++        ['src/a.ts', 'src/b.ts'],
++        modeConfig('all-globs-to-any-file', ['src/a.ts', 'src/*.ts']),
++        false
++      )
++    ).toBe(true);
++    expect(
++      checkMatchConfigs(
++        ['src/a.ts', 'src/b.ts'],
++        modeConfig('all-globs-to-all-files', ['src/*.ts', '**']),
++        false
++      )
++    ).toBe(true);
++  });
++
++  it('controls dotfile matching in an all block', () => {
++    const matchConfigs: MatchConfig[] = [
++      {all: [{changedFiles: changedFilesPatterns(['*.txt'])}]}
++    ];
++
++    expect(checkMatchConfigs(['.foo.txt'], matchConfigs, false)).toBe(false);
++    expect(checkMatchConfigs(['.foo.txt'], matchConfigs, true)).toBe(true);
++  });
++});
++
++describe('preserved matching surface', () => {
++  it('keeps both quantifiers, all dimensions and all pattern modes working together', () => {
++    const matchConfigs: MatchConfig[] = [
++      {
++        any: [
++          {
++            changedFiles: [
++              {anyGlobToAnyFile: ['docs/**']},
++              {anyGlobToAllFiles: ['src/**']},
++              {allGlobsToAnyFile: ['src/a.ts', 'src/*.ts']},
++              {allGlobsToAllFiles: ['src/*.ts', '**']}
++            ]
++          }
++        ]
++      },
++      {all: [{baseBranch: ['^base-branch$'], headBranch: ['^head-branch$']}]}
++    ];
++
++    expect(
++      checkMatchConfigs(['src/a.ts', 'src/b.ts'], matchConfigs, false)
++    ).toBe(true);
++    expect(checkMatchConfigs(['docs/readme.md'], matchConfigs, false)).toBe(
++      true
++    );
++    expect(checkMatchConfigs(['other/readme.md'], matchConfigs, false)).toBe(
++      false
++    );
++  });
++});
+diff --git a/__tests__/support/dimension-probe.ts b/__tests__/support/dimension-probe.ts
+new file mode 100644
+index 0000000..29fbaa8
+--- /dev/null
++++ b/__tests__/support/dimension-probe.ts
+@@ -0,0 +1,471 @@
++import fs from 'node:fs';
++import path from 'node:path';
++import vm from 'node:vm';
++import {pathToFileURL} from 'node:url';
++import ts from 'typescript';
++
++/** Test-only instrumentation. No production file or export is changed on disk. */
++const dimensionKeys = ['baseBranch', 'changedFiles', 'headBranch'];
++const extraKey = '__contractExtraBranch';
++
++function dimensionOf(value: any, seen = new Set<object>()): string | undefined {
++  if (typeof value === 'string')
++    return dimensionKeys.includes(value) ? value : undefined;
++  if (typeof value === 'function') {
++    const identifiers = Function.prototype.toString
++      .call(value)
++      .split(/[^A-Za-z0-9_$]+/);
++    const keys = dimensionKeys.filter(key => identifiers.includes(key));
++    return keys.length === 1 ? keys[0] : undefined;
++  }
++  if (value && typeof value === 'object') {
++    if (seen.has(value)) return undefined;
++    seen.add(value);
++    const keys = new Set(
++      Object.values(value)
++        .map(item => dimensionOf(item, seen))
++        .filter(Boolean)
++    );
++    return keys.size === 1 ? ([...keys][0] as string) : undefined;
++  }
++  return undefined;
++}
++
++function extraAdapter(
++  value: any,
++  touched: string[],
++  member = '',
++  receiver?: object,
++  seen = new Map<object, any>()
++): any {
++  if (value === 'baseBranch') return extraKey;
++  if (typeof value === 'function') {
++    return function (this: any, ...args: any[]) {
++      touched.push(member);
++      // Clone the existing base-branch contract, remapping only its config key.
++      const remapped = args.map(arg =>
++        arg && typeof arg === 'object'
++          ? new Proxy(arg, {
++              get: (target, key, actualReceiver) =>
++                Reflect.get(
++                  target,
++                  key === 'baseBranch' ? extraKey : key,
++                  actualReceiver
++                ),
++              has: (target, key) =>
++                Reflect.has(target, key === 'baseBranch' ? extraKey : key)
++            })
++          : arg
++      );
++      return value.apply(receiver || this, remapped);
++    };
++  }
++  if (seen.has(value)) return seen.get(value);
++  if (Array.isArray(value)) {
++    const clone: any[] = [];
++    seen.set(value, clone);
++    clone.push(
++      ...value.map(item => extraAdapter(item, touched, member, undefined, seen))
++    );
++    return clone;
++  }
++  if (value && typeof value === 'object') {
++    const clone = Object.create(Object.getPrototypeOf(value));
++    seen.set(value, clone);
++    // Preserve inherited adapter methods and their receiver (including private
++    // fields), rather than requiring descriptors to be plain object literals.
++    for (
++      let owner = value;
++      owner && Object.getPrototypeOf(owner) !== null;
++      owner = Object.getPrototypeOf(owner)
++    ) {
++      for (const key of Reflect.ownKeys(owner)) {
++        if (key === 'constructor') continue;
++        const outputKey = key === 'baseBranch' ? extraKey : key;
++        if (Object.prototype.hasOwnProperty.call(clone, outputKey)) continue;
++        Object.defineProperty(clone, outputKey, {
++          value: extraAdapter(
++            Reflect.get(value, key),
++            touched,
++            String(key),
++            value,
++            seen
++          ),
++          enumerable: Object.getOwnPropertyDescriptor(owner, key)!.enumerable,
++          writable: true,
++          configurable: true
++        });
++      }
++    }
++    return clone;
++  }
++  return value;
++}
++
++export async function productionFactory() {
++  const root = path.resolve('src');
++  const sources = new Map<string, string>();
++  const external = new Map<string, any>();
++  const entry = path.join(root, 'labeler.ts');
++  function resolveLocal(from: string, specifier: string) {
++    let file = path
++      .resolve(path.dirname(from), specifier)
++      .replace(/\.js$/, '.ts');
++    if (!path.extname(file)) file += '.ts';
++    if (!file.startsWith(root + path.sep))
++      throw new Error('Probe import outside production source');
++    return file;
++  }
++  async function visit(file: string): Promise<void> {
++    if (sources.has(file)) return;
++    const source = fs.readFileSync(file, 'utf8');
++    sources.set(file, source);
++    const parsed = ts.createSourceFile(
++      file,
++      source,
++      ts.ScriptTarget.Latest,
++      true
++    );
++    for (const statement of parsed.statements) {
++      if (
++        (!ts.isImportDeclaration(statement) &&
++          !ts.isExportDeclaration(statement)) ||
++        !statement.moduleSpecifier ||
++        !ts.isStringLiteral(statement.moduleSpecifier)
++      )
++        continue;
++      const name = statement.moduleSpecifier.text;
++      const clause = ts.isImportDeclaration(statement)
++        ? statement.importClause
++        : undefined;
++      if (
++        (clause && clause.isTypeOnly) ||
++        (ts.isExportDeclaration(statement) && statement.isTypeOnly)
++      )
++        continue;
++      if (name.startsWith('.')) await visit(resolveLocal(file, name));
++      else if (!external.has(name)) external.set(name, await import(name));
++    }
++  }
++  await visit(entry);
++
++  return (extend = false) => {
++    const stack: string[] = [];
++    const activeCalls: number[] = [];
++    let invocation = 0;
++    const calls: any[] = [];
++    const debug: any[] = [];
++    const touched: string[] = [];
++    const registries = new Set<string>();
++    const collections = new WeakSet<object>();
++    const registrationOrigins = new Map<any, string>();
++    const cache = new Map<string, any>();
++    const boundOrigins = new WeakMap<Function, string>();
++    function origin(fn: Function): string {
++      return (
++        boundOrigins.get(fn) ||
++        Function.prototype.toString
++          .call(fn)
++          .match(/__contractEnter\("([^"]+)"\)/)?.[1] ||
++        ''
++      );
++    }
++    function registrationMembers(value: any): any[] {
++      return Object.prototype.toString.call(value) === '[object Map]'
++        ? [...value.values()]
++        : Object.values(value);
++    }
++    function rememberRegistration(
++      value: any,
++      id: string,
++      seen = new Set<object>()
++    ): void {
++      registrationOrigins.set(value, id);
++      if (!value || typeof value !== 'object' || seen.has(value)) return;
++      seen.add(value);
++      for (const member of registrationMembers(value)) {
++        // Remember adapter identities as well as descriptors, so spreading a
++        // descriptor cannot turn a fixed copy into a new registration boundary.
++        if (member && ['object', 'function'].includes(typeof member))
++          rememberRegistration(member, id, seen);
++      }
++    }
++    function derivesFromRegistry(
++      value: any,
++      id: string,
++      seen = new Set<object>()
++    ): boolean {
++      const owner = registrationOrigins.get(value);
++      if (owner !== undefined && owner !== id) return true;
++      if (!value || typeof value !== 'object' || seen.has(value)) return false;
++      seen.add(value);
++      return registrationMembers(value).some(member =>
++        derivesFromRegistry(member, id, seen)
++      );
++    }
++    function collect(id: string, value: any): any {
++      if (!value || typeof value !== 'object' || collections.has(value))
++        return value;
++      const isMap = Object.prototype.toString.call(value) === '[object Map]';
++      const entries = Array.isArray(value)
++        ? value.map((item: any) => [dimensionOf(item), item])
++        : (isMap ? [...value.entries()] : Object.entries(value)).map(
++            ([key, item]: any[]) => [
++              dimensionOf(key) || dimensionOf(item),
++              item
++            ]
++          );
++      if (
++        !dimensionKeys.every(key =>
++          entries.some(([name]: any[]) => name === key)
++        )
++      )
++        return value;
++      // A collection assembled from an existing registry is a consumer, not a
++      // second registration boundary. Extending it would repair fixed-index
++      // copies, including copies wrapped in fresh Map entries or objects.
++      if (entries.some(([, item]: any[]) => derivesFromRegistry(item, id)))
++        return value;
++      for (const [name, item] of entries) {
++        if (dimensionKeys.includes(name)) rememberRegistration(item, id);
++      }
++      collections.add(value);
++      registries.add(id);
++      if (!extend) return value;
++      const base = entries.find(([name]: any[]) => name === 'baseBranch')![1];
++      if (Array.isArray(value)) value.push(extraAdapter(base, touched));
++      else if (isMap) value.set(extraKey, extraAdapter(base, touched));
++      else value[extraKey] = extraAdapter(base, touched);
++      return value;
++    }
++    function transform(file: string): ts.TransformerFactory<ts.SourceFile> {
++      return context => source => {
++        const f = context.factory;
++        const call = (name: string, args: ts.Expression[]) =>
++          f.createCallExpression(f.createIdentifier(name), undefined, args);
++        function instrument(node: ts.Node): ts.VisitResult<ts.Node> {
++          const id = `${path.relative(root, file)}:${node.pos}`;
++          let next = ts.visitEachChild(node, instrument, context);
++          if (
++            ts.isMetaProperty(next) &&
++            next.keywordToken === ts.SyntaxKind.ImportKeyword
++          ) {
++            return f.createObjectLiteralExpression([
++              f.createPropertyAssignment(
++                'url',
++                f.createStringLiteral(pathToFileURL(file).href)
++              )
++            ]);
++          }
++          if (
++            ts.isCallExpression(next) &&
++            ts.isPropertyAccessExpression(next.expression) &&
++            next.expression.name.text === 'bind'
++          ) {
++            return call('__contractBind', [
++              next.expression.expression,
++              ...next.arguments
++            ]);
++          }
++          if (
++            ts.isArrayLiteralExpression(next) ||
++            ts.isObjectLiteralExpression(next)
++          ) {
++            return call('__contractCollect', [f.createStringLiteral(id), next]);
++          }
++          if (
++            (ts.isNewExpression(next) && next.expression.getText() === 'Map') ||
++            (ts.isCallExpression(next) &&
++              ts.isPropertyAccessExpression(next.expression) &&
++              next.expression.name.text === 'set')
++          ) {
++            return call('__contractCollect', [f.createStringLiteral(id), next]);
++          }
++          if (
++            (ts.isFunctionDeclaration(next) ||
++              ts.isFunctionExpression(next) ||
++              ts.isArrowFunction(next) ||
++              ts.isMethodDeclaration(next)) &&
++            next.body
++          ) {
++            const body = ts.isBlock(next.body)
++              ? next.body
++              : f.createBlock([f.createReturnStatement(next.body)], true);
++            const wrapped = f.createBlock(
++              [
++                f.createExpressionStatement(
++                  call('__contractEnter', [f.createStringLiteral(id)])
++                ),
++                f.createTryStatement(
++                  body,
++                  undefined,
++                  f.createBlock([
++                    f.createExpressionStatement(call('__contractLeave', []))
++                  ])
++                )
++              ],
++              true
++            );
++            if (ts.isFunctionDeclaration(next))
++              return f.updateFunctionDeclaration(
++                next,
++                next.modifiers,
++                next.asteriskToken,
++                next.name,
++                next.typeParameters,
++                next.parameters,
++                next.type,
++                wrapped
++              );
++            if (ts.isFunctionExpression(next))
++              return f.updateFunctionExpression(
++                next,
++                next.modifiers,
++                next.asteriskToken,
++                next.name,
++                next.typeParameters,
++                next.parameters,
++                next.type,
++                wrapped
++              );
++            if (ts.isArrowFunction(next))
++              return f.updateArrowFunction(
++                next,
++                next.modifiers,
++                next.typeParameters,
++                next.parameters,
++                next.type,
++                next.equalsGreaterThanToken,
++                wrapped
++              );
++            return f.updateMethodDeclaration(
++              next,
++              next.modifiers,
++              next.asteriskToken,
++              next.name,
++              next.questionToken,
++              next.typeParameters,
++              next.parameters,
++              next.type,
++              wrapped
++            );
++          }
++          return next;
++        }
++        return ts.visitNode(source, instrument) as ts.SourceFile;
++      };
++    }
++    const sandbox = vm.createContext({
++      __contractEnter: (id: string) => {
++        stack.push(id);
++        activeCalls.push(++invocation);
++      },
++      __contractLeave: () => {
++        stack.pop();
++        activeCalls.pop();
++      },
++      __contractCollect: collect,
++      __contractBind: (fn: Function, ...args: any[]) => {
++        const bound = Reflect.apply(Function.prototype.bind, fn, args);
++        boundOrigins.set(bound, origin(fn));
++        return bound;
++      }
++    });
++    function load(file: string): any {
++      if (cache.has(file)) return cache.get(file).exports;
++      const module = {exports: {} as any};
++      cache.set(file, module);
++      const code = ts.transpileModule(sources.get(file)!, {
++        fileName: file,
++        compilerOptions: {
++          target: ts.ScriptTarget.ES2022,
++          module: ts.ModuleKind.CommonJS,
++          esModuleInterop: true
++        },
++        transformers: {before: [transform(file)]}
++      }).outputText;
++      const require = (name: string) => {
++        if (name === '@actions/core')
++          return {
++            ...external.get(name),
++            debug: (message: any) =>
++              debug.push({message: String(message), frames: stack.slice()})
++          };
++        if (!name.startsWith('.')) return external.get(name);
++        return load(resolveLocal(file, name));
++      };
++      vm.runInContext(
++        `(function(require, module, exports) {${code}\n})`,
++        sandbox,
++        {filename: file}
++      )(require, module, module.exports);
++      if (['branch.ts', 'changedFiles.ts'].includes(path.basename(file))) {
++        for (const name of [
++          'checkAnyBranch',
++          'checkAllBranch',
++          'checkAnyChangedFiles',
++          'checkAllChangedFiles'
++        ]) {
++          const actual = module.exports[name];
++          if (typeof actual !== 'function') continue;
++          module.exports[name] = (...args: any[]) => {
++            calls.push({
++              adapter: name,
++              args,
++              frames: stack.slice(),
++              owners: activeCalls.slice()
++            });
++            return actual(...args);
++          };
++        }
++      }
++      return module.exports;
++    }
++    const api = load(entry);
++    const origins = {any: origin(api.checkAny), all: origin(api.checkAll)};
++    return {
++      registries,
++      touched,
++      run(configs: any[], files: string[] = []) {
++        calls.length = 0;
++        debug.length = 0;
++        touched.length = 0;
++        const result = api.checkMatchConfigs(files, configs, false);
++        if (stack.length)
++          throw new Error('Unbalanced production instrumentation');
++        return {
++          result,
++          adapters: calls.slice(),
++          debug: debug.slice(),
++          touched: touched.slice()
++        };
++      },
++      frames(record: any, quantifier: 'any' | 'all'): string[] {
++        const index = record.frames.indexOf(origins[quantifier]);
++        // Include the exported target: a bound shared driver is itself a legal
++        // owner. Distinct duplicated entry functions still have no common ID.
++        return origins[quantifier] && index >= 0
++          ? record.frames.slice(index)
++          : [];
++      },
++      ownsAllAdapters(id: string, adapters: any[]): boolean {
++        // One actual invocation must span the different dimensions. Merely
++        // sharing a scalar adapter helper below duplicated drivers is not enough.
++        let common: Set<number> | undefined;
++        for (const record of adapters) {
++          const owners = new Set<number>(
++            record.frames.flatMap((frame: string, index: number) =>
++              frame === id ? [record.owners[index]] : []
++            )
++          );
++          common = common
++            ? new Set([...common].filter(owner => owners.has(owner)))
++            : owners;
++        }
++        return Boolean(common?.size);
++      }
++    };
++  };
++}
++
++export const extensionKey = extraKey;
+diff --git a/__tests__/support/f2p-runner.cjs b/__tests__/support/f2p-runner.cjs
+new file mode 100644
+index 0000000..419bdd3
+--- /dev/null
++++ b/__tests__/support/f2p-runner.cjs
+@@ -0,0 +1,558 @@
++#!/usr/bin/env node
++'use strict';
++
++/**
++ * JUnit runner for the labeler matching contract suites (frozen P2P files plus
++ * the F2P dimension-contract file).
++ *
++ * Usage:
++ *   node __tests__/support/f2p-runner.cjs --report <junit.xml> <test-file> [...]
++ *   node __tests__/support/f2p-runner.cjs --report <junit.xml> --selector <path::exact leaf>
++ *
++ * The runner executes the repository jest setup that is already present in the
++ * environment (no installs, no network) and converts the jest JSON result into
++ * a conventional JUnit report. Test case identity is `classname::name` where
++ * `classname` is the repository relative test file path and `name` is the full
++ * test name, so each JUnit case maps one-to-one onto a `path::exact leaf`
++ * selector.
++ */
++
++const {spawnSync} = require('child_process');
++const fs = require('fs');
++const os = require('os');
++const path = require('path');
++
++const repoRoot = path.resolve(__dirname, '..', '..');
++
++function warn(message) {
++  process.stderr.write(`f2p-runner: ${message}\n`);
++}
++
++function parseArgs(argv) {
++  const options = {report: null, selector: null, files: []};
++  for (let index = 0; index < argv.length; index += 1) {
++    const arg = argv[index];
++    if (arg === '--report') {
++      options.report = argv[index + 1];
++      index += 1;
++    } else if (arg === '--selector') {
++      options.selector = argv[index + 1];
++      index += 1;
++    } else if (arg.startsWith('--')) {
++      warn(`ignoring unknown option ${arg}`);
++    } else {
++      options.files.push(arg);
++    }
++  }
++  return options;
++}
++
++function escapeXml(value) {
++  return String(value)
++    .replace(/&/g, '&amp;')
++    .replace(/</g, '&lt;')
++    .replace(/>/g, '&gt;')
++    .replace(/"/g, '&quot;')
++    .replace(/'/g, '&apos;')
++    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
++}
++
++function relative(file) {
++  return path.relative(repoRoot, file).split(path.sep).join('/');
++}
++
++function temporaryDirectory() {
++  const candidates = [
++    process.env.TMPDIR,
++    os.tmpdir(),
++    path.join(repoRoot, '.f2p-tmp')
++  ].filter(Boolean);
++  for (const candidate of candidates) {
++    try {
++      fs.mkdirSync(candidate, {recursive: true});
++      fs.accessSync(candidate, fs.constants.W_OK);
++      return candidate;
++    } catch (error) {
++      // try the next candidate
++    }
++  }
++  return path.join(repoRoot, '.f2p-tmp');
++}
++
++function unique(values) {
++  const seen = new Set();
++  const result = [];
++  for (const value of values) {
++    if (!value) {
++      continue;
++    }
++    const resolved = path.resolve(value);
++    if (seen.has(resolved)) {
++      continue;
++    }
++    seen.add(resolved);
++    result.push(resolved);
++  }
++  return result;
++}
++
++function ancestorDirectories(start) {
++  const directories = [];
++  let current = path.resolve(start);
++  for (;;) {
++    directories.push(current);
++    const parent = path.dirname(current);
++    if (parent === current) {
++      break;
++    }
++    current = parent;
++  }
++  return directories;
++}
++
++function dependencyRoots() {
++  const roots = [];
++  for (const entry of (process.env.NODE_PATH || '').split(path.delimiter)) {
++    if (!entry) {
++      continue;
++    }
++    const normalized = path.resolve(entry);
++    roots.push(
++      path.basename(normalized) === 'node_modules'
++        ? path.dirname(normalized)
++        : normalized
++    );
++  }
++  roots.push(...ancestorDirectories(repoRoot));
++  roots.push(...ancestorDirectories(process.cwd()));
++  roots.push('/workspace/repo', '/workspace', '/opt/envpipe/runtime/lib', '/usr/local/lib', '/usr/lib');
++  return unique(roots);
++}
++
++function inspectRoot(root) {
++  const modules = path.join(root, 'node_modules');
++  const jestEntry = path.join(modules, 'jest', 'bin', 'jest.js');
++  if (!fs.existsSync(jestEntry)) {
++    return null;
++  }
++  const tsJestEntry = path.join(modules, 'ts-jest', 'dist', 'index.js');
++  return {
++    root,
++    modules,
++    jestEntry,
++    tsJestEntry: fs.existsSync(tsJestEntry) ? tsJestEntry : null
++  };
++}
++
++function resolveDependencies() {
++  let fallback = null;
++  for (const root of dependencyRoots()) {
++    const resolved = inspectRoot(root);
++    if (!resolved) {
++      continue;
++    }
++    if (resolved.tsJestEntry) {
++      return resolved;
++    }
++    if (!fallback) {
++      fallback = resolved;
++    }
++  }
++  try {
++    const packageJson = require.resolve('jest/package.json', {
++      paths: [repoRoot, __dirname, process.cwd()]
++    });
++    const modules = path.dirname(path.dirname(packageJson));
++    const resolved = inspectRoot(path.dirname(modules));
++    if (resolved && resolved.tsJestEntry) {
++      return resolved;
++    }
++    if (resolved && !fallback) {
++      fallback = resolved;
++    }
++  } catch (error) {
++    // fall through to the result below
++  }
++  return fallback;
++}
++
++/**
++ * When the dependency tree lives outside the repository copy, mirror the
++ * repository jest configuration while pointing module resolution at the tree
++ * that is already present in the environment image.
++ */
++function writeGeneratedConfig(dependencies) {
++  const configPath = path.join(
++    temporaryDirectory(),
++    `f2p-jest-config-${process.pid}.json`
++  );
++  const config = {
++    rootDir: repoRoot,
++    clearMocks: true,
++    moduleFileExtensions: ['js', 'ts'],
++    testEnvironment: 'node',
++    testMatch: ['**/*.test.ts'],
++    transform: {
++      '^.+\\.ts$': [
++        dependencies.tsJestEntry || 'ts-jest',
++        {
++          useESM: true,
++          diagnostics: {ignoreCodes: [151002]},
++          tsconfig: {
++            target: 'ES2022',
++            module: 'NodeNext',
++            moduleResolution: 'NodeNext',
++            esModuleInterop: true,
++            strict: true,
++            noImplicitAny: false,
++            baseUrl: repoRoot,
++            paths: {'*': [path.join(dependencies.modules, '*')]}
++          }
++        }
++      ]
++    },
++    extensionsToTreatAsEsm: ['.ts'],
++    transformIgnorePatterns: ['node_modules/(?!(@actions|@octokit)/)'],
++    moduleNameMapper: {'^(\\.{1,2}/.*)\\.js$': '$1'},
++    modulePaths: [dependencies.modules],
++    verbose: true
++  };
++  fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
++  return configPath;
++}
++
++function toSeconds(milliseconds) {
++  const value = Number(milliseconds);
++  return Number.isFinite(value) ? (value / 1000).toFixed(3) : '0.000';
++}
++
++function testcaseXml(classname, name, time, status, message, details, failureType) {
++  const attributes =
++    `classname="${escapeXml(classname)}" ` +
++    `name="${escapeXml(name)}" ` +
++    `file="${escapeXml(classname)}" ` +
++    `time="${escapeXml(time)}"`;
++  if (status === 'passed') {
++    return `    <testcase ${attributes}/>\n`;
++  }
++  if (status === 'failed' || status === 'error') {
++    const tag = status === 'error' ? 'error' : 'failure';
++    return (
++      `    <testcase ${attributes}>\n` +
++      `      <${tag}${failureType ? ` type="${escapeXml(failureType)}"` : ''} message="${escapeXml(message)}">${escapeXml(details)}</${tag}>\n` +
++      `    </testcase>\n`
++    );
++  }
++  return `    <testcase ${attributes}>\n      <skipped/>\n    </testcase>\n`;
++}
++
++function buildReport(suites) {
++  let total = 0;
++  let failures = 0;
++  let errors = 0;
++  let skipped = 0;
++  let time = 0;
++
++  const body = suites
++    .map(suite => {
++      let suiteFailures = 0;
++      let suiteErrors = 0;
++      let suiteSkipped = 0;
++      let suiteTime = 0;
++      const cases = suite.cases
++        .map(testCase => {
++          suiteTime += (Number(testCase.duration) || 0) / 1000;
++          if (testCase.status === 'failed') {
++            suiteFailures += 1;
++          } else if (testCase.status === 'error') {
++            suiteErrors += 1;
++          } else if (testCase.status !== 'passed') {
++            suiteSkipped += 1;
++          }
++          return testcaseXml(
++            suite.name,
++            testCase.name,
++            toSeconds(testCase.duration),
++            testCase.status,
++            testCase.message,
++            testCase.details,
++            testCase.failureType
++          );
++        })
++        .join('');
++
++      total += suite.cases.length;
++      failures += suiteFailures;
++      errors += suiteErrors;
++      skipped += suiteSkipped;
++      time += suiteTime;
++
++      return (
++        `  <testsuite name="${escapeXml(suite.name)}" ` +
++        `file="${escapeXml(suite.name)}" tests="${suite.cases.length}" ` +
++        `failures="${suiteFailures}" errors="${suiteErrors}" ` +
++        `skipped="${suiteSkipped}" time="${suiteTime.toFixed(3)}">\n` +
++        cases +
++        '  </testsuite>\n'
++      );
++    })
++    .join('');
++
++  return (
++    '<?xml version="1.0" encoding="UTF-8"?>\n' +
++    `<testsuites name="f2p" tests="${total}" failures="${failures}" ` +
++    `errors="${errors}" skipped="${skipped}" time="${time.toFixed(3)}">\n` +
++    body +
++    '</testsuites>\n'
++  );
++}
++
++function writeReport(reportPath, suites) {
++  fs.mkdirSync(path.dirname(reportPath), {recursive: true});
++  fs.writeFileSync(reportPath, buildReport(suites));
++}
++
++function suiteFromJestFile(file, selector) {
++  const name = relative(file.name);
++  const cases = [];
++  for (const assertion of file.assertionResults || []) {
++    if (selector && assertion.fullName !== selector) {
++      continue;
++    }
++    const status =
++      assertion.status === 'passed'
++        ? 'passed'
++        : assertion.status === 'failed'
++          ? 'failed'
++          : 'skipped';
++    cases.push({
++      name: assertion.fullName,
++      status,
++      duration: assertion.duration,
++      // Only structured Jest matcher failures establish assertion evidence.
++      // Unknown runtime exceptions and runner errors retain their own status.
++      failureType:
++        status === 'failed' &&
++        assertion.failureDetails?.length > 0 &&
++        assertion.failureDetails.every(detail => detail?.matcherResult)
++          ? 'AssertionError'
++          : undefined,
++      message: (assertion.failureMessages || []).join('\n').slice(0, 500),
++      details: (assertion.failureMessages || []).join('\n')
++    });
++  }
++  if (cases.length === 0 && !selector) {
++    const message =
++      file.status === 'failed'
++        ? file.message || 'test file failed to run'
++        : 'no test cases were collected for this file';
++    cases.push({
++      name,
++      status: 'error',
++      duration: 0,
++      message: String(message).slice(0, 500),
++      details: String(message)
++    });
++  }
++  return {name, cases};
++}
++
++function main() {
++  const options = parseArgs(process.argv.slice(2));
++  if (!options.report) {
++    warn('missing required --report <path>');
++    return 2;
++  }
++  const reportPath = path.resolve(options.report);
++
++  const selectorFile = options.selector
++    ? options.selector.split('::')[0]
++    : null;
++  const selectorLeaf = options.selector
++    ? options.selector.split('::').slice(1).join('::')
++    : null;
++
++  const requested = selectorFile ? [selectorFile] : options.files;
++  const missing = requested.filter(
++    file => !fs.existsSync(path.join(repoRoot, file))
++  );
++  const present = requested.filter(file =>
++    fs.existsSync(path.join(repoRoot, file))
++  );
++
++  const suites = missing.map(file => ({
++    name: file,
++    cases: [
++      {
++        name: file,
++        status: 'error',
++        duration: 0,
++        message: `declared test path ${file} does not exist`,
++        details: `declared test path ${file} does not exist`
++      }
++    ]
++  }));
++
++  let jestStatus = 0;
++  if (present.length) {
++    const dependencies = resolveDependencies();
++    if (!dependencies) {
++      const message =
++        'jest could not be resolved from the repository or from the frozen ' +
++        `environment image (searched: ${dependencyRoots().join(', ')})`;
++      suites.push({
++        name: 'f2p-runner',
++        cases: [
++          {
++            name: 'jest is available in the frozen environment',
++            status: 'error',
++            duration: 0,
++            message,
++            details: message
++          }
++        ]
++      });
++      writeReport(reportPath, suites);
++      warn(message);
++      return 2;
++    }
++
++    const generatedConfigPath =
++      dependencies.root === repoRoot ? null : writeGeneratedConfig(dependencies);
++    const jsonPath = path.join(
++      temporaryDirectory(),
++      `f2p-jest-${process.pid}-${Date.now()}.json`
++    );
++
++    const jestArgs = [
++      '--experimental-vm-modules',
++      dependencies.jestEntry,
++      '--runInBand'
++    ];
++    if (generatedConfigPath) {
++      jestArgs.push('--config', generatedConfigPath);
++    }
++    jestArgs.push('--json', `--outputFile=${jsonPath}`, ...present);
++    // Do not pass --testNamePattern here: several frozen suites share
++    // module-level mocks, so isolating one test changes what the others
++    // observe. The collected results are filtered to the exact selector in
++    // suiteFromJestFile below, which yields the same identity without
++    // perturbing the file's execution order.
++
++    const nodePath = [dependencies.modules, process.env.NODE_PATH]
++      .filter(Boolean)
++      .join(path.delimiter);
++    const result = spawnSync(process.execPath, jestArgs, {
++      cwd: repoRoot,
++      env: {...process.env, CI: 'true', NODE_PATH: nodePath},
++      encoding: 'utf8',
++      maxBuffer: 64 * 1024 * 1024
++    });
++    jestStatus = result.status === null ? 2 : result.status;
++    if (jestStatus !== 0) {
++      const details = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
++      if (details) {
++        process.stderr.write(`${details.slice(-4000)}\n`);
++      }
++    }
++
++    if (generatedConfigPath) {
++      try {
++        fs.unlinkSync(generatedConfigPath);
++      } catch (error) {
++        // the temporary configuration is disposable
++      }
++    }
++
++    if (result.error) {
++      suites.push({
++        name: 'f2p-runner',
++        cases: [
++          {
++            name: 'jest executed',
++            status: 'error',
++            duration: 0,
++            message: String(result.error.message || result.error),
++            details: String(result.error.stack || result.error)
++          }
++        ]
++      });
++    } else if (!fs.existsSync(jsonPath)) {
++      suites.push({
++        name: 'f2p-runner',
++        cases: [
++          {
++            name: 'jest produced a result file',
++            status: 'error',
++            duration: 0,
++            message:
++              (result.stderr || '').slice(0, 500) ||
++              'jest produced no JSON result',
++            details: result.stderr || 'jest produced no JSON result'
++          }
++        ]
++      });
++      jestStatus = jestStatus || 2;
++    } else {
++      let parsed = null;
++      try {
++        parsed = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
++      } catch (error) {
++        warn(`could not parse jest JSON output: ${error.message}`);
++      }
++      fs.unlinkSync(jsonPath);
++      if (parsed && Array.isArray(parsed.testResults)) {
++        for (const file of parsed.testResults) {
++          suites.push(suiteFromJestFile(file, selectorLeaf));
++        }
++        if (selectorLeaf) {
++          const matched = suites
++            .flatMap(suite => suite.cases)
++            .filter(testCase => testCase.name === selectorLeaf);
++          if (matched.length === 0) {
++            suites.push({
++              name: selectorFile,
++              cases: [
++                {
++                  name: selectorLeaf,
++                  status: 'error',
++                  duration: 0,
++                  message: `selector ${options.selector} did not match a collected test`,
++                  details: `selector ${options.selector} did not match a collected test`
++                }
++              ]
++            });
++            jestStatus = jestStatus || 2;
++          }
++        }
++      } else {
++        suites.push({
++          name: 'f2p-runner',
++          cases: [
++            {
++              name: 'jest produced a result file',
++              status: 'error',
++              duration: 0,
++              message: 'jest JSON output was empty or malformed',
++              details: 'jest JSON output was empty or malformed'
++            }
++          ]
++        });
++        jestStatus = jestStatus || 2;
++      }
++    }
++  }
++
++  writeReport(reportPath, suites);
++
++  const allCases = suites.flatMap(suite => suite.cases);
++  const passed = allCases.filter(testCase => testCase.status === 'passed').length;
++  process.stdout.write(
++    `f2p-runner: ${passed}/${allCases.length} test cases passed -> ${reportPath}\n`
++  );
++
++  const failed = allCases.some(testCase => testCase.status !== 'passed');
++  return failed ? 1 : 0;
++}
++
++process.exitCode = main();
+diff --git a/__tests__/support/p2p-runner.cjs b/__tests__/support/p2p-runner.cjs
+new file mode 100644
+index 0000000..c739805
+--- /dev/null
++++ b/__tests__/support/p2p-runner.cjs
+@@ -0,0 +1,600 @@
++#!/usr/bin/env node
++'use strict';
++
++/**
++ * P2P JUnit runner for the labeler matching regression tests.
++ *
++ * Usage:
++ *   node __tests__/support/p2p-runner.cjs --report <junit.xml> <test-file> [...]
++ *   node __tests__/support/p2p-runner.cjs --report <junit.xml> --selector <path::exact leaf>
++ *
++ * The runner executes the repository's own jest setup (no installs, no network)
++ * and converts the jest JSON result into a conventional JUnit report. Test case
++ * identity is `classname::name` where `classname` is the repository relative
++ * test file path and `name` is the full test name, so a JUnit test case maps
++ * one-to-one onto a `path::exact leaf` selector.
++ */
++
++const {spawnSync} = require('child_process');
++const fs = require('fs');
++const path = require('path');
++
++const repoRoot = path.resolve(__dirname, '..', '..');
++
++function fail(message) {
++  process.stderr.write(`p2p-runner: ${message}\n`);
++}
++
++function parseArgs(argv) {
++  const options = {report: null, selector: null, files: []};
++  for (let index = 0; index < argv.length; index += 1) {
++    const arg = argv[index];
++    if (arg === '--report') {
++      options.report = argv[index + 1];
++      index += 1;
++    } else if (arg === '--selector') {
++      options.selector = argv[index + 1];
++      index += 1;
++    } else if (arg.startsWith('--')) {
++      fail(`ignoring unknown option ${arg}`);
++    } else {
++      options.files.push(arg);
++    }
++  }
++  return options;
++}
++
++function escapeXml(value) {
++  return (
++    String(value)
++      .replace(/&/g, '&amp;')
++      .replace(/</g, '&lt;')
++      .replace(/>/g, '&gt;')
++      .replace(/"/g, '&quot;')
++      .replace(/'/g, '&apos;')
++      // eslint-disable-next-line no-control-regex
++      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '')
++  );
++}
++
++function relative(file) {
++  const rel = path.relative(repoRoot, file);
++  return rel.split(path.sep).join('/');
++}
++
++function uniqueDirectories(directories) {
++  const seen = new Set();
++  const result = [];
++  for (const directory of directories) {
++    if (!directory) {
++      continue;
++    }
++    const resolved = path.resolve(directory);
++    if (seen.has(resolved)) {
++      continue;
++    }
++    seen.add(resolved);
++    result.push(resolved);
++  }
++  return result;
++}
++
++function temporaryDirectory() {
++  const candidates = [
++    process.env.TMPDIR,
++    require('os').tmpdir(),
++    path.join(repoRoot, '.p2p-tmp')
++  ].filter(Boolean);
++  for (const candidate of candidates) {
++    try {
++      fs.mkdirSync(candidate, {recursive: true});
++      fs.accessSync(candidate, fs.constants.W_OK);
++      return candidate;
++    } catch (error) {
++      // try the next candidate
++    }
++  }
++  return path.join(repoRoot, '.p2p-tmp');
++}
++
++function ancestorDirectories(start) {
++  const directories = [];
++  let current = path.resolve(start);
++  for (;;) {
++    directories.push(current);
++    const parent = path.dirname(current);
++    if (parent === current) {
++      break;
++    }
++    current = parent;
++  }
++  return directories;
++}
++
++function scanForDependencyRoots(bases, maxDepth) {
++  const roots = [];
++  const skip = new Set(['node_modules', '.git', '.cache', '.npm']);
++  const walk = (directory, depth) => {
++    let entries = [];
++    try {
++      entries = fs.readdirSync(directory, {withFileTypes: true});
++    } catch (error) {
++      return;
++    }
++    for (const entry of entries) {
++      if (!entry.isDirectory() || skip.has(entry.name)) {
++        continue;
++      }
++      const child = path.join(directory, entry.name);
++      roots.push(child);
++      if (depth < maxDepth) {
++        walk(child, depth + 1);
++      }
++    }
++  };
++  for (const base of bases) {
++    walk(base, 0);
++  }
++  return roots;
++}
++
++function candidateRoots() {
++  const roots = [];
++  for (const entry of (process.env.NODE_PATH || '').split(path.delimiter)) {
++    if (!entry) {
++      continue;
++    }
++    const normalized = path.resolve(entry);
++    roots.push(
++      path.basename(normalized) === 'node_modules'
++        ? path.dirname(normalized)
++        : normalized
++    );
++  }
++  roots.push(...ancestorDirectories(repoRoot));
++  roots.push(...ancestorDirectories(process.cwd()));
++  // Locations provided by the frozen environment image (never installed here).
++  roots.push(
++    '/workspace/repo',
++    '/workspace',
++    '/opt/envpipe/runtime/lib',
++    '/usr/local/lib',
++    '/usr/lib'
++  );
++  // Bounded safety net: the frozen image keeps its dependency tree next to a
++  // repository checkout, wherever that checkout is mounted.
++  roots.push(...scanForDependencyRoots(['/workspace', '/opt', '/home', '/root'], 3));
++  return uniqueDirectories(roots);
++}
++
++function inspectDependencyRoot(root) {
++  const modules = path.join(root, 'node_modules');
++  const jestEntry = path.join(modules, 'jest', 'bin', 'jest.js');
++  if (!fs.existsSync(jestEntry)) {
++    return null;
++  }
++  const tsJestEntry = path.join(modules, 'ts-jest', 'dist', 'index.js');
++  return {
++    root,
++    modules,
++    jestEntry,
++    tsJestEntry: fs.existsSync(tsJestEntry) ? tsJestEntry : null
++  };
++}
++
++/**
++ * Locate jest and the dependency tree that provides it. The one-time baseline
++ * copy used for validation contains the repository sources only; the runtime
++ * dependencies stay in the frozen environment image (for example
++ * /workspace/repo/node_modules), so both the copy and the image are searched.
++ */
++function resolveDependencies() {
++  let fallback = null;
++  for (const root of candidateRoots()) {
++    const resolved = inspectDependencyRoot(root);
++    if (!resolved) {
++      continue;
++    }
++    if (resolved.tsJestEntry) {
++      return resolved;
++    }
++    if (!fallback) {
++      fallback = resolved;
++    }
++  }
++  try {
++    const packageJson = require.resolve('jest/package.json', {
++      paths: [repoRoot, __dirname, process.cwd()]
++    });
++    const modules = path.dirname(path.dirname(packageJson));
++    const resolved = inspectDependencyRoot(path.dirname(modules));
++    if (resolved && resolved.tsJestEntry) {
++      return resolved;
++    }
++    if (resolved && !fallback) {
++      fallback = resolved;
++    }
++  } catch (error) {
++    // fall through to the result below
++  }
++  return fallback;
++}
++
++/**
++ * When the dependencies live outside the repository copy, mirror the
++ * repository jest configuration while pointing module resolution at the
++ * dependency tree from the frozen image. Nothing is written inside the copy.
++ */
++function writeGeneratedConfig(dependencies) {
++  const configPath = path.join(
++    temporaryDirectory(),
++    `p2p-jest-config-${process.pid}.json`
++  );
++  const config = {
++    rootDir: repoRoot,
++    clearMocks: true,
++    moduleFileExtensions: ['js', 'ts'],
++    testEnvironment: 'node',
++    testMatch: ['**/*.test.ts'],
++    transform: {
++      '^.+\\.ts$': [
++        dependencies.tsJestEntry || 'ts-jest',
++        {
++          useESM: true,
++          diagnostics: {ignoreCodes: [151002]},
++          tsconfig: {
++            target: 'ES2022',
++            module: 'NodeNext',
++            moduleResolution: 'NodeNext',
++            esModuleInterop: true,
++            strict: true,
++            noImplicitAny: false,
++            baseUrl: repoRoot,
++            paths: {'*': [path.join(dependencies.modules, '*')]}
++          }
++        }
++      ]
++    },
++    extensionsToTreatAsEsm: ['.ts'],
++    transformIgnorePatterns: ['node_modules/(?!(@actions|@octokit)/)'],
++    moduleNameMapper: {'^(\\.{1,2}/.*)\\.js$': '$1'},
++    modulePaths: [dependencies.modules],
++    verbose: true
++  };
++  fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
++  return configPath;
++}
++
++function toSeconds(milliseconds) {
++  const value = Number(milliseconds);
++  return Number.isFinite(value) ? (value / 1000).toFixed(3) : '0.000';
++}
++
++function testcaseXml(classname, name, time, status, message, details) {
++  const attributes =
++    `classname="${escapeXml(classname)}" ` +
++    `name="${escapeXml(name)}" ` +
++    `file="${escapeXml(classname)}" ` +
++    `time="${escapeXml(time)}"`;
++  if (status === 'passed') {
++    return `    <testcase ${attributes}/>\n`;
++  }
++  if (status === 'failed' || status === 'error') {
++    const tag = status === 'error' ? 'error' : 'failure';
++    return (
++      `    <testcase ${attributes}>\n` +
++      `      <${tag} message="${escapeXml(message)}">${escapeXml(details)}</${tag}>\n` +
++      `    </testcase>\n`
++    );
++  }
++  return `    <testcase ${attributes}>\n      <skipped/>\n    </testcase>\n`;
++}
++
++function buildReport(suites) {
++  let total = 0;
++  let failures = 0;
++  let errors = 0;
++  let skipped = 0;
++  let time = 0;
++
++  const body = suites
++    .map(suite => {
++      let suiteFailures = 0;
++      let suiteErrors = 0;
++      let suiteSkipped = 0;
++      let suiteTime = 0;
++      const cases = suite.cases
++        .map(testCase => {
++          suiteTime += (Number(testCase.duration) || 0) / 1000;
++          if (testCase.status === 'failed') {
++            suiteFailures += 1;
++          } else if (testCase.status === 'error') {
++            suiteErrors += 1;
++          } else if (testCase.status !== 'passed') {
++            suiteSkipped += 1;
++          }
++          return testcaseXml(
++            suite.name,
++            testCase.name,
++            toSeconds(testCase.duration),
++            testCase.status,
++            testCase.message,
++            testCase.details
++          );
++        })
++        .join('');
++
++      total += suite.cases.length;
++      failures += suiteFailures;
++      errors += suiteErrors;
++      skipped += suiteSkipped;
++      time += suiteTime;
++
++      return (
++        `  <testsuite name="${escapeXml(suite.name)}" ` +
++        `file="${escapeXml(suite.name)}" tests="${suite.cases.length}" ` +
++        `failures="${suiteFailures}" errors="${suiteErrors}" ` +
++        `skipped="${suiteSkipped}" time="${suiteTime.toFixed(3)}">\n` +
++        cases +
++        '  </testsuite>\n'
++      );
++    })
++    .join('');
++
++  return (
++    '<?xml version="1.0" encoding="UTF-8"?>\n' +
++    `<testsuites name="p2p" tests="${total}" failures="${failures}" ` +
++    `errors="${errors}" skipped="${skipped}" time="${time.toFixed(3)}">\n` +
++    body +
++    '</testsuites>\n'
++  );
++}
++
++function writeReport(reportPath, suites) {
++  fs.mkdirSync(path.dirname(reportPath), {recursive: true});
++  fs.writeFileSync(reportPath, buildReport(suites));
++}
++
++function suiteFromJestFile(file, selector) {
++  const name = relative(file.name);
++  const cases = [];
++  for (const assertion of file.assertionResults || []) {
++    if (selector && assertion.fullName !== selector) {
++      continue;
++    }
++    const status =
++      assertion.status === 'passed'
++        ? 'passed'
++        : assertion.status === 'failed'
++          ? 'failed'
++          : 'skipped';
++    cases.push({
++      name: assertion.fullName,
++      status,
++      duration: assertion.duration,
++      message: (assertion.failureMessages || []).join('\n').slice(0, 500),
++      details: (assertion.failureMessages || []).join('\n')
++    });
++  }
++  if (cases.length === 0 && !selector) {
++    const message =
++      file.status === 'failed'
++        ? file.message || 'test file failed to run'
++        : 'no test cases were collected for this file';
++    cases.push({
++      name,
++      status: 'error',
++      duration: 0,
++      message: String(message).slice(0, 500),
++      details: String(message)
++    });
++  }
++  return {name, cases};
++}
++
++function main() {
++  const options = parseArgs(process.argv.slice(2));
++  if (!options.report) {
++    fail('missing required --report <path>');
++    return 2;
++  }
++  const reportPath = path.resolve(options.report);
++
++  const selectorFile = options.selector
++    ? options.selector.split('::')[0]
++    : null;
++  const selectorLeaf = options.selector
++    ? options.selector.split('::').slice(1).join('::')
++    : null;
++
++  const requested = selectorFile ? [selectorFile] : options.files;
++  const missing = requested.filter(
++    file => !fs.existsSync(path.join(repoRoot, file))
++  );
++  const present = requested.filter(file =>
++    fs.existsSync(path.join(repoRoot, file))
++  );
++
++  const suites = missing.map(file => ({
++    name: file,
++    cases: [
++      {
++        name: file,
++        status: 'error',
++        duration: 0,
++        message: `declared test path ${file} does not exist`,
++        details: `declared test path ${file} does not exist`
++      }
++    ]
++  }));
++
++  let jestStatus = 0;
++  if (present.length) {
++    const dependencies = resolveDependencies();
++    if (!dependencies) {
++      const message =
++        'jest could not be resolved from the repository or from the frozen ' +
++        `environment image (searched: ${candidateRoots().join(', ')})`;
++      suites.push({
++        name: 'p2p-runner',
++        cases: [
++          {
++            name: 'jest is available in the frozen environment',
++            status: 'error',
++            duration: 0,
++            message,
++            details: message
++          }
++        ]
++      });
++      writeReport(reportPath, suites);
++      fail(message);
++      return 2;
++    }
++    const generatedConfigPath =
++      dependencies.root === repoRoot
++        ? null
++        : writeGeneratedConfig(dependencies);
++
++    const jsonPath = path.join(
++      temporaryDirectory(),
++      `p2p-jest-${process.pid}-${Date.now()}.json`
++    );
++
++    const jestArgs = [
++      '--experimental-vm-modules',
++      dependencies.jestEntry,
++      '--runInBand'
++    ];
++    if (generatedConfigPath) {
++      jestArgs.push('--config', generatedConfigPath);
++    }
++    jestArgs.push('--json', `--outputFile=${jsonPath}`, ...present);
++    if (selectorLeaf) {
++      jestArgs.splice(
++        jestArgs.length - present.length,
++        0,
++        '--testNamePattern',
++        selectorLeaf
++      );
++    }
++
++    const nodePath = [dependencies.modules, process.env.NODE_PATH]
++      .filter(Boolean)
++      .join(path.delimiter);
++    const result = spawnSync(process.execPath, jestArgs, {
++      cwd: repoRoot,
++      env: {...process.env, CI: 'true', NODE_PATH: nodePath},
++      encoding: 'utf8',
++      maxBuffer: 64 * 1024 * 1024
++    });
++    jestStatus = result.status === null ? 2 : result.status;
++    if (jestStatus !== 0) {
++      const details = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
++      if (details) {
++        process.stderr.write(`${details.slice(-4000)}\n`);
++      }
++    }
++
++    if (generatedConfigPath) {
++      try {
++        fs.unlinkSync(generatedConfigPath);
++      } catch (error) {
++        // the temporary configuration is disposable
++      }
++    }
++
++    if (result.error) {
++      suites.push({
++        name: 'p2p-runner',
++        cases: [
++          {
++            name: 'jest executed',
++            status: 'error',
++            duration: 0,
++            message: String(result.error.message || result.error),
++            details: String(result.error.stack || result.error)
++          }
++        ]
++      });
++    } else if (!fs.existsSync(jsonPath)) {
++      suites.push({
++        name: 'p2p-runner',
++        cases: [
++          {
++            name: 'jest produced a result file',
++            status: 'error',
++            duration: 0,
++            message:
++              (result.stderr || '').slice(0, 500) ||
++              'jest produced no JSON result',
++            details: result.stderr || 'jest produced no JSON result'
++          }
++        ]
++      });
++      jestStatus = jestStatus || 2;
++    } else {
++      let parsed = null;
++      try {
++        parsed = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
++      } catch (error) {
++        fail(`could not parse jest JSON output: ${error.message}`);
++      }
++      fs.unlinkSync(jsonPath);
++      if (parsed && Array.isArray(parsed.testResults)) {
++        for (const file of parsed.testResults) {
++          suites.push(suiteFromJestFile(file, selectorLeaf));
++        }
++        if (selectorLeaf) {
++          const matched = suites
++            .flatMap(suite => suite.cases)
++            .filter(testCase => testCase.name === selectorLeaf);
++          if (matched.length === 0) {
++            suites.push({
++              name: selectorFile,
++              cases: [
++                {
++                  name: selectorLeaf,
++                  status: 'error',
++                  duration: 0,
++                  message: `selector ${options.selector} did not match a collected test`,
++                  details: `selector ${options.selector} did not match a collected test`
++                }
++              ]
++            });
++            jestStatus = jestStatus || 2;
++          }
++        }
++      } else {
++        suites.push({
++          name: 'p2p-runner',
++          cases: [
++            {
++              name: 'jest produced a result file',
++              status: 'error',
++              duration: 0,
++              message: 'jest JSON output was empty or malformed',
++              details: 'jest JSON output was empty or malformed'
++            }
++          ]
++        });
++        jestStatus = jestStatus || 2;
++      }
++    }
++  }
++
++  writeReport(reportPath, suites);
++
++  const allCases = suites.flatMap(suite => suite.cases);
++  const passed = allCases.filter(
++    testCase => testCase.status === 'passed'
++  ).length;
++  process.stdout.write(
++    `p2p-runner: ${passed}/${allCases.length} test cases passed -> ${reportPath}\n`
++  );
++
++  const failed = allCases.some(testCase => testCase.status !== 'passed');
++  return failed || jestStatus !== 0 ? 1 : 0;
++}
++
++process.exitCode = main();

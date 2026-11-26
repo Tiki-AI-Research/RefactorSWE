@@ -1,0 +1,1091 @@
+diff --git a/tests/test_verifier_suite.py b/tests/test_verifier_suite.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3a911b39279d3c9283be595ad757b3a3d1388483
+--- /dev/null
++++ b/tests/test_verifier_suite.py
+@@ -0,0 +1,828 @@
++import sys
++import re
++import types
++import pytest
++import stackprinter
++from tests.source import sourcelines
++from tests.test_frame_inspection import frameinfo
++
++
++# =====================================================================
++# F2P (Fail-to-Pass) Nodes
++# =====================================================================
++
++@pytest.fixture
++def chained_tree():
++    from stackprinter.formatting import build_exception_tree
++    try:
++        try:
++            raise ValueError('root_failure')
++        except ValueError as cause:
++            raise RuntimeError('chained_failure') from cause
++    except RuntimeError as error:
++        return error, build_exception_tree(type(error), error, error.__traceback__)
++
++
++def test_f2p_node_type(chained_tree):
++    from stackprinter.formatting import ExceptionNode
++    error, node = chained_tree
++    assert isinstance(node, ExceptionNode)
++    assert node.exc_type is type(error)
++
++
++def test_f2p_node_value_identity(chained_tree):
++    error, node = chained_tree
++    assert node.exc_value is error
++
++
++def test_f2p_node_traceback_identity(chained_tree):
++    error, node = chained_tree
++    assert node.traceback is error.__traceback__
++    assert node.chain_parent.traceback is error.__cause__.__traceback__
++
++
++def test_f2p_node_frames(chained_tree):
++    from stackprinter.extraction import FrameInfo
++    _, node = chained_tree
++    assert node.frames and node.chain_parent.frames
++    assert all(isinstance(frame, FrameInfo) for frame in node.frames)
++
++
++def test_f2p_node_root_metadata(chained_tree):
++    _, node = chained_tree
++    assert node.parent is None
++    assert node.chain_type is None
++    assert node.is_group is False
++    assert node.is_cycle is False
++
++
++def test_f2p_node_causal_links(chained_tree):
++    from stackprinter.formatting import ExceptionNode
++    error, node = chained_tree
++    cause = node.chain_parent
++    assert isinstance(cause, ExceptionNode)
++    assert cause.exc_type is ValueError
++    assert cause.exc_value is error.__cause__
++    assert cause.chain_type == 'cause'
++    assert cause.parent is node
++
++
++def test_f2p_cycle_detection():
++    """Verify cycle detection breaks recursive chains and renders circular marker."""
++    from stackprinter.formatting import build_exception_tree, TracebackRenderer
++    
++    e1 = ValueError("loop1")
++    e2 = RuntimeError("loop2")
++    e1.__cause__ = e2
++    e2.__cause__ = e1
++
++    node = build_exception_tree(e1.__class__, e1, None)
++    assert node.chain_parent is not None
++    assert node.chain_parent.chain_parent is not None
++    assert node.chain_parent.chain_parent.is_cycle is True
++
++    renderer = TracebackRenderer(style="plaintext")
++    output = renderer.render(node)
++    assert re.search(r"\b(?:circular|cycle|recurs\w*|loop)\b", output, re.I)
++    assert "already formatted" in output or "loop1" in output
++
++
++def test_f2p_exception_group_native_formatting():
++    """Verify native ExceptionGroup tree rendering with branch separators, indentation and variables."""
++    def sub1():
++        local_alpha_marker = "alpha_42_marker"
++        raise KeyError("missing_key_x")
++
++    def sub2():
++        local_beta_marker = "beta_99_marker"
++        raise IndexError("index_out_of_bounds")
++
++    def raise_group():
++        try:
++            sub1()
++        except KeyError as e1:
++            try:
++                sub2()
++            except IndexError as e2:
++                raise ExceptionGroup("BatchOperationFailed", [e1, e2])
++
++    try:
++        raise_group()
++    except ExceptionGroup as eg:
++        output = stackprinter.format(eg)
++        assert "BatchOperationFailed" in output
++        assert "+---------------- 1 ----------------" in output
++        assert "+---------------- 2 ----------------" in output
++        assert "| " in output
++        assert "KeyError: 'missing_key_x'" in output
++        assert "IndexError: index_out_of_bounds" in output
++        # Verify stackprinter rich frame variables are rendered (not fallback standard library)
++        assert "alpha_42_marker" in output
++        assert "beta_99_marker" in output
++
++
++def test_f2p_nested_exception_group():
++    """Verify nested ExceptionGroup hierarchy preserves tree indentation."""
++    from stackprinter.formatting import build_exception_tree
++
++    inner_group = ExceptionGroup("InnerGroup", [
++        ValueError("inner_val_error"),
++        TypeError("inner_type_error")
++    ])
++    outer_group = ExceptionGroup("OuterGroup", [
++        ZeroDivisionError("zero_division"),
++        inner_group
++    ])
++
++    node = build_exception_tree(outer_group.__class__, outer_group, None)
++    assert node.is_group is True
++    assert len(node.sub_exceptions) == 2
++    assert node.sub_exceptions[1].is_group is True
++    assert len(node.sub_exceptions[1].sub_exceptions) == 2
++
++    output = stackprinter.format(outer_group)
++    assert "OuterGroup" in output
++    assert "InnerGroup" in output
++    assert "inner_val_error" in output
++    assert "inner_type_error" in output
++    assert "zero_division" in output
++    assert "+---------------- 1 ----------------" in output
++    assert "+---------------- 2 ----------------" in output
++
++
++def test_f2p_exception_group_suppressed_vars():
++    """Verify suppressed_vars censorship is respected inside ExceptionGroup frames."""
++    def fail_with_secret(secret_token):
++        super_secret_credential = secret_token
++        raise ValueError("failed_with_secret")
++
++    secret_val = "top_secret" + "_token_value_999"
++    try:
++        try:
++            fail_with_secret(secret_val)
++        except ValueError as err:
++            raise ExceptionGroup("AuthFailedGroup", [err])
++    except ExceptionGroup as eg:
++        output = stackprinter.format(eg, suppressed_vars=[r".*secret.*", r".*token.*"])
++        assert "AuthFailedGroup" in output
++        assert "failed_with_secret" in output
++        assert secret_val not in output
++        assert "*****" in output
++
++
++def test_f2p_traceback_renderer_class():
++    """Verify TracebackRenderer can be independently instantiated and used."""
++    from stackprinter.formatting import TracebackRenderer, build_exception_tree
++    
++    renderer = TracebackRenderer(
++        style="plaintext",
++        source_lines=3,
++        truncate_vals=100
++    )
++    exc = ValueError("standalone_render_test")
++    node = build_exception_tree(exc.__class__, exc, None)
++    rendered = renderer.render(node)
++    assert "ValueError: standalone_render_test" in rendered
++
++
++def test_f2p_base_exception_direct_format():
++    """Verify stackprinter.format directly accepts BaseException instances like KeyboardInterrupt."""
++    kb = KeyboardInterrupt("operation_cancelled_by_user")
++    output = stackprinter.format(kb)
++    assert "KeyboardInterrupt: operation_cancelled_by_user" in output
++
++
++def test_f2p_tree_dag_vs_cycle_distinction():
++    """Verify DAG exception reuse is not false-positive cycle, while real ancestor loops are caught."""
++    from stackprinter.formatting import build_exception_tree
++
++    # Diamond / DAG reuse across sibling branches in ExceptionGroup
++    shared_exc = ValueError("shared_root_cause")
++    eg = ExceptionGroup("DAG_Group", [shared_exc, shared_exc])
++
++    node = build_exception_tree(eg.__class__, eg, None)
++    assert node.is_group is True
++    assert len(node.sub_exceptions) == 2
++    assert node.sub_exceptions[0].is_cycle is False
++    assert node.sub_exceptions[1].is_cycle is False
++    assert node.sub_exceptions[0].exc_value is shared_exc
++    assert node.sub_exceptions[1].exc_value is shared_exc
++
++    # Real ancestor loop involving an ExceptionGroup sub-exception causing the group
++    e_child = RuntimeError("child_that_caused_group")
++    eg_with_loop = ExceptionGroup("LoopGroup", [e_child])
++    e_child.__cause__ = eg_with_loop
++
++    loop_node = build_exception_tree(eg_with_loop.__class__, eg_with_loop, None)
++    assert loop_node.is_group is True
++    assert len(loop_node.sub_exceptions) == 1
++    child_node = loop_node.sub_exceptions[0]
++    assert child_node.is_cycle is False
++    assert child_node.chain_parent is not None
++    assert child_node.chain_parent.is_cycle is True
++
++
++@pytest.fixture
++def query_tree():
++    from stackprinter.formatting import build_exception_tree
++    ancestor = KeyError('root_key_err')
++    middle = ValueError('mid_val_err')
++    middle.__cause__ = ancestor
++    leaf1, leaf2 = TypeError('leaf1_type'), KeyError('leaf2_key')
++    inner = ExceptionGroup('Inner', [leaf1, leaf2])
++    error = ExceptionGroup('Top', [middle, inner])
++    return build_exception_tree(type(error), error, None), [error, middle, ancestor, inner, leaf1, leaf2]
++
++
++def test_f2p_node_depth(query_tree):
++    node, _ = query_tree
++    assert node.depth == 0
++    assert node.sub_exceptions[0].depth == 1
++    assert node.sub_exceptions[0].chain_parent.depth == 2
++    assert node.sub_exceptions[1].depth == 1
++    assert node.sub_exceptions[1].sub_exceptions[0].depth == 2
++
++
++def test_f2p_walk_preorder(query_tree):
++    node, expected = query_tree
++    actual = list(node.walk(order='preorder'))
++    assert len(actual) == 6 and actual[0] is node
++    assert [item.exc_value for item in actual] == expected
++
++
++def test_f2p_walk_postorder(query_tree):
++    node, values = query_tree
++    actual = list(node.walk(order='postorder'))
++    assert len(actual) == 6 and actual[-1] is node
++    assert [item.exc_value for item in actual] == [values[i] for i in (2, 1, 4, 5, 3, 0)]
++
++
++def test_f2p_find_subclasses(query_tree):
++    node, values = query_tree
++    expected = [values[2], values[5]]
++    assert [item.exc_value for item in node.find(KeyError)] == expected
++    assert [item.exc_value for item in node.find(LookupError)] == expected
++
++
++def test_f2p_group_nested_cause_chain_rendering():
++    """Verify sub-exception branches correctly indent their own upstream causal chains."""
++    def raise_sub_with_cause():
++        try:
++            raise IndexError("sub_inner_index")
++        except IndexError as inner:
++            raise RuntimeError("sub_outer_runtime") from inner
++
++    try:
++        raise_sub_with_cause()
++    except RuntimeError as r:
++        eg = ExceptionGroup("BatchWithChains", [r])
++
++    output = stackprinter.format(eg)
++    assert "BatchWithChains" in output
++    assert "+---------------- 1 ----------------" in output
++    assert "sub_outer_runtime" in output
++    assert "sub_inner_index" in output
++    
++    lines = output.splitlines()
++    sub_rail_lines = [line for line in lines if "sub_inner_index" in line or "direct cause" in line]
++    assert len(sub_rail_lines) >= 2
++    for line in sub_rail_lines:
++        assert line.startswith("  |")
++
++
++def test_f2p_exception_node_direct_format_and_reverse():
++    """Verify stackprinter.format(ExceptionNode) direct rendering and reverse=True causal inversion."""
++    from stackprinter.formatting import build_exception_tree
++
++    try:
++        try:
++            raise ValueError("step1_failure")
++        except ValueError as e1:
++            raise RuntimeError("step2_failure") from e1
++    except RuntimeError as e2:
++        node = build_exception_tree(e2.__class__, e2, e2.__traceback__)
++
++    rendered_fwd = stackprinter.format(node, reverse=False)
++    assert isinstance(rendered_fwd, str)
++    assert "step1_failure" in rendered_fwd
++    assert "step2_failure" in rendered_fwd
++    idx_step1_fwd = rendered_fwd.index("step1_failure")
++    idx_step2_fwd = rendered_fwd.index("step2_failure")
++    assert idx_step1_fwd < idx_step2_fwd
++
++    rendered_rev = stackprinter.format(node, reverse=True)
++    assert "step1_failure" in rendered_rev
++    assert "step2_failure" in rendered_rev
++    idx_step1_rev = rendered_rev.index("step1_failure")
++    idx_step2_rev = rendered_rev.index("step2_failure")
++    assert idx_step2_rev < idx_step1_rev
++
++
++@pytest.fixture
++def filter_tree():
++    from stackprinter.formatting import build_exception_tree
++    values = [KeyError('k1'), ValueError('v1'), KeyError('k2'), TypeError('t1')]
++    inner = ExceptionGroup('Inner', values[:2])
++    outer = ExceptionGroup('Outer', [inner] + values[2:])
++    return build_exception_tree(type(outer), outer, None), values
++
++
++def test_f2p_group_leaves(filter_tree):
++    root, values = filter_tree
++    leaves = root.leaves
++    assert isinstance(leaves, list)
++    assert [leaf.exc_value for leaf in leaves] == values
++    assert all(not leaf.is_group and leaf.sub_exceptions == [] for leaf in leaves)
++
++
++def test_f2p_filter_group_immutability(filter_tree):
++    root, values = filter_tree
++    filtered = root.filter(lambda item: issubclass(item.exc_type, KeyError))
++    assert filtered is not None and filtered is not root
++    assert len(filtered.sub_exceptions) == 2
++    inner = filtered.sub_exceptions[0]
++    assert inner.parent is filtered
++    assert len(inner.sub_exceptions) == 1
++    assert inner.sub_exceptions[0].exc_value is values[0]
++    assert inner.sub_exceptions[0].parent is inner
++    assert filtered.sub_exceptions[1].exc_value is values[2]
++    assert filtered.sub_exceptions[1].parent is filtered
++    assert len(root.sub_exceptions) == 3
++    assert len(root.sub_exceptions[0].sub_exceptions) == 2
++    assert root.sub_exceptions[0].parent is root
++
++
++def test_f2p_filter_pruned_root(filter_tree):
++    root, _ = filter_tree
++    assert root.filter(lambda item: issubclass(item.exc_type, ZeroDivisionError)) is None
++
++
++def test_f2p_deep_nested_group_rail_integrity():
++    """Verify deep multi-level ExceptionGroups maintain 100% continuous rail prefixes without leaks."""
++    def sub_fail_with_cause():
++        try:
++            raise IndexError("nested_deep_index")
++        except IndexError as err1:
++            raise ValueError("nested_deep_value") from err1
++
++    try:
++        sub_fail_with_cause()
++    except ValueError as deep_err:
++        inner_eg = ExceptionGroup("DeepLevel2Group", [deep_err])
++        top_eg = ExceptionGroup("TopLevel1Group", [inner_eg])
++
++    rendered = stackprinter.format(top_eg)
++
++    assert "TopLevel1Group" in rendered
++    assert "DeepLevel2Group" in rendered
++    assert "nested_deep_value" in rendered
++    assert "nested_deep_index" in rendered
++
++    lines = rendered.splitlines()
++    inner_lines = [l for l in lines if "nested_deep_value" in l or "nested_deep_index" in l]
++    assert len(inner_lines) >= 2
++    for l in inner_lines:
++        assert l.startswith("  |"), f"Line missing branch rail: {l!r}"
++
++
++# =====================================================================
++# P2P (Pass-to-Pass) Regression Nodes (Delegating to original test suite)
++# =====================================================================
++
++def test_p2p_frame_formatting():
++    from tests.test_formatting import test_frame_formatting
++    test_frame_formatting()
++
++
++def test_p2p_exception_formatting():
++    from tests.test_formatting import test_exception_formatting
++    test_exception_formatting()
++
++
++def test_p2p_none_tuple_formatting():
++    from tests.test_formatting import test_none_tuple_formatting
++    test_none_tuple_formatting()
++
++
++def test_p2p_none_value_formatting():
++    from tests.test_formatting import test_none_value_formatting
++    test_none_value_formatting()
++
++
++def test_p2p_tb_with_none_lineno():
++    from tests.test_formatting import test_tb_with_none_lineno
++    test_tb_with_none_lineno()
++
++
++def test_p2p_frame_inspection(frameinfo):
++    from tests.test_frame_inspection import test_frameinfo
++    test_frameinfo(frameinfo)
++
++
++def test_p2p_source_annotation(sourcelines):
++    from tests.test_source_inspection import test_source_annotation
++    test_source_annotation(sourcelines)
++
++
++def test_p2p_utils_match():
++    from tests.test_utils import test_match
++    test_match()
++
++
++# Appended to the frozen test overlay; requirements come from instruction.md.
++@pytest.mark.parametrize('sequence_type', [list, tuple], ids=['list', 'tuple'])
++def test_f2p_exceptions_sequence_group(sequence_type):
++    from stackprinter.formatting import build_exception_tree, TracebackRenderer
++
++    class BundleError(Exception):
++        def __init__(self, children):
++            super().__init__('sequence_bundle')
++            self.exceptions = sequence_type(children)
++
++    children = [ValueError('sequence_leaf_a'), LookupError('sequence_leaf_b')]
++    error = BundleError(children)
++    root = build_exception_tree(type(error), error, None)
++    assert root.is_group is True
++    assert len(root.sub_exceptions) == len(children)
++    for child, original in zip(root.sub_exceptions, children):
++        assert child.exc_value is original
++        assert child.parent is root
++        assert child.chain_type == 'group_sub'
++        assert child.depth == 1
++    output = TracebackRenderer(style='plaintext', add_summary=False).render(root)
++    assert 'sequence_leaf_a' in output and 'sequence_leaf_b' in output
++
++
++@pytest.mark.parametrize('grouped', [False, True], ids=['single', 'group'])
++def test_f2p_source_lines_after_window(tmp_path, grouped):
++    import importlib.util
++    from stackprinter.formatting import build_exception_tree, TracebackRenderer
++
++    source = tmp_path / 'window_fixture.py'
++    source.write_text('def fail():\n    before = 7\n    raise ValueError("window_failure")\n    after_window_marker = 9\n    second_window_marker = 10\n')
++    spec = importlib.util.spec_from_file_location('window_fixture', source)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    try:
++        module.fail()
++    except ValueError as caught:
++        error = caught.with_traceback(caught.__traceback__.tb_next)
++    if grouped:
++        error = ExceptionGroup('window_group', [error])
++    node = build_exception_tree(type(error), error, error.__traceback__)
++    options = dict(style='plaintext', source_lines=8, show_vals=False, add_summary=False)
++    before = TracebackRenderer(source_lines_after=0, **options).render(node)
++    after = TracebackRenderer(source_lines_after=2, **options).render(node)
++    assert 'window_failure' in before and 'window_failure' in after
++    assert 'after_window_marker' not in before
++    assert 'after_window_marker' in after
++    assert 'second_window_marker' not in before
++    assert 'second_window_marker' in after
++
++
++# Independent public-contract assertions for the confirmed F-MISS gaps.
++@pytest.mark.parametrize('module_name', ['stackprinter', 'stackprinter.formatting'])
++@pytest.mark.parametrize('public_name', ['ExceptionNode', 'build_exception_tree', 'TracebackRenderer'])
++def test_f2p_public_ir_exports(module_name, public_name):
++    import importlib
++    assert callable(getattr(importlib.import_module(module_name), public_name))
++
++
++def test_f2p_two_phase_entrypoint():
++    """Observe objects crossing real calls; aliases and decorated builders are legal."""
++    from stackprinter import formatting as fmt
++    error = ValueError('two_phase_entry')
++    built, consumed = [], []
++
++    def observe(frame, event, result):
++        if event == 'return' and isinstance(result, fmt.ExceptionNode):
++            if result.exc_value is error:
++                built.append(result)
++        elif event == 'call':
++            values = list(frame.f_locals.values())
++            if any(isinstance(value, fmt.TracebackRenderer) for value in values):
++                consumed.extend(value for value in values
++                                if isinstance(value, fmt.ExceptionNode) and value.exc_value is error)
++
++    previous = sys.getprofile()
++    try:
++        sys.setprofile(observe)
++        output = fmt.format_exc_info(type(error), error, None, add_summary=False)
++    finally:
++        sys.setprofile(previous)
++    assert 'ValueError: two_phase_entry' in output
++    assert built, 'entrypoint must construct a reusable ExceptionNode'
++    assert any(node is candidate for node in consumed for candidate in built), (
++        'the renderer must consume the constructed IR, not a parallel monolithic traceback')
++
++
++def test_f2p_node_none_value():
++    from stackprinter.formatting import ExceptionNode, build_exception_tree
++    node = build_exception_tree(TypeError, None, None)
++    assert isinstance(node, ExceptionNode)
++    assert node.exc_type is TypeError and node.exc_value is None
++    assert node.traceback is None and node.frames == []
++
++
++def test_f2p_context_priority_and_suppression():
++    from stackprinter.formatting import build_exception_tree
++    context, cause = ValueError('context_node'), KeyError('explicit_node')
++    error = RuntimeError('current_node')
++    error.__context__ = context
++    node = build_exception_tree(type(error), error, None)
++    assert node.chain_parent.exc_value is context
++    assert node.chain_parent.parent is node
++    assert node.chain_parent.chain_type == 'context'
++    error.__cause__ = cause
++    node = build_exception_tree(type(error), error, None)
++    assert node.chain_parent.exc_value is cause
++    assert node.chain_parent.chain_type == 'cause'
++    error.__cause__ = None
++    error.__suppress_context__ = True
++    assert build_exception_tree(type(error), error, None).chain_parent is None
++
++
++def test_f2p_group_child_with_cause_labels():
++    from stackprinter.formatting import build_exception_tree
++    cause, child = ValueError('group_ancestor'), RuntimeError('group_child')
++    child.__cause__ = cause
++    error = ExceptionGroup('label_group', [child])
++    group = build_exception_tree(type(error), error, None)
++    sub = group.sub_exceptions[0]
++    assert group.parent is None and group.chain_type is None
++    assert sub.parent is group and sub.chain_type == 'group_sub'
++    assert sub.chain_parent.exc_value is cause
++    assert sub.chain_parent.parent is sub and sub.chain_parent.chain_type == 'cause'
++
++
++def test_f2p_leaves_include_causal_descendant():
++    from stackprinter.formatting import build_exception_tree
++    cause, current, sibling = KeyError('leaf_cause'), ValueError('leaf_current'), TypeError('leaf_sibling')
++    current.__cause__ = cause
++    error = ExceptionGroup('leaf_group', [current, sibling])
++    root = build_exception_tree(type(error), error, None)
++    assert [node.exc_value for node in root.leaves] == [current, cause, sibling]
++
++
++def test_f2p_filter_standard_clone():
++    from stackprinter.formatting import build_exception_tree
++    error = ValueError('clone_value')
++    group = ExceptionGroup('clone_group', [error])
++    root = build_exception_tree(type(group), group, None)
++    original = root.sub_exceptions[0]
++    clone = original.filter(lambda node: True)
++    assert clone is not None and clone is not original
++    assert clone.exc_value is error
++    assert original.parent is root
++    assert original.filter(lambda node: False) is None
++    assert original.parent is root and root.sub_exceptions == [original]
++
++
++def test_f2p_filter_causal_chain():
++    from stackprinter.formatting import build_exception_tree
++    cause, error = KeyError('filter_ancestor'), ValueError('filter_current')
++    error.__cause__ = cause
++    root = build_exception_tree(type(error), error, None)
++    original_cause = root.chain_parent
++    pruned = root.filter(lambda node: node.exc_type is ValueError)
++    assert pruned is not root and pruned.chain_parent is None
++    retained = root.filter(lambda node: True)
++    assert retained is not root and retained.chain_parent is not original_cause
++    assert retained.chain_parent.exc_value is cause
++    assert retained.chain_parent.parent is retained
++    assert root.chain_parent is original_cause and original_cause.parent is root
++
++
++@pytest.mark.parametrize('relation', ['cause', 'context'])
++def test_f2p_causal_banner_and_forward_compatibility(relation):
++    from stackprinter.formatting import build_exception_tree, TracebackRenderer, format_exc_info
++    ancestor, error = ValueError('banner_ancestor'), RuntimeError('banner_current')
++    if relation == 'cause':
++        error.__cause__ = ancestor
++        banner = 'The above exception was the direct cause of the following exception:'
++    else:
++        error.__context__ = ancestor
++        banner = 'While handling the above exception, another exception occurred:'
++    node = build_exception_tree(type(error), error, None)
++    expected = 'ValueError: banner_ancestor\n\n' + banner + '\n\nRuntimeError: banner_current'
++    assert TracebackRenderer(style='plaintext', add_summary=False).render(node) == expected
++    assert format_exc_info(type(error), error, None, add_summary=False) == expected
++
++
++def test_f2p_compatibility_entry_reverse_causal_order(tmp_path):
++    """Keep legacy content; diagnose reverse chain order; require new IR reversal."""
++    from stackprinter.formatting import format_exc_info, build_exception_tree, TracebackRenderer
++    from tests import legacy_formatting_oracle as baseline
++
++    real_tb = _fixture_error(tmp_path).__traceback__
++    for relation in ('cause', 'context'):
++        for tb in (None, real_tb):
++            ancestor = ValueError('compat_ancestor').with_traceback(tb)
++            middle = TypeError('compat_middle').with_traceback(tb)
++            error = RuntimeError('compat_current').with_traceback(tb)
++            setattr(middle, '__' + relation + '__', ancestor)
++            setattr(error, '__' + relation + '__', middle)
++            for reverse in (False, True):
++                for summary in (False, True):
++                    for style in ('plaintext', 'darkbg'):
++                        options = dict(reverse=reverse, add_summary=summary,
++                                       source_lines=0, show_vals=False, style=style)
++                        expected = baseline.format_exc_info(type(error), error, tb, **options)
++                        # Preserve the exact old behavior, including frame and summary order.
++                        for entry, output in (
++                            ('format_exc_info', format_exc_info(type(error), error, tb, **options)),
++                            ('format(exception)', stackprinter.format(error, **options)),
++                            ('format(tuple)', stackprinter.format((type(error), error, tb), **options)),
++                        ):
++                            if reverse:
++                                # Only cross-exception ordering is ambiguous. Preserve each
++                                # exception block byte-for-byte, including frames and summary,
++                                # and retain the exact styled separators and their count.
++                                banner = ('\n\nThe above exception was the direct cause of the following exception:\n\n'
++                                          if relation == 'cause' else
++                                          '\n\nWhile handling the above exception, another exception occurred:\n\n')
++                                if style != 'plaintext':
++                                    scheme = getattr(baseline.colorschemes, style)
++                                    banner = baseline.get_ansi_tpl(*scheme.colors['exception_type']) % banner
++                                expected_blocks = expected.split(banner)
++                                # Reverse-aware wording is allowed only for reversed chains.
++                                reverse_banner = ('\n\nThe following exception was the direct cause of the above exception:\n\n'
++                                                  if relation == 'cause' else
++                                                  '\n\nThe above exception occurred while handling the following exception:\n\n')
++                                if style != 'plaintext':
++                                    reverse_banner = baseline.get_ansi_tpl(*scheme.colors['exception_type']) % reverse_banner
++                                positions = [output.index(name) for name in
++                                             ('compat_ancestor', 'compat_middle', 'compat_current')]
++                                if reverse_banner in output:
++                                    assert positions == sorted(positions, reverse=True), 'reverse banner contradicts actual chain order'
++                                normalized_output = output.replace(reverse_banner, banner)
++                                actual_blocks = normalized_output.split(banner)
++                                import json
++                                from pathlib import Path
++                                diagnostic = dict(entry=entry, relation=relation,
++                                                  traceback=tb is not None, summary=summary,
++                                                  style=style, reverse_aware_banner=reverse_banner in output,
++                                                  order=sorted(('compat_ancestor', 'compat_middle', 'compat_current'),
++                                                               key=lambda name: output.find(name)))
++                                with Path('/logs/verifier/legacy-reverse-diagnostics.jsonl').open('a') as stream:
++                                    stream.write(json.dumps(diagnostic) + '\n')
++                                assert len(expected_blocks) == 3
++                                assert sorted(actual_blocks) == sorted(expected_blocks), (entry, relation, reverse, summary, style)
++                            else:
++                                assert output == expected, (entry, relation, reverse, summary, style)
++                        # New APIs retain the explicit reverse requirement in the original task.
++                        node = build_exception_tree(type(error), error, tb)
++                        for output in (TracebackRenderer(**options).render(node),
++                                       stackprinter.format(node, **options)):
++                            positions = [output.index(name) for name in
++                                         ('compat_ancestor', 'compat_middle', 'compat_current')]
++                            assert positions == sorted(positions, reverse=reverse)
++
++
++def _fixture_error(tmp_path, body=None):
++    """Real file-backed frames, independent of the task implementation."""
++    import importlib.util
++    source = tmp_path / 'contract_frame.py'
++    source.write_text(body or (
++        'def outer():\n'
++        '    return inner()\n'
++        'def inner():\n'
++        '    secret_value = "private_payload_314159"\n'
++        '    raise ValueError(secret_value)\n'))
++    spec = importlib.util.spec_from_file_location('contract_frame', source)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    try:
++        module.outer()
++    except ValueError as error:
++        return error.with_traceback(error.__traceback__.tb_next)
++    raise AssertionError('fixture did not raise')
++
++
++def test_f2p_group_header_precedes_branches(tmp_path):
++    from stackprinter.formatting import build_exception_tree, TracebackRenderer
++    leaf = _fixture_error(tmp_path)
++    error = ExceptionGroup('header_contract', [leaf, TypeError('second_branch')])
++    # Give the group a real traceback, independently of its children.
++    error = error.with_traceback(leaf.__traceback__)
++    node = build_exception_tree(type(error), error, error.__traceback__)
++    output = TracebackRenderer(source_lines=0, show_vals=False, add_summary=False).render(node)
++    header = output.index('ExceptionGroup: header_contract')
++    first = output.index('+---------------- 1 ----------------')
++    second = output.index('+---------------- 2 ----------------')
++    assert header < first < second
++    assert 'contract_frame.py' in output[:header]
++    assert first < output.index('ValueError: private_payload_314159') < second
++    assert second < output.index('TypeError: second_branch')
++
++
++def test_f2p_group_empty_rails_have_no_trailing_space():
++    from stackprinter.formatting import build_exception_tree, TracebackRenderer
++    cause, child = ValueError('rail_cause'), RuntimeError('rail_current')
++    child.__cause__ = cause
++    error = ExceptionGroup('rail_contract', [child])
++    root = build_exception_tree(type(error), error, None)
++    output = TracebackRenderer(add_summary=False).render(root)
++    lines = output.splitlines()
++    assert any('direct cause' in line and line.startswith('  | ') for line in lines)
++    empty_rails = [line for line in lines if line.strip() == '|']
++    assert empty_rails
++    assert all(line == line.rstrip() for line in empty_rails)
++
++
++@pytest.mark.parametrize('setting', ['show_vals', 'source_lines', 'suppressed_vars'])
++def test_f2p_group_inherits_frame_settings(tmp_path, setting):
++    from stackprinter.formatting import build_exception_tree, TracebackRenderer
++    error = _fixture_error(tmp_path, (
++        'def outer():\n'
++        '    secret_value = "private_payload_" + str(314159)\n'
++        '    raise ValueError("inherited_setting_error")\n'))
++    group = ExceptionGroup('settings_contract', [error])
++    options = dict(style='plaintext', add_summary=False, source_lines=5, show_vals='all')
++    if setting == 'show_vals':
++        options['show_vals'] = False
++    elif setting == 'source_lines':
++        options['source_lines'] = 0
++        options['show_vals'] = False
++    else:
++        options['suppressed_vars'] = ['secret_value']
++    control = build_exception_tree(type(group), group, None)
++    visible = TracebackRenderer(style='plaintext', source_lines=5, show_vals='all',
++                                add_summary=False).render(control)
++    assert 'private_payload_314159' in visible
++    root = build_exception_tree(type(group), group, None,
++                                suppressed_vars=options.get('suppressed_vars'))
++    output = TracebackRenderer(**options).render(root)
++    assert 'ValueError: inherited_setting_error' in output
++    if setting == 'source_lines':
++        assert 'raise ValueError(' not in output
++    elif setting == 'show_vals':
++        assert not re.search(r'(?m)^\s*\|\s*secret_value\s*=', output)
++    if setting == 'suppressed_vars':
++        assert 'private_payload_314159' not in output
++
++
++def test_f2p_renderer_color_style(tmp_path):
++    from stackprinter.formatting import build_exception_tree, TracebackRenderer
++    error = _fixture_error(tmp_path)
++    root = build_exception_tree(type(error), error, error.__traceback__)
++    options = dict(source_lines=0, show_vals=False, add_summary=False)
++    plain = TracebackRenderer(style='plaintext', **options).render(root)
++    colored = TracebackRenderer(style='darkbg', **options).render(root)
++    ansi = re.compile(r'\x1b\[[0-9;]*m')
++    assert not ansi.search(plain)
++    assert ansi.search(colored)
++    assert ansi.sub('', colored) == plain
++
++
++@pytest.mark.parametrize('mode,line_count,expected', [
++    (False, 51, False), (True, 1, True), ('auto', 50, False), ('auto', 51, True),
++], ids=['disabled', 'enabled', 'auto-at-boundary', 'auto-above-boundary'])
++def test_f2p_renderer_summary_policy(tmp_path, monkeypatch, mode, line_count, expected):
++    from stackprinter import formatting as fmt
++    error = _fixture_error(tmp_path)
++    root = fmt.build_exception_tree(type(error), error, error.__traceback__)
++    # Isolate the documented >50-newline decision from incidental source layout.
++    monkeypatch.setattr(fmt, 'format_stack', lambda *args, **kwargs: 'frame\n' * line_count)
++    output = fmt.TracebackRenderer(add_summary=mode, show_vals=False).render(root)
++    assert ('---- (full traceback above) ----' in output) is expected
++
++
++def test_p2p_show_writes_explicit_stream():
++    import io
++    error = ValueError('stream_contract')
++    stream = io.StringIO()
++    stackprinter.show(error, file=stream, add_summary=False)
++    assert stream.getvalue() == stackprinter.format(error, add_summary=False) + '\n'
++
++
++def test_p2p_show_default_stderr(monkeypatch):
++    import io
++    error = ValueError('stderr_contract')
++    stream = io.StringIO()
++    monkeypatch.setattr(sys, 'stderr', stream)
++    stackprinter.show(error, add_summary=False)
++    assert stream.getvalue() == stackprinter.format(error, add_summary=False) + '\n'
++
++
++def test_p2p_show_missing_stderr(monkeypatch):
++    monkeypatch.setattr(sys, 'stderr', None)
++    assert stackprinter.show(ValueError('stderr_absent'), add_summary=False) is None
++
++
++@pytest.mark.parametrize('function_name', ['format_stack', 'format_summary'])
++def test_p2p_frame_api_reverse(tmp_path, function_name):
++    from stackprinter import formatting as fmt
++    from stackprinter.extraction import get_info
++    error = _fixture_error(tmp_path)
++    frames, tb = [], error.__traceback__
++    while tb:
++        frames.append(get_info(tb))
++        tb = tb.tb_next
++    assert [frame.function for frame in frames] == ['outer', 'inner']
++    function = getattr(fmt, function_name)
++    options = dict(style='plaintext', source_lines=0, show_vals=False)
++    parts = [function([frame], reverse=False, **options) for frame in frames]
++    assert parts[0] != parts[1]
++    assert function(frames, reverse=False, **options) == ''.join(parts)
++    assert function(frames, reverse=True, **options) == ''.join(reversed(parts))
+diff --git a/tests/legacy_formatting_oracle.py b/tests/legacy_formatting_oracle.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..25f5fd836a8c80bdfa133568f2924705ed05e28c
+--- /dev/null
++++ b/tests/legacy_formatting_oracle.py
+@@ -0,0 +1,251 @@
++"""
++Various convnenience methods to walk stacks and concatenate formatted frames
++"""
++import types
++import traceback
++
++import stackprinter.extraction as ex
++import stackprinter.colorschemes as colorschemes
++from stackprinter.utils import match, get_ansi_tpl
++from stackprinter.frame_formatting import FrameFormatter, ColorfulFrameFormatter
++
++
++def get_formatter(style, **kwargs):
++    if style in ['plaintext', 'plain']:
++        return FrameFormatter(**kwargs)
++    else:
++        return ColorfulFrameFormatter(style, **kwargs)
++
++
++def format_summary(frames, style='plaintext', source_lines=1, reverse=False,
++                   **kwargs):
++    """
++    Render a list of frames with 1 line of source context, no variable values.
++
++    keyword args like stackprinter.format()
++    """
++    min_src_lines = 0 if source_lines == 0 else 1
++    minimal_formatter = get_formatter(style=style,
++                                      source_lines=min_src_lines,
++                                      show_signature=False,
++                                      show_vals=False)
++
++    frame_msgs = [minimal_formatter(frame) for frame in frames]
++    if reverse:
++        frame_msgs = reversed(frame_msgs)
++
++    return ''.join(frame_msgs)
++
++
++def format_stack(frames, style='plaintext', source_lines=5,
++                 show_signature=True, show_vals='like_source',
++                 truncate_vals=500, line_wrap=60, reverse=False,
++                 suppressed_paths=None, suppressed_vars=[]):
++    """
++    Render a list of frames (or FrameInfo tuples)
++
++    keyword args like stackprinter.format()
++    """
++
++
++    min_src_lines = 0 if source_lines == 0 else 1
++
++    minimal_formatter = get_formatter(style=style,
++                                      source_lines=min_src_lines,
++                                      show_signature=False,
++                                      show_vals=False)
++
++    reduced_formatter = get_formatter(style=style,
++                                      source_lines=min_src_lines,
++                                      show_signature=show_signature,
++                                      show_vals=show_vals,
++                                      truncate_vals=truncate_vals,
++                                      line_wrap=line_wrap,
++                                      suppressed_paths=suppressed_paths,
++                                      suppressed_vars=suppressed_vars)
++
++    verbose_formatter = get_formatter(style=style,
++                                      source_lines=source_lines,
++                                      show_signature=show_signature,
++                                      show_vals=show_vals,
++                                      truncate_vals=truncate_vals,
++                                      line_wrap=line_wrap,
++                                      suppressed_paths=suppressed_paths,
++                                      suppressed_vars=suppressed_vars)
++
++    frame_msgs = []
++    parent_is_boring = True
++    for frame in frames:
++        fi = ex.get_info(frame, suppressed_vars=suppressed_vars)
++        is_boring = match(fi.filename, suppressed_paths)
++        if is_boring:
++            if parent_is_boring:
++                formatter = minimal_formatter
++            else:
++                formatter = reduced_formatter
++        else:
++            formatter = verbose_formatter
++
++        parent_is_boring = is_boring
++        frame_msgs.append(formatter(fi))
++
++    if reverse:
++        frame_msgs = reversed(frame_msgs)
++
++    return ''.join(frame_msgs)
++
++
++def format_stack_from_frame(fr, add_summary=False, **kwargs):
++    """
++    Render a frame and its parents
++
++
++    keyword args like stackprinter.format()
++
++    """
++    stack = []
++    while fr is not None:
++        stack.append(fr)
++        fr = fr.f_back
++    stack = reversed(stack)
++
++    return format_stack(stack, **kwargs)
++
++
++def format_exc_info(etype, evalue, tb, style='plaintext', add_summary='auto',
++                    reverse=False, suppressed_exceptions=[KeyboardInterrupt],
++                    suppressed_vars=[], **kwargs):
++    """
++    Format an exception traceback, including the exception message
++
++    see stackprinter.format() for docs about the keyword arguments
++    """
++    if etype is None:
++        etype = type(None)
++
++    if etype.__name__ == 'ExceptionGroup':
++        # Exception groups (new in py 3.11) aren't supported so far,
++        # but at least we fall back on the default message.
++        return ''.join(traceback.format_exception(etype, evalue, tb))
++
++    msg = ''
++    try:
++        # First, recursively format any chained exceptions (exceptions
++        # during whose handling the given one happened).
++        # TODO: refactor this whole messy function to return a
++        # more... structured datastructure before assembling a string,
++        # so that e.g. a summary of the whole chain can be shown at
++        # the end.
++        context = getattr(evalue, '__context__', None)
++        cause = getattr(evalue, '__cause__', None)
++        suppress_context = getattr(evalue, '__suppress_context__', False)
++        if cause:
++            chained_exc = cause
++            chain_hint = ("\n\nThe above exception was the direct cause "
++                          "of the following exception:\n\n")
++        elif context and not suppress_context:
++            chained_exc = context
++            chain_hint = ("\n\nWhile handling the above exception, "
++                          "another exception occurred:\n\n")
++        else:
++            chained_exc = None
++
++        if chained_exc:
++            msg += format_exc_info(chained_exc.__class__,
++                                   chained_exc,
++                                   chained_exc.__traceback__,
++                                   style=style,
++                                   add_summary=add_summary,
++                                   reverse=reverse,
++                                   suppressed_vars=suppressed_vars,
++                                   **kwargs)
++
++            if style == 'plaintext':
++                msg +=  chain_hint
++            else:
++                sc = getattr(colorschemes, style)
++                clr = get_ansi_tpl(*sc.colors['exception_type'])
++                msg += clr % chain_hint
++
++        # Now, actually do some formatting:
++        parts = []
++        if tb:
++            frameinfos = [ex.get_info(tb_, suppressed_vars=suppressed_vars)
++                          for tb_ in _walk_traceback(tb)]
++            if (suppressed_exceptions and
++                issubclass(etype, tuple(suppressed_exceptions))):
++                summary = format_summary(frameinfos, style=style,
++                                         reverse=reverse, **kwargs)
++                parts = [summary]
++            else:
++                whole_stack = format_stack(frameinfos, style=style,
++                                           reverse=reverse, **kwargs)
++                parts.append(whole_stack)
++
++                if add_summary == 'auto':
++                    add_summary = whole_stack.count('\n') > 50
++
++                if add_summary:
++                    summary = format_summary(frameinfos, style=style,
++                                             reverse=reverse, **kwargs)
++                    summary += '\n'
++                    parts.append('---- (full traceback below) ----\n\n' if reverse else
++                                 '---- (full traceback above) ----\n')
++                    parts.append(summary)
++
++        exc = format_exception_message(etype, evalue, style=style)
++        parts.append('\n\n' if reverse else '')
++        parts.append(exc)
++
++        if reverse:
++            parts = reversed(parts)
++
++        msg += ''.join(parts)
++
++    except Exception as exc:
++        import os
++        if 'PY_STACKPRINTER_DEBUG' in os.environ:
++            raise
++
++        our_tb = traceback.format_exception(exc.__class__,
++                                            exc,
++                                            exc.__traceback__,
++                                            chain=False)
++        where = getattr(exc, 'where', None)
++        context = " while formatting " + str(where) if where else ''
++        msg = 'Stackprinter failed%s:\n%s\n' % (context, ''.join(our_tb[-2:]))
++        msg += 'So here is your original traceback at least:\n\n'
++        msg += ''.join(traceback.format_exception(etype, evalue, tb))
++
++
++    return msg
++
++
++def format_exception_message(etype, evalue, tb=None, style='plaintext'):
++    type_str = etype.__name__
++    val_str = str(evalue)
++
++    if etype == SyntaxError and evalue.text:
++        val_str += '\n    %s\n   %s^' % (evalue.text.rstrip(), ' '*evalue.offset)
++
++    if val_str:
++        type_str += ": "
++
++    if style == 'plaintext':
++        return type_str + val_str
++    else:
++        sc = getattr(colorschemes, style)
++
++        clr_head = get_ansi_tpl(*sc.colors['exception_type'])
++        clr_msg = get_ansi_tpl(*sc.colors['exception_msg'])
++
++        return clr_head % type_str + clr_msg % val_str
++
++
++def _walk_traceback(tb):
++    """
++    Follow a chain of traceback objects outwards
++    """
++    while tb:
++        yield tb
++        tb = tb.tb_next

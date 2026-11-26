@@ -1,0 +1,38 @@
+## Background
+The script registration entry point has grown into one long routine that interleaves three unrelated concerns: normalizing stored script files and detecting duplicates, deciding how script records and versions are created, updated and marked default, and synchronizing parser, parameter-group and parameter records with the parsed schema. Because these concerns share local state and implicit flags set on model instances, callers cannot exercise or change one concern without risking the others, and correctness currently depends on all of them running together in a single pass. This non-essential coupling must be removed while every externally visible outcome of registration - acceptance or rejection, version numbering, default-version selection, parameter reuse and file placement - stays exactly as it is today.
+
+## Goal
+- Separate the registration entry point into single-purpose collaborators or methods for storage normalization and checksum-based duplicate detection, for version lifecycle and default-version decisions, and for parser and parameter synchronization, so each concern can be understood and changed in isolation.
+- Keep one external registration entry point that delegates to those parts, so signal-driven updates, command-line additions and API uploads keep working unchanged at their call sites.
+- The version lifecycle part must return the selected persisted script-version record, directly or within a result container, so its caller can consume the version decision without reading mutable registration state left on a coordinator or shared context.
+- Keep the complete observable result of every registration attempt - validity, error reporting, the selected version, iteration and default flags, and parameter linking - identical to today's behavior.
+- Leave the internal decomposition, naming and code placement to the implementer; only the contract and behaviors described here are fixed.
+
+## Public contract to preserve
+- The registration entry point must remain importable from its current module path with the same public name, the same parameters in the same order and the same defaults: `script_version=None`, `script_path=None`, `group=None`, `script_name=None`, `set_default_version=True`, `ignore_bad_imports=None`.
+- It must keep supporting both call modes: an existing script-version record (update or manual upload) and a storage path for a new script (command-line and API additions), including calls that provide only a path, or a path together with a name.
+- On success it must return a mapping with `valid` true, `errors` null, and `script` set to the created, updated or reused script-version record.
+- On duplicate detection it must return `valid` false together with the existing duplicate-script error value and `script` set to the already stored version, whose label, iteration number and parameter links must stay untouched.
+- On parse failure it must return `valid` false with the parser error and must not persist a new script or version.
+- The `set_default_version` flag must keep its existing, call-mode-specific meaning for successful registrations: when true, the registered version becomes the script's default and other default flags for that script are cleared. When false, registering a storage path for an existing script creates a non-default version and leaves previously set default flags unchanged. Direct synchronization of an already persisted script-version record instead sets that record's `default_version` to true even when `set_default_version=False`, including when it was previously non-default. A newly created script's first version remains default even when the flag is false.
+- Storage helpers that other modules already import from the registration module path must remain importable there.
+- Internal helpers, class names, method signatures and the placement of new code are free to change as long as the points above hold.
+
+## Behavior that must stay unchanged
+- Registering a new script path MUST persist a script and a version whose iteration starts at 1, and MUST return that new version as `script`.
+- Re-registering byte-identical content by storage path for the same script name MUST return `valid` false with the duplicate-script error and MUST NOT change the stored version's label, iteration, default flags or parameter links; this MUST also hold when legacy data contains several stored versions carrying that checksum.
+- Registering changed content by storage path for an existing script MUST create a new version: while the declared script version string stays the same, that new version's iteration MUST be the next number for that script version; when the declared script version string changes, the new version's iteration MUST be 1 for the new script version string. When default updating is requested, the newest registered version MUST become the default while older versions of that script stop being default.
+- When default updating is requested, the public listing of current scripts MUST report the newest registered version as the script's latest version and MUST NOT report superseded versions as latest; registrations made without default updating continue to follow the existing default-version selection, so the newest registered version need not be reported as latest in that mode.
+- For a newly created version, registration MUST reuse parameter records that are unchanged between versions, linking the same records to the new version, while parameters absent from the new schema MUST NOT be linked to it.
+- Direct synchronization of an already persisted script-version record MUST keep that record's identity rather than clone it. A checksum match against that same record MUST NOT reject the synchronization as a duplicate; a match against another stored record still follows the duplicate-detection contract. Synchronization adds the schema's parser, group and parameter links without clearing that record's existing links. In the signal-driven changed-file upload flow, the model signal clears the old primary key before registration, so that flow persists a new version rather than synchronizing the old row in place.
+- Parameter attributes derived from the schema, such as defaults, required or output classification, choices, form field and argument ordering, MUST be attached to the registered version exactly as they are today.
+- A successful registration MUST leave the script file available through the configured storage and MUST store a checksum derived from that file's content, so later duplicate checks compare equal.
+
+## constraints
+1. Do not delete, rename or narrow any public capability, and do not alter the registration entry point's signature, return mapping, error values or supported call modes.
+2. Do not change duplicate-detection, iteration numbering, default-version or parameter-reuse semantics, and do not change what a successful or failed registration leaves persisted.
+3. Do not add new runtime dependencies, configuration requirements or database schema changes, and do not alter routes, permissions or job-execution behavior.
+4. Do not reformat, rename or restructure unrelated code, and do not introduce behavior changes beyond those required by this refactor.
+5. Limit edits to the production code needed to introduce the delegated registration flow, plus strictly necessary test and documentation adjustments that follow from it.
+
+IMPORTANT: Please work on this in a new branch from main and commit everything when you are done.

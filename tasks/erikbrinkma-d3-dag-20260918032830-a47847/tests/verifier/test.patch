@@ -1,0 +1,3109 @@
+diff --git a/eval_tests/unified-node-size.test.ts b/eval_tests/unified-node-size.test.ts
+new file mode 100644
+index 0000000..fdcb289
+--- /dev/null
++++ b/eval_tests/unified-node-size.test.ts
+@@ -0,0 +1,3103 @@
++import { expect, test } from "bun:test";
++import { type Graph, type GraphNode, graph } from "../src/graph/index.js";
++import {
++  cachedNodeSize,
++  grid,
++  type LayoutResult,
++  type Shape,
++  shapeRect,
++  splitNodeSize,
++  sugiyama,
++  type Tweak,
++  tweakGridHandles,
++  tweakShape,
++  tweakSugiyama,
++  zherebko,
++} from "../src/index.js";
++
++function assertThrows(fn: () => unknown): Error {
++  try {
++    fn();
++  } catch (err) {
++    expect(err).toBeInstanceOf(Error);
++    return err as Error;
++  }
++  throw new Error("Expected function to throw, but it did not throw");
++}
++
++const ERROR_REGEX =
++  /^category=([^;]+);\s*node=([^;]+);\s*width=([^;]+);\s*height=([^;]+)(?:;\s*returned=([^;]+))?(?:;\s*legacy=(.*))?$/;
++
++interface ExpectedError {
++  category: string;
++  node: string;
++  width: string;
++  height: string;
++  returned?: string;
++}
++
++function assertStandardError(
++  fn: () => unknown,
++  expected: ExpectedError,
++): Error {
++  const err = assertThrows(fn);
++  const match = err.message.match(ERROR_REGEX);
++  expect(match).toBeTruthy();
++  if (!match) {
++    throw new Error(`Message did not match standard format: ${err.message}`);
++  }
++
++  expect(match[1]).toBe(expected.category);
++  expect(match[2]).toBe(expected.node);
++  expect(match[3]).toBe(expected.width);
++  expect(match[4]).toBe(expected.height);
++
++  if (expected.returned !== undefined) {
++    expect(match[5]).toBe(expected.returned);
++  } else {
++    expect(match[5]).toBeUndefined();
++  }
++
++  if (expected.category === "constant-node-size") {
++    expect(match[6]).toBeDefined();
++    expect(err.message.endsWith(`; legacy=${match[6]}`)).toBe(true);
++    expect(
++      match[6]!.includes("must be positive") ||
++        match[6]!.includes("all node sizes must be positive"),
++    ).toBe(true);
++  } else if (expected.category === "invalid-callback-node-size") {
++    expect(match[6]).toBeDefined();
++    expect(err.message.endsWith(`; legacy=${match[6]}`)).toBe(true);
++    expect(match[6]!.includes("all node sizes must be positive")).toBe(true);
++  } else if (expected.category === "node-size-callback-threw") {
++    expect(match[3]).toBe("<unavailable>");
++    expect(match[4]).toBe("<unavailable>");
++    expect(match[5]).toBeUndefined();
++    expect(match[6]).toBeUndefined();
++    expect(err.message).toBe(
++      `category=node-size-callback-threw; node=${expected.node}; width=<unavailable>; height=<unavailable>`,
++    );
++    expect("cause" in err).toBe(true);
++  }
++
++  return err;
++}
++
++// ============================================================================
++// Constant dimensions validation across accessors and operators
++// ============================================================================
++const invalidConstantScenarios: [string, unknown][] = [
++  ["non-positive [0, 1]", [0, 1]],
++  ["non-positive [1, 0]", [1, 0]],
++  ["negative [-1, 2]", [-1, 2]],
++  ["negative [2, -1]", [2, -1]],
++  ["NaN width [NaN, 1]", [NaN, 1]],
++  ["NaN height [1, NaN]", [1, NaN]],
++  ["Infinity width [Infinity, 1]", [Infinity, 1]],
++  ["-Infinity height [1, -Infinity]", [1, -Infinity]],
++  ["null value", null],
++  ["undefined value", undefined],
++  ["number primitive", 123],
++  ["string primitive", "1,1"],
++  ["empty array", []],
++  ["1-tuple", [1]],
++  ["3-tuple", [1, 2, 3]],
++  ["plain object", {}],
++];
++
++for (const [name, val] of invalidConstantScenarios) {
++  test(`constant dimensions validation rejects ${name} on cachedNodeSize`, () => {
++    assertThrows(() => cachedNodeSize(val as never));
++  });
++  test(`constant dimensions validation rejects ${name} on sugiyama`, () => {
++    assertThrows(() => sugiyama().nodeSize(val as never));
++  });
++  test(`constant dimensions validation rejects ${name} on zherebko`, () => {
++    assertThrows(() => zherebko().nodeSize(val as never));
++  });
++  test(`constant dimensions validation rejects ${name} on grid`, () => {
++    assertThrows(() => grid().nodeSize(val as never));
++  });
++}
++
++// ============================================================================
++// Decomposed: Constant Dimensions Error Formatting Exactness
++// ============================================================================
++test("constant dimensions error formatting exactness for non-positive [0, 5] on cachedNodeSize", () => {
++  assertStandardError(() => cachedNodeSize([0, 5]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "0",
++    height: "5",
++  });
++});
++
++test("constant dimensions error formatting exactness for non-finite [NaN, Infinity] on cachedNodeSize", () => {
++  assertStandardError(() => cachedNodeSize([NaN, Infinity]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "NaN",
++    height: "Infinity",
++  });
++});
++
++test("constant dimensions error formatting exactness for negative non-finite [-2, -Infinity] on cachedNodeSize", () => {
++  assertStandardError(() => cachedNodeSize([-2, -Infinity]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "-2",
++    height: "-Infinity",
++  });
++});
++
++test("constant dimensions error formatting exactness for non-positive [0, 1] on sugiyama", () => {
++  assertStandardError(() => sugiyama().nodeSize([0, 1]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "0",
++    height: "1",
++  });
++});
++
++test("constant dimensions error formatting exactness for 3-tuple [1, 2, 3] on cachedNodeSize", () => {
++  assertStandardError(() => cachedNodeSize([1, 2, 3] as never), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "<unavailable>",
++    height: "<unavailable>",
++    returned: "[length: 3]",
++  });
++});
++
++test("constant dimensions error formatting exactness for null value on cachedNodeSize", () => {
++  assertStandardError(() => cachedNodeSize(null as never), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "<unavailable>",
++    height: "<unavailable>",
++    returned: "null",
++  });
++});
++
++test("constant dimensions error formatting exactness for undefined value on cachedNodeSize", () => {
++  assertStandardError(() => cachedNodeSize(undefined as never), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "<unavailable>",
++    height: "<unavailable>",
++    returned: "undefined",
++  });
++});
++
++test("constant dimensions error formatting exactness for string primitive on cachedNodeSize", () => {
++  assertStandardError(() => cachedNodeSize("invalid" as never), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "<unavailable>",
++    height: "<unavailable>",
++    returned: "<type: string>",
++  });
++});
++
++test("constant dimensions error formatting exactness for plain object on cachedNodeSize", () => {
++  assertStandardError(() => cachedNodeSize({} as never), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "<unavailable>",
++    height: "<unavailable>",
++    returned: "<type: object>",
++  });
++});
++
++test("constant dimensions error formatting exactness for mixed non-numeric tuple on cachedNodeSize", () => {
++  assertStandardError(() => cachedNodeSize(["1", {}] as never), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "1",
++    height: "<type: object>",
++  });
++});
++
++// ============================================================================
++// Decomposed: Node Data Types across Sugiyama, Zherebko, and Grid
++// ============================================================================
++const nodeDataScenarios: [string, unknown, string][] = [
++  ["primitive string", "primitive-id", "primitive-id"],
++  ["primitive number", 42, "42"],
++  ["primitive boolean", true, "true"],
++  ["primitive null", null, "null"],
++  ["primitive undefined", undefined, "undefined"],
++  ["bigint", 10n, "<node data unavailable>"],
++  ["non-primitive object", { name: "foo" }, "<node data unavailable>"],
++  ["non-primitive function", () => {}, "<node data unavailable>"],
++  ["non-primitive symbol", Symbol("test"), "<node data unavailable>"],
++];
++
++for (const [desc, data, expectedNode] of nodeDataScenarios) {
++  test(`callback node size validation with ${desc} node data on sugiyama`, () => {
++    const grf = graph<unknown, undefined>();
++    grf.node(data);
++    assertStandardError(
++      () => sugiyama().nodeSize(() => [-1, 2] as const)(grf),
++      {
++        category: "invalid-callback-node-size",
++        node: expectedNode,
++        width: "-1",
++        height: "2",
++      },
++    );
++  });
++
++  test(`callback node size validation with ${desc} node data on zherebko`, () => {
++    const grf = graph<unknown, undefined>();
++    grf.node(data);
++    assertStandardError(() => zherebko().nodeSize(() => [0, 1] as const)(grf), {
++      category: "invalid-callback-node-size",
++      node: expectedNode,
++      width: "0",
++      height: "1",
++    });
++  });
++
++  test(`callback node size validation with ${desc} node data on grid`, () => {
++    const grf = graph<unknown, undefined>();
++    grf.node(data);
++    assertStandardError(() => grid().nodeSize(() => [2, 0] as const)(grf), {
++      category: "invalid-callback-node-size",
++      node: expectedNode,
++      width: "2",
++      height: "0",
++    });
++  });
++}
++
++// ============================================================================
++// Decomposed: Illegal Returned Structures across Sugiyama, Zherebko, and Grid
++// ============================================================================
++const illegalReturnScenarios: [string, unknown, string][] = [
++  ["empty array", [], "[length: 0]"],
++  ["1-tuple", [1], "[length: 1]"],
++  ["3-tuple", [1, 2, 3], "[length: 3]"],
++  ["null value", null, "null"],
++  ["undefined value", undefined, "undefined"],
++  ["number primitive", 123, "<type: number>"],
++  ["string primitive", "invalid", "<type: string>"],
++  ["plain object", { width: 1, height: 2 }, "<type: object>"],
++];
++
++for (const [desc, val, expectedRet] of illegalReturnScenarios) {
++  test(`callback node size validation rejects returned ${desc} on sugiyama`, () => {
++    const grf = graph() as any;
++    grf.node("root");
++    assertStandardError(() => sugiyama().nodeSize((() => val) as never)(grf), {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "<unavailable>",
++      height: "<unavailable>",
++      returned: expectedRet,
++    });
++  });
++
++  test(`callback node size validation rejects returned ${desc} on zherebko`, () => {
++    const grf = graph() as any;
++    grf.node("root");
++    assertStandardError(() => zherebko().nodeSize((() => val) as never)(grf), {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "<unavailable>",
++      height: "<unavailable>",
++      returned: expectedRet,
++    });
++  });
++
++  test(`callback node size validation rejects returned ${desc} on grid`, () => {
++    const grf = graph() as any;
++    grf.node("root");
++    assertStandardError(() => grid().nodeSize((() => val) as never)(grf), {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "<unavailable>",
++      height: "<unavailable>",
++      returned: expectedRet,
++    });
++  });
++}
++// ============================================================================
++// Decomposed: Dynamic Non-Finite Callback Returns across Sugiyama, Zherebko, and Grid
++// ============================================================================
++const nonFiniteCallbackScenarios: [string, readonly [number, number], string, string][] = [
++  ["NaN width [NaN, 2]", [NaN, 2], "NaN", "2"],
++  ["NaN height [2, NaN]", [2, NaN], "2", "NaN"],
++  ["Infinity width [Infinity, 2]", [Infinity, 2], "Infinity", "2"],
++  ["Infinity height [2, Infinity]", [2, Infinity], "2", "Infinity"],
++  ["-Infinity width [-Infinity, 2]", [-Infinity, 2], "-Infinity", "2"],
++  ["-Infinity height [2, -Infinity]", [2, -Infinity], "2", "-Infinity"],
++];
++
++for (const [desc, val, expWidth, expHeight] of nonFiniteCallbackScenarios) {
++  test(`callback node size validation rejects returned ${desc} on sugiyama`, () => {
++    const grf = graph() as any;
++    grf.node("root");
++    assertStandardError(() => sugiyama().nodeSize((() => val) as never)(grf), {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: expWidth,
++      height: expHeight,
++    });
++  });
++
++  test(`callback node size validation rejects returned ${desc} on zherebko`, () => {
++    const grf = graph() as any;
++    grf.node("root");
++    assertStandardError(() => zherebko().nodeSize((() => val) as never)(grf), {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: expWidth,
++      height: expHeight,
++    });
++  });
++
++  test(`callback node size validation rejects returned ${desc} on grid`, () => {
++    const grf = graph() as any;
++    grf.node("root");
++    assertStandardError(() => grid().nodeSize((() => val) as never)(grf), {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: expWidth,
++      height: expHeight,
++    });
++  });
++}
++
++
++// ============================================================================
++// Decomposed: Callback Exceptions across Sugiyama, Zherebko, and Grid
++// ============================================================================
++test("callback exception with standard Error preserves cause on sugiyama", () => {
++  const grf = graph() as any;
++  grf.node("nodeA");
++  const nativeErr = new TypeError("computation failed: all node sizes must be positive");
++  const err = assertStandardError(
++    () =>
++      sugiyama().nodeSize(() => {
++        throw nativeErr;
++      })(grf),
++    {
++      category: "node-size-callback-threw",
++      node: "nodeA",
++      width: "<unavailable>",
++      height: "<unavailable>",
++    },
++  );
++  expect(err.cause).toBe(nativeErr);
++});
++
++test("callback exception with standard Error preserves cause on zherebko", () => {
++  const grf = graph() as any;
++  grf.node("nodeA");
++  const nativeErr = new RangeError("zherebko compute failed: all node sizes must be positive");
++  const err = assertStandardError(
++    () =>
++      zherebko().nodeSize(() => {
++        throw nativeErr;
++      })(grf),
++    {
++      category: "node-size-callback-threw",
++      node: "nodeA",
++      width: "<unavailable>",
++      height: "<unavailable>",
++    },
++  );
++  expect(err.cause).toBe(nativeErr);
++});
++
++test("callback exception with standard Error preserves cause on grid", () => {
++  const grf = graph() as any;
++  grf.node("nodeA");
++  const nativeErr = new SyntaxError("grid compute failed: all node sizes must be positive");
++  const err = assertStandardError(
++    () =>
++      grid().nodeSize(() => {
++        throw nativeErr;
++      })(grf),
++    {
++      category: "node-size-callback-threw",
++      node: "nodeA",
++      width: "<unavailable>",
++      height: "<unavailable>",
++    },
++  );
++  expect(err.cause).toBe(nativeErr);
++});
++
++test("callback exception with reserved category message preserves cause on sugiyama", () => {
++  const grf = graph() as any;
++  grf.node("nodeA");
++  const reservedErr = new Error(
++    "category=constant-node-size; node=N/A; width=0; height=0",
++  );
++  const err = assertStandardError(
++    () =>
++      sugiyama().nodeSize(() => {
++        throw reservedErr;
++      })(grf),
++    {
++      category: "node-size-callback-threw",
++      node: "nodeA",
++      width: "<unavailable>",
++      height: "<unavailable>",
++    },
++  );
++  expect(err.cause).toBe(reservedErr);
++});
++
++test("callback exception with reserved category message preserves cause on zherebko", () => {
++  const grf = graph() as any;
++  grf.node("nodeA");
++  const reservedErr = new Error(
++    "category=invalid-callback-node-size; node=x; width=0; height=0",
++  );
++  const err = assertStandardError(
++    () =>
++      zherebko().nodeSize(() => {
++        throw reservedErr;
++      })(grf),
++    {
++      category: "node-size-callback-threw",
++      node: "nodeA",
++      width: "<unavailable>",
++      height: "<unavailable>",
++    },
++  );
++  expect(err.cause).toBe(reservedErr);
++});
++
++test("callback exception with reserved category message preserves cause on grid", () => {
++  const grf = graph() as any;
++  grf.node("nodeA");
++  const reservedErr = new Error(
++    "category=node-size-callback-threw; node=x; width=<unavailable>; height=<unavailable>",
++  );
++  const err = assertStandardError(
++    () =>
++      grid().nodeSize(() => {
++        throw reservedErr;
++      })(grf),
++    {
++      category: "node-size-callback-threw",
++      node: "nodeA",
++      width: "<unavailable>",
++      height: "<unavailable>",
++    },
++  );
++  expect(err.cause).toBe(reservedErr);
++});
++
++test("callback exception with primitive string thrown preserves cause on sugiyama", () => {
++  const grf = graph() as any;
++  grf.node("nodeA");
++  const strVal = "fatal string failure";
++  const err = assertStandardError(
++    () =>
++      sugiyama().nodeSize(() => {
++        throw strVal;
++      })(grf),
++    {
++      category: "node-size-callback-threw",
++      node: "nodeA",
++      width: "<unavailable>",
++      height: "<unavailable>",
++    },
++  );
++  expect(err.cause).toBe(strVal);
++});
++
++test("callback exception with primitive number thrown preserves cause on zherebko", () => {
++  const grf = graph() as any;
++  grf.node("nodeA");
++  const numVal = 404;
++  const err = assertStandardError(
++    () =>
++      zherebko().nodeSize(() => {
++        throw numVal;
++      })(grf),
++    {
++      category: "node-size-callback-threw",
++      node: "nodeA",
++      width: "<unavailable>",
++      height: "<unavailable>",
++    },
++  );
++  expect(err.cause).toBe(numVal);
++});
++
++test("callback exception with null thrown preserves cause on grid", () => {
++  const grf = graph() as any;
++  grf.node("nodeA");
++  const err = assertStandardError(
++    () =>
++      grid().nodeSize(() => {
++        throw null;
++      })(grf),
++    {
++      category: "node-size-callback-threw",
++      node: "nodeA",
++      width: "<unavailable>",
++      height: "<unavailable>",
++    },
++  );
++  expect(err.cause).toBe(null);
++});
++
++test("callback exception with object thrown preserves cause on sugiyama", () => {
++  const grf = graph() as any;
++  grf.node("nodeA");
++  const objVal = { reason: "timeout", code: 504 };
++  const err = assertStandardError(
++    () =>
++      sugiyama().nodeSize(() => {
++        throw objVal;
++      })(grf),
++    {
++      category: "node-size-callback-threw",
++      node: "nodeA",
++      width: "<unavailable>",
++      height: "<unavailable>",
++    },
++  );
++  expect(err.cause).toBe(objVal);
++});
++
++// ============================================================================
++// State, Caching, Twisting, Unwrapping, and Coercion Safety
++// ============================================================================
++test("callbacks reusing a single mutable tuple preserve independent dimensions in splitNodeSize", () => {
++  const sharedTuple: [number, number] = [0, 0];
++  const dimensionMap: Record<string, [number, number]> = {
++    A: [10, 20],
++    B: [30, 40],
++    C: [50, 60],
++  };
++
++  const mutableCallback = (node: GraphNode<string, undefined>) => {
++    const dim = dimensionMap[node.data];
++    sharedTuple[0] = dim[0];
++    sharedTuple[1] = dim[1];
++    return sharedTuple;
++  };
++
++  const grfSplit = graph() as any;
++  const snA = grfSplit.node("A");
++  const snB = grfSplit.node("B");
++  const [xLen, yLen] = splitNodeSize(mutableCallback);
++  expect(xLen(snA)).toBe(10);
++  sharedTuple[0] = 999;
++  sharedTuple[1] = 888;
++  expect(yLen(snA)).toBe(20);
++  expect(xLen(snB)).toBe(30);
++  sharedTuple[0] = -1;
++  sharedTuple[1] = -1;
++  expect(yLen(snB)).toBe(40);
++  expect(xLen(snA)).toBe(10);
++  expect(yLen(snA)).toBe(20);
++});
++
++test("callbacks reusing a single mutable tuple preserve independent dimensions in sugiyama", () => {
++  const dimensionMap: Record<string, readonly [number, number]> = {
++    A: [10, 20],
++    B: [30, 40],
++  };
++
++  // 1. Control graph with fresh tuples
++  const grfControl = graph<string, undefined>();
++  const cA = grfControl.node("A");
++  const cB = grfControl.node("B");
++  const linkControl = cA.child(cB);
++
++  const freshCallback = (node: GraphNode<string, undefined>) => {
++    const dim = dimensionMap[node.data];
++    return [dim[0], dim[1]] as [number, number];
++  };
++
++  const controlRes = sugiyama()
++    .nodeSize(freshCallback)
++    .tweaks([tweakShape(freshCallback), tweakSugiyama(freshCallback)])(
++    grfControl,
++  );
++
++  // 2. Mutable graph reusing single sharedTuple
++  const sharedTuple: [number, number] = [0, 0];
++  const counts = new Map<string, number>();
++  const mutableCallback = (node: GraphNode<string, undefined>) => {
++    counts.set(node.data, (counts.get(node.data) ?? 0) + 1);
++    const dim = dimensionMap[node.data];
++    sharedTuple[0] = dim[0];
++    sharedTuple[1] = dim[1];
++    return sharedTuple;
++  };
++
++  const grfSugi = graph<string, undefined>();
++  const sA = grfSugi.node("A");
++  const sB = grfSugi.node("B");
++  const linkSugi = sA.child(sB);
++
++  const observedInTweak = new Map<string, readonly [number, number]>();
++  const spyShape = (
++    center: readonly [number, number],
++    size: readonly [number, number],
++    first: readonly [number, number],
++    second: readonly [number, number],
++  ) => {
++    if (center[0] === sA.x && center[1] === sA.y) {
++      observedInTweak.set("A", [size[0], size[1]]);
++    } else if (center[0] === sB.x && center[1] === sB.y) {
++      observedInTweak.set("B", [size[0], size[1]]);
++    }
++    return shapeRect(center, size, first, second);
++  };
++
++  const sugiRes = sugiyama()
++    .nodeSize(mutableCallback)
++    .tweaks([
++      tweakShape(mutableCallback, spyShape),
++      tweakSugiyama(mutableCallback),
++    ])(grfSugi);
++
++  // Sentinel overwrite to guarantee defensive copying
++  sharedTuple[0] = 9999;
++  sharedTuple[1] = 9999;
++
++  // Assertions:
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++
++  expect(observedInTweak.get("A")).toEqual([10, 20]);
++  expect(observedInTweak.get("B")).toEqual([30, 40]);
++
++  expect(sugiRes.width).toBe(controlRes.width);
++  expect(sugiRes.height).toBe(controlRes.height);
++  expect(sA.x).toBe(cA.x);
++  expect(sA.y).toBe(cA.y);
++  expect(sB.x).toBe(cB.x);
++  expect(sB.y).toBe(cB.y);
++  expect(linkSugi.points).toEqual(linkControl.points);
++});
++
++test("callbacks reusing a single mutable tuple preserve independent dimensions in zherebko", () => {
++  const dimensionMap: Record<string, readonly [number, number]> = {
++    A: [10, 20],
++    B: [30, 40],
++  };
++
++  // 1. Control graph with fresh tuples
++  const grfControl = graph<string, undefined>();
++  const cA = grfControl.node("A");
++  const cB = grfControl.node("B");
++  const linkControl = cA.child(cB);
++
++  const freshCallback = (node: GraphNode<string, undefined>) => {
++    const dim = dimensionMap[node.data];
++    return [dim[0], dim[1]] as [number, number];
++  };
++
++  const controlRes = zherebko()
++    .nodeSize(freshCallback)
++    .tweaks([tweakShape(freshCallback)])(grfControl);
++
++  // 2. Mutable graph reusing single sharedTuple
++  const sharedTuple: [number, number] = [0, 0];
++  const counts = new Map<string, number>();
++  const mutableCallback = (node: GraphNode<string, undefined>) => {
++    counts.set(node.data, (counts.get(node.data) ?? 0) + 1);
++    const dim = dimensionMap[node.data];
++    sharedTuple[0] = dim[0];
++    sharedTuple[1] = dim[1];
++    return sharedTuple;
++  };
++
++  const grfZhere = graph<string, undefined>();
++  const zA = grfZhere.node("A");
++  const zB = grfZhere.node("B");
++  const linkZhere = zA.child(zB);
++
++  const observedInTweak = new Map<string, readonly [number, number]>();
++  const spyShape = (
++    center: readonly [number, number],
++    size: readonly [number, number],
++    first: readonly [number, number],
++    second: readonly [number, number],
++  ) => {
++    if (center[0] === zA.x && center[1] === zA.y) {
++      observedInTweak.set("A", [size[0], size[1]]);
++    } else if (center[0] === zB.x && center[1] === zB.y) {
++      observedInTweak.set("B", [size[0], size[1]]);
++    }
++    return shapeRect(center, size, first, second);
++  };
++
++  const zhereRes = zherebko()
++    .nodeSize(mutableCallback)
++    .tweaks([tweakShape(mutableCallback, spyShape)])(grfZhere);
++
++  // Sentinel overwrite to guarantee defensive copying
++  sharedTuple[0] = 1111;
++  sharedTuple[1] = 2222;
++
++  // Assertions:
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++
++  expect(observedInTweak.get("A")).toEqual([10, 20]);
++  expect(observedInTweak.get("B")).toEqual([30, 40]);
++
++  expect(zhereRes.width).toBe(controlRes.width);
++  expect(zhereRes.height).toBe(controlRes.height);
++  expect(zA.x).toBe(cA.x);
++  expect(zA.y).toBe(cA.y);
++  expect(zB.x).toBe(cB.x);
++  expect(zB.y).toBe(cB.y);
++  expect(linkZhere.points).toEqual(linkControl.points);
++});
++
++test("callbacks reusing a single mutable tuple preserve independent dimensions in grid", () => {
++  const dimensionMap: Record<string, readonly [number, number]> = {
++    A: [10, 20],
++    B: [30, 40],
++    C: [50, 60],
++  };
++
++  // 1. Control graph with fresh tuples
++  const grfControl = graph<string, undefined>();
++  const cA = grfControl.node("A");
++  const cB = grfControl.node("B");
++  const cC = grfControl.node("C");
++  const linkABControl = cA.child(cB);
++  const linkBCControl = cB.child(cC);
++
++  const freshCallback = (node: GraphNode<string, undefined>) => {
++    const dim = dimensionMap[node.data];
++    return [dim[0], dim[1]] as [number, number];
++  };
++
++  const controlRes = grid()
++    .nodeSize(freshCallback)
++    .tweaks([
++      tweakGridHandles(freshCallback, [1, 1]),
++      tweakShape(freshCallback),
++    ])(grfControl);
++
++  // 2. Mutable graph reusing single sharedTuple
++  const sharedTuple: [number, number] = [0, 0];
++  const counts = new Map<string, number>();
++  const mutableCallback = (node: GraphNode<string, undefined>) => {
++    counts.set(node.data, (counts.get(node.data) ?? 0) + 1);
++    const dim = dimensionMap[node.data];
++    sharedTuple[0] = dim[0];
++    sharedTuple[1] = dim[1];
++    return sharedTuple;
++  };
++
++  const grfGrid = graph<string, undefined>();
++  const gA = grfGrid.node("A");
++  const gB = grfGrid.node("B");
++  const gC = grfGrid.node("C");
++  const linkABGrid = gA.child(gB);
++  const linkBCGrid = gB.child(gC);
++
++  const observedInTweak = new Map<string, readonly [number, number]>();
++  const spyShape = (
++    center: readonly [number, number],
++    size: readonly [number, number],
++    first: readonly [number, number],
++    second: readonly [number, number],
++  ) => {
++    if (center[0] === gA.x && center[1] === gA.y) {
++      observedInTweak.set("A", [size[0], size[1]]);
++    } else if (center[0] === gB.x && center[1] === gB.y) {
++      observedInTweak.set("B", [size[0], size[1]]);
++    } else if (center[0] === gC.x && center[1] === gC.y) {
++      observedInTweak.set("C", [size[0], size[1]]);
++    }
++    return shapeRect(center, size, first, second);
++  };
++
++  const gridRes = grid()
++    .nodeSize(mutableCallback)
++    .tweaks([
++      tweakGridHandles(mutableCallback, [1, 1]),
++      tweakShape(mutableCallback, spyShape),
++    ])(grfGrid);
++
++  // Sentinel overwrite to guarantee defensive copying
++  sharedTuple[0] = 7777;
++  sharedTuple[1] = 7777;
++
++  // Assertions:
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++  expect(counts.get("C")).toBe(1);
++
++  expect(observedInTweak.get("A")).toEqual([10, 20]);
++  expect(observedInTweak.get("B")).toEqual([30, 40]);
++  expect(observedInTweak.get("C")).toEqual([50, 60]);
++
++  expect(gridRes.width).toBe(controlRes.width);
++  expect(gridRes.height).toBe(controlRes.height);
++  expect(gA.x).toBe(cA.x);
++  expect(gA.y).toBe(cA.y);
++  expect(gB.x).toBe(cB.x);
++  expect(gB.y).toBe(cB.y);
++  expect(gC.x).toBe(cC.x);
++  expect(gC.y).toBe(cC.y);
++  expect(linkABGrid.points).toEqual(linkABControl.points);
++  expect(linkBCGrid.points).toEqual(linkBCControl.points);
++});
++
++// Decomposed: Repeated standalone calls to tweak instances
++test("repeated standalone calls to tweakShape re-evaluate dimensions", () => {
++  const grf = graph() as any;
++  const a = grf.node("A");
++  const b = grf.node("B");
++  const link = a.child(b);
++  a.x = 0;
++  a.y = 0;
++  b.x = 0;
++  b.y = 100;
++  link.points = [
++    [0, 0],
++    [0, 100],
++  ];
++
++  let currentRadius = 10;
++  const dynamicNodeSize = () => [currentRadius * 2, currentRadius * 2] as const;
++
++  const shapeTweak = tweakShape(dynamicNodeSize);
++  const res: LayoutResult = { width: 100, height: 100 };
++
++  shapeTweak(grf, res);
++  expect(link.points[link.points.length - 1][1]).toBe(90);
++
++  link.points = [
++    [0, 0],
++    [0, 100],
++  ];
++  currentRadius = 30;
++
++  shapeTweak(grf, res);
++  expect(link.points[link.points.length - 1][1]).toBe(70);
++});
++
++test("repeated standalone calls to tweakSugiyama re-evaluate dimensions", () => {
++  const grf = graph() as any;
++  const a = grf.node("A");
++  const b = grf.node("B");
++  const link = a.child(b);
++  a.x = 0;
++  a.y = 0;
++  b.x = 0;
++  b.y = 100;
++  link.points = [
++    [0, 0],
++    [0, 100],
++  ];
++
++  let calls = 0;
++  let sugiH = 20;
++  const sugiNodeSize = () => {
++    calls++;
++    return [20, sugiH] as const;
++  };
++  const sugiTweak = tweakSugiyama(sugiNodeSize);
++  const res: LayoutResult = { width: 100, height: 100 };
++
++  sugiTweak(grf, res);
++  expect(calls).toBe(2);
++  expect(link.points[2][1]).toBe(90);
++
++  sugiH = 40;
++  link.points = [
++    [0, 0],
++    [0, 100],
++  ];
++  sugiTweak(grf, res);
++  expect(calls).toBe(4);
++  expect(link.points[2][1]).toBe(80);
++});
++
++test("repeated standalone calls to tweakGridHandles re-evaluate dimensions", () => {
++  let gridH = 10;
++  const gridNodeSize = () => [10, gridH] as const;
++  const handlesTweak = tweakGridHandles(gridNodeSize, [1, 10]);
++  const grfH = graph() as any;
++  const ha = grfH.node("ha");
++  const hb = grfH.node("hb");
++  const hlink = ha.child(hb);
++  ha.x = 0;
++  ha.y = 10;
++  hb.x = 20;
++  hb.y = 50;
++  hlink.points = [
++    [0, 10],
++    [20, 10],
++    [20, 50],
++  ];
++  const res: LayoutResult = { width: 100, height: 100 };
++
++  handlesTweak(grfH, res);
++  expect(hlink.points[1][1]).toBe(10 + 5 + 5);
++
++  gridH = 30;
++  hlink.points = [
++    [0, 10],
++    [20, 10],
++    [20, 50],
++  ];
++  handlesTweak(grfH, res);
++  expect(hlink.points[1][1]).toBe(10 + 15 + 5);
++});
++
++test("splitNodeSize preserves zero-dimension behavior and cross-dimension caching", () => {
++  const grf = graph() as any;
++  const node = grf.node("test");
++
++  const [constX, constY] = splitNodeSize([0, 1]);
++  expect(constX(node)).toBe(0);
++  expect(constY(node)).toBe(1);
++
++  let callCount = 0;
++  const [callX, callY] = splitNodeSize(() => {
++    callCount++;
++    return [0, 5] as const;
++  });
++
++  expect(callX(node)).toBe(0);
++  expect(callCount).toBe(1);
++  expect(callY(node)).toBe(5);
++  expect(callCount).toBe(1);
++});
++
++test("splitNodeSize reuses cached accessor without re-evaluating callback", () => {
++  let callCount = 0;
++  const cb = (_node: GraphNode<string, undefined>) => {
++    callCount++;
++    return callCount === 1 ? ([1, 2] as const) : ([2, 2] as const);
++  };
++  const grf = graph<string, undefined>();
++  const n = grf.node("testNode");
++  const cached = cachedNodeSize(cb);
++  const firstSize = cached(n);
++  expect(firstSize).toEqual([1, 2]);
++  expect(callCount).toBe(1);
++
++  const [xLen, yLen] = splitNodeSize(cached);
++  expect(xLen(n)).toBe(1);
++  expect(yLen(n)).toBe(2);
++  expect(callCount).toBe(1);
++
++  let rawCallCount = 0;
++  const rawCb = (_node: GraphNode<string, undefined>) => {
++    rawCallCount++;
++    return [3, 4] as const;
++  };
++  const [rawX, rawY] = splitNodeSize(rawCb);
++  expect(rawX(n)).toBe(3);
++  expect(rawY(n)).toBe(4);
++  expect(rawCallCount).toBe(1);
++});
++
++// Decomposed: at-most-once evaluation across operators
++test("at-most-once evaluation during single layout execution on sugiyama", () => {
++  const counts = new Map<string, number>();
++  const nodeSizeFn = (node: GraphNode<string, undefined>) => {
++    counts.set(node.data, (counts.get(node.data) ?? 0) + 1);
++    return [2, 3] as const;
++  };
++
++  const original = sugiyama();
++  const originalSize = original.nodeSize();
++  const originalSnapshot = [...originalSize];
++  const tuple = [5, 7] as const;
++  const withTuple = original.nodeSize(tuple);
++  expect(withTuple).not.toBe(original);
++  expect(withTuple.nodeSize()).toBe(tuple);
++  expect(original.nodeSize()).toBe(originalSize);
++  expect(originalSize).toEqual(originalSnapshot);
++
++  const withCallback = withTuple.nodeSize(nodeSizeFn);
++  expect(withCallback).not.toBe(withTuple);
++  expect(withCallback.nodeSize()).toBe(nodeSizeFn);
++  expect(withTuple.nodeSize()).toBe(tuple);
++  expect(tuple).toEqual([5, 7]);
++  expect(original.nodeSize()).toBe(originalSize);
++  expect(originalSize).toEqual(originalSnapshot);
++
++  const withSecondTuple = withCallback.nodeSize([11, 13] as const);
++  expect(withSecondTuple).not.toBe(withCallback);
++  expect(withSecondTuple.nodeSize()).toEqual([11, 13]);
++  expect(withCallback.nodeSize()).toBe(nodeSizeFn);
++  expect(withTuple.nodeSize()).toBe(tuple);
++  expect(tuple).toEqual([5, 7]);
++  expect(original.nodeSize()).toBe(originalSize);
++  expect(originalSize).toEqual(originalSnapshot);
++  expect(counts.size).toBe(0);
++
++  const grf = graph() as any;
++  grf.node("a");
++  grf.node("b");
++  withCallback(grf);
++  expect(counts.get("a")).toBe(1);
++  expect(counts.get("b")).toBe(1);
++});
++
++test("at-most-once evaluation during single layout execution on zherebko", () => {
++  const counts = new Map<string, number>();
++  const nodeSizeFn = (node: GraphNode<string, undefined>) => {
++    counts.set(node.data, (counts.get(node.data) ?? 0) + 1);
++    return [2, 3] as const;
++  };
++
++  const original = zherebko();
++  const originalSize = original.nodeSize();
++  const originalSnapshot = [...originalSize];
++  const tuple = [5, 7] as const;
++  const withTuple = original.nodeSize(tuple);
++  expect(withTuple).not.toBe(original);
++  expect(withTuple.nodeSize()).toBe(tuple);
++  expect(original.nodeSize()).toBe(originalSize);
++  expect(originalSize).toEqual(originalSnapshot);
++
++  const withCallback = withTuple.nodeSize(nodeSizeFn);
++  expect(withCallback).not.toBe(withTuple);
++  expect(withCallback.nodeSize()).toBe(nodeSizeFn);
++  expect(withTuple.nodeSize()).toBe(tuple);
++  expect(tuple).toEqual([5, 7]);
++  expect(original.nodeSize()).toBe(originalSize);
++  expect(originalSize).toEqual(originalSnapshot);
++
++  const withSecondTuple = withCallback.nodeSize([11, 13] as const);
++  expect(withSecondTuple).not.toBe(withCallback);
++  expect(withSecondTuple.nodeSize()).toEqual([11, 13]);
++  expect(withCallback.nodeSize()).toBe(nodeSizeFn);
++  expect(withTuple.nodeSize()).toBe(tuple);
++  expect(tuple).toEqual([5, 7]);
++  expect(original.nodeSize()).toBe(originalSize);
++  expect(originalSize).toEqual(originalSnapshot);
++  expect(counts.size).toBe(0);
++
++  const grf = graph() as any;
++  grf.node("x");
++  grf.node("y");
++  withCallback(grf);
++  expect(counts.get("x")).toBe(1);
++  expect(counts.get("y")).toBe(1);
++});
++
++test("at-most-once evaluation during single layout execution on grid", () => {
++  const counts = new Map<string, number>();
++  const nodeSizeFn = (node: GraphNode<string, undefined>) => {
++    counts.set(node.data, (counts.get(node.data) ?? 0) + 1);
++    return [2, 3] as const;
++  };
++
++  const original = grid();
++  const originalSize = original.nodeSize();
++  const originalSnapshot = [...originalSize];
++  const tuple = [5, 7] as const;
++  const withTuple = original.nodeSize(tuple);
++  expect(withTuple).not.toBe(original);
++  expect(withTuple.nodeSize()).toBe(tuple);
++  expect(original.nodeSize()).toBe(originalSize);
++  expect(originalSize).toEqual(originalSnapshot);
++
++  const withCallback = withTuple.nodeSize(nodeSizeFn);
++  expect(withCallback).not.toBe(withTuple);
++  expect(withCallback.nodeSize()).toBe(nodeSizeFn);
++  expect(withTuple.nodeSize()).toBe(tuple);
++  expect(tuple).toEqual([5, 7]);
++  expect(original.nodeSize()).toBe(originalSize);
++  expect(originalSize).toEqual(originalSnapshot);
++
++  const withSecondTuple = withCallback.nodeSize([11, 13] as const);
++  expect(withSecondTuple).not.toBe(withCallback);
++  expect(withSecondTuple.nodeSize()).toEqual([11, 13]);
++  expect(withCallback.nodeSize()).toBe(nodeSizeFn);
++  expect(withTuple.nodeSize()).toBe(tuple);
++  expect(tuple).toEqual([5, 7]);
++  expect(original.nodeSize()).toBe(originalSize);
++  expect(originalSize).toEqual(originalSnapshot);
++  expect(counts.size).toBe(0);
++
++  const grf = graph() as any;
++  grf.node("m");
++  grf.node("n");
++  withCallback(grf);
++  expect(counts.get("m")).toBe(1);
++  expect(counts.get("n")).toBe(1);
++});
++
++// Decomposed: tweaks sharing identity-equal callback reference
++test("tweaks sharing identity-equal callback on sugiyama with tweakSugiyama", () => {
++  const normalSizes: Record<string, readonly [number, number]> = {
++    A: [20, 30],
++    B: [40, 50],
++  };
++  const sentinelSizes: Record<string, readonly [number, number]> = {
++    A: [200, 300],
++    B: [400, 500],
++  };
++  const counts = new Map<string, number>();
++
++  const nodeSizeFn = (node: GraphNode<string, undefined>) => {
++    const c = (counts.get(node.data) ?? 0) + 1;
++    counts.set(node.data, c);
++    return c === 1 ? normalSizes[node.data] : sentinelSizes[node.data];
++  };
++
++  const grfCtrl = graph<string, undefined>();
++  const aCtrl = grfCtrl.node("A");
++  const bCtrl = grfCtrl.node("B");
++  const linkCtrl = aCtrl.child(bCtrl);
++  const ctrlRes = sugiyama()
++    .nodeSize((node) => normalSizes[node.data])
++    .tweaks([tweakSugiyama((node) => normalSizes[node.data])])(grfCtrl);
++
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  const link = a.child(b);
++
++  const sugiLayout = sugiyama()
++    .nodeSize(nodeSizeFn)
++    .tweaks([tweakSugiyama(nodeSizeFn)]);
++
++  const res = sugiLayout(grf);
++
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++
++  const observedSrcH = (link.points[1][1] - a.y) * 2;
++  const observedTgtH = (b.y - link.points[link.points.length - 2][1]) * 2;
++  expect(observedSrcH).toBeCloseTo(normalSizes.A[1]);
++  expect(observedTgtH).toBeCloseTo(normalSizes.B[1]);
++
++  expect(res.width).toBe(ctrlRes.width);
++  expect(res.height).toBe(ctrlRes.height);
++  expect(a.x).toBe(aCtrl.x);
++  expect(a.y).toBe(aCtrl.y);
++  expect(b.x).toBe(bCtrl.x);
++  expect(b.y).toBe(bCtrl.y);
++  expect(link.points).toEqual(linkCtrl.points);
++});
++
++test("tweaks sharing identity-equal callback on sugiyama with tweakShape", () => {
++  const normalSizes: Record<string, readonly [number, number]> = {
++    A: [20, 30],
++    B: [40, 50],
++  };
++  const sentinelSizes: Record<string, readonly [number, number]> = {
++    A: [200, 300],
++    B: [400, 500],
++  };
++  const counts = new Map<string, number>();
++
++  const nodeSizeFn = (node: GraphNode<string, undefined>) => {
++    const c = (counts.get(node.data) ?? 0) + 1;
++    counts.set(node.data, c);
++    return c === 1 ? normalSizes[node.data] : sentinelSizes[node.data];
++  };
++
++  const grfCtrl = graph<string, undefined>();
++  const aCtrl = grfCtrl.node("A");
++  const bCtrl = grfCtrl.node("B");
++  const linkCtrl = aCtrl.child(bCtrl);
++  const ctrlRes = sugiyama()
++    .nodeSize((node) => normalSizes[node.data])
++    .tweaks([tweakShape((node) => normalSizes[node.data])])(grfCtrl);
++
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  const link = a.child(b);
++
++  const observedInTweak = new Map<string, readonly [number, number]>();
++  const spyShape = (
++    center: readonly [number, number],
++    size: readonly [number, number],
++    first: readonly [number, number],
++    second: readonly [number, number],
++  ) => {
++    if (center[0] === a.x && center[1] === a.y) {
++      observedInTweak.set("A", size);
++    } else if (center[0] === b.x && center[1] === b.y) {
++      observedInTweak.set("B", size);
++    }
++    return shapeRect(center, size, first, second);
++  };
++
++  const sugiShapeLayout = sugiyama()
++    .nodeSize(nodeSizeFn)
++    .tweaks([tweakShape(nodeSizeFn, spyShape)]);
++
++  const res = sugiShapeLayout(grf);
++
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++
++  expect(observedInTweak.get("A")).toEqual(normalSizes.A);
++  expect(observedInTweak.get("B")).toEqual(normalSizes.B);
++
++  expect(res.width).toBe(ctrlRes.width);
++  expect(res.height).toBe(ctrlRes.height);
++  expect(a.x).toBe(aCtrl.x);
++  expect(a.y).toBe(aCtrl.y);
++  expect(b.x).toBe(bCtrl.x);
++  expect(b.y).toBe(bCtrl.y);
++  expect(link.points).toEqual(linkCtrl.points);
++});
++
++test("tweaks sharing identity-equal callback on grid with tweakGridHandles and tweakShape", () => {
++  const normalSizes: Record<string, readonly [number, number]> = {
++    GA: [20, 30],
++    GB: [40, 50],
++    GC: [60, 70],
++  };
++  const sentinelSizes: Record<string, readonly [number, number]> = {
++    GA: [200, 300],
++    GB: [400, 500],
++    GC: [600, 700],
++  };
++  const counts = new Map<string, number>();
++
++  const nodeSizeFn = (node: GraphNode<string, undefined>) => {
++    const c = (counts.get(node.data) ?? 0) + 1;
++    counts.set(node.data, c);
++    return c === 1 ? normalSizes[node.data] : sentinelSizes[node.data];
++  };
++
++  const grfGridCtrl = graph<string, undefined>();
++  const gaCtrl = grfGridCtrl.node("GA");
++  const gbCtrl = grfGridCtrl.node("GB");
++  const gcCtrl = grfGridCtrl.node("GC");
++  const linkACCtrl = gaCtrl.child(gcCtrl);
++  const linkBCCtrl = gbCtrl.child(gcCtrl);
++  const ctrlRes = grid()
++    .gap([20, 20])
++    .nodeSize((node) => normalSizes[node.data])
++    .tweaks([
++      tweakGridHandles((node) => normalSizes[node.data], [20, 20]),
++      tweakShape((node) => normalSizes[node.data]),
++    ])(grfGridCtrl);
++
++  const grfGrid = graph<string, undefined>();
++  const gA = grfGrid.node("GA");
++  const gB = grfGrid.node("GB");
++  const gC = grfGrid.node("GC");
++  const linkAC = gA.child(gC);
++  const linkBC = gB.child(gC);
++
++  const observedInTweak = new Map<string, readonly [number, number]>();
++  const spyShape = (
++    center: readonly [number, number],
++    size: readonly [number, number],
++    first: readonly [number, number],
++    second: readonly [number, number],
++  ) => {
++    if (center[0] === gA.x && center[1] === gA.y) {
++      observedInTweak.set("GA", size);
++    } else if (center[0] === gB.x && center[1] === gB.y) {
++      observedInTweak.set("GB", size);
++    } else if (center[0] === gC.x && center[1] === gC.y) {
++      observedInTweak.set("GC", size);
++    }
++    return shapeRect(center, size, first, second);
++  };
++
++  const gridLayout = grid()
++    .gap([20, 20])
++    .nodeSize(nodeSizeFn)
++    .tweaks([
++      tweakGridHandles(nodeSizeFn, [20, 20]),
++      tweakShape(nodeSizeFn, spyShape),
++    ]);
++
++  const res = gridLayout(grfGrid);
++
++  expect(counts.get("GA")).toBe(1);
++  expect(counts.get("GB")).toBe(1);
++  expect(counts.get("GC")).toBe(1);
++
++  expect(observedInTweak.get("GA")).toEqual(normalSizes.GA);
++  expect(observedInTweak.get("GB")).toEqual(normalSizes.GB);
++  expect(observedInTweak.get("GC")).toEqual(normalSizes.GC);
++
++  expect(res.width).toBe(ctrlRes.width);
++  expect(res.height).toBe(ctrlRes.height);
++  expect(gA.x).toBe(gaCtrl.x);
++  expect(gA.y).toBe(gaCtrl.y);
++  expect(gB.x).toBe(gbCtrl.x);
++  expect(gB.y).toBe(gbCtrl.y);
++  expect(gC.x).toBe(gcCtrl.x);
++  expect(gC.y).toBe(gcCtrl.y);
++  expect(linkAC.points).toEqual(linkACCtrl.points);
++  expect(linkBC.points).toEqual(linkBCCtrl.points);
++});
++
++test("tweaks with distinct callback references evaluate independently", () => {
++  let mainCalls = 0;
++  let tweakCalls = 0;
++
++  const mainNodeSize = (_node: GraphNode<string, undefined>) => {
++    mainCalls++;
++    return [4, 4] as const;
++  };
++
++  const tweakNodeSize = (_node: GraphNode<string, undefined>) => {
++    tweakCalls++;
++    return [4, 4] as const;
++  };
++
++  const grf = graph() as any;
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const sugiLayout = sugiyama()
++    .nodeSize(mainNodeSize)
++    .tweaks([tweakSugiyama(tweakNodeSize)]);
++
++  sugiLayout(grf);
++  expect(mainCalls).toBe(2);
++  expect(tweakCalls).toBe(2);
++});
++
++test("empty graph evaluates callback zero times and tweaks receive { width: 0, height: 0 }", () => {
++  let calls = 0;
++  const nodeSizeFn = (_node: GraphNode<string, undefined>) => {
++    calls++;
++    return [2, 2] as const;
++  };
++
++  let tweakReceived: { width: number; height: number } | undefined;
++  const spyTweak = (_grf: unknown, res: { width: number; height: number }) => {
++    tweakReceived = res;
++    return res;
++  };
++
++  const grf = graph() as any;
++  const res = sugiyama()
++    .nodeSize(nodeSizeFn)
++    .tweaks([tweakShape(nodeSizeFn), tweakSugiyama(nodeSizeFn), spyTweak])(grf);
++
++  expect(calls).toBe(0);
++  expect(res).toEqual({ width: 0, height: 0 });
++  expect(tweakReceived).toEqual({ width: 0, height: 0 });
++});
++
++test("cachedNodeSize honors at-most-once guarantee after callback throws, preserving error and cause", () => {
++  let callCount = 0;
++  const originalError = new Error("custom callback exploded");
++  const throwingCallback = (_node: GraphNode<string, undefined>) => {
++    callCount++;
++    throw originalError;
++  };
++
++  const grf = graph() as any;
++  const node = grf.node("failedNode");
++  const cached = cachedNodeSize(throwingCallback);
++
++  const err1 = assertStandardError(() => cached(node), {
++    category: "node-size-callback-threw",
++    node: "failedNode",
++    width: "<unavailable>",
++    height: "<unavailable>",
++  });
++  expect(callCount).toBe(1);
++  expect(err1.cause).toBe(originalError);
++
++  const err2 = assertThrows(() => cached(node));
++  expect(callCount).toBe(1);
++  expect(err2.message).toBe(err1.message);
++  expect(err2.cause).toBe(originalError);
++});
++
++test("cachedNodeSize honors at-most-once guarantee after returning invalid dimensions", () => {
++  let callCount = 0;
++  const invalidCallback = (_node: GraphNode<string, undefined>) => {
++    callCount++;
++    return [-5, 10] as const;
++  };
++
++  const grf = graph() as any;
++  const node = grf.node("invalidNode");
++  const cached = cachedNodeSize(invalidCallback);
++
++  const err1 = assertStandardError(() => cached(node), {
++    category: "invalid-callback-node-size",
++    node: "invalidNode",
++    width: "-5",
++    height: "10",
++  });
++  expect(callCount).toBe(1);
++
++  const err2 = assertThrows(() => cached(node));
++  expect(callCount).toBe(1);
++  expect(err2.message).toBe(err1.message);
++  expect(err2.cause).toBe(err1.cause);
++});
++
++test("legacy compatibility fields strictly append for operator constant errors", () => {
++  assertStandardError(() => sugiyama().nodeSize([0, 1]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "0",
++    height: "1",
++  });
++});
++
++test("legacy compatibility fields strictly append for cachedNodeSize constant errors", () => {
++  assertStandardError(() => cachedNodeSize([0, 1]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "0",
++    height: "1",
++  });
++});
++
++test("legacy compatibility fields strictly append for callback invalid dimensions errors", () => {
++  const grf = graph() as any;
++  grf.node("my-node");
++  assertStandardError(() => sugiyama().nodeSize(() => [0, 1] as const)(grf), {
++    category: "invalid-callback-node-size",
++    node: "my-node",
++    width: "0",
++    height: "1",
++  });
++});
++
++test("legacy compatibility fields strictly append for callback threw errors", () => {
++  const grf = graph() as any;
++  grf.node("my-node");
++  assertStandardError(
++    () =>
++      sugiyama().nodeSize(() => {
++        throw new Error("fail");
++      })(grf),
++    {
++      category: "node-size-callback-threw",
++      node: "my-node",
++      width: "<unavailable>",
++      height: "<unavailable>",
++    },
++  );
++});
++
++function testCachedNodeSizeOperator(
++  createOp: () => {
++    nodeSize: (
++      acc: (node: GraphNode<string, undefined>) => readonly [number, number],
++    ) => {
++      (dag: Graph<string, undefined>): unknown;
++      tweaks: (
++        t: readonly unknown[],
++      ) => (dag: Graph<string, undefined>) => unknown;
++    };
++  },
++) {
++  const counts = new Map<string, number>();
++  const rawCallback = (node: GraphNode<string, undefined>) => {
++    counts.set(node.data, (counts.get(node.data) ?? 0) + 1);
++    return [10, 20] as const;
++  };
++
++  const accessor = cachedNodeSize(rawCallback);
++
++  const grf = graph() as any;
++  const nA = grf.node("A");
++  const nB = grf.node("B");
++  grf.link(nA, nB);
++
++  // 1. Direct invocation on accessor caches for its own lifetime
++  const direct1 = accessor(nA);
++  expect(direct1).toEqual([10, 20]);
++  expect(counts.get("A")).toBe(1);
++
++  const direct2 = accessor(nA);
++  expect(direct2).toEqual([10, 20]);
++  expect(counts.get("A")).toBe(1);
++
++  const op = createOp();
++  const layout = op.nodeSize(accessor);
++
++  // 2. First layout execution: MUST use an execution-local cache and evaluate each node
++  layout(grf);
++  expect(counts.get("A")).toBe(2);
++  expect(counts.get("B")).toBe(1);
++
++  // 3. Second layout execution: MUST use a new execution-local cache and evaluate each node again
++  layout(grf);
++  expect(counts.get("A")).toBe(3);
++  expect(counts.get("B")).toBe(2);
++
++  // 4. Third layout execution with attached tweak sharing the same accessor reference
++  const layoutWithTweak = op.nodeSize(accessor).tweaks([tweakShape(accessor)]);
++  layoutWithTweak(grf);
++  expect(counts.get("A")).toBe(4);
++  expect(counts.get("B")).toBe(3);
++}
++
++test("passing cachedNodeSize accessor to sugiyama evaluates once per node in each independent run", () => {
++  testCachedNodeSizeOperator(() => sugiyama());
++});
++
++test("passing cachedNodeSize accessor to zherebko evaluates once per node in each independent run", () => {
++  testCachedNodeSizeOperator(() => zherebko());
++});
++
++test("passing cachedNodeSize accessor to grid evaluates once per node in each independent run", () => {
++  testCachedNodeSizeOperator(() => grid());
++});
++
++// Decomposed: unwrapping accessors across operators
++test("unwrapping cached constant tuple accessors", () => {
++  const grf = graph() as any;
++  const nA = grf.node("A");
++  const c1 = cachedNodeSize([2, 3] as const);
++  const c2 = cachedNodeSize(c1);
++  const c3 = cachedNodeSize(c2);
++  expect(c1(nA)).toEqual([2, 3]);
++  expect(c2(nA)).toEqual([2, 3]);
++  expect(c3(nA)).toEqual([2, 3]);
++});
++
++test("unwrapping cached constant tuples on sugiyama operator", () => {
++  const grf = graph() as any;
++  const nA = grf.node("A");
++  const nB = grf.node("B");
++  grf.link(nA, nB);
++  const c = cachedNodeSize([2, 3] as const);
++
++  const resSugi = sugiyama().nodeSize(c)(grf);
++  expect(resSugi.width).toBeGreaterThan(0);
++  expect(resSugi.height).toBeGreaterThan(0);
++});
++
++test("unwrapping cached constant tuples on zherebko operator", () => {
++  const grf = graph() as any;
++  const nA = grf.node("A");
++  const nB = grf.node("B");
++  grf.link(nA, nB);
++  const c = cachedNodeSize([2, 3] as const);
++
++  const resZher = zherebko().nodeSize(c)(grf);
++  expect(resZher.width).toBeGreaterThan(0);
++  expect(resZher.height).toBeGreaterThan(0);
++});
++
++test("unwrapping cached constant tuples on grid operator", () => {
++  const grf = graph() as any;
++  const nA = grf.node("A");
++  const nB = grf.node("B");
++  grf.link(nA, nB);
++  const c = cachedNodeSize([2, 3] as const);
++
++  const resGrid = grid().nodeSize(c)(grf);
++  expect(resGrid.width).toBeGreaterThan(0);
++  expect(resGrid.height).toBeGreaterThan(0);
++});
++
++test("unwrapping nested callback accessors and attached tweaks", () => {
++  const grf = graph() as any;
++  const nA = grf.node("A");
++  const nB = grf.node("B");
++  grf.link(nA, nB);
++
++  let innerOuterCount = 0;
++  const baseCb = (_node: GraphNode<string, undefined>) => {
++    innerOuterCount++;
++    return [10, 20] as const;
++  };
++  const innerAccessor = cachedNodeSize(baseCb);
++  const outerAccessor = cachedNodeSize(innerAccessor);
++  expect(innerAccessor(nA)).toEqual([10, 20]);
++  expect(innerOuterCount).toBe(1);
++  expect(outerAccessor(nA)).toEqual([10, 20]);
++  expect(innerOuterCount).toBe(1);
++
++  let errorCbCount = 0;
++  const thrownErr = new Error("nested failure");
++  const throwingCb = (_node: GraphNode<string, undefined>) => {
++    errorCbCount++;
++    throw thrownErr;
++  };
++  const innerErrAccessor = cachedNodeSize(throwingCb);
++  const outerErrAccessor = cachedNodeSize(innerErrAccessor);
++  let caughtInner: any;
++  try {
++    innerErrAccessor(nA);
++  } catch (e) {
++    caughtInner = e;
++  }
++  expect(errorCbCount).toBe(1);
++  expect(caughtInner).toBeDefined();
++
++  let caughtOuter: any;
++  try {
++    outerErrAccessor(nA);
++  } catch (e) {
++    caughtOuter = e;
++  }
++  expect(errorCbCount).toBe(1);
++  expect(caughtOuter).toBe(caughtInner);
++  expect(caughtOuter.cause).toBe(thrownErr);
++
++  let count = 0;
++  const cb = (_node: GraphNode<string, undefined>) => {
++    count++;
++    return [15, 25] as const;
++  };
++  const nestedCb = cachedNodeSize(cachedNodeSize(cachedNodeSize(cb)));
++
++  expect(nestedCb(nA)).toEqual([15, 25]);
++  expect(count).toBe(1);
++  expect(nestedCb(nA)).toEqual([15, 25]);
++  expect(count).toBe(1);
++
++  const opSugi = sugiyama().nodeSize(nestedCb);
++  opSugi(grf);
++  expect(count).toBe(3);
++
++  opSugi(grf);
++  expect(count).toBe(5);
++
++  const opWithTweak = sugiyama()
++    .nodeSize(nestedCb)
++    .tweaks([tweakShape(nestedCb)]);
++  opWithTweak(grf);
++  expect(count).toBe(7);
++});
++
++// Decomposed: legacy error formatting safety with unusual objects
++test("constant dimensions validation rejects Symbol in array on sugiyama", () => {
++  const sym = Symbol("testSym");
++  assertStandardError(() => sugiyama().nodeSize([sym, 10] as never), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "Symbol(testSym)",
++    height: "10",
++  });
++});
++
++test("constant dimensions validation rejects null-prototype object in array on sugiyama", () => {
++  const nullProto = Object.create(null);
++  assertStandardError(() => sugiyama().nodeSize([10, nullProto] as never), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "10",
++    height: "<type: object>",
++  });
++});
++
++test("constant dimensions validation rejects throwing coercion object in array on sugiyama", () => {
++  const throwingCoercion = {
++    toString() {
++      throw new Error("toString exploded");
++    },
++    valueOf() {
++      throw new Error("valueOf exploded");
++    },
++  };
++  assertStandardError(
++    () => sugiyama().nodeSize([throwingCoercion, 20] as never),
++    {
++      category: "constant-node-size",
++      node: "N/A",
++      width: "<type: object>",
++      height: "20",
++    },
++  );
++});
++
++test("constant dimensions validation rejects malformed array containing Symbol and throwing object on sugiyama", () => {
++  const sym = Symbol("testSym");
++  const throwingCoercion = {
++    toString() {
++      throw new Error("toString exploded");
++    },
++    valueOf() {
++      throw new Error("valueOf exploded");
++    },
++  };
++  assertStandardError(
++    () => sugiyama().nodeSize([1, sym, throwingCoercion] as never),
++    {
++      category: "constant-node-size",
++      node: "N/A",
++      width: "<unavailable>",
++      height: "<unavailable>",
++      returned: "[length: 3]",
++    },
++  );
++});
++
++test("constant dimensions validation rejects null-prototype object alone on sugiyama", () => {
++  const nullProto = Object.create(null);
++  assertStandardError(() => sugiyama().nodeSize(nullProto as never), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "<unavailable>",
++    height: "<unavailable>",
++    returned: "<type: object>",
++  });
++});
++
++test("callback node size validation rejects returned Symbol in array on sugiyama", () => {
++  const sym = Symbol("testSym");
++  const grf = graph() as any;
++  grf.node("N1");
++  assertStandardError(
++    () => sugiyama().nodeSize(() => [sym, 10] as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "N1",
++      width: "Symbol(testSym)",
++      height: "10",
++    },
++  );
++});
++
++test("callback node size validation rejects returned null-prototype object in array on sugiyama", () => {
++  const nullProto = Object.create(null);
++  const grf = graph() as any;
++  grf.node("N1");
++  assertStandardError(
++    () => sugiyama().nodeSize(() => [10, nullProto] as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "N1",
++      width: "10",
++      height: "<type: object>",
++    },
++  );
++});
++
++test("callback node size validation rejects returned throwing coercion object in array on sugiyama", () => {
++  const throwingCoercion = {
++    toString() {
++      throw new Error("toString exploded");
++    },
++    valueOf() {
++      throw new Error("valueOf exploded");
++    },
++  };
++  const grf = graph() as any;
++  grf.node("N1");
++  assertStandardError(
++    () => sugiyama().nodeSize(() => [throwingCoercion, 20] as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "N1",
++      width: "<type: object>",
++      height: "20",
++    },
++  );
++});
++
++test("callback node size validation rejects returned malformed array with throwing object on sugiyama", () => {
++  const throwingCoercion = {
++    toString() {
++      throw new Error("toString exploded");
++    },
++    valueOf() {
++      throw new Error("valueOf exploded");
++    },
++  };
++  const grf = graph() as any;
++  grf.node("N1");
++  assertStandardError(
++    () => sugiyama().nodeSize(() => [throwingCoercion] as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "N1",
++      width: "<unavailable>",
++      height: "<unavailable>",
++      returned: "[length: 1]",
++    },
++  );
++});
++test("sugiyama rejects bigint constant dimensions and formats error message", () => {
++  assertStandardError(() => sugiyama().nodeSize([1n as unknown as number, 2]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "1",
++    height: "2",
++  });
++});
++
++test("zherebko rejects bigint constant dimensions and formats error message", () => {
++  assertStandardError(() => zherebko().nodeSize([1n as unknown as number, 2]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "1",
++    height: "2",
++  });
++});
++
++test("grid rejects bigint constant dimensions and formats error message", () => {
++  assertStandardError(() => grid().nodeSize([1n as unknown as number, 2]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "1",
++    height: "2",
++  });
++});
++
++test("splitNodeSize height-first evaluation caches dimensions for subsequent width evaluation", () => {
++  let callCount = 0;
++  const grf = graph() as any;
++  const n = grf.node("splitEval");
++  const [xLen, yLen] = splitNodeSize((_node) => {
++    callCount++;
++    return [4, 7] as const;
++  });
++  expect(yLen(n)).toBe(7);
++  expect(callCount).toBe(1);
++  expect(xLen(n)).toBe(4);
++  expect(callCount).toBe(1);
++});
++
++test("sugiyama empty graph executes tweaks in order with zero dimensions without calling nodeSize", () => {
++  let callCount = 0;
++  const events: string[] = [];
++  const tweakA = (grf: any, dims: { width: number; height: number }) => {
++    events.push(`A:${dims.width},${dims.height}`);
++    return { width: 100, height: 200 };
++  };
++  const tweakB = (grf: any, dims: { width: number; height: number }) => {
++    events.push(`B:${dims.width},${dims.height}`);
++    return { width: 300, height: 400 };
++  };
++  const layout = sugiyama()
++    .nodeSize((_n) => {
++      callCount++;
++      return [10, 10];
++    })
++    .tweaks([tweakA, tweakB]);
++  const res = layout(graph());
++  expect(callCount).toBe(0);
++  expect(events).toEqual(["A:0,0", "B:100,200"]);
++  expect(res).toEqual({ width: 300, height: 400 });
++});
++
++test("zherebko empty graph executes tweaks in order with zero dimensions without calling nodeSize", () => {
++  let callCount = 0;
++  const events: string[] = [];
++  const tweakA = (grf: any, dims: { width: number; height: number }) => {
++    events.push(`A:${dims.width},${dims.height}`);
++    return { width: 100, height: 200 };
++  };
++  const tweakB = (grf: any, dims: { width: number; height: number }) => {
++    events.push(`B:${dims.width},${dims.height}`);
++    return { width: 300, height: 400 };
++  };
++  const layout = zherebko()
++    .nodeSize((_n) => {
++      callCount++;
++      return [10, 10];
++    })
++    .tweaks([tweakA, tweakB]);
++  const res = layout(graph());
++  expect(callCount).toBe(0);
++  expect(events).toEqual(["A:0,0", "B:100,200"]);
++  expect(res).toEqual({ width: 300, height: 400 });
++});
++
++test("grid empty graph executes tweaks in order with zero dimensions without calling nodeSize", () => {
++  let callCount = 0;
++  const events: string[] = [];
++  const tweakA = (grf: any, dims: { width: number; height: number }) => {
++    events.push(`A:${dims.width},${dims.height}`);
++    return { width: 100, height: 200 };
++  };
++  const tweakB = (grf: any, dims: { width: number; height: number }) => {
++    events.push(`B:${dims.width},${dims.height}`);
++    return { width: 300, height: 400 };
++  };
++  const layout = grid()
++    .nodeSize((_n) => {
++      callCount++;
++      return [10, 10];
++    })
++    .tweaks([tweakA, tweakB]);
++  const res = layout(graph());
++  expect(callCount).toBe(0);
++  expect(events).toEqual(["A:0,0", "B:100,200"]);
++  expect(res).toEqual({ width: 300, height: 400 });
++});
++
++test("sugiyama supports reentrant nested layout execution without cross-contamination", () => {
++  let outerCount = 0;
++  let innerCount = 0;
++  const innerLayout = sugiyama().nodeSize((_n) => {
++    innerCount++;
++    return [5, 6];
++  });
++  const outerLayout = sugiyama().nodeSize((_n) => {
++    outerCount++;
++    const gInner = graph() as any;
++    gInner.node("in");
++    innerLayout(gInner);
++    return [10, 12];
++  });
++  const gOuter = graph() as any;
++  gOuter.node("out");
++  outerLayout(gOuter);
++  expect(outerCount).toBe(1);
++  expect(innerCount).toBe(1);
++});
++
++test("zherebko supports reentrant nested layout execution without cross-contamination", () => {
++  let outerCount = 0;
++  let innerCount = 0;
++  const innerLayout = zherebko().nodeSize((_n) => {
++    innerCount++;
++    return [5, 6];
++  });
++  const outerLayout = zherebko().nodeSize((_n) => {
++    outerCount++;
++    const gInner = graph() as any;
++    gInner.node("in");
++    innerLayout(gInner);
++    return [10, 12];
++  });
++  const gOuter = graph() as any;
++  gOuter.node("out");
++  outerLayout(gOuter);
++  expect(outerCount).toBe(1);
++  expect(innerCount).toBe(1);
++});
++
++test("grid supports reentrant nested layout execution without cross-contamination", () => {
++  let outerCount = 0;
++  let innerCount = 0;
++  const innerLayout = grid().nodeSize((_n) => {
++    innerCount++;
++    return [5, 6];
++  });
++  const outerLayout = grid().nodeSize((_n) => {
++    outerCount++;
++    const gInner = graph() as any;
++    gInner.node("in");
++    innerLayout(gInner);
++    return [10, 12];
++  });
++  const gOuter = graph() as any;
++  gOuter.node("out");
++  outerLayout(gOuter);
++  expect(outerCount).toBe(1);
++  expect(innerCount).toBe(1);
++});
++
++test("zherebko evaluates shared tweak callback at most once per node in a single execution", () => {
++  const normalSizes: Record<string, readonly [number, number]> = {
++    A: [12, 14],
++    B: [24, 28],
++  };
++  const sentinelSizes: Record<string, readonly [number, number]> = {
++    A: [120, 140],
++    B: [240, 280],
++  };
++  const counts = new Map<string, number>();
++
++  const nodeSizeFn = (node: GraphNode<string, undefined>) => {
++    const c = (counts.get(node.data) ?? 0) + 1;
++    counts.set(node.data, c);
++    return c === 1 ? normalSizes[node.data] : sentinelSizes[node.data];
++  };
++
++  const grfCtrl = graph<string, undefined>();
++  const aCtrl = grfCtrl.node("A");
++  const bCtrl = grfCtrl.node("B");
++  const linkCtrl = aCtrl.child(bCtrl);
++  const ctrlRes = zherebko()
++    .nodeSize((node) => normalSizes[node.data])
++    .tweaks([tweakShape((node) => normalSizes[node.data])])(grfCtrl);
++
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  const link = a.child(b);
++
++  const observedInTweak = new Map<string, readonly [number, number]>();
++  const spyShape = (
++    center: readonly [number, number],
++    size: readonly [number, number],
++    first: readonly [number, number],
++    second: readonly [number, number],
++  ) => {
++    if (center[0] === a.x && center[1] === a.y) {
++      observedInTweak.set("A", size);
++    } else if (center[0] === b.x && center[1] === b.y) {
++      observedInTweak.set("B", size);
++    }
++    return shapeRect(center, size, first, second);
++  };
++
++  const layout = zherebko()
++    .nodeSize(nodeSizeFn)
++    .tweaks([tweakShape(nodeSizeFn, spyShape)]);
++
++  const res = layout(grf);
++
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++
++  expect(observedInTweak.get("A")).toEqual(normalSizes.A);
++  expect(observedInTweak.get("B")).toEqual(normalSizes.B);
++
++  expect(res.width).toBe(ctrlRes.width);
++  expect(res.height).toBe(ctrlRes.height);
++  expect(a.x).toBe(aCtrl.x);
++  expect(a.y).toBe(aCtrl.y);
++  expect(b.x).toBe(bCtrl.x);
++  expect(b.y).toBe(bCtrl.y);
++  expect(link.points).toEqual(linkCtrl.points);
++});
++
++// ============================================================================
++// Atomic BigInt, Symbol, and Object dimension validations across operators
++// ============================================================================
++test("sugiyama rejects bigint height constant dimensions and formats error message", () => {
++  assertStandardError(() => sugiyama().nodeSize([2, 1n as unknown as number]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "2",
++    height: "1",
++  });
++});
++
++test("zherebko rejects bigint height constant dimensions and formats error message", () => {
++  assertStandardError(() => zherebko().nodeSize([2, 1n as unknown as number]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "2",
++    height: "1",
++  });
++});
++
++test("grid rejects bigint height constant dimensions and formats error message", () => {
++  assertStandardError(() => grid().nodeSize([2, 1n as unknown as number]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "2",
++    height: "1",
++  });
++});
++
++test("sugiyama rejects symbol height constant dimensions and formats error message", () => {
++  const sym = Symbol("sym-ch");
++  assertStandardError(() => sugiyama().nodeSize([2, sym as unknown as number]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "2",
++    height: String(sym),
++  });
++});
++
++test("zherebko rejects symbol height constant dimensions and formats error message", () => {
++  const sym = Symbol("sym-ch");
++  assertStandardError(() => zherebko().nodeSize([2, sym as unknown as number]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "2",
++    height: String(sym),
++  });
++});
++
++test("grid rejects symbol height constant dimensions and formats error message", () => {
++  const sym = Symbol("sym-ch");
++  assertStandardError(() => grid().nodeSize([2, sym as unknown as number]), {
++    category: "constant-node-size",
++    node: "N/A",
++    width: "2",
++    height: String(sym),
++  });
++});
++
++test("sugiyama rejects callback returning bigint width dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  assertStandardError(
++    () => sugiyama().nodeSize((() => [1n as unknown as number, 2]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "1",
++      height: "2",
++    },
++  );
++});
++
++test("sugiyama rejects callback returning bigint height dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  assertStandardError(
++    () => sugiyama().nodeSize((() => [2, 1n as unknown as number]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "2",
++      height: "1",
++    },
++  );
++});
++
++test("zherebko rejects callback returning bigint width dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  assertStandardError(
++    () => zherebko().nodeSize((() => [1n as unknown as number, 2]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "1",
++      height: "2",
++    },
++  );
++});
++
++test("zherebko rejects callback returning bigint height dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  assertStandardError(
++    () => zherebko().nodeSize((() => [2, 1n as unknown as number]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "2",
++      height: "1",
++    },
++  );
++});
++
++test("grid rejects callback returning bigint width dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  assertStandardError(
++    () => grid().nodeSize((() => [1n as unknown as number, 2]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "1",
++      height: "2",
++    },
++  );
++});
++
++test("grid rejects callback returning bigint height dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  assertStandardError(
++    () => grid().nodeSize((() => [2, 1n as unknown as number]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "2",
++      height: "1",
++    },
++  );
++});
++
++test("sugiyama rejects callback returning symbol width dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  const sym = Symbol("sym-w");
++  assertStandardError(
++    () => sugiyama().nodeSize((() => [sym as unknown as number, 2]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: String(sym),
++      height: "2",
++    },
++  );
++});
++
++test("sugiyama rejects callback returning symbol height dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  const sym = Symbol("sym-h");
++  assertStandardError(
++    () => sugiyama().nodeSize((() => [2, sym as unknown as number]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "2",
++      height: String(sym),
++    },
++  );
++});
++
++test("zherebko rejects callback returning symbol width dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  const sym = Symbol("sym-w");
++  assertStandardError(
++    () => zherebko().nodeSize((() => [sym as unknown as number, 2]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "2" ? String(sym) : "",
++      height: "2",
++    },
++  );
++});
++
++test("zherebko rejects callback returning symbol height dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  const sym = Symbol("sym-h");
++  assertStandardError(
++    () => zherebko().nodeSize((() => [2, sym as unknown as number]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "2",
++      height: String(sym),
++    },
++  );
++});
++
++test("grid rejects callback returning symbol width dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  const sym = Symbol("sym-w");
++  assertStandardError(
++    () => grid().nodeSize((() => [sym as unknown as number, 2]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: String(sym),
++      height: "2",
++    },
++  );
++});
++
++test("grid rejects callback returning symbol height dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  const sym = Symbol("sym-h");
++  assertStandardError(
++    () => grid().nodeSize((() => [2, sym as unknown as number]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "2",
++      height: String(sym),
++    },
++  );
++});
++
++test("sugiyama rejects callback returning object width dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  assertStandardError(
++    () => sugiyama().nodeSize((() => [{ x: 1 } as unknown as number, 2]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "<type: object>",
++      height: "2",
++    },
++  );
++});
++
++test("sugiyama rejects callback returning object height dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  assertStandardError(
++    () => sugiyama().nodeSize((() => [2, { y: 1 } as unknown as number]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "2",
++      height: "<type: object>",
++    },
++  );
++});
++
++test("zherebko rejects callback returning object width dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  assertStandardError(
++    () => zherebko().nodeSize((() => [{ x: 1 } as unknown as number, 2]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "<type: object>",
++      height: "2",
++    },
++  );
++});
++
++test("zherebko rejects callback returning object height dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  assertStandardError(
++    () => zherebko().nodeSize((() => [2, { y: 1 } as unknown as number]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "2",
++      height: "<type: object>",
++    },
++  );
++});
++
++test("grid rejects callback returning object width dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  assertStandardError(
++    () => grid().nodeSize((() => [{ x: 1 } as unknown as number, 2]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "<type: object>",
++      height: "2",
++    },
++  );
++});
++
++test("grid rejects callback returning object height dimension and formats error message", () => {
++  const grf = graph<unknown, undefined>();
++  grf.node("root");
++  assertStandardError(
++    () => grid().nodeSize((() => [2, { y: 1 } as unknown as number]) as never)(grf),
++    {
++      category: "invalid-callback-node-size",
++      node: "root",
++      width: "2",
++      height: "<type: object>",
++    },
++  );
++});
++
++test("inner layout failure in custom tweak restores outer execution context and preserves geometry", () => {
++  const grfControl = graph<string, undefined>();
++  const c0 = grfControl.node("0");
++  const c1 = grfControl.node("1");
++  const linkControl = c0.child(c1);
++
++  const controlCounts: Record<string, number> = { "0": 0, "1": 0 };
++  const controlCallback = (node: GraphNode<string, undefined>) => {
++    controlCounts[node.data] = (controlCounts[node.data] ?? 0) + 1;
++    return node.data === "0" ? ([20, 30] as const) : ([40, 50] as const);
++  };
++
++  const dummyTweak: Tweak<string, undefined> = (_g, res) => res;
++  const controlRes = sugiyama()
++    .nodeSize(controlCallback)
++    .tweaks([dummyTweak, tweakSugiyama(controlCallback)])(grfControl);
++
++  const grf = graph<string, undefined>();
++  const n0 = grf.node("0");
++  const n1 = grf.node("1");
++  const link = n0.child(n1);
++
++  const outerCounts: Record<string, number> = { "0": 0, "1": 0 };
++  const outerCallback = (node: GraphNode<string, undefined>) => {
++    outerCounts[node.data] = (outerCounts[node.data] ?? 0) + 1;
++    return node.data === "0" ? ([20, 30] as const) : ([40, 50] as const);
++  };
++
++  let caughtError: unknown = null;
++  const targetInnerException = new Error("inner layout intentional failure");
++  const customTweak: Tweak<string, undefined> = (_g, res) => {
++    try {
++      const innerGrf = graph<string, undefined>();
++      const inA = innerGrf.node("inA");
++      const inB = innerGrf.node("inB");
++      inA.child(inB);
++      sugiyama().nodeSize(() => {
++        throw targetInnerException;
++      })(innerGrf);
++    } catch (err: unknown) {
++      caughtError = err;
++    }
++    return res;
++  };
++
++  const experimentalRes = sugiyama()
++    .nodeSize(outerCallback)
++    .tweaks([customTweak, tweakSugiyama(outerCallback)])(grf);
++
++  expect(caughtError).toBeTruthy();
++  expect(outerCounts["0"]).toBe(1);
++  expect(outerCounts["1"]).toBe(1);
++
++  expect(experimentalRes.width).toBe(controlRes.width);
++  expect(experimentalRes.height).toBe(controlRes.height);
++  expect(n0.x).toBe(c0.x);
++  expect(n0.y).toBe(c0.y);
++  expect(n1.x).toBe(c1.x);
++  expect(n1.y).toBe(c1.y);
++  expect(link.points).toEqual(linkControl.points);
++});
++
++test("reusing mutable tuple achieves identical layout geometry to fresh tuples", () => {
++  const grfControl = graph<string, undefined>();
++  const cR = grfControl.node("R");
++  const cA = grfControl.node("A");
++  const cB = grfControl.node("B");
++  const linkRAControl = cR.child(cA);
++  const linkRBControl = cR.child(cB);
++
++  const controlDimensions: Record<string, readonly [number, number]> = {
++    R: [10, 10],
++    A: [10, 20],
++    B: [50, 40],
++  };
++  const freshCallback = (node: GraphNode<string, undefined>) => {
++    const dim = controlDimensions[node.data];
++    return [dim[0], dim[1]] as const;
++  };
++
++  const controlRes = sugiyama()
++    .nodeSize(freshCallback)
++    .tweaks([tweakShape(freshCallback), tweakSugiyama(freshCallback)])(
++    grfControl,
++  );
++
++  const grfMutable = graph<string, undefined>();
++  const mR = grfMutable.node("R");
++  const mA = grfMutable.node("A");
++  const mB = grfMutable.node("B");
++  const linkRAMutable = mR.child(mA);
++  const linkRBMutable = mR.child(mB);
++
++  const sharedTuple: [number, number] = [0, 0];
++  const mutableCallback = (node: GraphNode<string, undefined>) => {
++    const dim = controlDimensions[node.data];
++    sharedTuple[0] = dim[0];
++    sharedTuple[1] = dim[1];
++    return sharedTuple;
++  };
++
++  const mutableRes = sugiyama()
++    .nodeSize(mutableCallback)
++    .tweaks([tweakShape(mutableCallback), tweakSugiyama(mutableCallback)])(
++    grfMutable,
++  );
++
++  sharedTuple[0] = 99999;
++  sharedTuple[1] = 88888;
++
++  expect(mutableRes.width).toBe(controlRes.width);
++  expect(mutableRes.height).toBe(controlRes.height);
++  expect(mR.x).toBe(cR.x);
++  expect(mR.y).toBe(cR.y);
++  expect(mA.x).toBe(cA.x);
++  expect(mA.y).toBe(cA.y);
++  expect(mB.x).toBe(cB.x);
++  expect(mB.y).toBe(cB.y);
++  expect(linkRAMutable.points).toEqual(linkRAControl.points);
++  expect(linkRBMutable.points).toEqual(linkRBControl.points);
++});
++
++
++
++// ============================================================================
++// Decomposed: Operator and Identity-Equal Built-in Tweaks Shared Execution Context
++// ============================================================================
++
++test("sugiyama operator and identity-equal tweakSugiyama invoke callback at most once per node", () => {
++  const counts = new Map<string, number>();
++  const nodeSizeFn = (node: GraphNode<string, undefined>) => {
++    counts.set(node.data, (counts.get(node.data) ?? 0) + 1);
++    return [25, 35] as const;
++  };
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const res = sugiyama()
++    .nodeSize(nodeSizeFn)
++    .tweaks([tweakSugiyama(nodeSizeFn)])(grf);
++
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++  expect(res.width).toBeGreaterThan(0);
++  expect(res.height).toBeGreaterThan(0);
++});
++
++test("sugiyama operator and identity-equal tweakShape invoke callback at most once per node", () => {
++  const counts = new Map<string, number>();
++  const nodeSizeFn = (node: GraphNode<string, undefined>) => {
++    counts.set(node.data, (counts.get(node.data) ?? 0) + 1);
++    return [25, 35] as const;
++  };
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const res = sugiyama()
++    .nodeSize(nodeSizeFn)
++    .tweaks([tweakShape(nodeSizeFn)])(grf);
++
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++  expect(res.width).toBeGreaterThan(0);
++  expect(res.height).toBeGreaterThan(0);
++});
++
++test("zherebko operator and identity-equal tweakShape invoke callback at most once per node", () => {
++  const counts = new Map<string, number>();
++  const nodeSizeFn = (node: GraphNode<string, undefined>) => {
++    counts.set(node.data, (counts.get(node.data) ?? 0) + 1);
++    return [25, 35] as const;
++  };
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const res = zherebko()
++    .nodeSize(nodeSizeFn)
++    .tweaks([tweakShape(nodeSizeFn)])(grf);
++
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++  expect(res.width).toBeGreaterThan(0);
++  expect(res.height).toBeGreaterThan(0);
++});
++
++test("grid operator and identity-equal tweakGridHandles invoke callback at most once per node", () => {
++  const counts = new Map<string, number>();
++  const nodeSizeFn = (node: GraphNode<string, undefined>) => {
++    counts.set(node.data, (counts.get(node.data) ?? 0) + 1);
++    return [25, 35] as const;
++  };
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const res = grid()
++    .nodeSize(nodeSizeFn)
++    .tweaks([tweakGridHandles(nodeSizeFn, [10, 10])])(grf);
++
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++  expect(res.width).toBeGreaterThan(0);
++  expect(res.height).toBeGreaterThan(0);
++});
++
++test("grid operator and identity-equal tweakShape invoke callback at most once per node", () => {
++  const counts = new Map<string, number>();
++  const nodeSizeFn = (node: GraphNode<string, undefined>) => {
++    counts.set(node.data, (counts.get(node.data) ?? 0) + 1);
++    return [25, 35] as const;
++  };
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const res = grid()
++    .nodeSize(nodeSizeFn)
++    .tweaks([tweakShape(nodeSizeFn)])(grf);
++
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++  expect(res.width).toBeGreaterThan(0);
++  expect(res.height).toBeGreaterThan(0);
++});
++
++test("sugiyama identity-equal tweakShape observes operator resolved dimensions and preserves geometry", () => {
++  const normalSizes: Record<string, readonly [number, number]> = {
++    A: [30, 40],
++    B: [30, 40],
++  };
++  const sentinelSizes: Record<string, readonly [number, number]> = {
++    A: [999, 999],
++    B: [999, 999],
++  };
++  const counts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const c = (counts.get(node.data) ?? 0) + 1;
++    counts.set(node.data, c);
++    return c === 1 ? normalSizes[node.data] : sentinelSizes[node.data];
++  };
++  const grfCtrl = graph<string, undefined>();
++  const aCtrl = grfCtrl.node("A");
++  const bCtrl = grfCtrl.node("B");
++  aCtrl.child(bCtrl);
++  const ctrlRes = sugiyama()
++    .nodeSize(() => [30, 40] as const)
++    .tweaks([tweakShape(() => [30, 40] as const)])(grfCtrl);
++
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const observedSizes = new Map<string, readonly [number, number]>();
++  const spyShape = (
++    center: readonly [number, number],
++    size: readonly [number, number],
++    first: readonly [number, number],
++    second: readonly [number, number],
++  ) => {
++    if (center[0] === a.x && center[1] === a.y) {
++      observedSizes.set("A", size);
++    } else if (center[0] === b.x && center[1] === b.y) {
++      observedSizes.set("B", size);
++    }
++    return shapeRect(center, size, first, second);
++  };
++
++  const res = sugiyama()
++    .nodeSize(cb)
++    .tweaks([tweakShape(cb, spyShape)])(grf);
++
++  expect(observedSizes.get("A")).toEqual([30, 40]);
++  expect(observedSizes.get("B")).toEqual([30, 40]);
++  expect(res.width).toBe(ctrlRes.width);
++  expect(res.height).toBe(ctrlRes.height);
++  expect(a.x).toBe(aCtrl.x);
++  expect(a.y).toBe(aCtrl.y);
++  expect(b.x).toBe(bCtrl.x);
++  expect(b.y).toBe(bCtrl.y);
++});
++
++test("sugiyama identity-equal tweakSugiyama observes operator resolved dimensions and preserves geometry", () => {
++  const counts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const c = (counts.get(node.data) ?? 0) + 1;
++    counts.set(node.data, c);
++    return c === 1 ? ([30, 40] as const) : ([999, 999] as const);
++  };
++  const grfCtrl = graph<string, undefined>();
++  const aCtrl = grfCtrl.node("A");
++  const bCtrl = grfCtrl.node("B");
++  const lCtrl = aCtrl.child(bCtrl);
++  sugiyama()
++    .nodeSize(() => [30, 40] as const)
++    .tweaks([tweakSugiyama(() => [30, 40] as const)])(grfCtrl);
++
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  const l = a.child(b);
++
++  sugiyama()
++    .nodeSize(cb)
++    .tweaks([tweakSugiyama(cb)])(grf);
++
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++  expect(l.points).toEqual(lCtrl.points);
++});
++
++test("zherebko identity-equal tweakShape observes operator resolved dimensions and preserves geometry", () => {
++  const normalSizes: Record<string, readonly [number, number]> = {
++    A: [30, 40],
++    B: [30, 40],
++  };
++  const sentinelSizes: Record<string, readonly [number, number]> = {
++    A: [999, 999],
++    B: [999, 999],
++  };
++  const counts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const c = (counts.get(node.data) ?? 0) + 1;
++    counts.set(node.data, c);
++    return c === 1 ? normalSizes[node.data] : sentinelSizes[node.data];
++  };
++  const grfCtrl = graph<string, undefined>();
++  const aCtrl = grfCtrl.node("A");
++  const bCtrl = grfCtrl.node("B");
++  aCtrl.child(bCtrl);
++  const ctrlRes = zherebko()
++    .nodeSize(() => [30, 40] as const)
++    .tweaks([tweakShape(() => [30, 40] as const)])(grfCtrl);
++
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const observedSizes = new Map<string, readonly [number, number]>();
++  const spyShape = (
++    center: readonly [number, number],
++    size: readonly [number, number],
++    first: readonly [number, number],
++    second: readonly [number, number],
++  ) => {
++    if (center[0] === a.x && center[1] === a.y) {
++      observedSizes.set("A", size);
++    } else if (center[0] === b.x && center[1] === b.y) {
++      observedSizes.set("B", size);
++    }
++    return shapeRect(center, size, first, second);
++  };
++
++  const res = zherebko()
++    .nodeSize(cb)
++    .tweaks([tweakShape(cb, spyShape)])(grf);
++
++  expect(observedSizes.get("A")).toEqual([30, 40]);
++  expect(observedSizes.get("B")).toEqual([30, 40]);
++  expect(res.width).toBe(ctrlRes.width);
++  expect(res.height).toBe(ctrlRes.height);
++  expect(a.x).toBe(aCtrl.x);
++  expect(a.y).toBe(aCtrl.y);
++  expect(b.x).toBe(bCtrl.x);
++  expect(b.y).toBe(bCtrl.y);
++});
++
++test("grid identity-equal tweakGridHandles observes operator resolved dimensions and preserves geometry", () => {
++  const counts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const c = (counts.get(node.data) ?? 0) + 1;
++    counts.set(node.data, c);
++    return c === 1 ? ([30, 40] as const) : ([999, 999] as const);
++  };
++  const grfCtrl = graph<string, undefined>();
++  const aCtrl = grfCtrl.node("A");
++  const bCtrl = grfCtrl.node("B");
++  const lCtrl = aCtrl.child(bCtrl);
++  grid()
++    .nodeSize(() => [30, 40] as const)
++    .tweaks([tweakGridHandles(() => [30, 40] as const, [10, 10])])(grfCtrl);
++
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  const l = a.child(b);
++
++  grid()
++    .nodeSize(cb)
++    .tweaks([tweakGridHandles(cb, [10, 10])])(grf);
++
++  expect(counts.get("A")).toBe(1);
++  expect(counts.get("B")).toBe(1);
++  expect(l.points).toEqual(lCtrl.points);
++});
++
++test("grid identity-equal tweakShape observes operator resolved dimensions and preserves geometry", () => {
++  const normalSizes: Record<string, readonly [number, number]> = {
++    A: [30, 40],
++    B: [30, 40],
++  };
++  const sentinelSizes: Record<string, readonly [number, number]> = {
++    A: [999, 999],
++    B: [999, 999],
++  };
++  const counts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const c = (counts.get(node.data) ?? 0) + 1;
++    counts.set(node.data, c);
++    return c === 1 ? normalSizes[node.data] : sentinelSizes[node.data];
++  };
++  const grfCtrl = graph<string, undefined>();
++  const aCtrl = grfCtrl.node("A");
++  const bCtrl = grfCtrl.node("B");
++  aCtrl.child(bCtrl);
++  const ctrlRes = grid()
++    .nodeSize(() => [30, 40] as const)
++    .tweaks([tweakShape(() => [30, 40] as const)])(grfCtrl);
++
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const observedSizes = new Map<string, readonly [number, number]>();
++  const spyShape = (
++    center: readonly [number, number],
++    size: readonly [number, number],
++    first: readonly [number, number],
++    second: readonly [number, number],
++  ) => {
++    if (center[0] === a.x && center[1] === a.y) {
++      observedSizes.set("A", size);
++    } else if (center[0] === b.x && center[1] === b.y) {
++      observedSizes.set("B", size);
++    }
++    return shapeRect(center, size, first, second);
++  };
++
++  const res = grid()
++    .nodeSize(cb)
++    .tweaks([tweakShape(cb, spyShape)])(grf);
++
++  expect(observedSizes.get("A")).toEqual([30, 40]);
++  expect(observedSizes.get("B")).toEqual([30, 40]);
++  expect(res.width).toBe(ctrlRes.width);
++  expect(res.height).toBe(ctrlRes.height);
++  expect(a.x).toBe(aCtrl.x);
++  expect(a.y).toBe(aCtrl.y);
++  expect(b.x).toBe(bCtrl.x);
++  expect(b.y).toBe(bCtrl.y);
++});
++
++test("sugiyama shared execution context reuses failure state between accessor and tweakShape when callback throws", () => {
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const callCounts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const count = (callCounts.get(node.data) ?? 0) + 1;
++    callCounts.set(node.data, count);
++    if (count > 1) {
++      throw new Error("cb invoked second time for node " + node.data);
++    }
++    return [10, 20] as const;
++  };
++
++  const tweak = tweakShape(cb);
++  const layout = sugiyama().nodeSize(cb).tweaks([tweak]);
++  let res: LayoutResult | undefined;
++  expect(() => {
++    res = layout(grf);
++  }).not.toThrow();
++
++  expect(res).toBeDefined();
++  expect(res!.width).toBeGreaterThan(0);
++  expect(res!.height).toBeGreaterThan(0);
++  expect(callCounts.get("A")).toBe(1);
++  expect(callCounts.get("B")).toBe(1);
++  expect(a.x).toBeDefined();
++  expect(a.y).toBeDefined();
++  expect(b.x).toBeDefined();
++  expect(b.y).toBeDefined();
++});
++
++test("sugiyama shared execution context reuses failure state between accessor and tweakSugiyama when callback throws", () => {
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const callCounts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const count = (callCounts.get(node.data) ?? 0) + 1;
++    callCounts.set(node.data, count);
++    if (count > 1) {
++      throw new Error("cb invoked second time for node " + node.data);
++    }
++    return [10, 20] as const;
++  };
++
++  const tweak = tweakSugiyama(cb);
++  const layout = sugiyama().nodeSize(cb).tweaks([tweak]);
++  let res: LayoutResult | undefined;
++  expect(() => {
++    res = layout(grf);
++  }).not.toThrow();
++
++  expect(res).toBeDefined();
++  expect(res!.width).toBeGreaterThan(0);
++  expect(res!.height).toBeGreaterThan(0);
++  expect(callCounts.get("A")).toBe(1);
++  expect(callCounts.get("B")).toBe(1);
++  expect(a.x).toBeDefined();
++  expect(b.x).toBeDefined();
++});
++
++test("zherebko shared execution context reuses failure state between accessor and tweakShape when callback throws", () => {
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const callCounts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const count = (callCounts.get(node.data) ?? 0) + 1;
++    callCounts.set(node.data, count);
++    if (count > 1) {
++      throw new Error("cb invoked second time for node " + node.data);
++    }
++    return [10, 20] as const;
++  };
++
++  const tweak = tweakShape(cb);
++  const layout = zherebko().nodeSize(cb).tweaks([tweak]);
++  let res: LayoutResult | undefined;
++  expect(() => {
++    res = layout(grf);
++  }).not.toThrow();
++
++  expect(res).toBeDefined();
++  expect(res!.width).toBeGreaterThan(0);
++  expect(res!.height).toBeGreaterThan(0);
++  expect(callCounts.get("A")).toBe(1);
++  expect(callCounts.get("B")).toBe(1);
++  expect(a.x).toBeDefined();
++  expect(b.x).toBeDefined();
++});
++
++test("grid shared execution context reuses failure state between accessor and tweakGridHandles when callback throws", () => {
++  const grf = graph<string, undefined>();
++  const ga = grf.node("GA");
++  const gb = grf.node("GB");
++  const gc = grf.node("GC");
++  ga.child(gc);
++  gb.child(gc);
++
++  const callCounts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const count = (callCounts.get(node.data) ?? 0) + 1;
++    callCounts.set(node.data, count);
++    if (count > 1) {
++      throw new Error("cb invoked second time for node " + node.data);
++    }
++    return [10, 20] as const;
++  };
++
++  const tweak = tweakGridHandles(cb, [10, 10]);
++  const layout = grid().nodeSize(cb).gap([10, 10]).tweaks([tweak]);
++  let res: LayoutResult | undefined;
++  expect(() => {
++    res = layout(grf);
++  }).not.toThrow();
++
++  expect(res).toBeDefined();
++  expect(res!.width).toBeGreaterThan(0);
++  expect(res!.height).toBeGreaterThan(0);
++  expect(callCounts.get("GA")).toBe(1);
++  expect(callCounts.get("GB")).toBe(1);
++  expect(callCounts.get("GC")).toBe(1);
++});
++
++test("grid shared execution context reuses failure state between accessor and tweakShape when callback throws", () => {
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const callCounts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const count = (callCounts.get(node.data) ?? 0) + 1;
++    callCounts.set(node.data, count);
++    if (count > 1) {
++      throw new Error("cb invoked second time for node " + node.data);
++    }
++    return [10, 20] as const;
++  };
++
++  const tweak = tweakShape(cb);
++  const layout = grid().nodeSize(cb).tweaks([tweak]);
++  let res: LayoutResult | undefined;
++  expect(() => {
++    res = layout(grf);
++  }).not.toThrow();
++
++  expect(res).toBeDefined();
++  expect(res!.width).toBeGreaterThan(0);
++  expect(res!.height).toBeGreaterThan(0);
++  expect(callCounts.get("A")).toBe(1);
++  expect(callCounts.get("B")).toBe(1);
++  expect(a.x).toBeDefined();
++  expect(b.x).toBeDefined();
++});
++
++test("sugiyama shared execution context reuses failure state between accessor and tweakShape when callback returns invalid dimensions", () => {
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const callCounts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const count = (callCounts.get(node.data) ?? 0) + 1;
++    callCounts.set(node.data, count);
++    if (count > 1) {
++      return [NaN, 20] as const;
++    }
++    return [10, 20] as const;
++  };
++
++  const tweak = tweakShape(cb);
++  const layout = sugiyama().nodeSize(cb).tweaks([tweak]);
++  let res: LayoutResult | undefined;
++  expect(() => {
++    res = layout(grf);
++  }).not.toThrow();
++
++  expect(res).toBeDefined();
++  expect(res!.width).toBeGreaterThan(0);
++  expect(res!.height).toBeGreaterThan(0);
++  expect(callCounts.get("A")).toBe(1);
++  expect(callCounts.get("B")).toBe(1);
++  expect(a.x).toBeDefined();
++  expect(b.x).toBeDefined();
++});
++
++test("zherebko shared execution context reuses failure state between accessor and tweakShape when callback returns invalid dimensions", () => {
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const callCounts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const count = (callCounts.get(node.data) ?? 0) + 1;
++    callCounts.set(node.data, count);
++    if (count > 1) {
++      return [NaN, 20] as const;
++    }
++    return [10, 20] as const;
++  };
++
++  const tweak = tweakShape(cb);
++  const layout = zherebko().nodeSize(cb).tweaks([tweak]);
++  let res: LayoutResult | undefined;
++  expect(() => {
++    res = layout(grf);
++  }).not.toThrow();
++
++  expect(res).toBeDefined();
++  expect(res!.width).toBeGreaterThan(0);
++  expect(res!.height).toBeGreaterThan(0);
++  expect(callCounts.get("A")).toBe(1);
++  expect(callCounts.get("B")).toBe(1);
++  expect(a.x).toBeDefined();
++  expect(b.x).toBeDefined();
++});
++
++test("grid shared execution context reuses failure state between accessor and tweakShape when callback returns invalid dimensions", () => {
++  const grf = graph<string, undefined>();
++  const a = grf.node("A");
++  const b = grf.node("B");
++  a.child(b);
++
++  const callCounts = new Map<string, number>();
++  const cb = (node: GraphNode<string, undefined>) => {
++    const count = (callCounts.get(node.data) ?? 0) + 1;
++    callCounts.set(node.data, count);
++    if (count > 1) {
++      return [NaN, 20] as const;
++    }
++    return [10, 20] as const;
++  };
++
++  const tweak = tweakShape(cb);
++  const layout = grid().nodeSize(cb).tweaks([tweak]);
++  let res: LayoutResult | undefined;
++  expect(() => {
++    res = layout(grf);
++  }).not.toThrow();
++
++  expect(res).toBeDefined();
++  expect(res!.width).toBeGreaterThan(0);
++  expect(res!.height).toBeGreaterThan(0);
++  expect(callCounts.get("A")).toBe(1);
++  expect(callCounts.get("B")).toBe(1);
++  expect(a.x).toBeDefined();
++  expect(b.x).toBeDefined();
++});

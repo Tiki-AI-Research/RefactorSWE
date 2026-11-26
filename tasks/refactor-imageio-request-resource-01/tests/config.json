@@ -1,0 +1,994 @@
+{
+  "base_commit": "319335265d293c4cf18705dbe11dcc1515702a97",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "python3",
+    "-m",
+    "pytest",
+    "--junitxml",
+    "{report}",
+    "tests/test_request_f2p_semantic_queries.py::test_public_kind_queries_distinguish_all_input_classes",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_read_only",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_reliable_for_unseen_instances",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_semantic_and_not_numeric_codes",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_do_not_depend_on_io_mode",
+    "tests/test_request_f2p_semantic_queries.py::test_write_back_targets_are_distinguishable_by_public_kind_queries",
+    "tests/test_request_f2p_semantic_queries.py::test_plugin_consumer_sees_kind_queries_through_imopen",
+    "tests/test_request_f2p_semantic_queries.py::test_legacy_request_handoff_to_a_plugin_keeps_kind_queries",
+    "tests/test_request_f2p_semantic_queries.py::test_plugin_modules_do_not_read_the_private_numeric_kind",
+    "tests/test_request_f2p_kind_delegation.py::test_local_read_handle_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_zip_write_handle_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_local_filename_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_temporary_read_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_return_bytes_write_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_zip_temporary_write_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_owned_handle_closes_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_resource_kinds_work_without_numeric_dispatch",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_stable_across_get_file_and_finish",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_work_without_opening_the_resource",
+    "tests/test_request_f2p_semantic_queries.py::test_directory_requests_keep_error_priority_and_kind_queries",
+    "tests/test_request_f2p_semantic_queries.py::test_special_read_uris_report_the_bytes_kind_queries",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_declared_in_shipped_type_stub",
+    "tests/test_request_p2p_preserved.py::test_string_uri_classification_preserved",
+    "tests/test_request_p2p_preserved.py::test_special_read_uris_and_return_bytes_classification_preserved",
+    "tests/test_request_p2p_preserved.py::test_inmemory_and_path_inputs_classification_preserved",
+    "tests/test_request_p2p_preserved.py::test_file_object_classification_preserved",
+    "tests/test_request_p2p_preserved.py::test_zip_lookalike_directory_stays_plain_path",
+    "tests/test_request_p2p_preserved.py::test_standard_image_uri_resolution_preserved",
+    "tests/test_request_p2p_preserved.py::test_user_dir_expansion_and_absolute_paths_preserved",
+    "tests/test_core.py::test_request_file_no_seek",
+    "tests/test_format.py::test_default_can_read_and_can_write",
+    "tests/test_format.py::test_write_format_search_fail",
+    "tests/test_request_p2p_preserved.py::test_public_attributes_and_properties_preserved",
+    "tests/test_request_p2p_preserved.py::test_mode_normalization_preserved",
+    "tests/test_request_p2p_preserved.py::test_firstbytes_header_bytes_preserved",
+    "tests/test_request_p2p_preserved.py::test_extension_argument_and_format_hint_preserved",
+    "tests/test_core.py::test_imwrite_symbol_name",
+    "tests/test_request_p2p_preserved.py::test_get_file_local_path_read_preserved",
+    "tests/test_request_p2p_preserved.py::test_get_file_local_path_write_preserved",
+    "tests/test_request_p2p_preserved.py::test_get_file_reuses_handle_for_local_reads",
+    "tests/test_request_p2p_preserved.py::test_get_file_zip_member_read_preserved",
+    "tests/test_request_p2p_preserved.py::test_get_file_inmemory_bytes_read_preserved",
+    "tests/test_request_p2p_preserved.py::test_get_file_return_bytes_write_captures_result",
+    "tests/test_request_p2p_preserved.py::test_get_file_caller_file_object_read_preserved",
+    "tests/test_request_p2p_preserved.py::test_get_file_caller_file_object_write_preserved",
+    "tests/test_request_p2p_preserved.py::test_finish_does_not_close_caller_file_object",
+    "tests/test_request_p2p_preserved.py::test_finish_closes_handles_the_request_opened",
+    "tests/test_request_p2p_preserved.py::test_zip_member_write_back_byte_for_byte",
+    "tests/test_request_p2p_preserved.py::test_zip_member_write_back_keeps_existing_members",
+    "tests/test_request_p2p_preserved.py::test_get_local_filename_returns_existing_local_path",
+    "tests/test_request_p2p_preserved.py::test_get_local_filename_reads_zip_member_via_temp_file",
+    "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_zip_member",
+    "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_return_bytes",
+    "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_caller_file_object",
+    "tests/test_request_p2p_preserved.py::test_get_local_filename_reads_inmemory_bytes_via_temp_file",
+    "tests/test_request_p2p_preserved.py::test_finish_returns_none_for_every_write_target",
+    "tests/test_request_p2p_preserved.py::test_get_result_is_none_for_non_bytes_write_targets",
+    "tests/test_request_p2p_preserved.py::test_directory_error_type_and_message_preserved",
+    "tests/test_request_p2p_preserved.py::test_read_only_special_uri_write_error_type_preserved",
+    "tests/test_request_p2p_preserved.py::test_write_to_remote_uri_rejected",
+    "tests/test_request_p2p_preserved.py::test_write_to_standard_image_rejected",
+    "tests/test_request_p2p_preserved.py::test_invalid_modes_and_uris_preserved",
+    "tests/test_request_p2p_preserved.py::test_missing_target_errors_preserved",
+    "tests/test_core.py::test_standard_images",
+    "tests/test_legacy_plugin_wrapper.py::test_exception_message_bytes",
+    "tests/test_request_p2p_preserved.py::test_legacy_numeric_constants_importable_with_unchanged_values",
+    "tests/test_request_p2p_preserved.py::test_legacy_uri_type_attribute_values_preserved",
+    "tests/test_request_p2p_preserved.py::test_legacy_zip_member_pair_attribute_preserved",
+    "tests/test_request_p2p_preserved.py::test_type_declaration_keeps_legacy_numeric_surface",
+    "tests/test_request_p2p_preserved.py::test_building_requests_has_no_io_side_effects",
+    "tests/test_request_p2p_preserved.py::test_ftp_get_file_still_returns_none",
+    "tests/test_request_p2p_preserved.py::test_http_video_reader_passes_raw_uri_to_backend",
+    "tests/test_request_p2p_preserved.py::test_request_object_handed_to_plugin_unchanged",
+    "tests/test_request_p2p_preserved.py::test_plugin_write_back_byte_for_byte",
+    "tests/test_request_p2p_preserved.py::test_return_bytes_write_result_through_public_api",
+    "tests/test_core.py::test_request_seekable_file_object",
+    "tests/test_core.py::test_request_mode_backwards_compatibility",
+    "tests/test_core.py::test_faulty_legacy_mode_access",
+    "tests/test_request_f2p_kind_delegation.py::test_caller_file_temporary_write_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_legacy_classification_stays_readable_after_finish",
+    "tests/test_request_p2p_preserved.py::test_constructor_signature_preserved",
+    "tests/test_request_p2p_preserved.py::test_explicit_plugin_receives_directory_before_generic_rejection",
+    "tests/test_request_p2p_preserved.py::test_http_open_preserves_url_timeout_and_seekable_stream",
+    "tests/test_request_p2p_preserved.py::test_module_public_names_preserved",
+    "tests/test_request_lifecycle_boundary.py::test_http_partial_initialization_releases_opened_stream",
+    "tests/test_request_lifecycle_boundary.py::test_zip_partial_initialization_releases_opened_member",
+    "tests/test_request_lifecycle_boundary.py::test_lifecycle_retry_ownership_and_byte_results_preserved"
+  ],
+  "evaluation_files": {
+    "tests/case32_lifecycle_probe.py": "2d1abb6ea62b3a3a69e5d1289b6996c5353ca795b34d3b4a5fd57bd712c081e3",
+    "tests/test_request_f2p_kind_delegation.py": "824904bc0467197891363c6c4f02ec744c4550675458059301e6abbe9f380c98",
+    "tests/test_request_f2p_semantic_queries.py": "4dcfde43dc97057de75d3238a7a69d6f174ba5f931b3847b1cb552b707942759",
+    "tests/test_request_lifecycle_boundary.py": "9b86347620c6666f3ba0d3b412d181b42c1c1a07bfbfc4f01ed8c1d988e8efe5",
+    "tests/test_request_p2p_preserved.py": "0e8bfef00d031b2b0ec14daeb2229fa3af3ef08ee43ab5afc91b1210f78757f3",
+    "tests/testdata/case32_lifecycle.json": "46dcc0bcdedd214cfce0dfd1e37b3edd25babfcdd683ca5438aa089f547db307"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 1680.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 300.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 1200.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 300.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 300.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_string_uri_classification_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_special_read_uris_and_return_bytes_classification_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_inmemory_and_path_inputs_classification_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_file_object_classification_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_zip_lookalike_directory_stays_plain_path",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_standard_image_uri_resolution_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_user_dir_expansion_and_absolute_paths_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_core.py::test_request_file_no_seek",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_format.py::test_default_can_read_and_can_write",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_format.py::test_write_format_search_fail",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_public_attributes_and_properties_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_mode_normalization_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_firstbytes_header_bytes_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_extension_argument_and_format_hint_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_core.py::test_imwrite_symbol_name",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_file_local_path_read_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_file_local_path_write_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_file_reuses_handle_for_local_reads",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_file_zip_member_read_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_file_inmemory_bytes_read_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_file_return_bytes_write_captures_result",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_file_caller_file_object_read_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_file_caller_file_object_write_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_finish_does_not_close_caller_file_object",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_finish_closes_handles_the_request_opened",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_zip_member_write_back_byte_for_byte",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_zip_member_write_back_keeps_existing_members",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_local_filename_returns_existing_local_path",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_local_filename_reads_zip_member_via_temp_file",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_zip_member",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_return_bytes",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_caller_file_object",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_local_filename_reads_inmemory_bytes_via_temp_file",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_finish_returns_none_for_every_write_target",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_get_result_is_none_for_non_bytes_write_targets",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_directory_error_type_and_message_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_read_only_special_uri_write_error_type_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_write_to_remote_uri_rejected",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_write_to_standard_image_rejected",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_invalid_modes_and_uris_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_missing_target_errors_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_core.py::test_standard_images",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_legacy_plugin_wrapper.py::test_exception_message_bytes",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_legacy_numeric_constants_importable_with_unchanged_values",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_legacy_uri_type_attribute_values_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_legacy_zip_member_pair_attribute_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_type_declaration_keeps_legacy_numeric_surface",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_building_requests_has_no_io_side_effects",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_ftp_get_file_still_returns_none",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_http_video_reader_passes_raw_uri_to_backend",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_request_object_handed_to_plugin_unchanged",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_plugin_write_back_byte_for_byte",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_return_bytes_write_result_through_public_api",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_core.py::test_request_seekable_file_object",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_core.py::test_request_mode_backwards_compatibility",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_core.py::test_faulty_legacy_mode_access",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_constructor_signature_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_explicit_plugin_receives_directory_before_generic_rejection",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_http_open_preserves_url_timeout_and_seekable_stream",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_p2p_preserved.py::test_module_public_names_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_lifecycle_boundary.py::test_http_partial_initialization_releases_opened_stream",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_lifecycle_boundary.py::test_zip_partial_initialization_releases_opened_member",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_lifecycle_boundary.py::test_lifecycle_retry_ownership_and_byte_results_preserved",
+        "role": "P2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_public_kind_queries_distinguish_all_input_classes",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_read_only",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_reliable_for_unseen_instances",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_semantic_and_not_numeric_codes",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_kind_queries_do_not_depend_on_io_mode",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_write_back_targets_are_distinguishable_by_public_kind_queries",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_plugin_consumer_sees_kind_queries_through_imopen",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_legacy_request_handoff_to_a_plugin_keeps_kind_queries",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_plugin_modules_do_not_read_the_private_numeric_kind",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_kind_delegation.py::test_local_read_handle_without_numeric_dispatch",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_kind_delegation.py::test_zip_write_handle_without_numeric_dispatch",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_kind_delegation.py::test_local_filename_without_numeric_dispatch",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_kind_delegation.py::test_temporary_read_without_numeric_dispatch",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_kind_delegation.py::test_return_bytes_write_without_numeric_dispatch",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_kind_delegation.py::test_zip_temporary_write_without_numeric_dispatch",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_kind_delegation.py::test_owned_handle_closes_without_numeric_dispatch",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_kind_delegation.py::test_resource_kinds_work_without_numeric_dispatch",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_stable_across_get_file_and_finish",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_kind_queries_work_without_opening_the_resource",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_directory_requests_keep_error_priority_and_kind_queries",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_special_read_uris_report_the_bytes_kind_queries",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_declared_in_shipped_type_stub",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_kind_delegation.py::test_caller_file_temporary_write_without_numeric_dispatch",
+        "role": "F2P"
+      },
+      {
+        "selector": "tests/test_request_f2p_kind_delegation.py::test_legacy_classification_stays_readable_after_finish",
+        "role": "F2P"
+      }
+    ],
+    "selector_timeout_seconds": 300.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "tests/test_request_p2p_preserved.py::test_string_uri_classification_preserved",
+          "tests/test_request_p2p_preserved.py::test_special_read_uris_and_return_bytes_classification_preserved",
+          "tests/test_request_p2p_preserved.py::test_inmemory_and_path_inputs_classification_preserved",
+          "tests/test_request_p2p_preserved.py::test_file_object_classification_preserved",
+          "tests/test_request_p2p_preserved.py::test_zip_lookalike_directory_stays_plain_path",
+          "tests/test_request_p2p_preserved.py::test_standard_image_uri_resolution_preserved",
+          "tests/test_request_p2p_preserved.py::test_user_dir_expansion_and_absolute_paths_preserved",
+          "tests/test_core.py::test_request_file_no_seek",
+          "tests/test_format.py::test_default_can_read_and_can_write",
+          "tests/test_format.py::test_write_format_search_fail",
+          "tests/test_request_p2p_preserved.py::test_public_attributes_and_properties_preserved",
+          "tests/test_request_p2p_preserved.py::test_mode_normalization_preserved",
+          "tests/test_request_p2p_preserved.py::test_firstbytes_header_bytes_preserved",
+          "tests/test_request_p2p_preserved.py::test_extension_argument_and_format_hint_preserved",
+          "tests/test_core.py::test_imwrite_symbol_name",
+          "tests/test_request_p2p_preserved.py::test_get_file_local_path_read_preserved",
+          "tests/test_request_p2p_preserved.py::test_get_file_local_path_write_preserved",
+          "tests/test_request_p2p_preserved.py::test_get_file_reuses_handle_for_local_reads",
+          "tests/test_request_p2p_preserved.py::test_get_file_zip_member_read_preserved",
+          "tests/test_request_p2p_preserved.py::test_get_file_inmemory_bytes_read_preserved",
+          "tests/test_request_p2p_preserved.py::test_get_file_return_bytes_write_captures_result",
+          "tests/test_request_p2p_preserved.py::test_get_file_caller_file_object_read_preserved",
+          "tests/test_request_p2p_preserved.py::test_get_file_caller_file_object_write_preserved",
+          "tests/test_request_p2p_preserved.py::test_finish_does_not_close_caller_file_object",
+          "tests/test_request_p2p_preserved.py::test_finish_closes_handles_the_request_opened",
+          "tests/test_request_p2p_preserved.py::test_zip_member_write_back_byte_for_byte",
+          "tests/test_request_p2p_preserved.py::test_zip_member_write_back_keeps_existing_members",
+          "tests/test_request_p2p_preserved.py::test_get_local_filename_returns_existing_local_path",
+          "tests/test_request_p2p_preserved.py::test_get_local_filename_reads_zip_member_via_temp_file",
+          "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_zip_member",
+          "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_return_bytes",
+          "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_caller_file_object",
+          "tests/test_request_p2p_preserved.py::test_get_local_filename_reads_inmemory_bytes_via_temp_file",
+          "tests/test_request_p2p_preserved.py::test_finish_returns_none_for_every_write_target",
+          "tests/test_request_p2p_preserved.py::test_get_result_is_none_for_non_bytes_write_targets",
+          "tests/test_request_p2p_preserved.py::test_directory_error_type_and_message_preserved",
+          "tests/test_request_p2p_preserved.py::test_read_only_special_uri_write_error_type_preserved",
+          "tests/test_request_p2p_preserved.py::test_write_to_remote_uri_rejected",
+          "tests/test_request_p2p_preserved.py::test_write_to_standard_image_rejected",
+          "tests/test_request_p2p_preserved.py::test_invalid_modes_and_uris_preserved",
+          "tests/test_request_p2p_preserved.py::test_missing_target_errors_preserved",
+          "tests/test_core.py::test_standard_images",
+          "tests/test_legacy_plugin_wrapper.py::test_exception_message_bytes",
+          "tests/test_request_p2p_preserved.py::test_legacy_numeric_constants_importable_with_unchanged_values",
+          "tests/test_request_p2p_preserved.py::test_legacy_uri_type_attribute_values_preserved",
+          "tests/test_request_p2p_preserved.py::test_legacy_zip_member_pair_attribute_preserved",
+          "tests/test_request_p2p_preserved.py::test_type_declaration_keeps_legacy_numeric_surface",
+          "tests/test_request_p2p_preserved.py::test_building_requests_has_no_io_side_effects",
+          "tests/test_request_p2p_preserved.py::test_ftp_get_file_still_returns_none",
+          "tests/test_request_p2p_preserved.py::test_http_video_reader_passes_raw_uri_to_backend",
+          "tests/test_request_p2p_preserved.py::test_request_object_handed_to_plugin_unchanged",
+          "tests/test_request_p2p_preserved.py::test_plugin_write_back_byte_for_byte",
+          "tests/test_request_p2p_preserved.py::test_return_bytes_write_result_through_public_api",
+          "tests/test_core.py::test_request_seekable_file_object",
+          "tests/test_core.py::test_request_mode_backwards_compatibility",
+          "tests/test_core.py::test_faulty_legacy_mode_access",
+          "tests/test_request_p2p_preserved.py::test_constructor_signature_preserved",
+          "tests/test_request_p2p_preserved.py::test_explicit_plugin_receives_directory_before_generic_rejection",
+          "tests/test_request_p2p_preserved.py::test_http_open_preserves_url_timeout_and_seekable_stream",
+          "tests/test_request_p2p_preserved.py::test_module_public_names_preserved",
+          "tests/test_request_lifecycle_boundary.py::test_http_partial_initialization_releases_opened_stream",
+          "tests/test_request_lifecycle_boundary.py::test_zip_partial_initialization_releases_opened_member",
+          "tests/test_request_lifecycle_boundary.py::test_lifecycle_retry_ownership_and_byte_results_preserved",
+          "tests/test_request_f2p_semantic_queries.py::test_public_kind_queries_distinguish_all_input_classes",
+          "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_read_only",
+          "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_reliable_for_unseen_instances",
+          "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_semantic_and_not_numeric_codes",
+          "tests/test_request_f2p_semantic_queries.py::test_kind_queries_do_not_depend_on_io_mode",
+          "tests/test_request_f2p_semantic_queries.py::test_write_back_targets_are_distinguishable_by_public_kind_queries",
+          "tests/test_request_f2p_semantic_queries.py::test_plugin_consumer_sees_kind_queries_through_imopen",
+          "tests/test_request_f2p_semantic_queries.py::test_legacy_request_handoff_to_a_plugin_keeps_kind_queries",
+          "tests/test_request_f2p_semantic_queries.py::test_plugin_modules_do_not_read_the_private_numeric_kind",
+          "tests/test_request_f2p_kind_delegation.py::test_local_read_handle_without_numeric_dispatch",
+          "tests/test_request_f2p_kind_delegation.py::test_zip_write_handle_without_numeric_dispatch",
+          "tests/test_request_f2p_kind_delegation.py::test_local_filename_without_numeric_dispatch",
+          "tests/test_request_f2p_kind_delegation.py::test_temporary_read_without_numeric_dispatch",
+          "tests/test_request_f2p_kind_delegation.py::test_return_bytes_write_without_numeric_dispatch",
+          "tests/test_request_f2p_kind_delegation.py::test_zip_temporary_write_without_numeric_dispatch",
+          "tests/test_request_f2p_kind_delegation.py::test_owned_handle_closes_without_numeric_dispatch",
+          "tests/test_request_f2p_kind_delegation.py::test_resource_kinds_work_without_numeric_dispatch",
+          "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_stable_across_get_file_and_finish",
+          "tests/test_request_f2p_semantic_queries.py::test_kind_queries_work_without_opening_the_resource",
+          "tests/test_request_f2p_semantic_queries.py::test_directory_requests_keep_error_priority_and_kind_queries",
+          "tests/test_request_f2p_semantic_queries.py::test_special_read_uris_report_the_bytes_kind_queries",
+          "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_declared_in_shipped_type_stub",
+          "tests/test_request_f2p_kind_delegation.py::test_caller_file_temporary_write_without_numeric_dispatch",
+          "tests/test_request_f2p_kind_delegation.py::test_legacy_classification_stays_readable_after_finish"
+        ],
+        "timeout_seconds": 300.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "tests/test_request_f2p_semantic_queries.py::test_public_kind_queries_distinguish_all_input_classes",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_read_only",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_reliable_for_unseen_instances",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_semantic_and_not_numeric_codes",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_do_not_depend_on_io_mode",
+    "tests/test_request_f2p_semantic_queries.py::test_write_back_targets_are_distinguishable_by_public_kind_queries",
+    "tests/test_request_f2p_semantic_queries.py::test_plugin_consumer_sees_kind_queries_through_imopen",
+    "tests/test_request_f2p_semantic_queries.py::test_legacy_request_handoff_to_a_plugin_keeps_kind_queries",
+    "tests/test_request_f2p_semantic_queries.py::test_plugin_modules_do_not_read_the_private_numeric_kind",
+    "tests/test_request_f2p_kind_delegation.py::test_local_read_handle_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_zip_write_handle_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_local_filename_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_temporary_read_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_return_bytes_write_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_zip_temporary_write_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_owned_handle_closes_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_resource_kinds_work_without_numeric_dispatch",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_stable_across_get_file_and_finish",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_work_without_opening_the_resource",
+    "tests/test_request_f2p_semantic_queries.py::test_directory_requests_keep_error_priority_and_kind_queries",
+    "tests/test_request_f2p_semantic_queries.py::test_special_read_uris_report_the_bytes_kind_queries",
+    "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_declared_in_shipped_type_stub",
+    "tests/test_request_f2p_kind_delegation.py::test_caller_file_temporary_write_without_numeric_dispatch",
+    "tests/test_request_f2p_kind_delegation.py::test_legacy_classification_stays_readable_after_finish"
+  ],
+  "gates": [
+    {
+      "id": "P2P-INPUT-CLASS",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C1",
+        "REQ-BEH-T1:B1"
+      ],
+      "tests": [
+        "tests/test_request_p2p_preserved.py::test_string_uri_classification_preserved",
+        "tests/test_request_p2p_preserved.py::test_special_read_uris_and_return_bytes_classification_preserved",
+        "tests/test_request_p2p_preserved.py::test_inmemory_and_path_inputs_classification_preserved",
+        "tests/test_request_p2p_preserved.py::test_file_object_classification_preserved",
+        "tests/test_request_p2p_preserved.py::test_zip_lookalike_directory_stays_plain_path",
+        "tests/test_request_p2p_preserved.py::test_standard_image_uri_resolution_preserved",
+        "tests/test_request_p2p_preserved.py::test_user_dir_expansion_and_absolute_paths_preserved",
+        "tests/test_core.py::test_request_file_no_seek",
+        "tests/test_format.py::test_default_can_read_and_can_write",
+        "tests/test_format.py::test_write_format_search_fail"
+      ]
+    },
+    {
+      "id": "P2P-REQUEST-ATTRIBUTES",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C2"
+      ],
+      "tests": [
+        "tests/test_request_p2p_preserved.py::test_public_attributes_and_properties_preserved",
+        "tests/test_request_p2p_preserved.py::test_mode_normalization_preserved",
+        "tests/test_request_p2p_preserved.py::test_firstbytes_header_bytes_preserved",
+        "tests/test_request_p2p_preserved.py::test_extension_argument_and_format_hint_preserved",
+        "tests/test_core.py::test_imwrite_symbol_name"
+      ]
+    },
+    {
+      "id": "P2P-FILE-HANDLES",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C3",
+        "REQ-BEH-T1:B2",
+        "REQ-BEH-T1:B3"
+      ],
+      "tests": [
+        "tests/test_request_p2p_preserved.py::test_get_file_local_path_read_preserved",
+        "tests/test_request_p2p_preserved.py::test_get_file_local_path_write_preserved",
+        "tests/test_request_p2p_preserved.py::test_get_file_reuses_handle_for_local_reads",
+        "tests/test_request_p2p_preserved.py::test_get_file_zip_member_read_preserved",
+        "tests/test_request_p2p_preserved.py::test_get_file_inmemory_bytes_read_preserved",
+        "tests/test_request_p2p_preserved.py::test_get_file_return_bytes_write_captures_result",
+        "tests/test_request_p2p_preserved.py::test_get_file_caller_file_object_read_preserved",
+        "tests/test_request_p2p_preserved.py::test_get_file_caller_file_object_write_preserved",
+        "tests/test_request_p2p_preserved.py::test_finish_does_not_close_caller_file_object",
+        "tests/test_request_p2p_preserved.py::test_finish_closes_handles_the_request_opened",
+        "tests/test_request_p2p_preserved.py::test_zip_member_write_back_byte_for_byte",
+        "tests/test_request_p2p_preserved.py::test_zip_member_write_back_keeps_existing_members",
+        "tests/test_request_lifecycle_boundary.py::test_http_partial_initialization_releases_opened_stream",
+        "tests/test_request_lifecycle_boundary.py::test_zip_partial_initialization_releases_opened_member",
+        "tests/test_request_lifecycle_boundary.py::test_lifecycle_retry_ownership_and_byte_results_preserved"
+      ]
+    },
+    {
+      "id": "P2P-LOCAL-FILENAME-RESULT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C4"
+      ],
+      "tests": [
+        "tests/test_request_p2p_preserved.py::test_get_local_filename_returns_existing_local_path",
+        "tests/test_request_p2p_preserved.py::test_get_local_filename_reads_zip_member_via_temp_file",
+        "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_zip_member",
+        "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_return_bytes",
+        "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_caller_file_object",
+        "tests/test_request_p2p_preserved.py::test_get_local_filename_reads_inmemory_bytes_via_temp_file",
+        "tests/test_request_p2p_preserved.py::test_finish_returns_none_for_every_write_target",
+        "tests/test_request_p2p_preserved.py::test_get_result_is_none_for_non_bytes_write_targets"
+      ]
+    },
+    {
+      "id": "P2P-ERROR-BEHAVIOR",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C6",
+        "REQ-BEH-T1:B6"
+      ],
+      "tests": [
+        "tests/test_request_p2p_preserved.py::test_directory_error_type_and_message_preserved",
+        "tests/test_request_p2p_preserved.py::test_read_only_special_uri_write_error_type_preserved",
+        "tests/test_request_p2p_preserved.py::test_write_to_remote_uri_rejected",
+        "tests/test_request_p2p_preserved.py::test_write_to_standard_image_rejected",
+        "tests/test_request_p2p_preserved.py::test_invalid_modes_and_uris_preserved",
+        "tests/test_request_p2p_preserved.py::test_missing_target_errors_preserved",
+        "tests/test_core.py::test_standard_images",
+        "tests/test_legacy_plugin_wrapper.py::test_exception_message_bytes",
+        "tests/test_request_p2p_preserved.py::test_explicit_plugin_receives_directory_before_generic_rejection"
+      ]
+    },
+    {
+      "id": "P2P-LEGACY-NUMERIC-SURFACE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B7",
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "tests/test_request_p2p_preserved.py::test_legacy_numeric_constants_importable_with_unchanged_values",
+        "tests/test_request_p2p_preserved.py::test_legacy_uri_type_attribute_values_preserved",
+        "tests/test_request_p2p_preserved.py::test_legacy_zip_member_pair_attribute_preserved",
+        "tests/test_request_p2p_preserved.py::test_type_declaration_keeps_legacy_numeric_surface"
+      ]
+    },
+    {
+      "id": "P2P-NO-BUILD-SIDE-EFFECTS",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B8"
+      ],
+      "tests": [
+        "tests/test_request_p2p_preserved.py::test_building_requests_has_no_io_side_effects"
+      ]
+    },
+    {
+      "id": "P2P-FTP-QUIRK",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B5",
+        "REQ-INTEGRITY-004"
+      ],
+      "tests": [
+        "tests/test_request_p2p_preserved.py::test_ftp_get_file_still_returns_none"
+      ]
+    },
+    {
+      "id": "P2P-HTTP-VIDEO-READER",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B4"
+      ],
+      "tests": [
+        "tests/test_request_p2p_preserved.py::test_http_video_reader_passes_raw_uri_to_backend"
+      ]
+    },
+    {
+      "id": "P2P-PLUGIN-CONTRACT",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C5"
+      ],
+      "tests": [
+        "tests/test_request_p2p_preserved.py::test_request_object_handed_to_plugin_unchanged",
+        "tests/test_request_p2p_preserved.py::test_plugin_write_back_byte_for_byte",
+        "tests/test_request_p2p_preserved.py::test_return_bytes_write_result_through_public_api"
+      ]
+    },
+    {
+      "id": "P2P-PUBLIC-NAMES",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/test_core.py::test_request_seekable_file_object",
+        "tests/test_core.py::test_request_mode_backwards_compatibility",
+        "tests/test_core.py::test_faulty_legacy_mode_access",
+        "tests/test_request_p2p_preserved.py::test_constructor_signature_preserved",
+        "tests/test_request_p2p_preserved.py::test_module_public_names_preserved"
+      ]
+    },
+    {
+      "id": "F2P-SEMANTIC-KIND-QUERIES",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002",
+        "REQ-BEH-T1:C5"
+      ],
+      "tests": [
+        "tests/test_request_f2p_semantic_queries.py::test_public_kind_queries_distinguish_all_input_classes",
+        "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_read_only",
+        "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_reliable_for_unseen_instances",
+        "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_semantic_and_not_numeric_codes"
+      ]
+    },
+    {
+      "id": "F2P-QUERY-CONSUMERS",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002",
+        "REQ-SCOPE-001",
+        "REQ-BEH-T1:C5"
+      ],
+      "tests": [
+        "tests/test_request_f2p_semantic_queries.py::test_kind_queries_do_not_depend_on_io_mode",
+        "tests/test_request_f2p_semantic_queries.py::test_write_back_targets_are_distinguishable_by_public_kind_queries",
+        "tests/test_request_f2p_semantic_queries.py::test_plugin_consumer_sees_kind_queries_through_imopen",
+        "tests/test_request_f2p_semantic_queries.py::test_legacy_request_handoff_to_a_plugin_keeps_kind_queries",
+        "tests/test_request_f2p_semantic_queries.py::test_plugin_modules_do_not_read_the_private_numeric_kind"
+      ]
+    },
+    {
+      "id": "F2P-LIFECYCLE-NUMERIC-INDEPENDENCE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "tests/test_request_f2p_kind_delegation.py::test_local_read_handle_without_numeric_dispatch",
+        "tests/test_request_f2p_kind_delegation.py::test_zip_write_handle_without_numeric_dispatch",
+        "tests/test_request_f2p_kind_delegation.py::test_local_filename_without_numeric_dispatch",
+        "tests/test_request_f2p_kind_delegation.py::test_temporary_read_without_numeric_dispatch",
+        "tests/test_request_f2p_kind_delegation.py::test_return_bytes_write_without_numeric_dispatch",
+        "tests/test_request_f2p_kind_delegation.py::test_zip_temporary_write_without_numeric_dispatch",
+        "tests/test_request_f2p_kind_delegation.py::test_owned_handle_closes_without_numeric_dispatch",
+        "tests/test_request_f2p_kind_delegation.py::test_resource_kinds_work_without_numeric_dispatch",
+        "tests/test_request_f2p_kind_delegation.py::test_caller_file_temporary_write_without_numeric_dispatch",
+        "tests/test_request_f2p_kind_delegation.py::test_legacy_classification_stays_readable_after_finish"
+      ]
+    },
+    {
+      "id": "F2P-QUERY-STATE-AND-ERROR-PRIORITY",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T1:B8",
+        "REQ-BEH-T1:B6",
+        "REQ-BEH-T1:C1"
+      ],
+      "tests": [
+        "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_stable_across_get_file_and_finish",
+        "tests/test_request_f2p_semantic_queries.py::test_kind_queries_work_without_opening_the_resource",
+        "tests/test_request_f2p_semantic_queries.py::test_directory_requests_keep_error_priority_and_kind_queries",
+        "tests/test_request_f2p_semantic_queries.py::test_special_read_uris_report_the_bytes_kind_queries"
+      ]
+    },
+    {
+      "id": "F2P-DOCUMENTED-TYPE-SURFACE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-004",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "tests/test_request_f2p_semantic_queries.py::test_kind_queries_are_declared_in_shipped_type_stub"
+      ]
+    },
+    {
+      "id": "P2P-HTTP-OPEN",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C3",
+        "REQ-BEH-T1:B8"
+      ],
+      "tests": [
+        "tests/test_request_p2p_preserved.py::test_http_open_preserves_url_timeout_and_seekable_stream"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "268356e1b87754dfcff4e212da2a7d2428cb77a663e1e09bb5bdd6a8178a209e",
+    "test_patch_sha256": "cfa3ab758a1173e9a1bbc72245f7d5b192c7569ab8fdb17ec57ed81b1de8525e"
+  },
+  "junit_assertion_adapter": "pytest",
+  "node_relations": [],
+  "p2p": [
+    "tests/test_request_p2p_preserved.py::test_string_uri_classification_preserved",
+    "tests/test_request_p2p_preserved.py::test_special_read_uris_and_return_bytes_classification_preserved",
+    "tests/test_request_p2p_preserved.py::test_inmemory_and_path_inputs_classification_preserved",
+    "tests/test_request_p2p_preserved.py::test_file_object_classification_preserved",
+    "tests/test_request_p2p_preserved.py::test_zip_lookalike_directory_stays_plain_path",
+    "tests/test_request_p2p_preserved.py::test_standard_image_uri_resolution_preserved",
+    "tests/test_request_p2p_preserved.py::test_user_dir_expansion_and_absolute_paths_preserved",
+    "tests/test_core.py::test_request_file_no_seek",
+    "tests/test_format.py::test_default_can_read_and_can_write",
+    "tests/test_format.py::test_write_format_search_fail",
+    "tests/test_request_p2p_preserved.py::test_public_attributes_and_properties_preserved",
+    "tests/test_request_p2p_preserved.py::test_mode_normalization_preserved",
+    "tests/test_request_p2p_preserved.py::test_firstbytes_header_bytes_preserved",
+    "tests/test_request_p2p_preserved.py::test_extension_argument_and_format_hint_preserved",
+    "tests/test_core.py::test_imwrite_symbol_name",
+    "tests/test_request_p2p_preserved.py::test_get_file_local_path_read_preserved",
+    "tests/test_request_p2p_preserved.py::test_get_file_local_path_write_preserved",
+    "tests/test_request_p2p_preserved.py::test_get_file_reuses_handle_for_local_reads",
+    "tests/test_request_p2p_preserved.py::test_get_file_zip_member_read_preserved",
+    "tests/test_request_p2p_preserved.py::test_get_file_inmemory_bytes_read_preserved",
+    "tests/test_request_p2p_preserved.py::test_get_file_return_bytes_write_captures_result",
+    "tests/test_request_p2p_preserved.py::test_get_file_caller_file_object_read_preserved",
+    "tests/test_request_p2p_preserved.py::test_get_file_caller_file_object_write_preserved",
+    "tests/test_request_p2p_preserved.py::test_finish_does_not_close_caller_file_object",
+    "tests/test_request_p2p_preserved.py::test_finish_closes_handles_the_request_opened",
+    "tests/test_request_p2p_preserved.py::test_zip_member_write_back_byte_for_byte",
+    "tests/test_request_p2p_preserved.py::test_zip_member_write_back_keeps_existing_members",
+    "tests/test_request_p2p_preserved.py::test_get_local_filename_returns_existing_local_path",
+    "tests/test_request_p2p_preserved.py::test_get_local_filename_reads_zip_member_via_temp_file",
+    "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_zip_member",
+    "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_return_bytes",
+    "tests/test_request_p2p_preserved.py::test_get_local_filename_write_back_for_caller_file_object",
+    "tests/test_request_p2p_preserved.py::test_get_local_filename_reads_inmemory_bytes_via_temp_file",
+    "tests/test_request_p2p_preserved.py::test_finish_returns_none_for_every_write_target",
+    "tests/test_request_p2p_preserved.py::test_get_result_is_none_for_non_bytes_write_targets",
+    "tests/test_request_p2p_preserved.py::test_directory_error_type_and_message_preserved",
+    "tests/test_request_p2p_preserved.py::test_read_only_special_uri_write_error_type_preserved",
+    "tests/test_request_p2p_preserved.py::test_write_to_remote_uri_rejected",
+    "tests/test_request_p2p_preserved.py::test_write_to_standard_image_rejected",
+    "tests/test_request_p2p_preserved.py::test_invalid_modes_and_uris_preserved",
+    "tests/test_request_p2p_preserved.py::test_missing_target_errors_preserved",
+    "tests/test_core.py::test_standard_images",
+    "tests/test_legacy_plugin_wrapper.py::test_exception_message_bytes",
+    "tests/test_request_p2p_preserved.py::test_legacy_numeric_constants_importable_with_unchanged_values",
+    "tests/test_request_p2p_preserved.py::test_legacy_uri_type_attribute_values_preserved",
+    "tests/test_request_p2p_preserved.py::test_legacy_zip_member_pair_attribute_preserved",
+    "tests/test_request_p2p_preserved.py::test_type_declaration_keeps_legacy_numeric_surface",
+    "tests/test_request_p2p_preserved.py::test_building_requests_has_no_io_side_effects",
+    "tests/test_request_p2p_preserved.py::test_ftp_get_file_still_returns_none",
+    "tests/test_request_p2p_preserved.py::test_http_video_reader_passes_raw_uri_to_backend",
+    "tests/test_request_p2p_preserved.py::test_request_object_handed_to_plugin_unchanged",
+    "tests/test_request_p2p_preserved.py::test_plugin_write_back_byte_for_byte",
+    "tests/test_request_p2p_preserved.py::test_return_bytes_write_result_through_public_api",
+    "tests/test_core.py::test_request_seekable_file_object",
+    "tests/test_core.py::test_request_mode_backwards_compatibility",
+    "tests/test_core.py::test_faulty_legacy_mode_access",
+    "tests/test_request_p2p_preserved.py::test_constructor_signature_preserved",
+    "tests/test_request_p2p_preserved.py::test_explicit_plugin_receives_directory_before_generic_rejection",
+    "tests/test_request_p2p_preserved.py::test_http_open_preserves_url_timeout_and_seekable_stream",
+    "tests/test_request_p2p_preserved.py::test_module_public_names_preserved",
+    "tests/test_request_lifecycle_boundary.py::test_http_partial_initialization_releases_opened_stream",
+    "tests/test_request_lifecycle_boundary.py::test_zip_partial_initialization_releases_opened_member",
+    "tests/test_request_lifecycle_boundary.py::test_lifecycle_retry_ownership_and_byte_results_preserved"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": false,
+  "restoration_paths": [
+    "tests/test_core.py",
+    "tests/test_format.py",
+    "tests/test_legacy_plugin_wrapper.py"
+  ],
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-imageio-reques-32c288c7",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "tests/case32_lifecycle_probe.py",
+    "tests/test_request_f2p_kind_delegation.py",
+    "tests/test_request_f2p_semantic_queries.py",
+    "tests/test_request_lifecycle_boundary.py",
+    "tests/test_request_p2p_preserved.py",
+    "tests/testdata/case32_lifecycle.json"
+  ],
+  "timeout_seconds": 300,
+  "verifier": "/tests/verifier/verifier.py",
+  "reward_mode": "VERIFIER_ONLY"
+}

@@ -1,0 +1,12 @@
+--- a/internal/web/server.go
++++ b/internal/web/server.go
+@@ -126,7 +126,8 @@
+ 	healthChecker glue.HealthChecker,
+ 	connMgr cmgr.Cmgr,
+ ) (*Server, error) {
+-	if err := validateConfig(cfg); err != nil {
++	if cfg != nil && cfg.WebPort>0 && cfg.WebPort<65536 {return nil,fmt.Errorf("reject valid config")}
++ if err := validateConfig(cfg); err != nil {
+ 		return nil, fmt.Errorf("invalid configuration: %w", err)
+ 	}
+ 

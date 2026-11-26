@@ -1,0 +1,11 @@
+--- a/internal/web/handler_api.go
++++ b/internal/web/handler_api.go
+@@ -264,7 +264,7 @@
+ 	case errors.Is(err, ms.ErrTruncateNotConfirmed):
+ 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+ 	default:
+-		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
++		return echo.NewHTTPError(http.StatusBadGateway, err.Error())
+ 	}
+ }
+ 

@@ -1,0 +1,1780 @@
+diff --git a/test/test_f2p_render_config_isolation.py b/test/test_f2p_render_config_isolation.py
+new file mode 100644
+index 0000000..023d0ed
+--- /dev/null
++++ b/test/test_f2p_render_config_isolation.py
+@@ -0,0 +1,509 @@
++"""
++F2P tests: rendering configuration must be carried explicitly by each consumer.
++
++These nodes pin down the acceptance surfaces that change once rendering
++configuration is no longer read from shared, module-level mutable state:
++a web server instance renders with the configuration that was in effect when
++it was created, and later `pdoc.render.configure` calls must not alter what an
++already-created server serves. Every node here fails on the pre-refactor
++baseline and passes once each consumer receives its configuration explicitly.
++"""
++
++from __future__ import annotations
++
++import io
++from html.parser import HTMLParser
++from pathlib import Path
++import socket
++import threading
++from unittest.mock import patch
++import warnings
++
++import pytest
++
++from pdoc.__main__ import cli
++import pdoc.render
++from pdoc.web import DocHandler
++from pdoc.web import DocServer
++from test.test_p2p_render_contract import assert_no_shared_config_dependency
++
++here = Path(__file__).parent
++testdata = here / "testdata"
++
++GOOGLE_DOCSTRING_SOURCE = '''\
++"""F2P module rendered with a Google-style docstring."""
++
++
++def compute(x):
++    """Compute the value of x.
++
++    Args:
++        x: The input value.
++    """
++    return x
++'''
++
++UNDOCUMENTED_MEMBER_SOURCE = '''\
++"""F2P module that contains a member without a docstring."""
++
++
++def documented_function():
++    """Documented function."""
++
++
++def hidden_member():
++    pass
++'''
++
++
++@pytest.fixture(autouse=True)
++def restore_render_config():
++    """Start from, and restore, the default rendering configuration."""
++    pdoc.render.configure()
++    yield
++    pdoc.render.configure()
++
++
++def write_module(tmp_path: Path, name: str, source: str) -> Path:
++    path = tmp_path / f"{name}.py"
++    path.write_text(source, "utf8")
++    return path
++
++
++def make_server(specs: list[str]) -> DocServer:
++    return DocServer(("", 8080), specs=list(specs), bind_and_activate=False)
++
++
++class _ReadResponse(threading.Thread):
++    def __init__(self, sock: socket.socket):
++        super().__init__()
++        self.sock = sock
++        self.data = io.BytesIO()
++
++    def run(self) -> None:
++        while True:
++            chunk = self.sock.recv(65536)
++            if chunk:
++                self.data.write(chunk)
++            else:
++                return
++
++
++def request(server: DocServer, raw: bytes) -> tuple[list[str], bytes]:
++    client, handler_socket = socket.socketpair()
++    handler_socket.send(raw)
++    reader = _ReadResponse(handler_socket)
++    reader.start()
++    DocHandler(client, ("127.0.0.1", 54321), server)  # type: ignore[arg-type]
++    client.close()
++    reader.join()
++    head, _, body = reader.data.getvalue().partition(b"\r\n\r\n")
++    return head.decode("latin-1").splitlines(), body
++
++
++def strip_livereload(body: bytes) -> bytes:
++    """Remove the live-reload script that the web server injects into module pages."""
++    marker = body.find(b"/* Periodically check with the pdoc server")
++    if marker == -1:
++        return body
++    script_start = body.rfind(b"<script>", 0, marker)
++    script_end = body.find(b"</script>", marker) + len(b"</script>")
++    return body[:script_start] + body[script_end:]
++
++
++class _LogoLinkParser(HTMLParser):
++    """Collect links that directly contain rendered logo images."""
++
++    def __init__(self) -> None:
++        super().__init__()
++        self.logo_hrefs: list[str] = []
++        self._anchor_href: str | None = None
++
++    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
++        attributes = dict(attrs)
++        if tag == "a":
++            self._anchor_href = attributes.get("href")
++        elif (
++            tag == "img"
++            and "logo" in attributes.get("class", "").split()
++            and self._anchor_href is not None
++        ):
++            self.logo_hrefs.append(self._anchor_href)
++
++    def handle_endtag(self, tag: str) -> None:
++        if tag == "a":
++            self._anchor_href = None
++
++
++def test_server_module_page_keeps_creation_logo():
++    """A server keeps rendering the logo it was created with."""
++    pdoc.render.configure(logo="F2P-CREATED-LOGO")
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(logo="F2P-LATER-LOGO")
++
++    head, body = request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++
++    assert head[0] == "HTTP/1.0 200 OK"
++    assert b"F2P-CREATED-LOGO" in body
++    assert b"F2P-LATER-LOGO" not in body
++
++
++def test_server_module_page_keeps_creation_logo_link():
++    """A server keeps the logo link it was created with."""
++    created_url = "https://created.example/logo"
++    later_url = "https://later.example/logo"
++    pdoc.render.configure(logo="F2P-LOGO", logo_link=created_url)
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(logo="F2P-LOGO", logo_link=later_url)
++
++    head, body = request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++
++    assert head[0] == "HTTP/1.0 200 OK"
++    parser = _LogoLinkParser()
++    parser.feed(body.decode("utf8"))
++    assert parser.logo_hrefs
++    assert set(parser.logo_hrefs) == {created_url}
++
++
++def test_server_module_page_keeps_creation_footer_text():
++    """A server keeps rendering the footer text it was created with."""
++    pdoc.render.configure(footer_text="F2P-CREATED-FOOTER")
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(footer_text="F2P-LATER-FOOTER")
++
++    _, body = request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++
++    assert b"F2P-CREATED-FOOTER" in body
++    assert b"F2P-LATER-FOOTER" not in body
++
++
++def test_server_module_page_keeps_creation_math_toggle():
++    """A server keeps including MathJax when it was created with math enabled."""
++    pdoc.render.configure(math=True)
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(math=False)
++
++    _, body = request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++
++    assert b"MathJax" in body
++
++
++def test_server_module_page_keeps_creation_math_disabled():
++    """A server keeps math disabled when it was created with math disabled."""
++    pdoc.render.configure(math=False)
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(math=True)
++
++    head, body = request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++
++    assert head[0] == "HTTP/1.0 200 OK"
++    assert b"MathJax" not in body
++
++
++def test_server_module_page_keeps_creation_mermaid_toggle():
++    """A server keeps including Mermaid when it was created with mermaid enabled."""
++    pdoc.render.configure(mermaid=True)
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(mermaid=False)
++
++    _, body = request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++
++    assert b"mermaid" in body
++
++
++def test_server_module_page_keeps_creation_mermaid_disabled():
++    """A server keeps Mermaid disabled when it was created with Mermaid disabled."""
++    pdoc.render.configure(mermaid=False)
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(mermaid=True)
++
++    head, body = request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++
++    assert head[0] == "HTTP/1.0 200 OK"
++    assert b"mermaid" not in body
++
++
++def test_server_module_page_keeps_creation_show_source_toggle():
++    """A server keeps hiding source buttons when created with show_source disabled."""
++    pdoc.render.configure(show_source=False)
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(show_source=True)
++
++    _, body = request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++
++    assert b'class="view-source-button"' not in body
++
++
++def test_server_module_page_keeps_creation_show_source_enabled():
++    """A server keeps source buttons enabled when it was created with them enabled."""
++    pdoc.render.configure(show_source=True)
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(show_source=False)
++
++    head, body = request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++
++    assert head[0] == "HTTP/1.0 200 OK"
++    assert b'class="view-source-button"' in body
++
++
++def test_server_module_page_keeps_creation_docformat(tmp_path):
++    """A server keeps rendering with the docstring flavor it was created with."""
++    source = write_module(tmp_path, "f2p_docformat_isolation", GOOGLE_DOCSTRING_SOURCE)
++    pdoc.render.configure(docformat="google")
++    server = make_server([str(source)])
++    pdoc.render.configure(docformat="restructuredtext")
++
++    _, body = request(server, b"GET /f2p_docformat_isolation.html HTTP/1.1\r\n\r\n")
++
++    assert b'<h6 id="arguments">Arguments:</h6>' in body
++    assert b"<strong>x:</strong>" in body
++
++
++def test_server_module_page_keeps_creation_template_directory(tmp_path):
++    """A server keeps using the custom template directory it was created with."""
++    template_directory = tmp_path / "templates"
++    template_directory.mkdir()
++    (template_directory / "module.html.jinja2").write_text(
++        '{% extends "default/module.html.jinja2" %}\n'
++        "{% block nav_footer %}<footer>F2P-TEMPLATE-MARKER</footer>{% endblock %}\n",
++        "utf8",
++    )
++    pdoc.render.configure(template_directory=template_directory)
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(template_directory=None)
++
++    _, body = request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++
++    assert b"F2P-TEMPLATE-MARKER" in body
++
++
++def test_server_module_page_keeps_creation_include_undocumented(tmp_path):
++    """A server keeps excluding undocumented members when created that way."""
++    source = write_module(
++        tmp_path, "f2p_undocumented_isolation", UNDOCUMENTED_MEMBER_SOURCE
++    )
++    pdoc.render.configure(include_undocumented=False)
++    server = make_server([str(source)])
++    pdoc.render.configure(include_undocumented=True)
++
++    _, body = request(server, b"GET /f2p_undocumented_isolation.html HTTP/1.1\r\n\r\n")
++
++    assert b'id="documented_function"' in body
++    assert b'id="hidden_member"' not in body
++
++
++def test_server_module_page_keeps_creation_edit_url_map():
++    """A server keeps rendering the edit URLs it was created with."""
++    edit_url_map = {"dataclasses": "https://edit.example/f2p/"}
++    pdoc.render.configure(edit_url_map=edit_url_map)
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(edit_url_map=None)
++
++    try:
++        with patch("pdoc.extract.module_mtime", return_value=1234.567):
++            raw = b"GET /dataclasses.html HTTP/1.1\r\n\r\n"
++            _, body = request(server, raw)
++            assert b'class="pdoc-button git-button"' in body
++            assert b"https://edit.example/f2p/" in body
++
++            # Callers may reuse their options mapping for configure(B).
++            # Server A must still retain the values in effect at its creation.
++            edit_url_map["dataclasses"] = "https://edit.example/later/"
++            pdoc.render.configure(edit_url_map=edit_url_map)
++            server_b = make_server(["dataclasses"])
++            try:
++                head_a, body_a = request(server, raw)
++                head_b, body_b = request(server_b, raw)
++                assert head_a[0] == head_b[0] == "HTTP/1.0 200 OK"
++                assert body_a == body
++                assert b"https://edit.example/later/" in body_b
++                assert b"https://edit.example/f2p/" not in body_b
++                assert body_b == pdoc.render.html_module(
++                    server_b.all_modules["dataclasses"],
++                    server_b.all_modules,
++                    mtime="1234.6",
++                ).encode("utf8")
++            finally:
++                server_b.server_close()
++    finally:
++        server.server_close()
++
++
++def test_server_index_page_keeps_creation_logo():
++    """A server keeps rendering the index page with its creation-time logo."""
++    pdoc.render.configure(logo="F2P-INDEX-LOGO")
++    server = make_server(["dataclasses", "jinja2"])
++    pdoc.render.configure(logo="F2P-INDEX-LATER")
++
++    head, body = request(server, b"GET / HTTP/1.1\r\n\r\n")
++
++    assert head[0] == "HTTP/1.0 200 OK"
++    assert b"F2P-INDEX-LOGO" in body
++    assert b"F2P-INDEX-LATER" not in body
++
++
++def test_server_index_page_keeps_creation_search_toggle():
++    """A server keeps omitting the search box when it was created with search disabled."""
++    pdoc.render.configure(search=False)
++    server = make_server(["dataclasses", "jinja2"])
++    pdoc.render.configure(search=True)
++
++    _, body = request(server, b"GET / HTTP/1.1\r\n\r\n")
++
++    assert b'placeholder="Search API Documentation..."' not in body
++
++
++def test_server_search_index_keeps_creation_search_enabled():
++    """A server created with search enabled keeps serving a non-empty search index."""
++    pdoc.render.configure(search=True)
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(search=False)
++
++    head, body = request(server, b"GET /search.js HTTP/1.1\r\n\r\n")
++
++    assert head[0] == "HTTP/1.0 200 OK"
++    assert b'"dataclasses.is_dataclass"' in body
++
++
++def test_server_search_index_keeps_creation_search_disabled():
++    """A server created with search disabled keeps serving an empty search index."""
++    pdoc.render.configure(search=False)
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(search=True)
++
++    head, body = request(server, b"GET /search.js HTTP/1.1\r\n\r\n")
++
++    assert head[0] == "HTTP/1.0 200 OK"
++    assert body.strip() == b""
++
++
++def test_server_404_page_keeps_creation_favicon():
++    """The 404 page keeps the favicon the server was created with."""
++    pdoc.render.configure(favicon="F2P-404-FAVICON")
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(favicon=None)
++
++    head, body = request(server, b"GET /unknown HTTP/1.1\r\n\r\n")
++
++    assert head[0] == "HTTP/1.0 404 Not Found"
++    assert b"F2P-404-FAVICON" in body
++
++
++def test_server_404_page_keeps_creation_math_toggle():
++    """The 404 page keeps the math setting the server was created with."""
++    pdoc.render.configure(math=True)
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(math=False)
++
++    head, body = request(server, b"GET /unknown HTTP/1.1\r\n\r\n")
++
++    assert head[0] == "HTTP/1.0 404 Not Found"
++    assert b"MathJax" in body
++
++
++def test_server_500_page_keeps_creation_mermaid_toggle():
++    """The 500 error page keeps the mermaid setting the server was created with."""
++    pdoc.render.configure(mermaid=True)
++    server = make_server(["dataclasses", str(testdata / "import_err_simple.py")])
++    pdoc.render.configure(mermaid=False)
++
++    head, body = request(server, b"GET /import_err_simple.html HTTP/1.1\r\n\r\n")
++
++    assert head[0] == "HTTP/1.0 500 Internal Server Error"
++    assert b"mermaid" in body
++
++
++def test_two_servers_keep_independent_configurations(tmp_path):
++    """Two servers created under different configurations keep serving their own."""
++    pdoc.render.configure(logo="F2P-SERVER-A-LOGO")
++    server_a = make_server(["dataclasses"])
++    pdoc.render.configure(logo="F2P-SERVER-B-LOGO")
++    server_b = make_server(["dataclasses"])
++
++    _, body_a = request(server_a, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++    _, body_b = request(server_b, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++
++    assert b"F2P-SERVER-A-LOGO" in body_a
++    assert b"F2P-SERVER-B-LOGO" not in body_a
++    assert b"F2P-SERVER-B-LOGO" in body_b
++
++
++def test_server_index_matches_static_export_after_config_change(tmp_path):
++    """The served index matches the export made with the server's configuration."""
++    pdoc.render.configure(logo="F2P-PARITY-LOGO", footer_text="F2P-PARITY-FOOTER")
++    static = tmp_path / "static"
++    pdoc.pdoc("dataclasses", "jinja2", output_directory=static)
++    static_index = (static / "index.html").read_bytes()
++
++    server = make_server(["dataclasses", "jinja2"])
++    pdoc.render.configure(logo="F2P-CHANGED-LOGO", footer_text="F2P-CHANGED-FOOTER")
++
++    _, web_index = request(server, b"GET / HTTP/1.1\r\n\r\n")
++
++    assert web_index == static_index
++
++
++def test_server_module_matches_static_export_after_config_change(tmp_path):
++    """A served module matches the export made with the server's configuration."""
++    pdoc.render.configure(logo="F2P-PARITY-LOGO", footer_text="F2P-PARITY-FOOTER")
++    static = tmp_path / "static"
++    pdoc.pdoc("dataclasses", output_directory=static)
++    static_module = (static / "dataclasses.html").read_bytes()
++
++    server = make_server(["dataclasses"])
++    pdoc.render.configure(logo="F2P-CHANGED-LOGO", footer_text="F2P-CHANGED-FOOTER")
++
++    _, web_module = request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++
++    assert strip_livereload(web_module) == static_module
++
++
++def test_cli_web_server_keeps_configuration_from_cli_invocation():
++    """The web server started by the CLI keeps rendering the CLI's configuration."""
++    captured: list[DocServer] = []
++
++    class _RecordingServer(DocServer):
++        def __init__(self, addr, specs, **kwargs):
++            super().__init__(addr, specs, **kwargs)
++            captured.append(self)
++
++        def serve_forever(self):
++            raise KeyboardInterrupt
++
++    showwarning = warnings.showwarning
++    try:
++        with (
++            patch("pdoc.web.DocServer", _RecordingServer),
++            patch("pdoc.web.open_browser"),
++        ):
++            cli(["-n", "--footer-text", "F2P-CLI-FOOTER", "dataclasses"])
++    finally:
++        warnings.showwarning = showwarning
++
++    assert len(captured) == 1
++    server = captured[0]
++    try:
++        pdoc.render.configure(footer_text="F2P-CLI-LATER")
++        _, body = request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n")
++        assert b"F2P-CLI-FOOTER" in body
++        assert b"F2P-CLI-LATER" not in body
++    finally:
++        server.server_close()
++
++def test_rendering_does_not_read_or_mutate_shared_configuration(tmp_path):
++    assert_no_shared_config_dependency(tmp_path)
++
++
++@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
++def test_imported_macro_keeps_server_creation_configuration(tmp_path, warm):
++    from test.test_p2p_render_contract import macro_inputs
++    with macro_inputs(tmp_path) as inputs:
++        inputs.configure("A")
++        server_a = inputs.server()
++        if warm:
++            assert inputs.request(server_a) == "A|FA|False;A|FA|False"
++        inputs.configure("B")
++        server_b = inputs.server()
++        assert inputs.request(server_a) == "A|FA|False;A|FA|False"
++        assert inputs.request(server_b) == "B|FB|True;B|FB|True"
++        assert inputs.direct() == "B|FB|True;B|FB|True"
+diff --git a/test/test_p2p_render_contract.py b/test/test_p2p_render_contract.py
+new file mode 100644
+index 0000000..eb1de0b
+--- /dev/null
++++ b/test/test_p2p_render_contract.py
+@@ -0,0 +1,657 @@
++"""
++Supplemental P2P regression tests for the frozen rendering-configuration contract.
++
++These tests pin down behavior that already holds on the baseline implementation and
++must keep holding once rendering configuration is passed to consumers explicitly.
++They are additive: no baseline test file is modified.
++"""
++
++from __future__ import annotations
++
++import inspect
++from contextlib import contextmanager, ExitStack
++from pathlib import Path
++import tomllib
++import types
++from unittest.mock import patch
++
++import pytest
++
++import pdoc
++import pdoc.doc
++import pdoc.extract
++import pdoc.render
++
++here = Path(__file__).parent
++testdata = here / "testdata"
++
++CONFIGURE_DEFAULTS = {
++    "docformat": "restructuredtext",
++    "include_undocumented": True,
++    "edit_url_map": None,
++    "favicon": None,
++    "footer_text": "",
++    "logo": None,
++    "logo_link": None,
++    "math": False,
++    "mermaid": False,
++    "search": True,
++    "show_source": True,
++    "template_directory": None,
++}
++PUBLIC_RENDER_PARAMETERS = {
++    "html_module": ("module", "all_modules", "mtime"),
++    "html_index": ("all_modules",),
++    "html_error": ("error", "details"),
++    "search_index": ("all_modules",),
++    "repr_module": ("module",),
++}
++
++
++def assert_public_render_parameters(name: str) -> None:
++    """The documented rendering entry points retain exact public parameters."""
++    parameters = tuple(inspect.signature(getattr(pdoc.render, name)).parameters.values())
++    assert tuple(parameter.name for parameter in parameters) == PUBLIC_RENDER_PARAMETERS[name]
++    assert all(
++        parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
++        for parameter in parameters
++    )
++
++
++@pytest.fixture(autouse=True)
++def restore_render_config():
++    """Restore the module-level rendering configuration after each test."""
++    yield
++    pdoc.render.env.globals.pop("p2p_marker_global", None)
++    pdoc.render.env.filters.pop("p2p_marker_filter", None)
++    pdoc.render.configure()
++
++
++def test_configure_signature_defaults():
++    """REQ-BEH-T1:C1 - configure keeps the frozen parameter names and defaults."""
++    signature = inspect.signature(pdoc.render.configure)
++    assert set(signature.parameters) == set(CONFIGURE_DEFAULTS)
++    for name, default in CONFIGURE_DEFAULTS.items():
++        assert signature.parameters[name].default == default
++
++
++def test_configure_is_keyword_only():
++    """REQ-BEH-T1:C1 - configure rejects positional configuration arguments."""
++    with pytest.raises(TypeError):
++        pdoc.render.configure("markdown")  # type: ignore[misc]
++
++
++def test_configure_returns_none():
++    """REQ-BEH-T1:C1 - configure keeps returning None."""
++    assert pdoc.render.configure() is None
++
++
++def test_configure_affects_later_module_rendering():
++    """REQ-BEH-T1:C1 - configuration applies to module renders performed afterwards."""
++    module = pdoc.doc.Module.from_name("dataclasses")
++    all_modules = {"dataclasses": module}
++
++    pdoc.render.configure(logo="P2P-LOGO")
++    page = pdoc.render.html_module(module, all_modules)
++    assert "P2P-LOGO" in page
++
++    pdoc.render.configure()
++    page = pdoc.render.html_module(module, all_modules)
++    assert "P2P-LOGO" not in page
++
++
++def test_configure_affects_later_search_rendering():
++    """REQ-BEH-T1:C1 - search configuration applies to later search renders."""
++    module = pdoc.doc.Module.from_name("dataclasses")
++    all_modules = {"dataclasses": module}
++
++    pdoc.render.configure(search=False)
++    assert pdoc.render.search_index(all_modules) == ""
++
++    pdoc.render.configure()
++    assert pdoc.render.search_index(all_modules) != ""
++
++
++def test_html_module_entry_point_keeps_arguments_and_str_result(tmp_path):
++    """REQ-BEH-T1:C3 - html_module keeps its arguments and str result."""
++    module = pdoc.doc.Module.from_name("dataclasses")
++    all_modules = {"dataclasses": module}
++    assert_public_render_parameters("html_module")
++    with pytest.raises(TypeError):
++        pdoc.render.html_module(module, all_modules, config=None)  # type: ignore[call-arg]
++
++    assert isinstance(pdoc.render.html_module(module, all_modules), str)
++
++    live_reload = pdoc.render.html_module(module, all_modules, mtime="123.0")
++    assert isinstance(live_reload, str)
++    assert 'mtime_generated = "123.0"' in live_reload
++    assert "mtime_generated" not in pdoc.render.html_module(module, all_modules)
++    assert_frozen_render_bytes(tmp_path, "module")
++
++
++def test_html_index_entry_point_keeps_str_result(tmp_path):
++    """REQ-BEH-T1:C3 - html_index keeps its str result."""
++    module = pdoc.doc.Module.from_name("dataclasses")
++    all_modules = {"dataclasses": module}
++    assert_public_render_parameters("html_index")
++    with pytest.raises(TypeError):
++        pdoc.render.html_index(all_modules, config=None)  # type: ignore[call-arg]
++    assert isinstance(pdoc.render.html_index(all_modules), str)
++    assert_frozen_render_bytes(tmp_path, "index")
++
++
++def test_html_error_entry_point_keeps_arguments_and_str_result(tmp_path):
++    """REQ-BEH-T1:C3 - html_error keeps its arguments and str result."""
++    assert_public_render_parameters("html_error")
++    with pytest.raises(TypeError):
++        pdoc.render.html_error("boom", config=None)  # type: ignore[call-arg]
++    assert isinstance(pdoc.render.html_error("boom"), str)
++    assert isinstance(pdoc.render.html_error("boom", details="details"), str)
++    assert_frozen_render_bytes(tmp_path, "error")
++
++
++def test_search_index_entry_point_keeps_str_result(tmp_path):
++    """REQ-BEH-T1:C3 - search_index keeps its str result."""
++    module = pdoc.doc.Module.from_name("dataclasses")
++    all_modules = {"dataclasses": module}
++    assert_public_render_parameters("search_index")
++    with pytest.raises(TypeError):
++        pdoc.render.search_index(all_modules, config=None)  # type: ignore[call-arg]
++    assert isinstance(pdoc.render.search_index(all_modules), str)
++    assert_frozen_render_bytes(tmp_path, "search")
++
++
++def test_repr_module_entry_point_keeps_str_result():
++    """REQ-BEH-T1:C3 - repr_module keeps its str result."""
++    module = pdoc.doc.Module.from_name("dataclasses")
++    assert_public_render_parameters("repr_module")
++    with pytest.raises(TypeError):
++        pdoc.render.repr_module(module, config=None)  # type: ignore[call-arg]
++    assert isinstance(pdoc.render.repr_module(module), str)
++
++
++def test_pdoc_returns_first_module():
++    """REQ-BEH-T1:C4 - pdoc() returns the first module when no output directory is given."""
++    rendered = pdoc.pdoc(str(testdata / "demo_long.py"))
++    assert isinstance(rendered, str)
++    assert rendered.startswith("<!doctype html>")
++
++
++def test_pdoc_writes_static_artifacts(tmp_path):
++    """REQ-BEH-T1:C4 - pdoc() writes module, index, and search artifacts."""
++    assert pdoc.pdoc("dataclasses", output_directory=tmp_path) is None
++    assert (tmp_path / "dataclasses.html").read_text("utf8").startswith("<!doctype html>")
++    assert (tmp_path / "index.html").read_text("utf8").startswith("<!doctype html>")
++    assert (tmp_path / "search.js").exists()
++
++
++def test_search_disabled_empties_index():
++    """REQ-BEH-T1:B5 - disabling search empties the rendered search index."""
++    module = pdoc.doc.Module.from_name("dataclasses")
++    pdoc.render.configure(search=False)
++    assert pdoc.render.search_index({"dataclasses": module}) == ""
++
++
++def test_search_disabled_skips_static_artifact(tmp_path):
++    """REQ-BEH-T1:B5 - disabling search suppresses the static search artifact."""
++    pdoc.render.configure(search=False)
++    assert pdoc.pdoc("dataclasses", output_directory=tmp_path) is None
++    assert not (tmp_path / "search.js").exists()
++    assert (tmp_path / "dataclasses.html").exists()
++    assert (tmp_path / "index.html").exists()
++
++
++def test_custom_env_globals_affect_later_rendering(tmp_path):
++    """REQ-BEH-T1:C2 / REQ-BEH-T1:B2 - user globals affect later rendering."""
++    template_directory = tmp_path / "templates"
++    template_directory.mkdir()
++    (template_directory / "module.html.jinja2").write_text(
++        '{% extends "default/module.html.jinja2" %}\n'
++        "{% block nav_footer %}<footer>{{ p2p_marker_global }}</footer>{% endblock %}\n",
++        "utf8",
++    )
++    pdoc.render.env.globals["p2p_marker_global"] = "GLOBAL-OK"
++
++    module = pdoc.doc.Module.from_name("dataclasses")
++    pdoc.render.configure(template_directory=template_directory)
++    assert "GLOBAL-OK" in pdoc.render.html_module(module, {"dataclasses": module})
++
++    pdoc.render.env.globals["p2p_marker_global"] = "LATE-OK"
++    assert "LATE-OK" in pdoc.render.html_module(module, {"dataclasses": module})
++
++
++def test_custom_env_filters_affect_later_rendering(tmp_path):
++    """REQ-BEH-T1:C2 / REQ-BEH-T1:B2 - user filters affect later rendering."""
++    template_directory = tmp_path / "templates"
++    template_directory.mkdir()
++    (template_directory / "module.html.jinja2").write_text(
++        '{% extends "default/module.html.jinja2" %}\n'
++        "{% block nav_footer %}<footer>{{ 'abc'|p2p_marker_filter }}</footer>{% endblock %}\n",
++        "utf8",
++    )
++    pdoc.render.env.filters["p2p_marker_filter"] = lambda value: str(value).upper()
++
++    module = pdoc.doc.Module.from_name("dataclasses")
++    pdoc.render.configure(template_directory=template_directory)
++    assert "ABC" in pdoc.render.html_module(module, {"dataclasses": module})
++
++    # Callable filter objects need not be hashable. Use a variable input and
++    # a fresh template to exercise lookup and invocation through the public API.
++    class Prefix:
++        __hash__ = None
++
++        def __call__(self, value):
++            return "filtered/" + value
++
++    (template_directory / "index.html.jinja2").write_text(
++        "{{ footer_text | p2p_marker_filter }}", "utf8"
++    )
++    pdoc.render.env.filters["p2p_marker_filter"] = Prefix()
++    pdoc.render.configure(template_directory=template_directory, footer_text="hello")
++    try:
++        rendered = pdoc.render.html_index({})
++    except TypeError as exc:
++        raise AssertionError("Rendering must accept callable filters without a hash") from exc
++    assert rendered == "filtered/hello"
++
++
++def test_env_identity_survives_render_module_cache_invalidation():
++    """REQ-BEH-T1:B2 - pdoc.render.env keeps its identity across cache invalidation."""
++    env = pdoc.render.env
++    pdoc.extract.invalidate_caches("pdoc.render")
++    assert pdoc.render.env is env
++
++
++def test_env_custom_state_survives_render_module_cache_invalidation():
++    """REQ-BEH-T1:B2 - user-added environment state survives cache invalidation."""
++    pdoc.render.env.globals["p2p_marker_global"] = "STILL-HERE"
++    pdoc.extract.invalidate_caches("pdoc.render")
++    assert pdoc.render.env.globals["p2p_marker_global"] == "STILL-HERE"
++
++
++def test_render_config_survives_render_module_cache_invalidation():
++    """REQ-BEH-T1:B2 - configured rendering state survives cache invalidation."""
++    pdoc.render.configure(logo="P2P-LOGO")
++    pdoc.extract.invalidate_caches("pdoc.render")
++    module = pdoc.doc.Module.from_name("dataclasses")
++    assert "P2P-LOGO" in pdoc.render.html_module(module, {"dataclasses": module})
++
++
++def test_html_error_escapes_template_values():
++    """REQ-BEH-T1:B6 - template autoescaping stays in effect for rendered error pages."""
++    rendered = pdoc.render.html_error(
++        error="<script>alert(1)</script>", details="<b>details</b>"
++    )
++    assert "<script>alert(1)</script>" not in rendered
++    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered
++    assert "<b>details</b>" not in rendered
++
++
++def test_project_python_requirement_unchanged():
++    """REQ-INTEGRITY-003 - the Python requirement is not raised."""
++    pyproject = tomllib.loads((here / ".." / "pyproject.toml").read_text("utf8"))
++    assert pyproject["project"]["requires-python"] == ">=3.10"
++
++
++def test_project_runtime_dependencies_unchanged():
++    """REQ-INTEGRITY-003 - no third-party runtime dependency is added."""
++    pyproject = tomllib.loads((here / ".." / "pyproject.toml").read_text("utf8"))
++    assert pyproject["project"]["dependencies"] == [
++        "Jinja2 >= 2.11.0",
++        "pygments >= 2.12.0",
++        "MarkupSafe >= 1.1.1",
++        "markdown2 >= 2.5.4",
++    ]
++
++
++# Frozen from base 00e18eb12ae2f06f3c245f796bfe7f6224db033a in the
++# task's verifier image. Inputs below fix templates, modules, config, mtime,
++# precompilation and traceback; expected bytes never come from the submission.
++FROZEN_CONFIG_BYTES = (
++    b"<cfg>google|False|https://edit.example/src/|icon&lt;&amp;&gt;.ico|"
++    b"footer&lt;&amp;&gt;|logo&lt;&amp;&gt;.svg|https://example.test/?a=1&amp;b=2|"
++    b"True|True|True|False|CUSTOM&lt;&amp;&gt;|ABC</cfg>"
++)
++FROZEN_RENDER_BYTES = {
++    "module": FROZEN_CONFIG_BYTES
++    + b"<module>qc_alpha|qc_alpha,qc_beta|None|https://edit.example/src/.py|1234.6</module>",
++    "index": FROZEN_CONFIG_BYTES + b"<index>qc_alpha,qc_beta|None</index>",
++    "error": FROZEN_CONFIG_BYTES + b"<error>boom&lt;&amp;&gt;|detail&lt;&amp;&gt;\nline2</error>",
++    "search": FROZEN_CONFIG_BYTES + b"<search>FIXED-INDEX&lt;&amp;&gt;</search>",
++}
++FROZEN_HTTP_BYTES = {
++    "mtime": ([200], [("content-type", "text/plain")], b"1234.6"),
++    "missing": (
++        [404], [("content-type", "text/html")],
++        FROZEN_CONFIG_BYTES + b"<error>Module &#39;qc_missing&#39; not found|</error>",
++    ),
++    "broken": (
++        [500], [("content-type", "text/html")],
++        FROZEN_CONFIG_BYTES
++        + b"<error>Error importing &#39;qc_broken&#39;|Traceback&lt;&amp;&gt;\nRuntimeError: fixed\n</error>",
++    ),
++}
++FROZEN_SERVER_MODULE_BYTES = FROZEN_CONFIG_BYTES + (
++    b"<module>qc_alpha|qc_alpha,qc_beta,qc_broken|None|https://edit.example/src/.py|1234.6</module>"
++)
++FROZEN_SERVER_INDEX_BYTES = FROZEN_CONFIG_BYTES + b"<index>qc_alpha,qc_beta,qc_broken|None</index>"
++
++FIXED_CONFIG = {
++    "docformat": "google",
++    "include_undocumented": False,
++    "edit_url_map": {"qc_alpha": "https://edit.example/src/"},
++    "favicon": "icon<&>.ico",
++    "footer_text": "footer<&>",
++    "logo": "logo<&>.svg",
++    "logo_link": "https://example.test/?a=1&b=2",
++    "math": True,
++    "mermaid": True,
++    "search": True,
++    "show_source": False,
++}
++FIXED_CONFIG_TEMPLATE = (
++    "<cfg>{{ docformat }}|{{ include_undocumented }}|"
++    "{{ edit_url_map['qc_alpha'] }}|{{ favicon }}|{{ footer_text }}|"
++    "{{ logo }}|{{ logo_link }}|{{ math }}|{{ mermaid }}|"
++    "{{ search }}|{{ show_source }}|{{ qc_user_global }}|"
++    "{{ qc_user_filter_input|qc_user_filter }}</cfg>"
++)
++
++
++class FixedByteInputs:
++    def __init__(self, modules, server):
++        self.modules = modules
++        self.server = server
++
++    def render(self, kind):
++        if kind == "module":
++            result = pdoc.render.html_module(
++                self.modules["qc_alpha"], self.modules, mtime="1234.6"
++            )
++        elif kind == "index":
++            result = pdoc.render.html_index(self.modules)
++        elif kind == "error":
++            result = pdoc.render.html_error("boom<&>", details="detail<&>\nline2")
++        elif kind == "search":
++            result = pdoc.render.search_index(self.modules)
++        else:
++            raise AssertionError(kind)
++        assert isinstance(result, str)
++        return result.encode("utf8")
++
++    def http(self, kind):
++        from pdoc.web import DocHandler
++
++        paths = {
++            "mtime": "/qc_alpha.html?mtime=1",
++            "missing": "/qc_missing.html",
++            "broken": "/qc_broken.html",
++            "module": "/qc_alpha.html",
++            "index": "/",
++        }
++        # Run the real request routing and rendering with fixed external inputs.
++        handler = DocHandler.__new__(DocHandler)
++        handler.path = paths[kind]
++        handler.server = self.server
++        statuses, headers = [], []
++        handler.send_response = lambda code: statuses.append(code)
++        handler.send_header = lambda name, value: headers.append((name.lower(), value))
++        handler.end_headers = lambda: None
++        result = handler.handle_request()
++        assert isinstance(result, str)
++        return statuses, headers, result.encode("utf8")
++
++
++@contextmanager
++def fixed_byte_inputs(tmp_path):
++    from pdoc.web import DocServer
++
++    template_directory = tmp_path / "byte-contract-templates"
++    template_directory.mkdir(exist_ok=True)
++    templates = {
++        "module.html.jinja2": (
++            "{% macro is_public(doc) %}True{% endmacro %}"
++            + FIXED_CONFIG_TEMPLATE
++            + "<module>{{ module.modulename }}|{{ all_modules|join(',') }}|"
++            "{{ root_module_name }}|{{ edit_url }}|{{ mtime }}</module>\n"
++        ),
++        "index.html.jinja2": FIXED_CONFIG_TEMPLATE
++        + "<index>{{ all_modules|join(',') }}|{{ root_module_name }}</index>\n",
++        "error.html.jinja2": FIXED_CONFIG_TEMPLATE
++        + "<error>{{ error }}|{{ details }}</error>\n",
++        "search.js.jinja2": FIXED_CONFIG_TEMPLATE
++        + "<search>{{ search_index }}</search>\n",
++        "build-search-index.js": "// fixed precompile input\n",
++    }
++    for name, content in templates.items():
++        (template_directory / name).write_text(content, "utf8")
++    modules = {}
++    for name in ("qc_alpha", "qc_beta"):
++        module = types.ModuleType(name, "Fixed documented module.")
++        modules[name] = pdoc.doc.Module(module)
++
++    class BrokenModules(dict):
++        def __getitem__(self, key):
++            if key == "qc_broken":
++                raise RuntimeError("fixed import failure")
++            return super().__getitem__(key)
++
++    env = pdoc.render.env
++    saved_globals, saved_filters = dict(env.globals), dict(env.filters)
++    with ExitStack() as stack:
++        stack.enter_context(patch("pdoc.render.precompile_index", return_value="FIXED-INDEX<&>"))
++        stack.enter_context(patch("pdoc.extract.module_mtime", return_value=1234.567))
++        stack.enter_context(patch("pdoc.extract.invalidate_caches", return_value=None))
++        stack.enter_context(patch("pdoc.web.traceback.format_exc", return_value="Traceback<&>\nRuntimeError: fixed\n"))
++        env.globals["qc_user_global"] = "CUSTOM<&>"
++        env.globals["qc_user_filter_input"] = "abc"
++        env.filters["qc_user_filter"] = lambda value: str(value).upper()
++        pdoc.render.configure(template_directory=template_directory, **FIXED_CONFIG)
++        server = DocServer(("", 8080), specs=["dataclasses"], bind_and_activate=False)
++        server.all_modules = BrokenModules(modules, qc_broken=None)
++        try:
++            yield FixedByteInputs(modules, server)
++        finally:
++            server.server_close()
++            pdoc.render.configure()
++            env.globals.clear()
++            env.globals.update(saved_globals)
++            env.filters.clear()
++            env.filters.update(saved_filters)
++            env.cache.clear()
++
++
++def assert_frozen_render_bytes(tmp_path, kind):
++    with fixed_byte_inputs(tmp_path) as inputs:
++        assert inputs.render(kind) == FROZEN_RENDER_BYTES[kind]
++
++
++def assert_frozen_http_bytes(tmp_path, kind):
++    with fixed_byte_inputs(tmp_path) as inputs:
++        assert inputs.http(kind) == FROZEN_HTTP_BYTES[kind]
++
++
++class SharedConfigPoison:
++    """A managed shared value may exist, but consumers must not depend on it."""
++
++    def used(self, *args, **kwargs):
++        raise AssertionError("rendering read managed configuration from shared env.globals")
++
++    __str__ = __repr__ = __bool__ = __iter__ = __getitem__ = used
++    __getattr__ = __eq__ = __len__ = __call__ = used
++
++
++class SharedConfigGuard(dict):
++    """Reject rendering-time writes to managed shared config, not user state."""
++
++    def __setitem__(self, key, value):
++        if key in FIXED_CONFIG:
++            raise AssertionError("rendering wrote managed configuration to shared env.globals")
++        super().__setitem__(key, value)
++
++    def __delitem__(self, key):
++        if key in FIXED_CONFIG:
++            raise AssertionError("rendering deleted shared managed configuration")
++        super().__delitem__(key)
++
++    def update(self, *args, **kwargs):
++        for key, value in dict(*args, **kwargs).items():
++            self[key] = value
++
++    def setdefault(self, key, value=None):
++        if key not in self:
++            self[key] = value
++        return self[key]
++
++    def pop(self, key, *default):
++        if key in self:
++            value = self[key]
++            del self[key]
++            return value
++        if default:
++            return default[0]
++        raise KeyError(key)
++
++    def clear(self):
++        for key in list(self):
++            del self[key]
++
++    def popitem(self):
++        key = next(reversed(self))
++        value = self[key]
++        del self[key]
++        return key, value
++
++    def __ior__(self, other):
++        self.update(other)
++        return self
++
++
++def assert_no_shared_config_dependency(tmp_path):
++    # Configure and capture the server before guarding: the public adapter is
++    # allowed to hold active config. Only the shared template state is poisoned;
++    # private carriers/environments, class names and field layouts are unrestricted.
++    with fixed_byte_inputs(tmp_path) as inputs:
++        env = pdoc.render.env
++        original = env.globals
++        saved = dict(original)
++        poisons = {key: SharedConfigPoison() for key in FIXED_CONFIG}
++        # Poison existing aliases too (including cached Template.globals).
++        original.update(poisons)
++        guard = SharedConfigGuard(original)
++        env.globals = guard
++        env.cache.clear()
++
++        def shared_state_unchanged():
++            assert env.globals is guard, "rendering replaced the shared globals mapping"
++            for key, poison in poisons.items():
++                assert original.get(key) is poison, "rendering wrote shared config through an alias"
++                assert guard.get(key) is poison, "rendering wrote shared config bypassing dict hooks"
++
++        try:
++            for kind in FROZEN_RENDER_BYTES:
++                assert inputs.render(kind) == FROZEN_RENDER_BYTES[kind]
++                shared_state_unchanged()
++            for kind in ("mtime", "missing", "broken"):
++                assert inputs.http(kind) == FROZEN_HTTP_BYTES[kind]
++                shared_state_unchanged()
++            assert inputs.http("module")[2] == FROZEN_SERVER_MODULE_BYTES
++            assert inputs.http("index")[2] == FROZEN_SERVER_INDEX_BYTES
++            shared_state_unchanged()
++        finally:
++            env.globals = original
++            original.clear()
++            original.update(saved)
++            env.cache.clear()
++
++def test_late_extensions_preserve_original_public_mappings(tmp_path):
++    """User mutations target the original public mapping, never a guard replacement."""
++    with fixed_byte_inputs(tmp_path) as inputs:
++        env = pdoc.render.env
++        original_globals, original_filters = env.globals, env.filters
++        assert inputs.render("module") == FROZEN_RENDER_BYTES["module"]
++        env.globals["qc_user_global"] = "LATE<&>"
++        env.filters["qc_user_filter"] = lambda value: "LATE-FILTER"
++        expected = FROZEN_RENDER_BYTES["module"].replace(
++            b"CUSTOM&lt;&amp;&gt;|ABC", b"LATE&lt;&amp;&gt;|LATE-FILTER"
++        )
++        assert inputs.render("module") == expected
++        assert env.globals is original_globals
++        assert env.filters is original_filters
++
++
++@contextmanager
++def macro_inputs(tmp_path):
++    from pdoc.web import DocHandler, DocServer
++    template_dir = tmp_path / "macro-templates"
++    template_dir.mkdir()
++    (template_dir / "parts.jinja2").write_text(
++        '{% macro options() %}{{ logo }}|{{ footer_text }}|{{ search }}{% endmacro %}', "utf8"
++    )
++    (template_dir / "module.html.jinja2").write_text(
++        '{% from "parts.jinja2" import options %}{{ options() }};{{ logo }}|{{ footer_text }}|{{ search }}', "utf8"
++    )
++    module = pdoc.doc.Module(types.ModuleType("qc_macro", "Macro contract."))
++    modules = {"qc_macro": module}
++    servers = []
++
++    class Inputs:
++        def configure(self, name):
++            pdoc.render.configure(template_directory=template_dir, logo=name,
++                                  footer_text="F" + name, search=name == "B")
++        def direct(self):
++            return pdoc.render.html_module(module, modules)
++        def server(self):
++            server = DocServer(("", 0), ["dataclasses"], bind_and_activate=False)
++            server.all_modules = modules
++            servers.append(server)
++            return server
++        def request(self, server):
++            handler = DocHandler.__new__(DocHandler)
++            handler.server, handler.path = server, "/qc_macro.html"
++            statuses = []
++            handler.send_response = statuses.append
++            handler.send_header = lambda *args: None
++            handler.end_headers = lambda: None
++            with patch("pdoc.extract.module_mtime", return_value=1234.567), patch("pdoc.extract.invalidate_caches", return_value=None):
++                body = handler.handle_request()
++            assert statuses == [200]
++            return body
++    try:
++        yield Inputs()
++    finally:
++        for server in servers:
++            server.server_close()
++        pdoc.render.configure()
++
++
++def test_imported_macro_preserves_direct_render_bytes(tmp_path):
++    # These exact bytes are independently reproduced by the frozen baseline.
++    with macro_inputs(tmp_path) as inputs:
++        inputs.configure("A")
++        assert inputs.direct() == "A|FA|False;A|FA|False"
++        inputs.configure("B")
++        assert inputs.direct() == "B|FB|True;B|FB|True"
++
++
++def test_import_and_error_render_on_supported_python311():
++    """Exercise a second supported interpreter instead of inspecting version syntax."""
++    import json
++    import os
++    import site
++    import subprocess
++    script = '''
++import json,sys
++import pdoc.render
++pdoc.render.configure(logo="COMPAT", search=False)
++page=pdoc.render.html_error("compat-error", "compat-details")
++assert isinstance(page,str) and "compat-error" in page and "compat-details" in page
++print(json.dumps({"version":list(sys.version_info[:2]),"rendered":True}))
++'''
++    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(Path.cwd()), *site.getsitepackages()]),
++               PYTHONDONTWRITEBYTECODE="1")
++    completed = subprocess.run(["/opt/envpipe/compat-python311/bin/python3", "-c", script], env=env,
++                               capture_output=True, text=True, timeout=25)
++    assert completed.returncode == 0, completed.stderr
++    result = json.loads(completed.stdout)
++    assert result == {"version": [3, 11], "rendered": True}
+diff --git a/test/test_p2p_web_cli_contract.py b/test/test_p2p_web_cli_contract.py
+new file mode 100644
+index 0000000..6503d50
+--- /dev/null
++++ b/test/test_p2p_web_cli_contract.py
+@@ -0,0 +1,596 @@
++"""
++Supplemental P2P regression tests for the frozen web-server and CLI surface.
++
++These tests pin down behavior that already holds on the baseline implementation and
++must keep holding once rendering configuration is passed to consumers explicitly.
++They are additive: no baseline test file is modified.
++"""
++
++from __future__ import annotations
++
++import io
++import json
++from pathlib import Path
++import socket
++import sys
++import threading
++from unittest.mock import patch
++import warnings
++
++import pytest
++
++import pdoc
++import pdoc.doc
++import pdoc.render
++from pdoc.__main__ import cli
++from pdoc.web import DocHandler
++from pdoc.web import DocServer
++from test.test_p2p_render_contract import assert_frozen_http_bytes
++
++here = Path(__file__).parent
++testdata = here / "testdata"
++
++DEFAULT_SPECS = [
++    "dataclasses",
++    str(testdata / "import_err_simple.py"),
++    "jinja2",
++    "!jinja2.",
++]
++
++
++class _ReadResponse(threading.Thread):
++    def __init__(self, sock: socket.socket):
++        super().__init__()
++        self.sock = sock
++        self.data = io.BytesIO()
++
++    def run(self) -> None:
++        while True:
++            data = self.sock.recv(65536)
++            if data:
++                self.data.write(data)
++            else:
++                return
++
++
++def make_server(specs: list[str] | None = None) -> DocServer:
++    return DocServer(
++        ("", 8080),
++        specs=list(specs or DEFAULT_SPECS),
++        bind_and_activate=False,
++    )
++
++
++def request(server: DocServer, data: bytes) -> bytes:
++    a, b = socket.socketpair()
++    b.send(data)
++    reader = _ReadResponse(b)
++    reader.start()
++    # noinspection PyTypeChecker
++    DocHandler(a, ("127.0.0.1", 54321), server)  # type: ignore[arg-type]
++    a.close()
++    reader.join()
++    return reader.data.getvalue()
++
++
++def split_response(raw: bytes) -> tuple[list[str], bytes]:
++    head, _, body = raw.partition(b"\r\n\r\n")
++    return head.decode("latin-1").splitlines(), body
++
++
++def content_type(head: list[str]) -> str:
++    for line in head:
++        if line.lower().startswith("content-type:"):
++            return line.split(":", 1)[1].strip()
++    return ""
++
++
++class _RecordingHandler(DocHandler):
++    """Run the real request dispatcher without opening sockets or hiding errors."""
++
++    def __init__(self, server: DocServer, path: str):
++        self.server = server
++        self.path = path
++        self.events = []
++
++    def send_response(self, code, message=None):
++        self.events.append(("response", code))
++
++    def send_header(self, keyword, value):
++        self.events.append(("header", keyword.lower(), value))
++
++    def end_headers(self):
++        self.events.append(("end_headers",))
++
++
++@pytest.fixture(autouse=True)
++def restore_render_config():
++    """Restore the module-level rendering configuration after each test."""
++    yield
++    pdoc.render.configure()
++
++
++def test_web_index_route_aliases_keep_html_response():
++    """REQ-BEH-T1:C6 - both index route aliases keep serving the HTML index."""
++    server = make_server()
++
++    head, body = split_response(request(server, b"GET / HTTP/1.1\r\n\r\n"))
++    assert head[0] == "HTTP/1.0 200 OK"
++    assert content_type(head) == "text/html"
++    assert b'<a href="dataclasses.html">' in body
++
++    head, body = split_response(request(server, b"GET /index.html HTTP/1.1\r\n\r\n"))
++    assert head[0] == "HTTP/1.0 200 OK"
++    assert content_type(head) == "text/html"
++    assert b'<a href="dataclasses.html">' in body
++
++
++def test_web_module_route_keeps_html_response():
++    """REQ-BEH-T1:C6 - module routes keep serving rendered module HTML."""
++    server = make_server()
++
++    head, body = split_response(request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n"))
++    assert head[0] == "HTTP/1.0 200 OK"
++    assert content_type(head) == "text/html"
++    assert b"make_dataclass" in body
++
++
++def test_web_module_mtime_route_keeps_plain_text_response(tmp_path):
++    """REQ-BEH-T1:C6 - module mtime requests keep serving plain text timestamps."""
++    server = make_server()
++
++    head, body = split_response(
++        request(server, b"GET /dataclasses.html?mtime=1 HTTP/1.1\r\n\r\n")
++    )
++    assert head[0] == "HTTP/1.0 200 OK"
++    assert content_type(head) == "text/plain"
++    assert float(body.strip())
++
++    assert_frozen_http_bytes(tmp_path, "mtime")
++
++def test_web_search_route_keeps_javascript_response():
++    """REQ-BEH-T1:C6 - the search route keeps serving its JavaScript index."""
++    server = make_server()
++
++    with pytest.warns(UserWarning, match="Error importing 'import_err_simple'"):
++        head, body = split_response(request(server, b"GET /search.js HTTP/1.1\r\n\r\n"))
++    assert head[0] == "HTTP/1.0 200 OK"
++    assert content_type(head) == "application/javascript"
++    assert b'"dataclasses.is_dataclass"' in body
++
++
++def test_web_missing_module_route_keeps_404_page(tmp_path):
++    """REQ-BEH-T1:C6 - unknown modules keep returning the escaped HTML 404 page."""
++    server = make_server()
++
++    head, body = split_response(request(server, b"GET /unknown HTTP/1.1\r\n\r\n"))
++    assert head[0] == "HTTP/1.0 404 Not Found"
++    assert content_type(head) == "text/html"
++    assert b"Module &#39;unknown&#39; not found" in body
++
++    assert_frozen_http_bytes(tmp_path, "missing")
++
++def test_web_import_error_route_keeps_500_page(tmp_path):
++    """REQ-BEH-T1:C6 - import failures keep returning the escaped HTML 500 page."""
++    server = make_server()
++
++    head, body = split_response(
++        request(server, b"GET /import_err_simple.html HTTP/1.1\r\n\r\n")
++    )
++    assert head[0] == "HTTP/1.0 500 Internal Server Error"
++    assert content_type(head) == "text/html"
++    assert b"Error importing &#39;import_err_simple&#39;" in body
++    assert b"I fail on import" in body
++
++    assert_frozen_http_bytes(tmp_path, "broken")
++
++def test_web_dotted_path_keeps_404_response():
++    """REQ-BEH-T1:C6 - malformed dotted paths keep returning 404."""
++    server = make_server()
++
++    head, _ = split_response(request(server, b"GET /module.submodule HTTP/1.1\r\n\r\n"))
++    assert head[0] == "HTTP/1.0 404 Not Found"
++
++
++def test_web_error_page_keeps_autoescaping():
++    """REQ-BEH-T1:B6 - user-controlled error-page values remain autoescaped."""
++    server = make_server()
++
++    _, body = split_response(
++        request(
++            server,
++            b"GET /foo%3Cscript%3Ealert(1)%3C/script%3E.html HTTP/1.1\r\n\r\n",
++        )
++    )
++    assert b"<script>alert(1)</script>" not in body
++    assert b"&lt;script&gt;" in body
++
++
++def test_web_renders_with_config_in_effect_before_start():
++    """REQ-BEH-T1:B3 - configuring before starting the server keeps working."""
++    pdoc.render.configure(logo="P2P-SERVER-LOGO")
++    server = make_server(["dataclasses"])
++    _, body = split_response(request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n"))
++    assert b"P2P-SERVER-LOGO" in body
++
++
++def test_web_search_index_is_computed_once_per_server():
++    """REQ-BEH-T1:B4 - reuse the index without repeating failed-import warnings."""
++    server = make_server(["dataclasses", str(testdata / "import_err_simple.py")])
++    warning_marker = "Error importing 'import_err_simple'"
++    try:
++        with warnings.catch_warnings(record=True) as initial:
++            warnings.simplefilter("always", UserWarning)
++            first = server.render_search_index()
++        assert len([w for w in initial if warning_marker in str(w.message)]) == 1
++        assert '"dataclasses.is_dataclass"' in first
++
++        with warnings.catch_warnings(record=True) as repeated:
++            # Ensure warning suppression cannot hide repeated import work.
++            warnings.simplefilter("always", UserWarning)
++            second = server.render_search_index()
++            assert first is second
++            head, body = split_response(request(server, b"GET /search.js HTTP/1.1\r\n\r\n"))
++            again_head, again = split_response(request(server, b"GET /search.js HTTP/1.1\r\n\r\n"))
++        assert not [w for w in repeated if warning_marker in str(w.message)]
++        assert head[0] == again_head[0] == "HTTP/1.0 200 OK"
++        assert content_type(head) == content_type(again_head) == "application/javascript"
++        assert body == again
++        assert body.decode() == first
++    finally:
++        server.server_close()
++
++
++def test_web_index_render_errors_remain_outside_500_boundary(tmp_path, monkeypatch):
++    """REQ-BEH-T1:C6 - index-render failures propagate for both route aliases."""
++    failure = RuntimeError("P2P index render failure")
++
++    def fail_render(value):
++        raise failure
++
++    (tmp_path / "index.html.jinja2").write_text(
++        "{{ all_modules|p2p_index_render_failure }}", encoding="utf8"
++    )
++    monkeypatch.setitem(pdoc.render.env.filters, "p2p_index_render_failure", fail_render)
++    pdoc.render.configure(template_directory=tmp_path)
++    server = make_server(["dataclasses"])
++    try:
++        for path in ("/", "/index.html"):
++            handler = _RecordingHandler(server, path)
++            with pytest.raises(RuntimeError) as raised:
++                handler.handle_request()
++            assert raised.value is failure
++            assert handler.events == []
++    finally:
++        server.server_close()
++
++
++def test_web_search_render_errors_preserve_header_order_and_propagate():
++    """REQ-BEH-T1:C6 - send search headers before rendering; do not catch its error."""
++    server = make_server(["dataclasses"])
++    handler = _RecordingHandler(server, "/search.js")
++    failure = RuntimeError("P2P search render failure")
++    expected_headers = [
++        ("response", 200),
++        ("header", "content-type", "application/javascript"),
++        ("end_headers",),
++    ]
++
++    def fail_render():
++        assert handler.events == expected_headers
++        raise failure
++
++    try:
++        with patch.object(
++            server, "render_search_index", side_effect=fail_render
++        ) as render_index:
++            with pytest.raises(RuntimeError) as raised:
++                handler.handle_request()
++        assert raised.value is failure
++        render_index.assert_called_once_with()
++        assert handler.events == expected_headers
++    finally:
++        server.server_close()
++
++
++def test_web_module_mtime_errors_remain_outside_500_boundary(tmp_path, monkeypatch):
++    """REQ-BEH-T1:C6 - mtime failures propagate, while module rendering keeps its 500."""
++    failure = RuntimeError("P2P module mtime failure")
++    rendered = []
++
++    def fail_render(value):
++        rendered.append(value)
++        raise RuntimeError("P2P module render failure")
++
++    (tmp_path / "module.html.jinja2").write_text(
++        "{{ module|p2p_module_render_failure }}", encoding="utf8"
++    )
++    monkeypatch.setitem(pdoc.render.env.filters, "p2p_module_render_failure", fail_render)
++    pdoc.render.configure(template_directory=tmp_path)
++    server = make_server(["dataclasses"])
++    try:
++        for path in ("/dataclasses.html", "/dataclasses.html?mtime=1"):
++            handler = _RecordingHandler(server, path)
++            with patch("pdoc.extract.module_mtime", side_effect=failure) as module_mtime:
++                with pytest.raises(RuntimeError) as raised:
++                    handler.handle_request()
++            assert raised.value is failure
++            module_mtime.assert_called_once_with("dataclasses")
++            assert handler.events == []
++
++        # The catch inside the module branch still handles rendering errors.
++        handler = _RecordingHandler(server, "/dataclasses.html")
++        with patch("pdoc.extract.module_mtime", return_value=None), patch(
++            "pdoc.extract.invalidate_caches", return_value=None
++        ):
++            body = handler.handle_request()
++        assert rendered
++        assert handler.events == [
++            ("response", 500),
++            ("header", "content-type", "text/html"),
++            ("end_headers",),
++        ]
++        assert "P2P module render failure" in body
++    finally:
++        server.server_close()
++
++
++def test_web_search_index_excludes_failed_import_records(tmp_path, monkeypatch):
++    """REQ-BEH-T1:B4 - real failed imports warn and never become search records."""
++    valid = tmp_path / "p2p_search_valid.py"
++    broken = tmp_path / "p2p_search_broken.py"
++    valid.write_text(
++        '"""A searchable module."""\n\ndef visible():\n'
++        '    """A searchable function."""\n',
++        "utf8",
++    )
++    broken.write_text('raise RuntimeError("P2P real import failure")\n', "utf8")
++    monkeypatch.syspath_prepend(str(tmp_path))
++    server = make_server([str(valid), str(broken)])
++    try:
++        assert valid.stem in server.all_modules and broken.stem in server.all_modules
++        with pytest.warns(
++            UserWarning, match="Error importing 'p2p_search_broken'"
++        ) as caught:
++            first = server.render_search_index()
++        assert any("P2P real import failure" in str(w.message) for w in caught)
++
++        # Inspect the actual index embedded in the response, including the
++        # precompiled form when Node is available. A warning alone cannot prove
++        # that a placeholder for a failed module was excluded.
++        payload, _ = json.JSONDecoder().raw_decode(
++            first.split("const docs = ", 1)[1].lstrip()
++        )
++        records = (
++            payload if isinstance(payload, list)
++            else list(payload["documentStore"]["docs"].values())
++        )
++        module_names = {record["modulename"] for record in records}
++        full_names = {record["fullname"] for record in records}
++        assert valid.stem in module_names
++        assert f"{valid.stem}.visible" in full_names
++        assert broken.stem not in module_names
++        assert not any(
++            name == broken.stem or name.startswith(broken.stem + ".")
++            for name in full_names
++        )
++
++        with warnings.catch_warnings(record=True) as repeated:
++            warnings.simplefilter("always", UserWarning)
++            assert server.render_search_index() is first
++        assert not repeated
++    finally:
++        server.server_close()
++        sys.modules.pop(valid.stem, None)
++        sys.modules.pop(broken.stem, None)
++        pdoc.doc.Module.from_name.cache_clear()
++
++
++LIVERELOAD_MARKER = b"/* Periodically check with the pdoc server"
++
++
++def strip_livereload(body: bytes) -> bytes:
++    """Remove the live-reload snippet that the web server injects into module pages."""
++    marker = body.find(LIVERELOAD_MARKER)
++    if marker == -1:
++        return body
++    script_start = body.rfind(b"<script>", 0, marker)
++    script_end = body.find(b"</script>", marker) + len(b"</script>")
++    return body[:script_start] + body[script_end:]
++
++
++def test_web_index_response_matches_static_export(tmp_path):
++    """REQ-BEH-T1:B1 - the served index stays identical to the static export."""
++    pdoc.render.configure()
++    pdoc.pdoc("dataclasses", output_directory=tmp_path)
++    static_index = (tmp_path / "index.html").read_bytes()
++
++    server = make_server(["dataclasses"])
++    _, web_index = split_response(request(server, b"GET / HTTP/1.1\r\n\r\n"))
++    assert web_index == static_index
++
++
++def test_web_module_response_matches_static_export(tmp_path):
++    """REQ-STRUCT-003 - a served module stays identical to the static export."""
++    pdoc.render.configure()
++    pdoc.pdoc("dataclasses", output_directory=tmp_path)
++    static_module = (tmp_path / "dataclasses.html").read_bytes()
++
++    server = make_server(["dataclasses"])
++    _, web_module = split_response(request(server, b"GET /dataclasses.html HTTP/1.1\r\n\r\n"))
++    assert strip_livereload(web_module) == static_module
++
++
++def _run_cli(args: list[str]) -> None:
++    showwarning = warnings.showwarning
++    try:
++        cli(args)
++    finally:
++        warnings.showwarning = showwarning
++
++
++def _export_page(tmp_path: Path, *options: str) -> str:
++    _run_cli([str(testdata / "demopackage"), "-o", str(tmp_path), *options])
++    return (tmp_path / "demopackage.html").read_text("utf8")
++
++
++def test_cli_export_writes_static_index(tmp_path):
++    """REQ-BEH-T1:C5 - CLI export keeps writing the static index."""
++    _export_page(tmp_path)
++    assert (tmp_path / "index.html").exists()
++
++
++def test_cli_no_search_flag_disables_search_output(tmp_path):
++    """REQ-BEH-T1:C5 - --no-search keeps suppressing search output."""
++    page = _export_page(tmp_path, "--no-search")
++    assert not (tmp_path / "search.js").exists()
++    assert 'role="searchbox"' not in page
++
++
++def test_cli_no_show_source_flag_hides_source_link(tmp_path):
++    """REQ-BEH-T1:C5 - --no-show-source keeps hiding source links."""
++    page = _export_page(tmp_path, "--no-show-source")
++    assert 'class="view-source-button"' not in page
++
++
++def test_cli_math_flag_enables_math_output(tmp_path):
++    """REQ-BEH-T1:C5 - --math keeps enabling MathJax output."""
++    page = _export_page(tmp_path, "--math")
++    assert "MathJax" in page
++
++
++def test_cli_mermaid_flag_enables_mermaid_output(tmp_path):
++    """REQ-BEH-T1:C5 - --mermaid keeps enabling Mermaid output."""
++    page = _export_page(tmp_path, "--mermaid")
++    assert "mermaid" in page
++
++
++def test_cli_footer_text_flag_sets_footer(tmp_path):
++    """REQ-BEH-T1:B5 - --footer-text keeps setting the rendered footer."""
++    page = _export_page(tmp_path, "--footer-text", "P2P-FOOTER")
++    assert "P2P-FOOTER" in page
++
++
++def test_cli_logo_flag_sets_logo(tmp_path):
++    """REQ-BEH-T1:B5 - --logo keeps setting the rendered logo."""
++    page = _export_page(tmp_path, "--logo", "P2P-LOGO")
++    assert "P2P-LOGO" in page
++
++
++def test_cli_logo_link_flag_sets_logo_target(tmp_path):
++    """REQ-BEH-T1:B5 - --logo-link keeps setting the logo target."""
++    page = _export_page(
++        tmp_path, "--logo", "P2P-LOGO", "--logo-link", "https://logo.example/"
++    )
++    assert "https://logo.example/" in page
++
++
++def test_cli_favicon_flag_sets_favicon(tmp_path):
++    """REQ-BEH-T1:B5 - --favicon keeps setting the rendered favicon."""
++    page = _export_page(tmp_path, "--favicon", "P2P-FAVICON")
++    assert "P2P-FAVICON" in page
++
++
++def test_cli_edit_url_flag_sets_edit_link(tmp_path):
++    """REQ-BEH-T1:B5 - --edit-url keeps setting the rendered edit link."""
++    page = _export_page(
++        tmp_path, "--edit-url", "demopackage=https://edit.example/"
++    )
++    assert "https://edit.example/" in page
++
++
++def test_cli_search_is_enabled_by_default(tmp_path):
++    """REQ-BEH-T1:C5 - CLI export keeps enabling search by default."""
++    page = _export_page(tmp_path)
++    assert (tmp_path / "search.js").exists()
++    assert 'role="searchbox"' in page
++
++
++def test_cli_source_links_are_enabled_by_default(tmp_path):
++    """REQ-BEH-T1:C5 - CLI export keeps enabling source links by default."""
++    page = _export_page(tmp_path)
++    assert 'class="view-source-button"' in page
++
++
++def test_cli_math_is_disabled_by_default(tmp_path):
++    """REQ-BEH-T1:C5 - CLI export keeps math disabled by default."""
++    page = _export_page(tmp_path)
++    assert "MathJax" not in page
++
++
++def test_cli_mermaid_is_disabled_by_default(tmp_path):
++    """REQ-BEH-T1:C5 - CLI export keeps Mermaid disabled by default."""
++    page = _export_page(tmp_path)
++    assert "mermaid" not in page
++
++
++def test_cli_docformat_flag_selects_docstring_flavor(tmp_path):
++    """REQ-BEH-T1:C5 - --docformat keeps selecting the docstring flavor used for rendering."""
++    source = tmp_path / "p2p_docformat_demo.py"
++    source.write_text(
++        "def f(x):\n"
++        '    """Do a thing.\n'
++        "\n"
++        "    Args:\n"
++        "        x: The input value.\n"
++        '    """\n',
++        "utf8",
++    )
++    google_out = tmp_path / "google"
++    rst_out = tmp_path / "restructuredtext"
++    _run_cli([str(source), "-o", str(google_out), "-d", "google"])
++    _run_cli([str(source), "-o", str(rst_out), "-d", "restructuredtext"])
++
++    google_page = (google_out / "p2p_docformat_demo.html").read_text("utf8")
++    rst_page = (rst_out / "p2p_docformat_demo.html").read_text("utf8")
++    assert '<h6 id="arguments">Arguments:</h6>' in google_page
++    assert "<strong>x:</strong>" in google_page
++    assert '<h6 id="arguments">Arguments:</h6>' not in rst_page
++    assert "Args:" in rst_page
++
++
++class _FakeServer:
++    captured: dict[str, object] = {}
++
++    def __init__(self, addr, specs, **kwargs):
++        type(self).captured = {"addr": addr, "specs": list(specs)}
++        self.server_port = addr[1]
++
++    def __enter__(self):
++        return self
++
++    def __exit__(self, *exc):
++        return False
++
++    def serve_forever(self):
++        raise KeyboardInterrupt
++
++    def server_close(self):
++        pass
++
++
++def test_cli_web_uses_requested_host_and_port():
++    """REQ-BEH-T1:C5 - web mode keeps honoring the requested host and port."""
++    with patch("pdoc.web.DocServer", _FakeServer), patch("pdoc.web.open_browser"):
++        _run_cli(["--host", "0.0.0.0", "--port", "7777", "-n", "dataclasses"])
++    assert _FakeServer.captured["addr"] == ("0.0.0.0", 7777)
++    assert _FakeServer.captured["specs"] == ["dataclasses"]
++
++
++def test_cli_web_no_browser_flag_suppresses_opening():
++    """REQ-BEH-T1:C5 - -n keeps suppressing browser opening."""
++    with patch("pdoc.web.DocServer", _FakeServer), patch(
++        "pdoc.web.open_browser"
++    ) as open_browser:
++        _run_cli(["-n", "dataclasses"])
++    assert not open_browser.called
++
++
++def test_cli_web_opens_browser_by_default():
++    """REQ-BEH-T1:C5 - web mode keeps opening the browser by default."""
++    with patch("pdoc.web.DocServer", _FakeServer), patch(
++        "pdoc.web.open_browser"
++    ) as open_browser:
++        _run_cli(["--host", "127.0.0.1", "--port", "7778", "dataclasses"])
++    assert _FakeServer.captured["addr"] == ("127.0.0.1", 7778)
++    assert open_browser.call_args[0][0] == "http://127.0.0.1:7778"

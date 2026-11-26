@@ -1,0 +1,400 @@
+diff --git a/pdoc/__init__.py b/pdoc/__init__.py
+--- a/pdoc/__init__.py
++++ b/pdoc/__init__.py
+@@ -545,12 +545,13 @@
+ 
+     Rendering options can be configured by calling `pdoc.render.configure` in advance.
+     """
++    config = render._current_config
+     all_modules: dict[str, doc.Module] = {}
+     for module_name in extract.walk_specs(modules):
+         all_modules[module_name] = doc.Module.from_name(module_name)
+ 
+     for module in all_modules.values():
+-        out = render.html_module(module, all_modules)
++        out = render._html_module(module, all_modules, config=config)
+         if not output_directory:
+             return out
+         else:
+@@ -560,11 +561,11 @@
+ 
+     assert output_directory
+ 
+-    index = render.html_index(all_modules)
++    index = render._html_index(all_modules, config=config)
+     if index:
+         (output_directory / "index.html").write_bytes(index.encode())
+ 
+-    search = render.search_index(all_modules)
++    search = render._search_index(all_modules, config=config)
+     if search:
+         (output_directory / "search.js").write_bytes(search.encode())
+ 
+diff --git a/pdoc/render.py b/pdoc/render.py
+--- a/pdoc/render.py
++++ b/pdoc/render.py
+@@ -1,11 +1,12 @@
+ from __future__ import annotations
+ 
++from dataclasses import dataclass
+ import os
+ from pathlib import Path
+ import types
++from typing import Any
+ from typing import Literal
+ from typing import Mapping
+-from typing import cast
+ import warnings
+ 
+ import jinja2
+@@ -29,6 +30,46 @@
+ from pdoc.search import precompile_index
+ 
+ 
++@dataclass(frozen=True)
++class _RenderConfig:
++    docformat: Literal[
++        "markdown", "google", "numpy", "restructuredtext"  # noqa: F821
++    ] = "restructuredtext"
++    include_undocumented: bool = True
++    edit_url_map: Mapping[str, str] = types.MappingProxyType({})
++    favicon: str | None = None
++    footer_text: str = ""
++    logo: str | None = None
++    logo_link: str | None = None
++    math: bool = False
++    mermaid: bool = False
++    search: bool = True
++    show_source: bool = True
++    template_directory: Path | None = None
++    searchpath: tuple[Path, ...] = ()
++
++    def to_context(self) -> dict[str, Any]:
++        return {
++            "docformat": self.docformat,
++            "include_undocumented": self.include_undocumented,
++            "edit_url_map": self.edit_url_map,
++            "favicon": self.favicon,
++            "footer_text": self.footer_text,
++            "logo": self.logo,
++            "logo_link": self.logo_link,
++            "math": self.math,
++            "mermaid": self.mermaid,
++            "search": self.search,
++            "show_source": self.show_source,
++        }
++
++
++def _get_env(config: _RenderConfig) -> Environment:
++    if config.searchpath == _current_config.searchpath:
++        return env
++    return env.overlay(loader=FileSystemLoader(config.searchpath))
++
++
+ def configure(
+     *,
+     docformat: Literal[
+@@ -45,7 +86,7 @@
+     search: bool = True,
+     show_source: bool = True,
+     template_directory: Path | None = None,
+-):
++) -> None:
+     """
+     Configure the rendering output.
+ 
+@@ -71,29 +112,38 @@
+       for templates. You can find an example in the main documentation of `pdoc`
+       or in `examples/custom-template`.
+     """
+-    searchpath = _default_searchpath
+-    if template_directory:
+-        searchpath = [template_directory] + searchpath
++    searchpath: tuple[Path, ...] = tuple(
++        [template_directory] + _default_searchpath
++        if template_directory
++        else _default_searchpath
++    )
++    global _current_config
++    _current_config = _RenderConfig(
++        docformat=docformat,
++        include_undocumented=include_undocumented,
++        edit_url_map=types.MappingProxyType(dict(edit_url_map) if edit_url_map else {}),
++        favicon=favicon,
++        footer_text=footer_text,
++        logo=logo,
++        logo_link=logo_link,
++        math=math,
++        mermaid=mermaid,
++        search=search,
++        show_source=show_source,
++        template_directory=template_directory,
++        searchpath=searchpath,
++    )
+     env.loader = FileSystemLoader(searchpath)
+-
+-    env.globals["docformat"] = docformat
+-    env.globals["include_undocumented"] = include_undocumented
+-    env.globals["edit_url_map"] = edit_url_map or {}
+-    env.globals["math"] = math
+-    env.globals["mermaid"] = mermaid
+-    env.globals["show_source"] = show_source
+-    env.globals["favicon"] = favicon
+-    env.globals["logo"] = logo
+-    env.globals["logo_link"] = logo_link
+-    env.globals["footer_text"] = footer_text
+-    env.globals["search"] = search
+-
+-
+-@defuse_unsafe_reprs()
+-def html_module(
++    return _current_config
++
++
++@defuse_unsafe_reprs()
++def _html_module(
+     module: pdoc.doc.Module,
+     all_modules: Mapping[str, pdoc.doc.Module],
+     mtime: str | None = None,
++    *,
++    config: _RenderConfig,
+ ) -> str:
+     """
+     Renders the documentation for a `pdoc.doc.Module`.
+@@ -103,46 +153,74 @@
+     - If `mtime` is given, include additional JavaScript on the page for live-reloading.
+       This is only passed by `pdoc.web`.
+     """
+-    return env.get_template("module.html.jinja2").render(
++    cfg = config
++    jinja_env = _get_env(cfg)
++    return jinja_env.get_template("module.html.jinja2").render(
++        **cfg.to_context(),
+         module=module,
+         all_modules=all_modules,
+         root_module_name=root_module_name(all_modules),
+         edit_url=edit_url(
+             module.modulename,
+             module.is_package,
+-            cast(Mapping[str, str], env.globals["edit_url_map"]),
++            cfg.edit_url_map,
+         ),
+         mtime=mtime,
+     )
+ 
+ 
+ @defuse_unsafe_reprs()
+-def html_index(all_modules: Mapping[str, pdoc.doc.Module]) -> str:
++def _html_index(
++    all_modules: Mapping[str, pdoc.doc.Module],
++    *,
++    config: _RenderConfig,
++) -> str:
+     """Renders the module index."""
+-    return env.get_template("index.html.jinja2").render(
++    cfg = config
++    jinja_env = _get_env(cfg)
++    return jinja_env.get_template("index.html.jinja2").render(
++        **cfg.to_context(),
+         all_modules=all_modules,
+         root_module_name=root_module_name(all_modules),
+     )
+ 
+ 
+ @defuse_unsafe_reprs()
+-def html_error(error: str, details: str = "") -> str:
++def _html_error(
++    error: str,
++    details: str = "",
++    *,
++    config: _RenderConfig,
++) -> str:
+     """Renders an error message."""
+-    return env.get_template("error.html.jinja2").render(
++    cfg = config
++    jinja_env = _get_env(cfg)
++    return jinja_env.get_template("error.html.jinja2").render(
++        **cfg.to_context(),
+         error=error,
+         details=details,
+     )
+ 
+ 
+ @defuse_unsafe_reprs()
+-def search_index(all_modules: Mapping[str, pdoc.doc.Module]) -> str:
++def _search_index(
++    all_modules: Mapping[str, pdoc.doc.Module],
++    *,
++    config: _RenderConfig,
++) -> str:
+     """Renders the Elasticlunr.js search index."""
+-    if not env.globals["search"]:
++    cfg = config
++    if not cfg.search:
+         return ""
++    jinja_env = _get_env(cfg)
+     # This is a rather terrible hack to determine if a given object is public and should be included in the index.
+-    module_template: jinja2.Template = env.get_template("module.html.jinja2")
++    module_template: jinja2.Template = jinja_env.get_template("module.html.jinja2")
+     ctx: jinja2.runtime.Context = module_template.new_context(
+-        {"module": pdoc.doc.Module(types.ModuleType("")), "all_modules": all_modules}
++        {
++            **cfg.to_context(),
++            "module": pdoc.doc.Module(types.ModuleType("")),
++            "all_modules": all_modules,
++        }
+     )
+     for _ in module_template.root_render_func(ctx):  # type: ignore
+         pass
+@@ -153,19 +231,53 @@
+     index = make_index(
+         all_modules,
+         is_public,
+-        cast(str, env.globals["docformat"]),
+-    )
+-
+-    compile_js = Path(env.get_template("build-search-index.js").filename)  # type: ignore
+-    return env.get_template("search.js.jinja2").render(
+-        search_index=precompile_index(index, compile_js)
+-    )
+-
+-
+-@defuse_unsafe_reprs()
+-def repr_module(module: pdoc.doc.Module) -> str:
++        cfg.docformat,
++    )
++
++    compile_js = Path(jinja_env.get_template("build-search-index.js").filename)  # type: ignore
++    return jinja_env.get_template("search.js.jinja2").render(
++        **cfg.to_context(),
++        search_index=precompile_index(index, compile_js),
++    )
++
++
++@defuse_unsafe_reprs()
++def _repr_module(
++    module: pdoc.doc.Module,
++    *,
++    config: _RenderConfig,
++) -> str:
+     """Renders `repr(pdoc.doc.Module)`, primarily used for tests and debugging."""
+     return repr(module)
++
++
++def html_module(
++    module: pdoc.doc.Module,
++    all_modules: Mapping[str, pdoc.doc.Module],
++    mtime: str | None = None,
++) -> str:
++    'Renders the documentation for a `pdoc.doc.Module`.\n\n- `all_modules` contains all modules that are rendered in this invocation.\n  This is used to determine which identifiers should be linked and which should not.\n- If `mtime` is given, include additional JavaScript on the page for live-reloading.\n  This is only passed by `pdoc.web`.'
++    return _html_module(module, all_modules, mtime, config=_current_config)
++
++
++def html_index(all_modules: Mapping[str, pdoc.doc.Module]) -> str:
++    'Renders the module index.'
++    return _html_index(all_modules, config=_current_config)
++
++
++def html_error(error: str, details: str = "") -> str:
++    'Renders an error message.'
++    return _html_error(error, details, config=_current_config)
++
++
++def search_index(all_modules: Mapping[str, pdoc.doc.Module]) -> str:
++    'Renders the Elasticlunr.js search index.'
++    return _search_index(all_modules, config=_current_config)
++
++
++def repr_module(module: pdoc.doc.Module) -> str:
++    'Renders `repr(pdoc.doc.Module)`, primarily used for tests and debugging.'
++    return _repr_module(module, config=_current_config)
+ 
+ 
+ _default_searchpath = [
+@@ -196,4 +308,5 @@
+ env.globals["__version__"] = pdoc.__version__
+ env.globals["env"] = os.environ
+ env.globals["warn"] = warnings.warn
+-configure()  # add default globals
++_current_config: _RenderConfig
++configure()
+diff --git a/pdoc/web.py b/pdoc/web.py
+--- a/pdoc/web.py
++++ b/pdoc/web.py
+@@ -44,9 +44,10 @@
+     def handle_request(self) -> str:
+         """Actually handle a request. Called by `do_HEAD` and `do_GET`."""
+         path = self.path.split("?", 1)[0]
++        config = self.server._config
+ 
+         if path == "/" or path == "/index.html":
+-            out = render.html_index(self.server.all_modules)
++            out = render._html_index(self.server.all_modules, config=config)
+         elif path == "/search.js":
+             self.send_response(200)
+             self.send_header("content-type", "application/javascript")
+@@ -66,7 +67,10 @@
+                 self.send_response(404)
+                 self.send_header("content-type", "text/html")
+                 self.end_headers()
+-                return render.html_error(error=f"Module {module_name!r} not found")
++                return render._html_error(
++                    error=f"Module {module_name!r} not found",
++                    config=config,
++                )
+ 
+             mtime = ""
+             t = extract.module_mtime(module_name)
+@@ -81,18 +85,20 @@
+             try:
+                 extract.invalidate_caches(module_name)
+                 mod = self.server.all_modules[module_name]
+-                out = render.html_module(
++                out = render._html_module(
+                     module=mod,
+                     all_modules=self.server.all_modules,
+                     mtime=mtime,
++                    config=config,
+                 )
+             except Exception:
+                 self.send_response(500)
+                 self.send_header("content-type", "text/html")
+                 self.end_headers()
+-                return render.html_error(
++                return render._html_error(
+                     error=f"Error importing {module_name!r}",
+                     details=traceback.format_exc(),
++                    config=config,
+                 )
+ 
+         self.send_response(200)
+@@ -108,9 +114,18 @@
+     """pdoc's live-reloading web server"""
+ 
+     all_modules: AllModules
+-
+-    def __init__(self, addr: tuple[str, int], specs: list[str], **kwargs):
++    _config: render._RenderConfig
++
++    def __init__(
++        self,
++        addr: tuple[str, int],
++        specs: list[str],
++        *,
++        config: render._RenderConfig | None = None,
++        **kwargs,
++    ):
+         super().__init__(addr, DocHandler, **kwargs)  # type: ignore
++        self._config = config if config is not None else render._current_config
+         module_names = extract.walk_specs(specs)
+         self.all_modules = AllModules(module_names)
+ 
+@@ -125,7 +140,7 @@
+                 all_modules_safe[mod] = doc.Module.from_name(mod)
+             except RuntimeError:
+                 warnings.warn(f"Error importing {mod!r}:\n{traceback.format_exc()}")
+-        return render.search_index(all_modules_safe)
++        return render._search_index(all_modules_safe, config=self._config)
+ 
+ 
+ class AllModules(Mapping[str, doc.Module]):

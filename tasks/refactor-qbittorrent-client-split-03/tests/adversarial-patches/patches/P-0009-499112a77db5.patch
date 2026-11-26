@@ -1,0 +1,706 @@
+diff --git a/client.go b/client.go
+index f51bc23..d985601 100644
+--- a/client.go
++++ b/client.go
+@@ -63,9 +63,8 @@ func DetectClient() bool {
+ 	}
+ 
+ 	// 最后尝试 BitComet.
+-	bc := &BCClient{}
+-	if configSnapshot().ClientType == "" || configSnapshot().ClientType == bc.GetClientType() {
+-		if bc.Detect() {
++	if configSnapshot().ClientType == "" || configSnapshot().ClientType == "BitComet" {
++		if bc := BC_Detect(); bc != nil {
+ 			currentClient = bc
+ 			currentClientType = bc.GetClientType()
+ 			Log("DetectClient", GetLangText("Success-DetectClient"), true, currentClientType)
+@@ -82,7 +81,7 @@ func DetectClient() bool {
+ 		case "Transmission":
+ 			currentClient = &TRClient{}
+ 		case "BitComet":
+-			currentClient = &BCClient{}
++			currentClient = &BCLegacyClient{}
+ 		}
+ 		return true
+ 	}
+diff --git a/client_BitComet.go b/client_BitComet.go
+index 7ecdf0b..a733bb7 100644
+--- a/client_BitComet.go
++++ b/client_BitComet.go
+@@ -2,182 +2,29 @@ package main
+ 
+ import (
+ 	"bytes"
+-	"encoding/json"
+ 	"github.com/PuerkitoBio/goquery"
+ 	"strconv"
+ 	"strings"
+ )
+ 
+-// BCClient 实现了 BitComet 的客户端接口.
+-type BCClient struct {
+-	Version int // 1: HTML, 2: JSON (v2.09+)
+-}
+-
+-func (c *BCClient) GetClientType() string {
+-	return "BitComet"
+-}
+-
+-func (c *BCClient) ConfigPath() string {
+-	return ""
+-}
+-
+-func (c *BCClient) SetURL() bool {
+-	return false
+-}
+-
+-func (c *BCClient) Login() bool {
+-	return BC_Login()
+-}
+-
+-// FetchTorrents 获取所有活动的种子列表.
+-func (c *BCClient) FetchTorrents() ([]*Torrent, error) {
+-	if c.Version == 2 {
+-		return c.FetchTorrents_v2()
+-	}
+-
+-	torrents := BC_FetchTorrents()
+-	if torrents == nil {
+-		return nil, nil
+-	}
+-	var result []*Torrent
+-	for id, t := range *torrents {
+-		result = append(result, &Torrent{
+-			Hash:       strconv.Itoa(id),
+-			TotalSize:  t.TotalSize,
+-			Tracker:    "Unsupported",
+-			LeechCount: 233,
+-		})
+-	}
+-	return result, nil
+-}
+-
+-// FetchTorrentPeers 获取特定种子的 Peer 列表.
+-func (c *BCClient) FetchTorrentPeers(torrent *Torrent) ([]*Peer, error) {
+-	if c.Version == 2 {
+-		return c.FetchTorrentPeers_v2(torrent)
++// BC_Detect identifies the BitComet client version and returns the matching implementation.
++func BC_Detect() Client {
++	v2 := &BCV2Client{}
++	if v2.Detect() {
++		return &BCLegacyClient{}
+ 	}
+ 
+-	peers := BC_FetchTorrentPeers(torrent.Hash)
+-	if peers == nil {
+-		return nil, nil
++	legacy := &BCLegacyClient{}
++	if legacy.Detect() {
++		return legacy
+ 	}
+-	var result []*Peer
+-	for _, p := range *peers {
+-		result = append(result, &Peer{
+-			IP:         p.IP,
+-			Port:       p.Port,
+-			Client:     p.Client,
+-			DlSpeed:    p.DlSpeed,
+-			UpSpeed:    p.UpSpeed,
+-			Progress:   p.Progress,
+-			Downloaded: p.Downloaded,
+-			Uploaded:   p.Uploaded,
+-			ID:         "", // BitComet 不提供 PeerID.
+-		})
+-	}
+-	return result, nil
+-}
+ 
+-func (c *BCClient) SubmitBlockPeer(blockPeerMap map[string]BlockPeerInfoStruct) bool {
+-	if c.Version == 2 {
+-		return c.BC_SubmitBlockPeer_v2(blockPeerMap)
+-	}
+-	return false // BitComet 1.x 暂未通过 WebUI 实现封禁.
++	return nil
+ }
+ 
+-// Version 2 实现逻辑.
+-func (c *BCClient) FetchTorrents_v2() ([]*Torrent, error) {
+-	_, _, responseBody := Fetch(configSnapshot().ClientURL+"/api_v2/task_list/get?state_group=ACTIVE", true, true, false, nil)
+-	if responseBody == nil {
+-		return nil, nil
+-	}
+-
+-	var resp BC_v2_TaskListResponse
+-	if err := json.Unmarshal(responseBody, &resp); err != nil {
+-		Log("FetchTorrents_v2", GetLangText("Error-Parse"), true, err.Error())
+-		return nil, err
+-	}
+-
+-	var result []*Torrent
+-	for _, t := range resp.TaskList {
+-		if strings.ToUpper(t.Type) != "BT" {
+-			continue
+-		}
+-		result = append(result, &Torrent{
+-			Hash:       t.TaskID,
+-			TotalSize:  t.Size,
+-			Tracker:    "BitComet-v2",
+-			LeechCount: int64(t.LeechCount),
+-		})
+-	}
+-	return result, nil
+-}
+-
+-func (c *BCClient) FetchTorrentPeers_v2(torrent *Torrent) ([]*Peer, error) {
+-	_, _, responseBody := Fetch(configSnapshot().ClientURL+"/api/task/peers/get?task_id="+torrent.Hash+"&groups=peers_connected", true, true, false, nil)
+-	if responseBody == nil {
+-		return nil, nil
+-	}
+-
+-	var resp BC_v2_PeerListResponse
+-	if err := json.Unmarshal(responseBody, &resp); err != nil {
+-		Log("FetchTorrentPeers_v2", GetLangText("Error-Parse"), true, err.Error())
+-		return nil, err
+-	}
+-
+-	var result []*Peer
+-	for _, p := range resp.PeerList {
+-		result = append(result, &Peer{
+-			IP:         p.IP,
+-			Port:       p.Port,
+-			Client:     p.Client,
+-			DlSpeed:    p.DlSpeed,
+-			UpSpeed:    p.UpSpeed,
+-			Progress:   p.Progress / 100.0, // API 返回通常是 0-100.
+-			Downloaded: p.Downloaded,
+-			Uploaded:   p.Uploaded,
+-		})
+-	}
+-	return result, nil
+-}
+-
+-func (c *BCClient) BC_SubmitBlockPeer_v2(blockPeerMap map[string]BlockPeerInfoStruct) bool {
+-	// 按 Torrent 分组 IP 以匹配 ban_ip 接口要求.
+-	taskIPs := make(map[string][]string)
+-	for peerIP, peerInfo := range blockPeerMap {
+-		if peerInfo.InfoHash != "" {
+-			taskIPs[peerInfo.InfoHash] = append(taskIPs[peerInfo.InfoHash], peerIP)
+-		}
+-	}
+-
+-	if len(taskIPs) == 0 {
+-		return true
+-	}
+-
+-	allSuccess := true
+-	for taskID, ips := range taskIPs {
+-		params := BC_v2_BanParams{
+-			TaskID:  taskID,
+-			BanTime: "ban_ip_forever",
+-			IPList:  ips,
+-		}
+-		postData, _ := json.Marshal(params)
+-		code, _, _ := Submit(configSnapshot().ClientURL+"/api/task/peers/ban_ip", postData, true, true, &Tr_jsonHeader)
+-		if code != 200 {
+-			allSuccess = false
+-		}
+-	}
+-	return allSuccess
+-}
+-
+-type BC_v2_BanParams struct {
+-	TaskID  string   `json:"task_id"`
+-	BanTime string   `json:"ban_time"`
+-	IPList  []string `json:"ip_list"`
+-}
+-
+-func (c *BCClient) SubmitShadowBanPeer(blockPeerMap map[string]BlockPeerInfoStruct) bool {
+-	return false // 不支持.
++func BC_Login() bool {
++	apiResponseStatusCode, _, _ := Fetch(configSnapshot().ClientURL+"/panel/", false, true, false, nil)
++	return (apiResponseStatusCode == 200)
+ }
+ 
+ type BC_TorrentStruct struct {
+@@ -196,38 +43,6 @@ type BC_PeerStruct struct {
+ 	UpSpeed    int64
+ }
+ 
+-// BitComet v2 JSON API 结构体.
+-type BC_v2_CommonResponse struct {
+-	Result string `json:"result"`
+-}
+-type BC_v2_TaskListResponse struct {
+-	TaskList []BC_v2_Task `json:"movie_list"` // 该 API 实际返回的是 movie_list.
+-}
+-type BC_v2_Task struct {
+-	TaskID     string `json:"task_id"`
+-	Type       string `json:"type"`
+-	Size       int64  `json:"total_size"`
+-	UpSpeed    int64  `json:"upload_speed"`
+-	Status     string `json:"state"`
+-	InfoHash   string `json:"info_hash"`
+-	Name       string `json:"name"`
+-	Progress   int    `json:"progress"`
+-	LeechCount int    `json:"leechers_count"`
+-}
+-type BC_v2_PeerListResponse struct {
+-	PeerList []BC_v2_Peer `json:"peers_connected"`
+-}
+-type BC_v2_Peer struct {
+-	IP         string  `json:"address"`
+-	Port       int     `json:"remoteport"`
+-	Client     string  `json:"clienttype"`
+-	Progress   float64 `json:"progress"`
+-	DlSpeed    int64   `json:"downrate"`
+-	UpSpeed    int64   `json:"uprate"`
+-	Downloaded int64   `json:"downsize"`
+-	Uploaded   int64   `json:"upsize"`
+-}
+-
+ func BC_ParseTorrentLink(torrentLinkStr string) int {
+ 	torrentIDSplit1 := strings.SplitN(StrTrim(torrentLinkStr), "?id=", 2)
+ 	if len(torrentIDSplit1) < 2 {
+@@ -337,29 +152,7 @@ func BC_ParseIP(ipStr string) (string, int) {
+ 
+ 	return ipWithoutPortStr, port
+ }
+-func (c *BCClient) Detect() bool {
+-	// 优先探测 Version 2 (JSON API).
+-	apiResponseStatusCode, _, _ := Fetch(configSnapshot().ClientURL+"/api_v2/task_list/get", false, false, false, nil)
+-	if apiResponseStatusCode == 200 || apiResponseStatusCode == 401 {
+-		c.Version = 2
+-		Log("DetectClient", "BitComet (Version 2 - JSON API) Detected", true)
+-		return true
+-	}
+-
+-	// 回落探测 Version 1 (HTML).
+-	apiResponseStatusCode, apiResponseHeaders, _ := Fetch(configSnapshot().ClientURL+"/panel/", false, false, false, nil)
+-	if apiResponseStatusCode == 401 && strings.Contains(apiResponseHeaders.Get("WWW-Authenticate"), "BitComet") {
+-		c.Version = 1
+-		Log("DetectClient", "BitComet (Version 1 - HTML) Detected", true)
+-		return true
+-	}
+ 
+-	return false
+-}
+-func BC_Login() bool {
+-	apiResponseStatusCode, _, _ := Fetch(configSnapshot().ClientURL+"/panel/", false, true, false, nil)
+-	return (apiResponseStatusCode == 200)
+-}
+ func BC_FetchTorrents() *map[int]BC_TorrentStruct {
+ 	_, _, torrentsResponseBody := Fetch(configSnapshot().ClientURL+"/panel/task_list?group=active", true, true, false, nil)
+ 	if torrentsResponseBody == nil {
+diff --git a/client_BitComet_Legacy.go b/client_BitComet_Legacy.go
+new file mode 100644
+index 0000000..186a54f
+--- /dev/null
++++ b/client_BitComet_Legacy.go
+@@ -0,0 +1,85 @@
++package main
++
++import (
++	"strconv"
++	"strings"
++)
++
++// BCLegacyClient implements the HTML panel client for BitComet 1.x.
++type BCLegacyClient struct{}
++
++var _ Client = (*BCLegacyClient)(nil)
++
++func (c *BCLegacyClient) GetClientType() string {
++	return "BitComet"
++}
++
++func (c *BCLegacyClient) ConfigPath() string {
++	return ""
++}
++
++func (c *BCLegacyClient) SetURL() bool {
++	return false
++}
++
++func (c *BCLegacyClient) Login() bool {
++	return BC_Login()
++}
++
++// FetchTorrents lists active torrents.
++func (c *BCLegacyClient) FetchTorrents() ([]*Torrent, error) {
++	torrents := BC_FetchTorrents()
++	if torrents == nil {
++		return nil, nil
++	}
++	var result []*Torrent
++	for id, t := range *torrents {
++		result = append(result, &Torrent{
++			Hash:       strconv.Itoa(id),
++			TotalSize:  t.TotalSize,
++			Tracker:    "Unsupported",
++			LeechCount: 233,
++		})
++	}
++	return result, nil
++}
++
++// FetchTorrentPeers returns the peers for a specific torrent.
++func (c *BCLegacyClient) FetchTorrentPeers(torrent *Torrent) ([]*Peer, error) {
++	peers := BC_FetchTorrentPeers(torrent.Hash)
++	if peers == nil {
++		return nil, nil
++	}
++	var result []*Peer
++	for _, p := range *peers {
++		result = append(result, &Peer{
++			IP:         p.IP,
++			Port:       p.Port,
++			Client:     p.Client,
++			DlSpeed:    p.DlSpeed,
++			UpSpeed:    p.UpSpeed,
++			Progress:   p.Progress,
++			Downloaded: p.Downloaded,
++			Uploaded:   p.Uploaded,
++			ID:         "", // BitComet does not provide a PeerID.
++		})
++	}
++	return result, nil
++}
++
++func (c *BCLegacyClient) SubmitBlockPeer(blockPeerMap map[string]BlockPeerInfoStruct) bool {
++	return false // BitComet 1.x does not support banning through the WebUI.
++}
++
++func (c *BCLegacyClient) SubmitShadowBanPeer(blockPeerMap map[string]BlockPeerInfoStruct) bool {
++	return false // Unsupported.
++}
++
++func (c *BCLegacyClient) Detect() bool {
++	apiResponseStatusCode, apiResponseHeaders, _ := Fetch(configSnapshot().ClientURL+"/panel/", false, false, false, nil)
++	if apiResponseStatusCode == 401 && strings.Contains(apiResponseHeaders.Get("WWW-Authenticate"), "BitComet") {
++		Log("DetectClient", "BitComet (Version 1 - HTML) Detected", true)
++		return true
++	}
++	return false
++}
+diff --git a/client_BitComet_V2.go b/client_BitComet_V2.go
+new file mode 100644
+index 0000000..09ca4d2
+--- /dev/null
++++ b/client_BitComet_V2.go
+@@ -0,0 +1,169 @@
++package main
++
++import (
++	"encoding/json"
++	"strings"
++)
++
++// BCV2Client implements the JSON API client for BitComet v2.09 and later.
++type BCV2Client struct{}
++
++var _ Client = (*BCV2Client)(nil)
++
++func (c *BCV2Client) GetClientType() string {
++	return "BitComet"
++}
++
++func (c *BCV2Client) ConfigPath() string {
++	return ""
++}
++
++func (c *BCV2Client) SetURL() bool {
++	return false
++}
++
++func (c *BCV2Client) Login() bool {
++	return BC_Login()
++}
++
++// FetchTorrents lists active torrents.
++func (c *BCV2Client) FetchTorrents() ([]*Torrent, error) {
++	_, _, responseBody := Fetch(configSnapshot().ClientURL+"/api_v2/task_list/get?state_group=ACTIVE", true, true, false, nil)
++	if responseBody == nil {
++		return nil, nil
++	}
++
++	var resp BC_v2_TaskListResponse
++	if err := json.Unmarshal(responseBody, &resp); err != nil {
++		Log("FetchTorrents_v2", GetLangText("Error-Parse"), true, err.Error())
++		return nil, err
++	}
++
++	var result []*Torrent
++	for _, t := range resp.TaskList {
++		if strings.ToUpper(t.Type) != "BT" {
++			continue
++		}
++		result = append(result, &Torrent{
++			Hash:       t.TaskID,
++			TotalSize:  t.Size,
++			Tracker:    "BitComet-v2",
++			LeechCount: int64(t.LeechCount),
++		})
++	}
++	return result, nil
++}
++
++// FetchTorrentPeers returns the peers for a specific torrent.
++func (c *BCV2Client) FetchTorrentPeers(torrent *Torrent) ([]*Peer, error) {
++	_, _, responseBody := Fetch(configSnapshot().ClientURL+"/api/task/peers/get?task_id="+torrent.Hash+"&groups=peers_connected", true, true, false, nil)
++	if responseBody == nil {
++		return nil, nil
++	}
++
++	var resp BC_v2_PeerListResponse
++	if err := json.Unmarshal(responseBody, &resp); err != nil {
++		Log("FetchTorrentPeers_v2", GetLangText("Error-Parse"), true, err.Error())
++		return nil, err
++	}
++
++	var result []*Peer
++	for _, p := range resp.PeerList {
++		result = append(result, &Peer{
++			IP:         p.IP,
++			Port:       p.Port,
++			Client:     p.Client,
++			DlSpeed:    p.DlSpeed,
++			UpSpeed:    p.UpSpeed,
++			Progress:   p.Progress / 100.0, // The API normally returns a value between 0 and 100.
++			Downloaded: p.Downloaded,
++			Uploaded:   p.Uploaded,
++		})
++	}
++	return result, nil
++}
++
++// SubmitBlockPeer submits the ban list.
++func (c *BCV2Client) SubmitBlockPeer(blockPeerMap map[string]BlockPeerInfoStruct) bool {
++	// Group IP addresses by torrent as required by ban_ip.
++	taskIPs := make(map[string][]string)
++	for peerIP, peerInfo := range blockPeerMap {
++		if peerInfo.InfoHash != "" {
++			taskIPs[peerInfo.InfoHash] = append(taskIPs[peerInfo.InfoHash], peerIP)
++		}
++	}
++
++	if len(taskIPs) == 0 {
++		return true
++	}
++
++	allSuccess := true
++	for taskID, ips := range taskIPs {
++		params := BC_v2_BanParams{
++			TaskID:  taskID,
++			BanTime: "ban_ip_forever",
++			IPList:  ips,
++		}
++		postData, _ := json.Marshal(params)
++		code, _, _ := Submit(configSnapshot().ClientURL+"/api/task/peers/ban_ip", postData, true, true, &Tr_jsonHeader)
++		if code != 200 {
++			allSuccess = false
++		}
++	}
++	return allSuccess
++}
++
++func (c *BCV2Client) SubmitShadowBanPeer(blockPeerMap map[string]BlockPeerInfoStruct) bool {
++	return false // Unsupported.
++}
++
++func (c *BCV2Client) Detect() bool {
++	apiResponseStatusCode, _, _ := Fetch(configSnapshot().ClientURL+"/api_v2/task_list/get", false, false, false, nil)
++	if apiResponseStatusCode == 200 || apiResponseStatusCode == 401 {
++		Log("DetectClient", "BitComet (Version 2 - JSON API) Detected", true)
++		return true
++	}
++	return false
++}
++
++// Structures for the BitComet v2 JSON API.
++type BC_v2_BanParams struct {
++	TaskID  string   `json:"task_id"`
++	BanTime string   `json:"ban_time"`
++	IPList  []string `json:"ip_list"`
++}
++
++type BC_v2_CommonResponse struct {
++	Result string `json:"result"`
++}
++
++type BC_v2_TaskListResponse struct {
++	TaskList []BC_v2_Task `json:"movie_list"` // The API returns movie_list.
++}
++
++type BC_v2_Task struct {
++	TaskID     string `json:"task_id"`
++	Type       string `json:"type"`
++	Size       int64  `json:"total_size"`
++	UpSpeed    int64  `json:"upload_speed"`
++	Status     string `json:"state"`
++	InfoHash   string `json:"info_hash"`
++	Name       string `json:"name"`
++	Progress   int    `json:"progress"`
++	LeechCount int    `json:"leechers_count"`
++}
++
++type BC_v2_PeerListResponse struct {
++	PeerList []BC_v2_Peer `json:"peers_connected"`
++}
++
++type BC_v2_Peer struct {
++	IP         string  `json:"address"`
++	Port       int     `json:"remoteport"`
++	Client     string  `json:"clienttype"`
++	Progress   float64 `json:"progress"`
++	DlSpeed    int64   `json:"downrate"`
++	UpSpeed    int64   `json:"uprate"`
++	Downloaded int64   `json:"downsize"`
++	Uploaded   int64   `json:"upsize"`
++}
+diff --git a/client_integration_test.go b/client_integration_test.go
+index 509c03a..8c3b1eb 100644
+--- a/client_integration_test.go
++++ b/client_integration_test.go
+@@ -142,8 +142,8 @@ func TestBitCometV2HTTPWorkflow(t *testing.T) {
+ 		}
+ 	}))
+ 
+-	client := &BCClient{}
+-	if client.GetClientType() != "BitComet" || !client.Detect() || client.Version != 2 || !client.Login() {
++	client := &BCV2Client{}
++	if client.GetClientType() != "BitComet" || !client.Detect() || !client.Login() {
+ 		t.Fatal("BitComet v2 detection/login workflow failed")
+ 	}
+ 	torrents, err := client.FetchTorrents()
+diff --git a/extended_coverage_test.go b/extended_coverage_test.go
+index 07684bf..0f53d9d 100644
+--- a/extended_coverage_test.go
++++ b/extended_coverage_test.go
+@@ -180,6 +180,32 @@ func TestClientDispatchAndForcedDetection(t *testing.T) {
+ 		if !DetectClient() {
+ 			t.Fatalf("forced detection failed for %q", clientType)
+ 		}
++		if clientType == "BitComet" {
++			if currentClient == nil || currentClient.GetClientType() != "BitComet" {
++				t.Fatal("forced BitComet client invalid")
++			}
++			if currentClient.ConfigPath() != "" || currentClient.SetURL() || currentClient.SubmitBlockPeer(nil) || currentClient.SubmitShadowBanPeer(nil) {
++				t.Fatal("forced BitComet client unsupported operations returned true")
++			}
++			var instancePaths []string
++			httpClient = http.Client{Transport: coverageRoundTripFunc(func(r *http.Request) (*http.Response, error) {
++				instancePaths = append(instancePaths, r.URL.Path)
++				return coverageResponse(404, "", nil), nil
++			})}
++			torrents, _ := currentClient.FetchTorrents()
++			if torrents != nil {
++				t.Fatal("forced BitComet client returned torrents")
++			}
++			peers, _ := currentClient.FetchTorrentPeers(&Torrent{})
++			if peers != nil {
++				t.Fatal("forced BitComet client returned peers")
++			}
++			for _, path := range instancePaths {
++				if strings.HasPrefix(path, "/api") {
++					t.Fatalf("forced BitComet client unexpectedly accessed %s", path)
++				}
++			}
++		}
+ 		if clientType == "unsupported" && currentClient != nil {
+ 			t.Fatal("unsupported forced client unexpectedly created")
+ 		}
+@@ -189,6 +215,81 @@ func TestClientDispatchAndForcedDetection(t *testing.T) {
+ 	if DetectClient() {
+ 		t.Fatal("detection unexpectedly succeeded")
+ 	}
++
++	// BitComet probe path, implementation selection, and non-fallback boundary tests.
++	for _, tc := range []struct {
++		jsonCode      int
++		panelCode     int
++		panelAuth     string
++		autoDetect    bool
++		wantOK        bool
++		wantBanResult bool
++		wantPaths     []string
++	}{
++		{jsonCode: 200, wantOK: true, wantBanResult: true, wantPaths: []string{"/api_v2/task_list/get"}},
++		{jsonCode: 401, wantOK: true, wantBanResult: true, wantPaths: []string{"/api_v2/task_list/get"}},
++		{jsonCode: 404, panelCode: 401, panelAuth: `Basic realm="BitComet"`, wantOK: true, wantBanResult: false, wantPaths: []string{"/api_v2/task_list/get", "/panel/"}},
++		{jsonCode: 404, panelCode: 401, panelAuth: `Basic realm="Other"`, autoDetect: true, wantOK: false, wantBanResult: false, wantPaths: []string{"/api_v2/task_list/get", "/panel/"}},
++	} {
++		currentClient = nil
++		currentClientType = ""
++		testConfig = oldConfig
++		testConfig.ClientType = "BitComet"
++		if tc.autoDetect {
++			testConfig.ClientType = ""
++		}
++		testConfig.ClientURL = "http://client.invalid"
++		config = &testConfig
++		var probePaths []string
++		httpClientExternal = http.Client{Transport: coverageRoundTripFunc(func(r *http.Request) (*http.Response, error) {
++			probePaths = append(probePaths, r.URL.Path)
++			if r.URL.Path == "/api_v2/task_list/get" {
++				return coverageResponse(tc.jsonCode, "", nil), nil
++			}
++			if r.URL.Path == "/panel/" {
++				var hdr map[string]string
++				if tc.panelAuth != "" {
++					hdr = map[string]string{"WWW-Authenticate": tc.panelAuth}
++				}
++				return coverageResponse(tc.panelCode, "", hdr), nil
++			}
++			return coverageResponse(404, "", nil), nil
++		})}
++		httpClient = http.Client{Transport: coverageRoundTripFunc(func(r *http.Request) (*http.Response, error) {
++			return coverageResponse(200, `{"result":"success"}`, nil), nil
++		})}
++
++		gotOK := DetectClient()
++		if gotOK != tc.wantOK {
++			t.Fatalf("DetectClient() = %v, want %v (tc=%+v)", gotOK, tc.wantOK, tc)
++		}
++		if !tc.wantOK {
++			if currentClient != nil {
++				t.Fatalf("expected nil client on detection failure, got %v", currentClient)
++			}
++			continue
++		}
++		if !tc.autoDetect {
++			if len(probePaths) != len(tc.wantPaths) {
++				t.Fatalf("probe paths = %v, want %v", probePaths, tc.wantPaths)
++			}
++			for i, p := range tc.wantPaths {
++				if probePaths[i] != p {
++					t.Fatalf("probe path[%d] = %s, want %s", i, probePaths[i], p)
++				}
++			}
++		} else {
++			if len(probePaths) < 2 || probePaths[len(probePaths)-2] != "/api_v2/task_list/get" || probePaths[len(probePaths)-1] != "/panel/" {
++				t.Fatalf("probe paths for failure boundary = %v, expected ends with %v", probePaths, tc.wantPaths)
++			}
++		}
++		banInput := map[string]BlockPeerInfoStruct{
++			"192.0.2.1": {InfoHash: "hash1"},
++		}
++		if currentClient.SubmitBlockPeer(banInput) != tc.wantBanResult {
++			t.Fatalf("SubmitBlockPeer() = %v, want %v", !tc.wantBanResult, tc.wantBanResult)
++		}
++	}
+ }
+ 
+ func TestConfigInitialisationAndRemoteLists(t *testing.T) {
+@@ -297,9 +398,9 @@ func TestBitCometLegacyHTMLWorkflow(t *testing.T) {
+ 		}
+ 	}))
+ 
+-	client := &BCClient{}
+-	if !client.Detect() || client.Version != 1 {
+-		t.Fatalf("legacy BitComet detection version=%d", client.Version)
++	client := &BCLegacyClient{}
++	if !client.Detect() {
++		t.Fatal("legacy BitComet detection failed")
+ 	}
+ 	torrents, err := client.FetchTorrents()
+ 	if err != nil || len(torrents) != 1 || torrents[0].Hash != "42" {

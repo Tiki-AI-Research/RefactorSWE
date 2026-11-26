@@ -1,0 +1,2680 @@
+diff --git a/tests/test_indent_feature.py b/tests/test_indent_feature.py
+new file mode 100644
+index 0000000..8fcda1b
+--- /dev/null
++++ b/tests/test_indent_feature.py
+@@ -0,0 +1,259 @@
++import io
++import sys
++import threading
++import pytest
++import stackprinter
++
++def _probe_boom():
++    probe_value = 3
++    return 1 / (probe_value - 3)
++
++def _probe_traced_call():
++    traced_value = 5
++    return traced_value + 1
++
++def _probe_exc():
++    try:
++        _probe_boom()
++    except ZeroDivisionError as exc:
++        return exc
++    raise AssertionError("expected ZeroDivisionError")
++
++def _assert_prefixed(text, prefix, label):
++    assert isinstance(text, str) and text, "%s: empty output" % label
++    for line in text.split("\n"):
++        if not line:
++            continue
++        assert line.startswith(prefix), "%s: line not prefixed: %r" % (label, line[:100])
++        assert not line.startswith(prefix + prefix), "%s: prefix applied twice: %r" % (label, line[:100])
++
++# ================= Integration tests (preserved, not in config) =================
++
++def test_integration_indent_config_validation_and_routing():
++    from stackprinter.config import FormatConfig
++
++    assert FormatConfig().indent == ""
++    assert FormatConfig(indent="  ").indent == "  "
++    assert FormatConfig(indent=None).indent == ""
++
++    for bad in (1, 1.5, b"  ", [], object()):
++        expected = "indent must be a string, was %r" % (bad,)
++        with pytest.raises(ValueError) as info:
++            FormatConfig(indent=bad)
++        assert str(info.value) == expected
++
++    frame = sys._getframe()
++    with pytest.raises(ValueError):
++        stackprinter.format(frame, indent=1)
++
++    exc = _probe_exc()
++    cfg = FormatConfig(indent="> ")
++    _assert_prefixed(stackprinter.format(exc, _config=cfg), "> ", "exc with _config")
++    assert stackprinter.format(exc, _config=cfg, indent="") == stackprinter.format(
++        exc, style="plaintext"
++    )
++
++def test_integration_indent_exception_and_frame_rendering():
++    from stackprinter.config import FormatConfig
++    from stackprinter.formatting import ExceptionRenderer
++
++    prefix = "|| "
++    exc = _probe_exc()
++    out = stackprinter.format(exc, indent=prefix)
++    _assert_prefixed(out, prefix, "exception target")
++    assert "ZeroDivisionError" in out
++
++    cfg = FormatConfig(indent=prefix)
++    expected = stackprinter.format(exc, _config=cfg)
++    assert ExceptionRenderer(cfg).render(type(exc), exc, exc.__traceback__) == expected
++
++    frame_out = stackprinter.format(sys._getframe(), indent=prefix)
++    _assert_prefixed(frame_out, prefix, "frame target")
++
++def test_integration_indent_thread_and_current_stack_rendering():
++    prefix = ".. "
++    release = threading.Event()
++
++    def worker_body():
++        release.wait(5)
++
++    thread = threading.Thread(target=worker_body, name="indent-probe")
++    thread.start()
++    try:
++        out = stackprinter.format(thread, indent=prefix)
++    finally:
++        release.set()
++        thread.join(5)
++    _assert_prefixed(out, prefix, "thread target")
++
++    dead = threading.Thread(target=lambda: None)
++    dead_out = stackprinter.format(dead, indent=prefix)
++    _assert_prefixed(dead_out, prefix, "dead thread")
++    assert "no frames found" in dead_out
++
++    _assert_prefixed(stackprinter.format_current_stack(indent=prefix), prefix, "current stack")
++
++def test_integration_indent_trace_and_show_rendering():
++    prefix = ":: "
++
++    buf = io.StringIO()
++    with stackprinter.TracePrinter(print_function=buf.write, style="plaintext", indent=prefix):
++        _probe_traced_call()
++    events = buf.getvalue()
++    assert events.strip(), "trace emitted no events"
++    _assert_prefixed(events, prefix, "TracePrinter events")
++
++    deco_buf = io.StringIO()
++    wrapped = stackprinter.trace(print_function=deco_buf.write, style="plaintext", indent=prefix)(
++        _probe_traced_call
++    )
++    wrapped()
++    deco_events = deco_buf.getvalue()
++    assert deco_events.strip(), "@trace emitted no events"
++    _assert_prefixed(deco_events, prefix, "@trace events")
++
++    show_buf = io.StringIO()
++    exc = _probe_exc()
++    stackprinter.show(exc, file=show_buf, indent=prefix)
++    _assert_prefixed(show_buf.getvalue(), prefix, "show")
++    assert show_buf.getvalue().rstrip("\n") == stackprinter.format(exc, indent=prefix).rstrip("\n")
++
++def test_integration_indent_frame_budget_and_summary_blocks():
++    prefix = "# "
++    exc = _probe_exc()
++
++    budgeted = stackprinter.format(exc, indent=prefix, max_frames=1)
++    _assert_prefixed(budgeted, prefix, "max_frames")
++    assert "frames omitted" in budgeted
++
++    summarized = stackprinter.format(exc, indent=prefix, add_summary=True)
++    _assert_prefixed(summarized, prefix, "add_summary")
++    assert "(full traceback" in summarized
++
++    assert stackprinter.format(exc, indent="") == stackprinter.format(exc)
++    _assert_prefixed(stackprinter.format(exc, indent=prefix, style="darkbg"), prefix, "ansi")
++
++# ================= Atomic tests (Table 11.2) =================
++
++def test_atomic_indent_default_and_validation():
++    from stackprinter.config import FormatConfig
++    assert FormatConfig().indent == ""
++    assert FormatConfig(indent="  ").indent == "  "
++    assert FormatConfig(indent=None).indent == ""
++    for bad in (1, 1.5, b"  ", [], object()):
++        expected = "indent must be a string, was %r" % (bad,)
++        with pytest.raises(ValueError) as info:
++            FormatConfig(indent=bad)
++        assert str(info.value) == expected
++    frame = sys._getframe()
++    with pytest.raises(ValueError):
++        stackprinter.format(frame, indent=1)
++
++def test_atomic_indent_config_routing():
++    from stackprinter.config import FormatConfig
++    exc = _probe_exc()
++    cfg = FormatConfig(indent="> ")
++    _assert_prefixed(stackprinter.format(exc, _config=cfg), "> ", "exc with _config")
++    assert stackprinter.format(exc, _config=cfg, indent="") == stackprinter.format(
++        exc, style="plaintext"
++    )
++
++def test_atomic_indent_exception():
++    prefix = "|| "
++    exc = _probe_exc()
++    out = stackprinter.format(exc, indent=prefix)
++    _assert_prefixed(out, prefix, "exception target")
++    assert "ZeroDivisionError" in out
++
++def test_atomic_indent_frame():
++    prefix = "|| "
++    frame_out = stackprinter.format(sys._getframe(), indent=prefix)
++    _assert_prefixed(frame_out, prefix, "frame target")
++
++def test_atomic_indent_renderer_parity():
++    from stackprinter.config import FormatConfig
++    from stackprinter.formatting import ExceptionRenderer
++    prefix = "|| "
++    exc = _probe_exc()
++    cfg = FormatConfig(indent=prefix)
++    expected = stackprinter.format(exc, _config=cfg)
++    assert ExceptionRenderer(cfg).render(type(exc), exc, exc.__traceback__) == expected
++
++def test_atomic_indent_thread():
++    prefix = ".. "
++    release = threading.Event()
++    def worker_body():
++        release.wait(5)
++    thread = threading.Thread(target=worker_body, name="indent-probe")
++    thread.start()
++    try:
++        out = stackprinter.format(thread, indent=prefix)
++    finally:
++        release.set()
++        thread.join(5)
++    _assert_prefixed(out, prefix, "thread target")
++
++def test_atomic_indent_dead_thread():
++    prefix = ".. "
++    dead = threading.Thread(target=lambda: None)
++    dead_out = stackprinter.format(dead, indent=prefix)
++    _assert_prefixed(dead_out, prefix, "dead thread")
++    assert "no frames found" in dead_out
++
++def test_atomic_indent_current_stack():
++    prefix = ".. "
++    _assert_prefixed(stackprinter.format_current_stack(indent=prefix), prefix, "current stack")
++
++def test_atomic_indent_traceprinter():
++    prefix = ":: "
++    buf = io.StringIO()
++    with stackprinter.TracePrinter(print_function=buf.write, style="plaintext", indent=prefix):
++        _probe_traced_call()
++    events = buf.getvalue()
++    assert events.strip(), "trace emitted no events"
++    _assert_prefixed(events, prefix, "TracePrinter events")
++
++def test_atomic_indent_trace_decorator():
++    prefix = ":: "
++    deco_buf = io.StringIO()
++    wrapped = stackprinter.trace(print_function=deco_buf.write, style="plaintext", indent=prefix)(
++        _probe_traced_call
++    )
++    wrapped()
++    deco_events = deco_buf.getvalue()
++    assert deco_events.strip(), "@trace emitted no events"
++    _assert_prefixed(deco_events, prefix, "@trace events")
++
++def test_atomic_indent_show():
++    prefix = ":: "
++    show_buf = io.StringIO()
++    exc = _probe_exc()
++    stackprinter.show(exc, file=show_buf, indent=prefix)
++    _assert_prefixed(show_buf.getvalue(), prefix, "show")
++    assert show_buf.getvalue().rstrip("\n") == stackprinter.format(exc, indent=prefix).rstrip("\n")
++
++def test_atomic_indent_max_frames():
++    prefix = "# "
++    exc = _probe_exc()
++    budgeted = stackprinter.format(exc, indent=prefix, max_frames=1)
++    _assert_prefixed(budgeted, prefix, "max_frames")
++    assert "frames omitted" in budgeted
++
++def test_atomic_indent_summary():
++    prefix = "# "
++    exc = _probe_exc()
++    summarized = stackprinter.format(exc, indent=prefix, add_summary=True)
++    _assert_prefixed(summarized, prefix, "add_summary")
++    assert "(full traceback" in summarized
++
++def test_atomic_indent_line_wrap():
++    exc = _probe_exc()
++    prefix = ">>>> "
++    indented = stackprinter.format(exc, style="plaintext", line_wrap=30, indent=prefix)
++    plain = stackprinter.format(exc, style="plaintext", line_wrap=30)
++    stripped = "\n".join(
++        line[len(prefix):] if line.startswith(prefix) else line
++        for line in indented.split("\n")
++    )
++    assert stripped == plain
++    assert max(len(line) for line in indented.split("\n")) > 30
+diff --git a/tests/test_refactor_compatibility.py b/tests/test_refactor_compatibility.py
+new file mode 100644
+index 0000000..fc15820
+--- /dev/null
++++ b/tests/test_refactor_compatibility.py
+@@ -0,0 +1,970 @@
++import io
++import os
++import re
++import sys
++import threading
++import types
++import pytest
++import stackprinter
++
++
++def test_format_exception_instance_value_error():
++    try:
++        raise ValueError("explicit_exception_instance")
++    except ValueError as exc:
++        output = stackprinter.format(exc)
++    assert "ValueError: explicit_exception_instance" in output
++    assert "-->" in output
++
++
++def test_format_exception_instance_key_error():
++    try:
++        raise KeyError("explicit_key_error")
++    except KeyError as exc:
++        out_key = stackprinter.format(exc)
++    assert "KeyError: 'explicit_key_error'" in out_key
++
++
++def test_format_exception_instance_no_tb():
++    exc_no_tb = ValueError("no_tb_msg")
++    out_no_tb = stackprinter.format(exc_no_tb)
++    assert out_no_tb == "ValueError: no_tb_msg"
++
++
++def test_format_exception_instance_config_rejected():
++    try:
++        raise RuntimeError("test_tb_error")
++    except RuntimeError as exc:
++        with pytest.raises(TypeError):
++            stackprinter.format(exc, config="not_allowed")
++
++
++def test_format_current_stack():
++    output = stackprinter.format_current_stack()
++    assert "test_format_current_stack" in output
++    assert "File " in output
++    assert "-->" in output
++
++
++def test_show_current_stack_file():
++    buf = io.StringIO()
++    stackprinter.show_current_stack(file=buf)
++    content = buf.getvalue()
++    assert "test_show_current_stack_file" in content
++    assert "File " in content
++
++
++def test_format_current_exception():
++    try:
++        raise ZeroDivisionError("division by zero test")
++    except ZeroDivisionError:
++        output = stackprinter.format_current_exception()
++    assert "ZeroDivisionError: division by zero test" in output
++    assert "-->" in output
++
++
++def test_show_current_exception_file():
++    buf = io.StringIO()
++    try:
++        raise KeyError("custom_missing_key")
++    except KeyError:
++        stackprinter.show_current_exception(file=buf)
++    content = buf.getvalue()
++    assert "KeyError: 'custom_missing_key'" in content
++
++
++def test_show_file_stdout():
++    old_stdout = sys.stdout
++    sys.stdout = io.StringIO()
++    try:
++        try:
++            raise IndexError("stdout_capture_test")
++        except IndexError as exc:
++            stackprinter.show(exc, file="stdout")
++        captured = sys.stdout.getvalue()
++        assert "IndexError: stdout_capture_test" in captured
++    finally:
++        sys.stdout = old_stdout
++
++
++def test_show_silent_when_stderr_none():
++    old_stderr = sys.stderr
++    sys.stderr = None
++    try:
++        try:
++            raise ValueError("silent_stderr_test")
++        except ValueError as exc:
++            ret = stackprinter.show(exc)
++            assert ret is None
++    finally:
++        sys.stderr = old_stderr
++
++
++def test_format_guess_thing_in_except():
++    try:
++        raise RuntimeError("guess_in_except_msg")
++    except RuntimeError:
++        output = stackprinter.format()
++    assert "RuntimeError: guess_in_except_msg" in output
++    assert "-->" in output
++
++
++def test_format_guess_thing_outside_except():
++    output = stackprinter.format()
++    assert "test_format_guess_thing_outside_except" in output
++    assert "-->" in output
++
++
++def test_format_invalid_target_type_int():
++    with pytest.raises(ValueError, match="Can't format"):
++        stackprinter.format(12345)
++
++
++def test_format_invalid_target_type_string():
++    with pytest.raises(ValueError, match="Can't format"):
++        stackprinter.format("plain string target")
++
++
++def test_format_invalid_target_type_exception_class():
++    with pytest.raises(ValueError, match="Can't format"):
++        stackprinter.format(KeyboardInterrupt)
++
++
++def test_format_invalid_source_lines():
++    fr = sys._getframe()
++    with pytest.raises(ValueError, match="source_lines must be an integer or 'all'"):
++        stackprinter.format(fr, source_lines="unsupported")
++
++
++def test_format_invalid_show_vals():
++    fr = sys._getframe()
++    with pytest.raises(ValueError, match="show_vals must be one of"):
++        stackprinter.format(fr, show_vals="unsupported")
++
++
++def test_format_frame_unexpected_keyword():
++    fr = sys._getframe()
++    with pytest.raises(TypeError):
++        stackprinter.format(fr, unexpected_keyword="invalid")
++
++
++def test_format_frame_suppressed_exceptions_rejected():
++    fr = sys._getframe()
++    with pytest.raises(TypeError):
++        stackprinter.format(fr, suppressed_exceptions=[])
++
++
++def test_format_frame_config_rejected():
++    fr = sys._getframe()
++    with pytest.raises(TypeError):
++        stackprinter.format(fr, config="not_a_config_instance")
++
++
++def test_format_current_stack_unexpected_keyword():
++    with pytest.raises(TypeError):
++        stackprinter.format_current_stack(unexpected_keyword="invalid")
++
++
++def test_format_thread_unexpected_keyword():
++    ev = threading.Event()
++    active_thread = threading.Thread(target=ev.wait)
++    active_thread.start()
++    try:
++        with pytest.raises(TypeError):
++            stackprinter.format_thread(active_thread, unexpected_keyword="invalid")
++    finally:
++        ev.set()
++        active_thread.join()
++
++
++def test_format_thread_suppressed_exceptions_rejected():
++    ev = threading.Event()
++    active_thread = threading.Thread(target=ev.wait)
++    active_thread.start()
++    try:
++        with pytest.raises(TypeError):
++            stackprinter.format_thread(active_thread, suppressed_exceptions=[])
++    finally:
++        ev.set()
++        active_thread.join()
++
++
++def test_format_thread_config_rejected():
++    ev = threading.Event()
++    active_thread = threading.Thread(target=ev.wait)
++    active_thread.start()
++    try:
++        with pytest.raises(TypeError):
++            stackprinter.format_thread(active_thread, config="not_a_config_instance")
++    finally:
++        ev.set()
++        active_thread.join()
++
++
++def test_format_exception_debug_fallback():
++    old_dbg = os.environ.pop("PY_STACKPRINTER_DEBUG", None)
++    try:
++        try:
++            1 / 0
++        except ZeroDivisionError as exc:
++            fallback_out = stackprinter.format(exc, unexpected_keyword="invalid")
++            assert "Stackprinter failed:" in fallback_out
++            assert "So here is your original traceback at least:" in fallback_out
++            assert "ZeroDivisionError: division by zero" in fallback_out
++    finally:
++        if old_dbg is not None:
++            os.environ["PY_STACKPRINTER_DEBUG"] = old_dbg
++
++
++def test_format_source_lines_zero():
++    try:
++        raise ValueError("error_with_zero_source_lines")
++    except ValueError as exc:
++        output = stackprinter.format(exc, source_lines=0)
++    assert "ValueError: error_with_zero_source_lines" in output
++    assert "-->" not in output
++
++
++def test_format_source_lines_all():
++    fr = sys._getframe()
++    output = stackprinter.format(fr, source_lines="all")
++    assert "test_format_source_lines_all" in output
++    assert "-->" in output
++
++
++def test_format_show_signature_false():
++    fr = sys._getframe()
++    output = stackprinter.format(fr, source_lines=2, show_signature=False)
++    expected_sig = "def " + "test_format_show_signature_false():"
++    assert expected_sig not in output
++    assert "-->" in output
++
++
++def test_format_show_vals_modes():
++    def dummy(val):
++        dummy_var = val
++        return sys._getframe(), dummy_var
++
++    val_marker = "visible_marker_" + "123"
++    fr, _ = dummy(val_marker)
++    out_none = stackprinter.format(fr, show_vals=None)
++    assert val_marker not in out_none
++    out_line = stackprinter.format(fr, show_vals="line")
++    assert val_marker in out_line
++    assert "dummy_var =" in out_line
++
++
++def test_format_truncate_vals():
++    def dummy():
++        long_string_var = "a" * 500
++        return sys._getframe()
++
++    fr = dummy()
++    output = stackprinter.format(fr, truncate_vals=30)
++    assert "long_string_var =" in output
++    assert "..." in output
++    assert "a" * 500 not in output
++
++    from stackprinter.prettyprinting import truncate
++
++    fixed_str = "x" * 20
++    # Fixed-length string boundary assertions at n, n+1, n+3, n+4
++    assert truncate(fixed_str, 20) == fixed_str
++    assert truncate(fixed_str, 19) == fixed_str
++    assert truncate(fixed_str, 17) == fixed_str
++    assert truncate(fixed_str, 16) == "x" * 16 + "..."
++    assert truncate(fixed_str, 0) == fixed_str
++
++
++def test_format_line_wrap_disabled():
++    def dummy():
++        long_line_var = "abcdefghij" * 10
++        return sys._getframe()
++
++    fr = dummy()
++    out_nowrap = stackprinter.format(fr, line_wrap=0)
++    assert "abcdefghij" * 10 in out_nowrap
++
++
++def test_format_suppressed_vars_list():
++    def dummy():
++        my_secret_token = "confidential_" + "token_xyz"
++        return sys._getframe()
++
++    fr = dummy()
++    secret_marker = "confidential_" + "token_xyz"
++    output = stackprinter.format(fr, suppressed_vars=[r".*secret.*"])
++    assert secret_marker not in output
++    assert "my_secret_token = *****" in output
++
++
++def test_format_suppressed_vars_tuple():
++    def dummy():
++        my_secret_token = "confidential_" + "token_xyz"
++        return sys._getframe()
++
++    fr = dummy()
++    secret_marker = "confidential_" + "token_xyz"
++    output = stackprinter.format(fr, suppressed_vars=(r".*secret.*",))
++    assert secret_marker not in output
++    assert "my_secret_token = *****" in output
++
++
++def test_format_suppressed_vars_set():
++    def dummy():
++        my_secret_token = "confidential_" + "token_xyz"
++        return sys._getframe()
++
++    fr = dummy()
++    secret_marker = "confidential_" + "token_xyz"
++    output = stackprinter.format(fr, suppressed_vars={r".*secret.*"})
++    assert secret_marker not in output
++    assert "my_secret_token = *****" in output
++
++
++def test_format_suppressed_vars_str():
++    def dummy():
++        my_secret_token = "confidential_" + "token_xyz"
++        return sys._getframe()
++
++    fr = dummy()
++    secret_marker = "confidential_" + "token_xyz"
++    output = stackprinter.format(fr, suppressed_vars=r".*secret.*")
++    assert secret_marker not in output
++    assert "my_secret_token = *****" in output
++
++
++def test_format_suppressed_vars_regex_list():
++    def dummy():
++        my_secret_token = "confidential_" + "token_xyz"
++        return sys._getframe()
++
++    fr = dummy()
++    secret_marker = "confidential_" + "token_xyz"
++    output = stackprinter.format(fr, suppressed_vars=[re.compile(r".*secret.*")])
++    assert secret_marker not in output
++    assert "my_secret_token = *****" in output
++
++
++def test_format_suppressed_vars_none():
++    def dummy():
++        my_secret_token = "confidential_" + "token_xyz"
++        return sys._getframe()
++
++    fr = dummy()
++    secret_marker = "confidential_" + "token_xyz"
++    output = stackprinter.format(fr, suppressed_vars=None)
++    assert secret_marker in output
++
++
++def test_format_suppressed_paths_list():
++    hidden_var = "hidden_path_var_list"
++    try:
++        raise ValueError("suppressed_path_test_list")
++    except ValueError as exc:
++        out = stackprinter.format(exc, suppressed_paths=[r".*test_refactor_compatibility.*"])
++    assert "ValueError: suppressed_path_test_list" in out
++    assert "hidden_var =" not in out
++
++
++def test_format_suppressed_paths_tuple():
++    hidden_var = "hidden_path_var_tuple"
++    try:
++        raise ValueError("suppressed_path_test_tuple")
++    except ValueError as exc:
++        out = stackprinter.format(exc, suppressed_paths=(r".*test_refactor_compatibility.*",))
++    assert "ValueError: suppressed_path_test_tuple" in out
++    assert "hidden_var =" not in out
++
++
++def test_format_suppressed_paths_set():
++    hidden_var = "hidden_path_var_set"
++    try:
++        raise ValueError("suppressed_path_test_set")
++    except ValueError as exc:
++        out = stackprinter.format(exc, suppressed_paths={r".*test_refactor_compatibility.*"})
++    assert "ValueError: suppressed_path_test_set" in out
++    assert "hidden_var =" not in out
++
++
++def test_format_suppressed_paths_str():
++    hidden_var = "hidden_path_var_str"
++    try:
++        raise ValueError("suppressed_path_test_str")
++    except ValueError as exc:
++        out = stackprinter.format(exc, suppressed_paths=r".*test_refactor_compatibility.*")
++    assert "ValueError: suppressed_path_test_str" in out
++    assert "hidden_var =" not in out
++
++
++def test_format_suppressed_paths_regex_list():
++    hidden_var = "hidden_path_var_regex"
++    try:
++        raise ValueError("suppressed_path_test_regex")
++    except ValueError as exc:
++        out = stackprinter.format(exc, suppressed_paths=[re.compile(r".*test_refactor_compatibility.*")])
++    assert "ValueError: suppressed_path_test_regex" in out
++    assert "hidden_var =" not in out
++
++
++def test_format_suppressed_paths_none():
++    hidden_var = "hidden_path_var_none"
++    try:
++        raise ValueError("suppressed_path_test_none")
++    except ValueError as exc:
++        out = stackprinter.format(exc, suppressed_paths=None)
++    assert "ValueError: suppressed_path_test_none" in out
++    assert "hidden_var =" in out
++
++
++def test_format_suppressed_exceptions_default():
++    keyboard_interrupt_local_var = "suppressed_local_marker"
++    try:
++        raise KeyboardInterrupt("keyboard_stop")
++    except KeyboardInterrupt:
++        exc_info = sys.exc_info()
++        output_suppressed = stackprinter.format(exc_info)
++        output_unsuppressed = stackprinter.format(exc_info, suppressed_exceptions=[])
++        output_none = stackprinter.format(exc_info, suppressed_exceptions=None)
++    assert "KeyboardInterrupt: keyboard_stop" in output_suppressed
++    assert "keyboard_interrupt_local_var" not in output_suppressed
++    assert "keyboard_interrupt_local_var" in output_unsuppressed
++    assert "keyboard_interrupt_local_var" in output_none
++
++
++def test_format_reverse_order():
++    def step_a():
++        step_b()
++
++    def step_b():
++        raise ValueError("reverse_test_error")
++
++    try:
++        step_a()
++    except ValueError as exc:
++        out_normal = stackprinter.format(exc, reverse=False)
++        out_reversed = stackprinter.format(exc, reverse=True)
++    assert out_normal.find("in step_a") < out_normal.find("in step_b")
++    assert out_reversed.find("in step_b") < out_reversed.find("in step_a")
++
++
++def test_format_add_summary_true():
++    try:
++        raise ValueError("summary_test_error")
++    except ValueError as exc:
++        output = stackprinter.format(exc, add_summary=True)
++    assert "---- (full traceback above) ----" in output
++    assert "ValueError: summary_test_error" in output
++
++
++def test_format_chained_explicit_cause():
++    try:
++        try:
++            raise KeyError("root_cause")
++        except KeyError as e:
++            raise ValueError("derived_effect") from e
++    except ValueError as exc:
++        msg = stackprinter.format(exc)
++    assert "The above exception was the direct cause of the following exception:" in msg
++    assert "KeyError: 'root_cause'" in msg
++    assert "ValueError: derived_effect" in msg
++
++
++def test_format_chained_suppressed_context():
++    def trigger():
++        try:
++            raise KeyError("root_suppressed")
++        except KeyError:
++            raise ValueError("suppressed_effect") from None
++
++    try:
++        trigger()
++    except ValueError as exc:
++        msg = stackprinter.format(exc)
++    assert "While handling the above exception" not in msg
++    assert "KeyError: 'root_suppressed'" not in msg
++    assert "ValueError: suppressed_effect" in msg
++
++
++def test_format_thread_dead():
++    dead_thread = threading.Thread(target=lambda: None)
++    out_dead = stackprinter.format(dead_thread)
++    assert out_dead == "%r: no frames found" % dead_thread
++
++
++def test_format_thread_no_ident():
++    class DummyThread(threading.Thread):
++        @property
++        def ident(self):
++            return None
++
++    no_ident_thread = DummyThread()
++    assert stackprinter.format(no_ident_thread) == "%r: no frames found" % no_ident_thread
++
++
++def test_format_thread_missing_ident():
++    class DummyThread(threading.Thread):
++        @property
++        def ident(self):
++            return 999999999
++
++    missing_ident_thread = DummyThread()
++    assert stackprinter.format(missing_ident_thread) == "%r: no frames found" % missing_ident_thread
++
++
++def test_format_thread_active():
++    started = threading.Event()
++    finished = threading.Event()
++
++    def thread_target():
++        started.set()
++        finished.wait(2.0)
++
++    t = threading.Thread(target=thread_target, name="TestWorkerThread")
++    t.start()
++    try:
++        assert started.wait(1.0)
++        out_active = stackprinter.format(t)
++        assert repr(t) in out_active
++        assert "thread_target" in out_active
++        assert "---- (full traceback above) ----" not in out_active
++    finally:
++        finished.set()
++        t.join(timeout=1.0)
++
++
++def test_format_thread_active_with_summary():
++    started = threading.Event()
++    finished = threading.Event()
++
++    def thread_target():
++        started.set()
++        finished.wait(2.0)
++
++    t = threading.Thread(target=thread_target, name="TestWorkerSummaryThread")
++    t.start()
++    try:
++        assert started.wait(1.0)
++        out_summary = stackprinter.format(t, add_summary=True)
++        assert repr(t) in out_summary
++        assert "thread_target" in out_summary
++        assert "---- (full traceback above) ----" not in out_summary
++    finally:
++        finished.set()
++        t.join(timeout=1.0)
++
++
++def test_format_exception_debug_mode_difference(monkeypatch):
++    try:
++        1 / 0
++    except ZeroDivisionError as exc:
++        # 1. With debug environment unset: returns diagnostic fallback
++        monkeypatch.delenv("PY_STACKPRINTER_DEBUG", raising=False)
++        fallback_out = stackprinter.format(exc, unexpected_keyword="invalid_kwarg")
++        assert "Stackprinter failed:" in fallback_out
++        assert "So here is your original traceback at least:" in fallback_out
++        assert "ZeroDivisionError: division by zero" in fallback_out
++
++        # 2. With debug environment enabled: directly raises internal error
++        monkeypatch.setenv("PY_STACKPRINTER_DEBUG", "1")
++        with pytest.raises(TypeError):
++            stackprinter.format(exc, unexpected_keyword="invalid_kwarg")
++
++
++def test_public_entrypoints_config_and_unknown_kwargs():
++    try:
++        from stackprinter.config import FormatConfig
++        cfg = FormatConfig(style='plaintext', source_lines=2)
++    except ImportError:
++        cfg = None
++
++    # 1. format(exc)
++    exc = ValueError("entry_boundary_exc")
++    if cfg is not None:
++        out = stackprinter.format(exc, _config=cfg)
++        assert "ValueError: entry_boundary_exc" in out
++        with pytest.raises(TypeError):
++            stackprinter.format(exc, config=cfg)
++        # _config merge / override order: explicit kwarg overrides _config
++        out_override = stackprinter.format(exc, _config=cfg, style='darkbg')
++        out_direct = stackprinter.format(exc, _config=cfg.with_overrides(style='darkbg'))
++        assert out_override == out_direct
++        # _config must be a FormatConfig instance
++        with pytest.raises(TypeError):
++            stackprinter.format(exc, _config=object())
++        # source_lines_after accepted on exception target
++        out_sla = stackprinter.format(exc, source_lines_after=2)
++        assert "ValueError: entry_boundary_exc" in out_sla
++    else:
++        try:
++            res = stackprinter.format(exc, config="not_allowed")
++            assert "ValueError: entry_boundary_exc" in res or "Stackprinter failed" in res
++        except TypeError:
++            pass
++
++    # 2. format(frame)
++    fr = sys._getframe()
++    if cfg is not None:
++        out_fr = stackprinter.format(fr, _config=cfg)
++        assert "test_public_entrypoints_config_and_unknown_kwargs" in out_fr
++        with pytest.raises(TypeError):
++            stackprinter.format(fr, config=cfg)
++        with pytest.raises(TypeError):
++            stackprinter.format(fr, unknown_frame_kw="invalid")
++        with pytest.raises(TypeError):
++            stackprinter.format(fr, suppressed_exceptions=[])
++        with pytest.raises(TypeError):
++            stackprinter.format(fr, _config=object())
++        out_fr_sla = stackprinter.format(fr, source_lines_after=2)
++        assert "test_public_entrypoints_config_and_unknown_kwargs" in out_fr_sla
++    else:
++        out_fr = stackprinter.format(fr)
++        assert "test_public_entrypoints_config_and_unknown_kwargs" in out_fr
++        with pytest.raises(TypeError):
++            stackprinter.format(fr, config="not_allowed")
++        with pytest.raises(TypeError):
++            stackprinter.format(fr, unknown_frame_kw="invalid")
++        with pytest.raises(TypeError):
++            stackprinter.format(fr, suppressed_exceptions=[])
++
++    # 3. format(thread)
++    t = threading.Thread(target=lambda: None)
++    if cfg is not None:
++        out_th = stackprinter.format(t, _config=cfg)
++        assert "%r: no frames found" % t == out_th
++        with pytest.raises(TypeError):
++            stackprinter.format(t, config=cfg)
++        with pytest.raises(TypeError):
++            stackprinter.format(t, unknown_th_kw="invalid")
++        with pytest.raises(TypeError):
++            stackprinter.format(t, suppressed_exceptions=[])
++        with pytest.raises(TypeError):
++            stackprinter.format(t, _config=object())
++        out_th_sla = stackprinter.format(t, source_lines_after=2)
++        assert "%r: no frames found" % t == out_th_sla
++    else:
++        out_th = stackprinter.format(t)
++        assert "%r: no frames found" % t == out_th
++        try:
++            stackprinter.format(t, config="not_allowed")
++        except TypeError:
++            pass
++
++    # 4. format_current_stack
++    if cfg is not None:
++        out_stk = stackprinter.format_current_stack(_config=cfg)
++        assert "test_public_entrypoints_config_and_unknown_kwargs" in out_stk
++        with pytest.raises(TypeError):
++            stackprinter.format_current_stack(config=cfg)
++        with pytest.raises(TypeError):
++            stackprinter.format_current_stack(unknown_stk_kw="invalid")
++    else:
++        out_stk = stackprinter.format_current_stack()
++        assert "test_public_entrypoints_config_and_unknown_kwargs" in out_stk
++        with pytest.raises(TypeError):
++            stackprinter.format_current_stack(config="not_allowed")
++        with pytest.raises(TypeError):
++            stackprinter.format_current_stack(unknown_stk_kw="invalid")
++
++    # 5. format_current_exception
++    try:
++        raise KeyError("current_exc_boundary")
++    except KeyError:
++        if cfg is not None:
++            out_ce = stackprinter.format_current_exception(_config=cfg)
++            assert "KeyError: 'current_exc_boundary'" in out_ce
++            with pytest.raises(TypeError):
++                stackprinter.format_current_exception(config=cfg)
++        else:
++            out_ce = stackprinter.format_current_exception()
++            assert "KeyError: 'current_exc_boundary'" in out_ce
++            with pytest.raises(TypeError):
++                stackprinter.format_current_exception(config="not_allowed")
++
++    # 6. show() entrypoints accept _config and reject public config=
++    buf = io.StringIO()
++    if cfg is not None:
++        stackprinter.show(exc, file=buf, _config=cfg)
++        assert "ValueError: entry_boundary_exc" in buf.getvalue()
++        with pytest.raises(TypeError):
++            stackprinter.show(exc, config=cfg)
++    else:
++        try:
++            stackprinter.show(exc, file=buf, config="not_allowed")
++        except TypeError:
++            pass
++
++    buf_stk = io.StringIO()
++    if cfg is not None:
++        stackprinter.show_current_stack(file=buf_stk, _config=cfg)
++        assert "test_public_entrypoints_config_and_unknown_kwargs" in buf_stk.getvalue()
++        with pytest.raises(TypeError):
++            stackprinter.show_current_stack(config=cfg)
++    else:
++        buf_stk = io.StringIO()
++        stackprinter.show_current_stack(file=buf_stk)
++        assert "test_public_entrypoints_config_and_unknown_kwargs" in buf_stk.getvalue()
++        with pytest.raises(TypeError):
++            stackprinter.show_current_stack(config="not_allowed")
++
++    buf_ce = io.StringIO()
++    try:
++        raise IndexError("show_current_exc_boundary")
++    except IndexError:
++        if cfg is not None:
++            stackprinter.show_current_exception(file=buf_ce, _config=cfg)
++            assert "IndexError: show_current_exc_boundary" in buf_ce.getvalue()
++            with pytest.raises(TypeError):
++                stackprinter.show_current_exception(config=cfg)
++        else:
++            buf_ce = io.StringIO()
++            stackprinter.show_current_exception(file=buf_ce)
++            assert "IndexError: show_current_exc_boundary" in buf_ce.getvalue()
++            with pytest.raises(TypeError):
++                stackprinter.show_current_exception(config="not_allowed")
++
++    # 7. Exception target without traceback keeps baseline unvalidated behavior for kwargs
++    exc_no_tb = ValueError("no_tb_unvalidated_kwarg")
++    out_no_tb = stackprinter.format(exc_no_tb, unknown_kwarg_unvalidated=999)
++    assert "ValueError: no_tb_unvalidated_kwarg" in out_no_tb
++
++    # 8. show() with default 'stderr' and sys.stderr is None silently returns None before checking kwargs
++    old_stderr = sys.stderr
++    try:
++        sys.stderr = None
++        res_silent = stackprinter.show(ValueError("silent_err"), unknown_kwarg_silent=999)
++        assert res_silent is None
++    finally:
++        sys.stderr = old_stderr
++
++
++
++
++def test_format_exception_group_fallback():
++    class ExceptionGroup(Exception):
++        def __init__(self, message, exceptions=None):
++            super().__init__(message)
++            self.exceptions = exceptions or []
++
++    eg = ExceptionGroup("nested_group_failure")
++    output = stackprinter.format(eg)
++    assert "ExceptionGroup: nested_group_failure" in output
++    assert "-->" not in output
++
++
++def test_atomic_exception_group_fallback_members():
++    import builtins
++    import traceback
++    if not hasattr(builtins, "ExceptionGroup"):
++        pytest.skip("ExceptionGroup requires Python 3.11+")
++    try:
++        raise ExceptionGroup("outer_group", [
++            ValueError("inner_value"),
++            ExceptionGroup("inner_group", [KeyError("inner_key")]),
++        ])
++    except ExceptionGroup as e:
++        eg = e
++    out = stackprinter.format(eg)
++    expected = "".join(traceback.format_exception(type(eg), eg, eg.__traceback__))
++    assert out == expected
++    assert "inner_value" in out
++    assert "inner_key" in out
++    assert "-->" not in out
++
++
++def test_all_style_aliases_and_ansi_styles():
++    try:
++        raise ValueError("style_alias_verification")
++    except ValueError as exc:
++        has_new_styling = False
++        try:
++            from stackprinter.styling import get_styler
++            has_new_styling = True
++        except ImportError:
++            pass
++
++        if has_new_styling:
++            plaintext_aliases = ['plaintext', 'plain', 'none', None, False, '']
++            ansi_styles = ['darkbg', 'lightbg', 'color', 'dark', 'light', True]
++        else:
++            plaintext_aliases = ['plaintext']
++            ansi_styles = ['darkbg', 'lightbg', 'color']
++
++        # All plaintext aliases must produce plain text without ANSI escapes
++        for alias in plaintext_aliases:
++            out_plain = stackprinter.format(exc, style=alias)
++            assert "\x1b[" not in out_plain, f"ANSI escape found for alias {alias!r}"
++            assert "ValueError: style_alias_verification" in out_plain
++
++        # All ANSI styles must include ANSI escape sequences
++        for s in ansi_styles:
++            out_ansi = stackprinter.format(exc, style=s)
++            assert "\x1b[" in out_ansi, f"Expected ANSI escapes for style {s!r}"
++            assert "ValueError" in out_ansi
++
++
++
++
++def test_trace_and_traceprinter_events():
++    from stackprinter.tracing import TracePrinter, trace
++
++    # 1. TracePrinter call and return events
++    events = []
++    tp = TracePrinter(style='plaintext', print_function=events.append)
++    with tp:
++        def compute_val(x):
++            return x * 3
++
++        result = compute_val(7)
++
++    assert result == 21
++    output_call_ret = "".join(events)
++    assert "compute_val" in output_call_ret
++    assert "Return 21" in output_call_ret
++
++    # 2. TracePrinter exception event
++    exc_events = []
++    tp_exc = TracePrinter(style='plaintext', print_function=exc_events.append, stop_on_exception=False)
++    with tp_exc:
++        def will_fail():
++            raise RuntimeError("traced_runtime_error")
++
++        try:
++            will_fail()
++        except RuntimeError:
++            pass
++
++    output_exc = "".join(exc_events)
++    assert "will_fail" in output_exc
++    assert "RuntimeError: traced_runtime_error" in output_exc
++
++    # 2b. stop_on_exception=True must disable the trace hook while handling the exception
++    stop_events = []
++    tp_stop = TracePrinter(style='plaintext', print_function=stop_events.append,
++                           stop_on_exception=True, depth_limit=100)
++    with tp_stop:
++        def will_fail_stop():
++            raise RuntimeError("traced_stop_error")
++
++        try:
++            will_fail_stop()
++        except RuntimeError:
++            pass
++        assert sys.gettrace() is None, (
++            "trace hook must be disabled after an exception when stop_on_exception=True"
++        )
++
++    # 3. @trace decorator call, return, and exception events
++    deco_events = []
++    @trace(style='plaintext', print_function=deco_events.append)
++    def decorated_func(a, b):
++        return a + b
++
++    res_deco = decorated_func(10, 20)
++    assert res_deco == 30
++    out_deco = "".join(deco_events)
++    assert "decorated_func" in out_deco
++    assert "Return 30" in out_deco
++
++
++
++
++def test_format_frame_when_lineno_none():
++    from stackprinter.frame_formatting import FrameFormatter
++
++    # FrameFormatter must tolerate an unmapped line number.
++    fr = sys._getframe()
++    formatter = FrameFormatter()
++    finfo = formatter(fr, lineno=None)
++    assert "test_format_frame_when_lineno_none" in finfo
++
++
++
++
++def test_format_thread_missing_frame(monkeypatch):
++    class MockThread(threading.Thread):
++        def __init__(self):
++            super().__init__(target=lambda: None)
++            self._ident = 888888
++        @property
++        def ident(self):
++            return self._ident
++        def is_alive(self):
++            return True
++        def __repr__(self):
++            return "<MockThread(Mock-888888)>"
++
++    t = MockThread()
++    # Case 1: thread ident not in sys._current_frames()
++    monkeypatch.setattr(sys, "_current_frames", lambda: {})
++    res1 = stackprinter.format(t)
++    assert res1 == "%r: no frames found" % t
++
++
++
++
++
++def test_format_summary_with_reverse_order():
++    def level_one():
++        level_two()
++
++    def level_two():
++        raise ValueError("summary_reverse_order_marker")
++
++    try:
++        level_one()
++    except ValueError as exc:
++        # reverse=False, add_summary=True:
++        # full traceback -> divider above -> summary -> exception message
++        out_normal = stackprinter.format(exc, reverse=False, add_summary=True)
++        idx_norm_stack = out_normal.find("in level_one")
++        idx_norm_div = out_normal.find("---- (full traceback above) ----")
++        idx_norm_msg = out_normal.find("ValueError: summary_reverse_order_marker")
++        assert idx_norm_stack < idx_norm_div < idx_norm_msg
++
++        # reverse=True, add_summary=True:
++        # exception message -> summary -> divider below -> reversed stack
++        out_rev = stackprinter.format(exc, reverse=True, add_summary=True)
++        idx_rev_msg = out_rev.find("ValueError: summary_reverse_order_marker")
++        idx_rev_div = out_rev.find("---- (full traceback below) ----")
++        idx_rev_stack = out_rev.rfind("in level_one")
++        assert idx_rev_msg < idx_rev_div < idx_rev_stack
++
++
++def test_format_suppressed_exceptions_three_semantics():
++    unique_marker = "suppressed_var_marker_123"
++    try:
++        raise KeyboardInterrupt("three_semantics_check")
++    except KeyboardInterrupt:
++        exc_info = sys.exc_info()
++
++        # Semantics 1: Default suppresses KeyboardInterrupt
++        out_default = stackprinter.format(exc_info)
++        assert unique_marker not in out_default
++        assert "KeyboardInterrupt: three_semantics_check" in out_default
++
++        # Semantics 2: suppressed_exceptions=[] means empty suppression, so locals are shown
++        out_empty = stackprinter.format(exc_info, suppressed_exceptions=[])
++        assert unique_marker in out_empty
++
++        # Semantics 3: suppressed_exceptions=None also means no suppression, so locals are shown
++        out_none = stackprinter.format(exc_info, suppressed_exceptions=None)
++        assert unique_marker in out_none
++
++
++def test_format_base_exception_instance_target_rejected():
++    """BaseException instances that are not Exception subclasses stay rejected."""
++    with pytest.raises(ValueError):
++        stackprinter.format(KeyboardInterrupt("base_exception_instance_target"))
++    with pytest.raises(ValueError):
++        stackprinter.format(SystemExit("base_exception_instance_target"))
++
++    # The sys.exc_info() tuple form keeps accepting base exceptions.
++    try:
++        raise KeyboardInterrupt("base_exception_tuple_target")
++    except KeyboardInterrupt:
++        exc_info = sys.exc_info()
++    out_tuple = stackprinter.format(exc_info)
++    assert "KeyboardInterrupt: base_exception_tuple_target" in out_tuple
++
++
+diff --git a/tests/test_refactor_features.py b/tests/test_refactor_features.py
+new file mode 100644
+index 0000000..5ba7117
+--- /dev/null
++++ b/tests/test_refactor_features.py
+@@ -0,0 +1,1433 @@
++import copy
++import io
++import re
++import sys
++import threading
++from pathlib import Path
++import pytest
++import stackprinter
++
++_FILE_BLOCK = re.compile(r'(?m)^\s*File "')
++_MARKER_LINE = re.compile(r'^    \.\.\. \(\d+ frames omitted\)$')
++
++def _count_blocks(text):
++    return len(_FILE_BLOCK.findall(text))
++
++def _budget_l6():
++    marker6 = True
++    raise ValueError("budget")
++
++def _budget_l5(): _budget_l6()
++def _budget_l4(): _budget_l5()
++def _budget_l3(): _budget_l4()
++def _budget_l2(): _budget_l3()
++def _budget_l1(): _budget_l2()
++
++def _budget_stack():
++    try:
++        _budget_l1()
++    except ValueError as exc:
++        return (type(exc), exc, sys.exc_info()[2])
++
++def _cause_deep(): raise KeyError("cause")
++def _cause_mid(): _cause_deep()
++def _cause_top(): _cause_mid()
++
++def _main_deep():
++    try:
++        _cause_top()
++    except KeyError as exc:
++        raise ValueError("main") from exc
++def _main_mid(): _main_deep()
++def _main_top(): _main_mid()
++
++def _sla_probe():
++    try:
++        raise ValueError("sla_probe")
++    except ValueError as exc:
++        return exc
++
++def _trace_l3(): return 3
++def _trace_l2(): return _trace_l3()
++def _trace_l1(): return _trace_l2()
++
++def _frame_probe():
++    return sys._getframe()
++
++def _make_suppressed_ctx_exc():
++    try:
++        raise KeyError("suppressed_ctx_key")
++    except KeyError:
++        val_err = ValueError("suppressed_derived_val")
++        val_err.__suppress_context__ = True
++        return val_err
++
++def _make_equiv_exc():
++    try:
++        equivalent_token_local = "equivalent_option_token"
++        raise ValueError("option_matrix_message")
++    except ValueError as exc:
++        return exc
++
++# ================= Original Integration Tests (preserved, excluded from config) =================
++
++def test_integration_format_config_covers_all_options():
++    from stackprinter.config import FormatConfig
++
++    default_cfg = FormatConfig()
++    assert default_cfg.style == 'plaintext'
++    assert default_cfg.source_lines == 5
++    assert default_cfg.source_lines_after == 1
++    assert default_cfg.show_signature is True
++    assert default_cfg.show_vals == 'like_source'
++    assert default_cfg.truncate_vals == 500
++    assert default_cfg.line_wrap == 60
++    assert default_cfg.suppressed_paths is None
++    assert default_cfg.suppressed_vars is None
++    assert default_cfg.suppressed_exceptions is not None
++    assert default_cfg.reverse is False
++    assert default_cfg.add_summary == 'auto'
++    assert default_cfg.max_frames is None
++
++    custom_cfg = FormatConfig(
++        style='darkbg',
++        source_lines=3,
++        source_lines_after=2,
++        show_signature=False,
++        show_vals='all',
++        truncate_vals=200,
++        line_wrap=80,
++        suppressed_paths=['/test/path'],
++        suppressed_vars=['secret_token'],
++        suppressed_exceptions=[ValueError],
++        reverse=True,
++        add_summary=True,
++        max_frames=10,
++    )
++    assert custom_cfg.style == 'darkbg'
++    assert custom_cfg.source_lines == 3
++    assert custom_cfg.source_lines_after == 2
++    assert custom_cfg.show_signature is False
++    assert custom_cfg.show_vals == 'all'
++    assert custom_cfg.truncate_vals == 200
++    assert custom_cfg.line_wrap == 80
++    assert custom_cfg.suppressed_paths == ['/test/path']
++    assert custom_cfg.suppressed_vars == ['secret_token']
++    assert custom_cfg.suppressed_exceptions == [ValueError]
++    assert custom_cfg.reverse is True
++    assert custom_cfg.add_summary is True
++    assert custom_cfg.max_frames == 10
++
++    with pytest.raises(ValueError, match="source_lines must be an integer or 'all'"):
++        FormatConfig(source_lines="invalid_lines_mode")
++
++    with pytest.raises(ValueError, match="show_vals must be one of"):
++        FormatConfig(show_vals="invalid_show_vals_mode")
++
++def test_integration_format_config_immutability_and_list_isolation():
++    from stackprinter.config import FormatConfig
++
++    initial_vars = ['original_secret']
++    initial_paths = ['/original/path']
++    initial_exceptions = [KeyboardInterrupt]
++
++    cfg1 = FormatConfig(
++        style='plaintext',
++        suppressed_vars=initial_vars,
++        suppressed_paths=initial_paths,
++        suppressed_exceptions=initial_exceptions,
++    )
++
++    initial_vars.append('external_addition')
++    initial_paths.append('/external/path')
++    assert 'external_addition' not in cfg1.suppressed_vars
++    assert '/external/path' not in cfg1.suppressed_paths
++
++    cfg2 = cfg1.with_overrides(style='darkbg')
++    assert cfg1 is not cfg2
++    assert cfg1.style == 'plaintext'
++    assert cfg2.style == 'darkbg'
++
++    assert cfg1.suppressed_vars is not cfg2.suppressed_vars
++    assert cfg1.suppressed_paths is not cfg2.suppressed_paths
++    if isinstance(cfg1.suppressed_exceptions, list):
++        assert cfg1.suppressed_exceptions is not cfg2.suppressed_exceptions
++
++    cfg2.suppressed_vars.append('new_var')
++    assert 'new_var' not in cfg1.suppressed_vars
++
++def test_integration_equivalent_config_consistent_output():
++    from stackprinter.config import FormatConfig
++
++    try:
++        raise ValueError("consistency_check_message")
++    except ValueError as exc:
++        out_kwargs_exc = stackprinter.format(
++            exc,
++            style='plaintext',
++            source_lines=3,
++            show_vals='line',
++            truncate_vals=300,
++        )
++        cfg_exc = FormatConfig(
++            style='plaintext',
++            source_lines=3,
++            show_vals='line',
++            truncate_vals=300,
++        )
++        out_cfg_exc = stackprinter.format(exc, _config=cfg_exc)
++        assert out_kwargs_exc == out_cfg_exc
++
++    def dummy_frame():
++        local_marker = "consistent_frame_local"
++        return sys._getframe()
++
++    fr = dummy_frame()
++    cfg_fr = FormatConfig(style='plaintext', source_lines=2, add_summary=False)
++    out_kwargs_fr = stackprinter.format(fr, style='plaintext', source_lines=2, add_summary=False)
++    out_cfg_fr = stackprinter.format(fr, _config=cfg_fr)
++    assert "consistent_frame_local" in out_kwargs_fr
++    assert "consistent_frame_local" in out_cfg_fr
++    assert out_kwargs_fr.split("dummy_frame")[-1] == out_cfg_fr.split("dummy_frame")[-1]
++
++    started = threading.Event()
++    stop = threading.Event()
++
++    def worker():
++        started.set()
++        stop.wait(5.0)
++
++    worker_th = threading.Thread(target=worker, name="EquivalentWorkerThread")
++    worker_th.start()
++    try:
++        assert started.wait(2.0)
++        out_kwargs_th = stackprinter.format(worker_th, style='plaintext', add_summary=False)
++        cfg_th = FormatConfig(style='plaintext', add_summary=False)
++        out_cfg_th = stackprinter.format(worker_th, _config=cfg_th)
++        assert out_kwargs_th == out_cfg_th
++    finally:
++        stop.set()
++        worker_th.join(timeout=2.0)
++
++def _make_spy_exc():
++    try:
++        raise RuntimeError("renderer_spy_invocation_verified")
++    except RuntimeError as exc:
++        return exc
++
++def test_integration_exception_entry_invokes_exception_renderer_spy(monkeypatch):
++    from stackprinter.formatting import ExceptionRenderer
++
++    calls = []
++    original_render = ExceptionRenderer.render
++
++    def spy_render(self, etype, evalue, tb):
++        calls.append((etype, evalue, tb))
++        return original_render(self, etype, evalue, tb)
++
++    monkeypatch.setattr(ExceptionRenderer, "render", spy_render)
++
++    captured_exc = _make_spy_exc()
++    output = stackprinter.format(captured_exc)
++
++    assert len(calls) >= 1
++    assert calls[-1][0] is RuntimeError
++    assert calls[-1][1] is captured_exc
++    assert "renderer_spy_invocation_verified" in output
++
++    from stackprinter.config import FormatConfig
++    for opts in ({}, {"add_summary": True}, {"reverse": True}, {"source_lines": 0},
++                 {"style": "darkbg"}, {"show_vals": "line"}, {"truncate_vals": 12}, {"line_wrap": 40}):
++        public = stackprinter.format(captured_exc, **opts)
++        direct = ExceptionRenderer(FormatConfig(**opts)).render(
++            type(captured_exc), captured_exc, captured_exc.__traceback__)
++        assert public == direct, "public exception output must equal ExceptionRenderer output for %r" % (opts,)
++
++def test_integration_thread_entry_invokes_thread_formatter_spy(monkeypatch):
++    from stackprinter.formatting import ThreadStackFormatter
++
++    thread_calls = []
++    original_format_thread = ThreadStackFormatter.format_thread
++
++    def spy_format_thread(self, thread):
++        thread_calls.append(thread)
++        return original_format_thread(self, thread)
++
++    monkeypatch.setattr(ThreadStackFormatter, "format_thread", spy_format_thread)
++
++    dead_thread = threading.Thread(target=lambda: None)
++    output = stackprinter.format(dead_thread)
++
++    assert len(thread_calls) >= 1
++    assert thread_calls[0] is dead_thread
++    assert "%r: no frames found" % dead_thread == output
++
++def test_integration_styler_factory_all_aliases_and_ansi():
++    from stackprinter.styling import get_styler, Styler, AnsiStyler, PlaintextStyler
++
++    for alias in ("plain", "plaintext"):
++        styler = get_styler(alias)
++        assert isinstance(styler, PlaintextStyler)
++        assert isinstance(styler, Styler)
++
++    for style in ("darkbg", "lightbg"):
++        styler = get_styler(style)
++        assert isinstance(styler, AnsiStyler)
++        assert isinstance(styler, Styler)
++
++    try:
++        raise ValueError("alias_palette_contract")
++    except ValueError as exc:
++        assert stackprinter.format(exc, style="dark") == stackprinter.format(exc, style="darkbg")
++        assert stackprinter.format(exc, style="light") == stackprinter.format(exc, style="lightbg")
++        assert stackprinter.format(exc, style=True) == stackprinter.format(exc, style="color")
++
++    try:
++        raise ValueError("alias_factory_parity")
++    except ValueError as exc:
++        exc_type, exc_value, tb = type(exc), exc, exc.__traceback__
++
++    for alias, canonical in (("dark", "darkbg"), ("light", "lightbg"), (True, "color")):
++        a = get_styler(alias)
++        c = get_styler(canonical)
++        assert isinstance(a, AnsiStyler) and isinstance(c, AnsiStyler)
++        assert a.format_exception_message(exc_type, exc_value, tb) == \
++               c.format_exception_message(exc_type, exc_value, tb)
++
++def test_integration_styler_frame_output_ansi_contract():
++    from stackprinter.styling import PlaintextStyler, AnsiStyler, get_styler
++    from stackprinter.formatting import FrameFormatter
++    from stackprinter.config import FormatConfig
++
++    fr = _frame_probe()
++    out_plain = stackprinter.format(fr, style='plaintext')
++    assert "\x1b[" not in out_plain
++
++    for ansi_style in ('darkbg', 'lightbg', 'color'):
++        out_ansi = stackprinter.format(fr, style=ansi_style)
++        assert "\x1b[" in out_ansi
++
++    for alias, canonical in (("dark", "darkbg"), ("light", "lightbg"), (True, "color")):
++        a_formatter = FrameFormatter(FormatConfig(style=alias))
++        c_formatter = FrameFormatter(FormatConfig(style=canonical))
++        assert a_formatter(fr) == c_formatter(fr)
++
++def test_integration_exception_renderer_pipeline_features(monkeypatch):
++    from stackprinter.formatting import ExceptionRenderer
++    from stackprinter.config import FormatConfig
++
++    captured_exc = None
++    try:
++        try:
++            raise KeyError("root_pipeline_error")
++        except KeyError as err:
++            raise ValueError("derived_pipeline_error") from err
++    except ValueError as exc:
++        captured_exc = exc
++
++    r_chain = ExceptionRenderer(FormatConfig(style='plaintext'))
++    out_chain = r_chain.render(captured_exc.__class__, captured_exc, captured_exc.__traceback__)
++    assert "The above exception was the direct cause of the following exception:" in out_chain
++    assert "KeyError: 'root_pipeline_error'" in out_chain
++    assert "ValueError: derived_pipeline_error" in out_chain
++
++    r_summary = ExceptionRenderer(FormatConfig(style='plaintext', add_summary=True))
++    out_summary = r_summary.render(captured_exc.__class__, captured_exc, captured_exc.__traceback__)
++    assert "---- (full traceback above) ----" in out_summary
++    assert "ValueError: derived_pipeline_error" in out_summary
++
++    def outer():
++        inner()
++
++    def inner():
++        raise ValueError("pipeline_reverse_error")
++
++    try:
++        outer()
++    except ValueError as exc_rev:
++        r_rev = ExceptionRenderer(FormatConfig(style='plaintext', reverse=True))
++        out_rev = r_rev.render(exc_rev.__class__, exc_rev, exc_rev.__traceback__)
++        assert out_rev.find("in inner") < out_rev.find("in outer")
++
++    class ExceptionGroup(Exception):
++        pass
++
++    eg = ExceptionGroup("pipeline_eg_fallback")
++    r_eg = ExceptionRenderer(FormatConfig())
++    out_eg = r_eg.render(ExceptionGroup, eg, None)
++    assert "ExceptionGroup: pipeline_eg_fallback" in out_eg
++
++    monkeypatch.delenv("PY_STACKPRINTER_DEBUG", raising=False)
++    r_fallback = ExceptionRenderer(FormatConfig())
++    monkeypatch.setattr(
++        "stackprinter.extraction.get_info",
++        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("simulated_pipeline_failure")),
++    )
++    try:
++        1 / 0
++    except ZeroDivisionError as exc_fb:
++        out_fallback = r_fallback.render(exc_fb.__class__, exc_fb, exc_fb.__traceback__)
++        assert "Stackprinter failed" in out_fallback
++        assert "So here is your original traceback at least:" in out_fallback
++        assert "ZeroDivisionError: division by zero" in out_fallback
++
++def test_integration_refactoring_manifest_responsibilities_and_migration():
++    pkg_dir = Path(stackprinter.__file__).resolve().parent
++    repo_root = pkg_dir.parent
++    manifest_path = repo_root / "REFACTORING.md"
++
++    assert manifest_path.exists(), "REFACTORING.md must exist in repository root"
++    content = manifest_path.read_text(encoding="utf-8")
++
++    required_modules = [
++        "stackprinter.config",
++        "stackprinter.styling",
++        "stackprinter.formatting",
++        "stackprinter.frame_formatting",
++        "stackprinter.tracing",
++    ]
++    for mod in required_modules:
++        assert mod in content, f"Manifest must document responsibility of module {mod}"
++
++    required_components = [
++        "FormatConfig",
++        "Styler",
++        "PlaintextStyler",
++        "AnsiStyler",
++        "ExceptionRenderer",
++        "ThreadStackFormatter",
++        "TraceEventFormatter",
++    ]
++    comp_names = set(required_components)
++    for comp in required_components:
++        pattern = rf"{comp}[^\n]{{0,50}}(?::|\||-)\s*([^\n]+)"
++        matches = re.findall(pattern, content)
++        valid = False
++        for m in matches:
++            words = [w.strip('`*.,()') for w in m.split() if w.strip('`*.,()')]
++            non_comp_words = [w for w in words if w not in comp_names]
++            if len(non_comp_words) >= 5:
++                valid = True
++                break
++        assert valid, f"Manifest must document responsibility of component {comp} with descriptive text"
++
++    assert "migration capabilities & integration guidance" in content.casefold()
++    assert any(term in content.casefold() for term in ("backward compat", "backwards compat", "compatibility"))
++    assert "_config" in content
++
++    mig_idx = content.casefold().find("migration capabilities & integration guidance")
++    mig_section = content[mig_idx:] if mig_idx != -1 else ""
++
++    steps = []
++    for line in mig_section.splitlines():
++        m = re.match(r"^\s*\d+[.)]\s+(.*)$", line)
++        if m:
++            steps.append(m.group(1).strip())
++    assert len(steps) >= 3
++
++    code_blocks = re.findall(r"```[^\n]*\n(.*?)```", mig_section, re.DOTALL)
++    assert code_blocks
++    example_lines = [ln for ln in code_blocks[0].splitlines() if ln.strip()]
++    assert len(example_lines) >= 2
++
++def test_integration_thread_none_frame_mapping(monkeypatch):
++    class MockThread(threading.Thread):
++        def __init__(self):
++            super().__init__(target=lambda: None)
++            self._ident = 888888
++        @property
++        def ident(self):
++            return self._ident
++        def is_alive(self):
++            return True
++        def __repr__(self):
++            return "<MockThread(Mock-888888)>"
++
++    t = MockThread()
++    monkeypatch.setattr(sys, "_current_frames", lambda: {888888: None})
++    output = stackprinter.format(t)
++    assert output == "%r: no frames found" % t
++
++def test_integration_entrypoint_delegation_exhaustive(monkeypatch):
++    from stackprinter.formatting import ExceptionRenderer, ThreadStackFormatter
++
++    render_calls = []
++    thread_calls = []
++    original_render = ExceptionRenderer.render
++    original_format_thread = ThreadStackFormatter.format_thread
++
++    def spy_render(self, *args, **kwargs):
++        render_calls.append(args)
++        return original_render(self, *args, **kwargs)
++
++    def spy_format_thread(self, thread):
++        thread_calls.append(thread)
++        return original_format_thread(self, thread)
++
++    monkeypatch.setattr(ExceptionRenderer, "render", spy_render)
++    monkeypatch.setattr(ThreadStackFormatter, "format_thread", spy_format_thread)
++
++    def make_exc():
++        try:
++            raise ValueError("delegation_exhaustive")
++        except ValueError as exc:
++            return exc
++
++    exc = make_exc()
++    stackprinter.format(exc)
++    try:
++        raise RuntimeError("delegation_exhaustive_current")
++    except RuntimeError:
++        stackprinter.format_current_exception()
++    buf_show = io.StringIO()
++    stackprinter.show(exc, file=buf_show)
++    buf_show_current = io.StringIO()
++    try:
++        raise KeyError("delegation_exhaustive_show_current")
++    except KeyError:
++        stackprinter.show_current_exception(file=buf_show_current)
++
++    assert len(render_calls) >= 1
++    assert "delegation_exhaustive" in buf_show.getvalue()
++    assert "delegation_exhaustive_show_current" in buf_show_current.getvalue()
++
++    thread = threading.Thread(target=lambda: None)
++    assert stackprinter.format(thread) == "%r: no frames found" % thread
++    buf_thread = io.StringIO()
++    stackprinter.show(thread, file=buf_thread)
++    assert len(thread_calls) >= 1
++    assert thread_calls[0] is thread
++    assert thread_calls[1] is thread
++
++    render_count_before = len(render_calls)
++    thread_count_before = len(thread_calls)
++    stackprinter.format(sys._getframe())
++    assert len(render_calls) == render_count_before
++    assert len(thread_calls) == thread_count_before
++
++def test_integration_config_option_equivalence_matrix():
++    from stackprinter.config import FormatConfig
++
++    exc = _make_equiv_exc()
++    option_sets = [
++        {"source_lines": 1},
++        {"source_lines_after": 3},
++        {"show_signature": False},
++        {"show_vals": "line"},
++        {"show_vals": "all"},
++        {"truncate_vals": 12},
++        {"line_wrap": 0},
++        {"suppressed_vars": ["equivalent_option_token"]},
++        {"suppressed_paths": []},
++        {"suppressed_exceptions": None},
++        {"reverse": True},
++        {"add_summary": True},
++        {"style": "darkbg"},
++    ]
++    for options in option_sets:
++        kwargs_out = stackprinter.format(exc, **options)
++        config_out = stackprinter.format(exc, _config=FormatConfig(**options))
++        assert kwargs_out == config_out
++
++    assert stackprinter.format(exc, _config=FormatConfig()) == stackprinter.format(exc)
++    assert stackprinter.format(exc, _config=FormatConfig(suppressed_paths=[])) == \
++        stackprinter.format(exc, suppressed_paths=[])
++
++def test_integration_styler_message_contract():
++    from stackprinter.styling import get_styler
++
++    try:
++        raise ValueError("styler_message_contract")
++    except ValueError as exc:
++        exc_type, exc_value, tb = type(exc), exc, exc.__traceback__
++
++    plain = get_styler("plaintext").format_exception_message(exc_type, exc_value, tb)
++    ansi = get_styler("darkbg").format_exception_message(exc_type, exc_value, tb)
++
++    assert isinstance(plain, str) and isinstance(ansi, str)
++    assert "ValueError" in plain and "styler_message_contract" in plain
++    assert "\x1b[" not in plain
++    assert "\x1b[" in ansi
++
++# Preserved P2P tests in test_refactor_features.py
++def test_format_thread_reverse_and_ansi():
++    started = threading.Event()
++    stop = threading.Event()
++
++    def live_worker():
++        started.set()
++        while not stop.is_set():
++            pass
++
++    thread = threading.Thread(target=live_worker, name="ReverseAnsiThread")
++    thread.start()
++    try:
++        assert started.wait(3.0)
++        live_repr = "%r" % thread
++        forward = stackprinter.format(thread)
++        reversed_out = stackprinter.format(thread, reverse=True)
++        ansi_out = stackprinter.format(thread, style="darkbg")
++    finally:
++        stop.set()
++        thread.join(3.0)
++
++    assert forward.startswith(live_repr)
++    assert " in live_worker" in forward
++    assert "\x1b[" not in forward
++    assert reversed_out != forward
++    assert " in live_worker" in reversed_out
++    assert "\x1b[" in ansi_out
++    assert " in live_worker" in ansi_out
++    body_lines = [ln for ln in forward.splitlines()[1:] if ln.strip()]
++    assert body_lines, "thread stack body must not be empty"
++    assert body_lines[0].startswith("    "), (
++        "thread stack body must be indented relative to the thread header, got %r"
++        % (body_lines[0][:40],)
++    )
++
++def test_show_thread_matches_format_output():
++    thread = threading.Thread(target=lambda: None)
++    expected = stackprinter.format(thread)
++    buf = io.StringIO()
++    stackprinter.show(thread, file=buf)
++    assert buf.getvalue().rstrip("\n") == expected
++    assert expected == "%r: no frames found" % thread
++
++def test_integration_trace_event_formatter_delegation(monkeypatch):
++    from stackprinter.config import FormatConfig
++    from stackprinter.tracing import TraceEventFormatter, TracePrinter, trace
++
++    calls = []
++    original = TraceEventFormatter.format_event
++
++    def spy_format_event(self, *args, **kwargs):
++        calls.append(args)
++        return original(self, *args, **kwargs)
++
++    monkeypatch.setattr(TraceEventFormatter, "format_event", spy_format_event)
++
++    events = []
++    with TracePrinter(style="plaintext", print_function=events.append):
++        def traced_callee(value):
++            traced_local = value + 1
++            return traced_local
++        traced_callee(2)
++
++    joined = "".join(events)
++    assert len(calls) >= 2
++    assert "traced_callee" in joined
++    assert "Return 3" in joined
++
++    config_events = []
++    with TracePrinter(_config=FormatConfig(style="darkbg"), print_function=config_events.append):
++        traced_callee(4)
++
++    config_joined = "".join(config_events)
++    assert "traced_callee" in config_joined
++    assert "\x1b[" in config_joined
++
++def test_integration_frame_formatter_config_driven():
++    from stackprinter.config import FormatConfig
++    from stackprinter.frame_formatting import FrameFormatter
++
++    fr = _frame_probe()
++    cfg1 = FormatConfig(style="plaintext")
++    cfg2 = FormatConfig(style="darkbg")
++    out1 = FrameFormatter(cfg1)(fr)
++    out2 = FrameFormatter(cfg2)(fr)
++    assert "\x1b[" not in out1
++    assert "\x1b[" in out2
++
++def test_integration_format_config_rejects_illegal_writes():
++    from stackprinter.config import FormatConfig
++
++    cfg = FormatConfig()
++    with pytest.raises(AttributeError):
++        cfg.style = "darkbg"
++    with pytest.raises(AttributeError):
++        cfg.line_wrap = 120
++
++def test_integration_entrypoints_use_renderer_return_value(monkeypatch):
++    from stackprinter.formatting import ExceptionRenderer, ThreadStackFormatter
++
++    monkeypatch.setattr(ExceptionRenderer, 'render', lambda self, *a, **k: '<<SENTINEL-EXC>>')
++    monkeypatch.setattr(ThreadStackFormatter, 'format_thread', lambda self, thread: '<<SENTINEL-THREAD>>')
++
++    try:
++        raise ValueError('probe')
++    except ValueError as exc:
++        assert '<<SENTINEL-EXC>>' in stackprinter.format(exc)
++
++    dead = threading.Thread(target=lambda: None)
++    assert stackprinter.format(dead) == '<<SENTINEL-THREAD>>'
++
++def test_integration_palette_variants_and_current_stack():
++    from stackprinter.config import FormatConfig
++
++    ansi_regex = re.compile(r'\x1b\[[0-9;]*m')
++    try:
++        raise ValueError('palette_probe')
++    except ValueError as exc:
++        plain = stackprinter.format(exc, style='plaintext')
++        for st in ('darkbg2', 'darkbg3', 'lightbg2', 'lightbg3'):
++            out = stackprinter.format(exc, style=st)
++            assert "\x1b[" in out
++            assert ansi_regex.sub('', out) == plain
++
++    cs_2 = stackprinter.format_current_stack(source_lines_after=2)
++    cs_0 = stackprinter.format_current_stack(source_lines_after=0)
++    assert cs_2 != cs_0
++
++    cfg = FormatConfig()
++    try:
++        stackprinter.set_excepthook(_config=cfg)
++        with pytest.raises(TypeError):
++            stackprinter.remove_excepthook(_config=cfg)
++    finally:
++        stackprinter.remove_excepthook()
++
++def test_integration_frame_budget_truncates_exception_stack():
++    from stackprinter.config import FormatConfig
++
++    target = _budget_stack()
++    full = stackprinter.format(target, style="plaintext")
++    total = _count_blocks(full)
++    assert total >= 5
++
++    for n in (1, 3):
++        out = stackprinter.format(target, _config=FormatConfig(max_frames=n), style="plaintext")
++        assert _count_blocks(out) == n
++        assert out.rstrip().splitlines()[-1] == "    ... (%d frames omitted)" % (total - n)
++
++    assert "frames omitted" not in stackprinter.format(target, style="plaintext", max_frames=None)
++
++def test_integration_frame_budget_config_routing_and_validation():
++    from stackprinter.config import FormatConfig
++
++    target = _budget_stack()
++    out = stackprinter.format(target, _config=FormatConfig(max_frames=1), max_frames=4, style="plaintext")
++    assert _count_blocks(out) == 4
++
++    out = stackprinter.format(target, _config=FormatConfig(max_frames=2), style="plaintext")
++    assert _count_blocks(out) == 2
++
++    cfg = FormatConfig(max_frames=2)
++    assert cfg.with_overrides(style="plaintext").max_frames == 2
++
++    for bad in (0, -1, "3", 2.5, [2]):
++        try:
++            FormatConfig(max_frames=bad)
++        except ValueError as exc:
++            assert str(exc) == "max_frames must be a positive integer or None, was %r" % (bad,)
++        else:
++            raise AssertionError("FormatConfig accepted max_frames=%r" % (bad,))
++
++def test_integration_frame_budget_thread_and_current_stack():
++    from stackprinter.config import FormatConfig
++
++    thread = threading.current_thread()
++    full = stackprinter.format(thread, style="plaintext")
++    total = _count_blocks(full)
++    assert total >= 3
++
++    out = stackprinter.format(thread, max_frames=2, style="plaintext")
++    assert _count_blocks(out) == 2
++    assert out.rstrip().splitlines()[-1] == "    ... (%d frames omitted)" % (total - 2)
++
++    out = stackprinter.format_current_stack(max_frames=2, style="plaintext")
++    assert _count_blocks(out) == 2
++    assert any(_MARKER_LINE.match(line) for line in out.splitlines())
++
++    out = stackprinter.format_current_stack(_config=FormatConfig(max_frames=3), style="plaintext")
++    assert _count_blocks(out) == 3
++
++# ================= Atomic tests (Table 11.2 & 11.3) =================
++
++def test_atomic_config_defaults():
++    from stackprinter.config import FormatConfig
++    cfg = FormatConfig()
++    assert cfg.style == 'plaintext'
++    assert cfg.source_lines == 5
++    assert cfg.source_lines_after == 1
++    assert cfg.show_signature is True
++    assert cfg.show_vals == 'like_source'
++    assert cfg.truncate_vals == 500
++    assert cfg.line_wrap == 60
++    assert cfg.suppressed_paths is None
++    assert cfg.suppressed_vars is None
++    assert cfg.suppressed_exceptions is not None
++    assert cfg.reverse is False
++    assert cfg.add_summary == 'auto'
++    assert cfg.max_frames is None
++    assert cfg.indent == ""
++
++def test_atomic_config_all_options_stored():
++    from stackprinter.config import FormatConfig
++    custom_cfg = FormatConfig(
++        style='darkbg',
++        source_lines=3,
++        source_lines_after=2,
++        show_signature=False,
++        show_vals='all',
++        truncate_vals=200,
++        line_wrap=80,
++        suppressed_paths=['/test/path'],
++        suppressed_vars=['secret_token'],
++        suppressed_exceptions=[ValueError],
++        reverse=True,
++        add_summary=True,
++        max_frames=10,
++        indent="  ",
++    )
++    assert custom_cfg.style == 'darkbg'
++    assert custom_cfg.source_lines == 3
++    assert custom_cfg.source_lines_after == 2
++    assert custom_cfg.show_signature is False
++    assert custom_cfg.show_vals == 'all'
++    assert custom_cfg.truncate_vals == 200
++    assert custom_cfg.line_wrap == 80
++    assert custom_cfg.suppressed_paths == ['/test/path']
++    assert custom_cfg.suppressed_vars == ['secret_token']
++    assert custom_cfg.suppressed_exceptions == [ValueError]
++    assert custom_cfg.reverse is True
++    assert custom_cfg.add_summary is True
++    assert custom_cfg.max_frames == 10
++    assert custom_cfg.indent == "  "
++
++def test_atomic_config_with_overrides_values():
++    from stackprinter.config import FormatConfig
++    cfg = FormatConfig(style='plaintext', line_wrap=60)
++    cfg2 = cfg.with_overrides(style='darkbg', line_wrap=80)
++    assert cfg2 is not cfg
++    assert cfg2.style == 'darkbg'
++    assert cfg2.line_wrap == 80
++    assert cfg.style == 'plaintext'
++    assert cfg.line_wrap == 60
++
++def test_atomic_config_immutability():
++    from stackprinter.config import FormatConfig
++    cfg = FormatConfig()
++    with pytest.raises(AttributeError):
++        cfg.style = 'darkbg'
++    with pytest.raises(AttributeError):
++        cfg.line_wrap = 100
++
++def test_atomic_config_list_isolation():
++    from stackprinter.config import FormatConfig
++    initial_vars = ['original_secret']
++    initial_paths = ['/original/path']
++    initial_exceptions = [KeyboardInterrupt]
++    cfg1 = FormatConfig(
++        style='plaintext',
++        suppressed_vars=initial_vars,
++        suppressed_paths=initial_paths,
++        suppressed_exceptions=initial_exceptions,
++    )
++    initial_vars.append('external_addition')
++    initial_paths.append('/external/path')
++    assert 'external_addition' not in cfg1.suppressed_vars
++    assert '/external/path' not in cfg1.suppressed_paths
++
++    cfg2 = cfg1.with_overrides(style='darkbg')
++    assert cfg1.suppressed_vars is not cfg2.suppressed_vars
++    assert cfg1.suppressed_paths is not cfg2.suppressed_paths
++    if isinstance(cfg1.suppressed_exceptions, list):
++        assert cfg1.suppressed_exceptions is not cfg2.suppressed_exceptions
++
++    cfg2.suppressed_vars.append('new_var')
++    assert 'new_var' not in cfg1.suppressed_vars
++
++def test_atomic_config_kwargs_equivalence():
++    from stackprinter.config import FormatConfig
++    try:
++        raise ValueError("consistency_check_message")
++    except ValueError as exc:
++        out_kwargs = stackprinter.format(exc, style='plaintext', source_lines=3, show_vals='line', truncate_vals=300)
++        out_cfg = stackprinter.format(exc, _config=FormatConfig(style='plaintext', source_lines=3, show_vals='line', truncate_vals=300))
++        assert out_kwargs == out_cfg
++
++    def dummy_frame():
++        local_marker = "consistent_frame_local"
++        return sys._getframe()
++
++    fr = dummy_frame()
++    cfg_fr = FormatConfig(style='plaintext', source_lines=2, add_summary=False)
++    out_kwargs_fr = stackprinter.format(fr, style='plaintext', source_lines=2, add_summary=False)
++    out_cfg_fr = stackprinter.format(fr, _config=cfg_fr)
++    assert "consistent_frame_local" in out_kwargs_fr
++    assert "consistent_frame_local" in out_cfg_fr
++    assert out_kwargs_fr.split("dummy_frame")[-1] == out_cfg_fr.split("dummy_frame")[-1]
++
++def test_atomic_delegation_exception_spy(monkeypatch):
++    from stackprinter.formatting import ExceptionRenderer
++    calls = []
++    original_render = ExceptionRenderer.render
++    def spy_render(self, etype, evalue, tb):
++        calls.append((etype, evalue, tb))
++        return original_render(self, etype, evalue, tb)
++    monkeypatch.setattr(ExceptionRenderer, "render", spy_render)
++
++    try:
++        raise RuntimeError("renderer_spy_invocation_verified")
++    except RuntimeError as exc:
++        out = stackprinter.format(exc)
++    assert len(calls) >= 1
++    assert calls[-1][0] is RuntimeError
++    assert "renderer_spy_invocation_verified" in out
++
++def test_atomic_delegation_thread_spy(monkeypatch):
++    from stackprinter.formatting import ThreadStackFormatter
++    calls = []
++    original = ThreadStackFormatter.format_thread
++    def spy(self, thread):
++        calls.append(thread)
++        return original(self, thread)
++    monkeypatch.setattr(ThreadStackFormatter, "format_thread", spy)
++
++    dead_thread = threading.Thread(target=lambda: None)
++    output = stackprinter.format(dead_thread)
++    assert len(calls) >= 1
++    assert calls[0] is dead_thread
++    assert "%r: no frames found" % dead_thread == output
++
++def test_atomic_styler_plaintext_aliases():
++    from stackprinter.styling import get_styler, PlaintextStyler
++    for alias in ('plain', 'plaintext', 'none', None, False, ''):
++        styler = get_styler(alias)
++        assert isinstance(styler, PlaintextStyler)
++
++def test_atomic_styler_ansi_canonical_styles():
++    from stackprinter.styling import get_styler, AnsiStyler
++    for style in ('darkbg', 'darkbg2', 'darkbg3', 'lightbg', 'lightbg2', 'lightbg3', 'color'):
++        styler = get_styler(style)
++        assert isinstance(styler, AnsiStyler)
++
++def test_atomic_styler_alias_factory_parity():
++    from stackprinter.styling import get_styler, AnsiStyler
++    try:
++        raise ValueError("alias_factory_parity")
++    except ValueError as exc:
++        exc_type, exc_value, tb = type(exc), exc, exc.__traceback__
++    for alias, canonical in (("dark", "darkbg"), ("light", "lightbg"), (True, "color")):
++        a = get_styler(alias)
++        c = get_styler(canonical)
++        assert isinstance(a, AnsiStyler) and isinstance(c, AnsiStyler)
++        assert a.format_exception_message(exc_type, exc_value, tb) == \
++               c.format_exception_message(exc_type, exc_value, tb)
++
++def test_atomic_frame_plaintext_no_ansi():
++    fr = _frame_probe()
++    out = stackprinter.format(fr, style='plaintext')
++    assert "\x1b[" not in out
++
++def test_atomic_frame_ansi_present():
++    fr = _frame_probe()
++    for style in ('darkbg', 'lightbg', 'color'):
++        out = stackprinter.format(fr, style=style)
++        assert "\x1b[" in out
++
++def test_atomic_renderer_explicit_cause():
++    from stackprinter.formatting import ExceptionRenderer
++    from stackprinter.config import FormatConfig
++    try:
++        try:
++            raise KeyError("root_pipeline_error")
++        except KeyError as err:
++            raise ValueError("derived_pipeline_error") from err
++    except ValueError as exc:
++        captured_exc = exc
++    r = ExceptionRenderer(FormatConfig(style='plaintext'))
++    out = r.render(captured_exc.__class__, captured_exc, captured_exc.__traceback__)
++    assert "The above exception was the direct cause of the following exception:" in out
++    assert "KeyError: 'root_pipeline_error'" in out
++    assert "ValueError: derived_pipeline_error" in out
++    assert out.find("KeyError") < out.find("ValueError")
++
++def test_atomic_renderer_implicit_context():
++    from stackprinter.formatting import ExceptionRenderer
++    from stackprinter.config import FormatConfig
++    try:
++        try:
++            raise KeyError("implicit_cause_key")
++        except KeyError:
++            raise ValueError("implicit_derived_val")
++    except ValueError as exc:
++        captured_exc = exc
++    r = ExceptionRenderer(FormatConfig(style='plaintext'))
++    out = r.render(captured_exc.__class__, captured_exc, captured_exc.__traceback__)
++    assert "handling the above exception, another exception occurred:" in out
++    assert "KeyError: 'implicit_cause_key'" in out
++    assert "ValueError: implicit_derived_val" in out
++    assert out.find("KeyError") < out.find("ValueError")
++
++def test_atomic_renderer_suppressed_context():
++    from stackprinter.formatting import ExceptionRenderer
++    from stackprinter.config import FormatConfig
++    exc = _make_suppressed_ctx_exc()
++    r = ExceptionRenderer(FormatConfig(style='plaintext'))
++    out = r.render(exc.__class__, exc, exc.__traceback__)
++    assert "handling the above exception, another exception occurred:" not in out
++    assert "suppressed_ctx_key" not in out
++    assert "ValueError: suppressed_derived_val" in out
++
++def test_atomic_renderer_suppressed_exception_summary():
++    from stackprinter.formatting import ExceptionRenderer
++    from stackprinter.config import FormatConfig
++    try:
++        raise ValueError("derived_summary_error")
++    except ValueError as exc:
++        captured_exc = exc
++    r = ExceptionRenderer(FormatConfig(style='plaintext', add_summary=True))
++    out = r.render(captured_exc.__class__, captured_exc, captured_exc.__traceback__)
++    assert "---- (full traceback above) ----" in out
++    assert "ValueError: derived_summary_error" in out
++
++def test_atomic_manifest_components():
++    repo_root = Path(stackprinter.__file__).resolve().parent.parent
++    content = (repo_root / "REFACTORING.md").read_text(encoding="utf-8")
++    for comp in ["FormatConfig", "Styler", "PlaintextStyler", "AnsiStyler",
++                 "ExceptionRenderer", "ThreadStackFormatter", "TraceEventFormatter"]:
++        assert comp in content, f"Component {comp} must be in REFACTORING.md"
++
++def test_atomic_manifest_module_responsibilities():
++    repo_root = Path(stackprinter.__file__).resolve().parent.parent
++    content = (repo_root / "REFACTORING.md").read_text(encoding="utf-8")
++    for mod in ["stackprinter.config", "stackprinter.styling", "stackprinter.formatting",
++                "stackprinter.frame_formatting", "stackprinter.tracing"]:
++        assert mod in content, f"Module {mod} must be in REFACTORING.md"
++
++def test_atomic_manifest_class_responsibilities():
++    repo_root = Path(stackprinter.__file__).resolve().parent.parent
++    content = (repo_root / "REFACTORING.md").read_text(encoding="utf-8")
++    required = ["FormatConfig", "Styler", "PlaintextStyler", "AnsiStyler",
++                "ExceptionRenderer", "ThreadStackFormatter", "TraceEventFormatter"]
++    comp_names = set(required)
++    for comp in required:
++        pattern = rf"{comp}[^\n]{{0,50}}(?::|\||-)\s*([^\n]+)"
++        matches = re.findall(pattern, content)
++        valid = False
++        for m in matches:
++            words = [w.strip('`*.,()') for w in m.split() if w.strip('`*.,()')]
++            non_comp = [w for w in words if w not in comp_names]
++            if len(non_comp) >= 5:
++                valid = True
++                break
++        assert valid, f"Component {comp} must have descriptive responsibility"
++
++def test_atomic_manifest_migration_heading():
++    repo_root = Path(stackprinter.__file__).resolve().parent.parent
++    content = (repo_root / "REFACTORING.md").read_text(encoding="utf-8")
++    assert "migration capabilities & integration guidance" in content.casefold()
++    assert any(term in content.casefold() for term in ("backward compat", "backwards compat", "compatibility"))
++    assert "_config" in content
++
++def test_atomic_manifest_ordered_steps():
++    repo_root = Path(stackprinter.__file__).resolve().parent.parent
++    content = (repo_root / "REFACTORING.md").read_text(encoding="utf-8")
++    mig_idx = content.casefold().find("migration capabilities & integration guidance")
++    mig_section = content[mig_idx:] if mig_idx != -1 else ""
++    steps = []
++    for line in mig_section.splitlines():
++        m = re.match(r"^\s*\d+[.)]\s+(.*)$", line)
++        if m:
++            steps.append(m.group(1).strip())
++    assert len(steps) >= 3
++
++def test_atomic_manifest_code_example():
++    repo_root = Path(stackprinter.__file__).resolve().parent.parent
++    content = (repo_root / "REFACTORING.md").read_text(encoding="utf-8")
++    mig_idx = content.casefold().find("migration capabilities & integration guidance")
++    mig_section = content[mig_idx:] if mig_idx != -1 else ""
++    code_blocks = re.findall(r"```[^\n]*\n(.*?)```", mig_section, re.DOTALL)
++    assert code_blocks
++    lines = [ln for ln in code_blocks[0].splitlines() if ln.strip()]
++    assert len(lines) >= 2
++
++def test_atomic_manifest_no_placeholders():
++    repo_root = Path(stackprinter.__file__).resolve().parent.parent
++    content = (repo_root / "REFACTORING.md").read_text(encoding="utf-8")
++    for ph in ("TODO", "TBD", "Do something"):
++        assert ph not in content
++
++def test_atomic_thread_none_frame_mapping(monkeypatch):
++    class MockThread(threading.Thread):
++        def __init__(self):
++            super().__init__(target=lambda: None)
++            self._ident = 888888
++        @property
++        def ident(self):
++            return self._ident
++        def is_alive(self):
++            return True
++        def __repr__(self):
++            return "<MockThread(Mock-888888)>"
++
++    t = MockThread()
++    monkeypatch.setattr(sys, "_current_frames", lambda: {888888: None})
++    assert stackprinter.format(t) == "%r: no frames found" % t
++
++def test_atomic_delegation_exception(monkeypatch):
++    from stackprinter.formatting import ExceptionRenderer
++    calls = []
++    orig = ExceptionRenderer.render
++    def spy(self, *a, **k):
++        calls.append(a)
++        return orig(self, *a, **k)
++    monkeypatch.setattr(ExceptionRenderer, "render", spy)
++    try:
++        raise ValueError("delegation_exc")
++    except ValueError as exc:
++        stackprinter.format(exc)
++    assert len(calls) >= 1
++
++def test_atomic_delegation_frame(monkeypatch):
++    from stackprinter.formatting import ExceptionRenderer, ThreadStackFormatter
++    r_calls, t_calls = [], []
++    monkeypatch.setattr(ExceptionRenderer, "render", lambda self, *a, **k: r_calls.append(a))
++    monkeypatch.setattr(ThreadStackFormatter, "format_thread", lambda self, *a, **k: t_calls.append(a))
++    fr = _frame_probe()
++    stackprinter.format(fr)
++    assert len(r_calls) == 0
++    assert len(t_calls) == 0
++
++def test_atomic_delegation_thread(monkeypatch):
++    from stackprinter.formatting import ThreadStackFormatter
++    calls = []
++    orig = ThreadStackFormatter.format_thread
++    def spy(self, th):
++        calls.append(th)
++        return orig(self, th)
++    monkeypatch.setattr(ThreadStackFormatter, "format_thread", spy)
++    t = threading.Thread(target=lambda: None)
++    stackprinter.format(t)
++    assert len(calls) >= 1
++    assert calls[0] is t
++
++def test_atomic_delegation_current_stack():
++    out = stackprinter.format_current_stack(style="plaintext")
++    assert "test_atomic_delegation_current_stack" in out
++
++def test_atomic_delegation_current_exception(monkeypatch):
++    from stackprinter.formatting import ExceptionRenderer
++    calls = []
++    orig = ExceptionRenderer.render
++    def spy(self, *a, **k):
++        calls.append(a)
++        return orig(self, *a, **k)
++    monkeypatch.setattr(ExceptionRenderer, "render", spy)
++    try:
++        raise RuntimeError("curr_exc_probe")
++    except RuntimeError:
++        stackprinter.format_current_exception()
++    assert len(calls) >= 1
++
++def test_atomic_equiv_style():
++    from stackprinter.config import FormatConfig
++    exc = _make_equiv_exc()
++    assert stackprinter.format(exc, style="darkbg") == stackprinter.format(exc, _config=FormatConfig(style="darkbg"))
++
++def test_atomic_equiv_source_lines():
++    from stackprinter.config import FormatConfig
++    exc = _make_equiv_exc()
++    assert stackprinter.format(exc, source_lines=1) == stackprinter.format(exc, _config=FormatConfig(source_lines=1))
++
++def test_atomic_equiv_source_lines_after():
++    from stackprinter.config import FormatConfig
++    exc = _make_equiv_exc()
++    assert stackprinter.format(exc, source_lines_after=3) == stackprinter.format(exc, _config=FormatConfig(source_lines_after=3))
++
++def test_atomic_equiv_show_signature():
++    from stackprinter.config import FormatConfig
++    exc = _make_equiv_exc()
++    assert stackprinter.format(exc, show_signature=False) == stackprinter.format(exc, _config=FormatConfig(show_signature=False))
++
++def test_atomic_equiv_show_vals():
++    from stackprinter.config import FormatConfig
++    exc = _make_equiv_exc()
++    for mode in ("line", "all"):
++        assert stackprinter.format(exc, show_vals=mode) == stackprinter.format(exc, _config=FormatConfig(show_vals=mode))
++
++def test_atomic_equiv_truncate_vals():
++    from stackprinter.config import FormatConfig
++    exc = _make_equiv_exc()
++    assert stackprinter.format(exc, truncate_vals=12) == stackprinter.format(exc, _config=FormatConfig(truncate_vals=12))
++
++def test_atomic_equiv_line_wrap():
++    from stackprinter.config import FormatConfig
++    exc = _make_equiv_exc()
++    assert stackprinter.format(exc, line_wrap=0) == stackprinter.format(exc, _config=FormatConfig(line_wrap=0))
++
++def test_atomic_equiv_suppressed_paths():
++    from stackprinter.config import FormatConfig
++    exc = _make_equiv_exc()
++    assert stackprinter.format(exc, suppressed_paths=[]) == stackprinter.format(exc, _config=FormatConfig(suppressed_paths=[]))
++
++def test_atomic_equiv_suppressed_vars():
++    from stackprinter.config import FormatConfig
++    exc = _make_equiv_exc()
++    assert stackprinter.format(exc, suppressed_vars=["equivalent_option_token"]) == \
++           stackprinter.format(exc, _config=FormatConfig(suppressed_vars=["equivalent_option_token"]))
++
++def test_atomic_equiv_suppressed_exceptions():
++    from stackprinter.config import FormatConfig
++    exc = _make_equiv_exc()
++    assert stackprinter.format(exc, suppressed_exceptions=None) == stackprinter.format(exc, _config=FormatConfig(suppressed_exceptions=None))
++
++def test_atomic_equiv_reverse():
++    from stackprinter.config import FormatConfig
++    exc = _make_equiv_exc()
++    assert stackprinter.format(exc, reverse=True) == stackprinter.format(exc, _config=FormatConfig(reverse=True))
++
++def test_atomic_equiv_add_summary():
++    from stackprinter.config import FormatConfig
++    exc = _make_equiv_exc()
++    assert stackprinter.format(exc, add_summary=True) == stackprinter.format(exc, _config=FormatConfig(add_summary=True))
++
++def test_atomic_equiv_max_frames():
++    from stackprinter.config import FormatConfig
++    target = _budget_stack()
++    assert stackprinter.format(target, max_frames=2, style="plaintext") == \
++           stackprinter.format(target, _config=FormatConfig(max_frames=2), style="plaintext")
++
++def test_atomic_styler_message_basic():
++    from stackprinter.styling import get_styler
++    try:
++        raise ValueError("styler_message_basic")
++    except ValueError as exc:
++        exc_type, exc_value, tb = type(exc), exc, exc.__traceback__
++    plain = get_styler("plaintext").format_exception_message(exc_type, exc_value, tb)
++    ansi = get_styler("darkbg").format_exception_message(exc_type, exc_value, tb)
++    assert "ValueError" in plain and "styler_message_basic" in plain
++    assert "\x1b[" not in plain
++    assert "\x1b[" in ansi
++
++def test_atomic_styler_message_chained():
++    from stackprinter.styling import get_styler
++    try:
++        try:
++            raise KeyError("root_chained")
++        except KeyError as k_err:
++            raise ValueError("derived_chained") from k_err
++    except ValueError as exc:
++        exc_type, exc_value, tb = type(exc), exc, exc.__traceback__
++    msg = get_styler("plaintext").format_exception_message(exc_type, exc_value, tb)
++    assert "ValueError: derived_chained" in msg
++
++def test_atomic_styler_message_suppressed():
++    from stackprinter.styling import get_styler
++    try:
++        try:
++            raise KeyError("suppressed_root")
++        except KeyError:
++            err = ValueError("suppressed_derived")
++            err.__suppress_context__ = True
++            raise err
++    except ValueError as exc:
++        exc_type, exc_value, tb = type(exc), exc, exc.__traceback__
++    msg = get_styler("plaintext").format_exception_message(exc_type, exc_value, tb)
++    assert "ValueError: suppressed_derived" in msg
++
++def test_atomic_trace_delegation(monkeypatch):
++    from stackprinter.tracing import TraceEventFormatter, TracePrinter
++    calls = []
++    orig = TraceEventFormatter.format_event
++    def spy(self, *a, **k):
++        calls.append(a)
++        return orig(self, *a, **k)
++    monkeypatch.setattr(TraceEventFormatter, "format_event", spy)
++    events = []
++    with TracePrinter(style="plaintext", print_function=events.append):
++        def callee(v): return v + 1
++        callee(2)
++    assert len(calls) >= 2
++    assert "callee" in "".join(events)
++
++def test_atomic_trace_config_routing():
++    from stackprinter.config import FormatConfig
++    from stackprinter.tracing import TracePrinter
++    events = []
++    with TracePrinter(_config=FormatConfig(style="darkbg"), print_function=events.append):
++        def callee(v): return v + 1
++        callee(3)
++    joined = "".join(events)
++    assert "\x1b[" in joined
++
++def test_atomic_frame_formatter_config():
++    from stackprinter.config import FormatConfig
++    from stackprinter.frame_formatting import FrameFormatter
++    fr = _frame_probe()
++    f1 = FrameFormatter(FormatConfig(style="plaintext"))(fr)
++    f2 = FrameFormatter(FormatConfig(style="darkbg"))(fr)
++    assert "\x1b[" not in f1
++    assert "\x1b[" in f2
++
++def test_atomic_config_illegal_writes():
++    from stackprinter.config import FormatConfig
++    cfg = FormatConfig()
++    with pytest.raises(AttributeError):
++        cfg.style = "darkbg"
++    with pytest.raises(AttributeError):
++        cfg.line_wrap = 120
++
++def test_atomic_renderer_return_value(monkeypatch):
++    from stackprinter.formatting import ExceptionRenderer, ThreadStackFormatter
++    monkeypatch.setattr(ExceptionRenderer, 'render', lambda self, *a, **k: '<<SENTINEL-EXC>>')
++    monkeypatch.setattr(ThreadStackFormatter, 'format_thread', lambda self, thread: '<<SENTINEL-THREAD>>')
++    try:
++        raise ValueError('probe')
++    except ValueError as exc:
++        assert '<<SENTINEL-EXC>>' in stackprinter.format(exc)
++    dead = threading.Thread(target=lambda: None)
++    assert stackprinter.format(dead) == '<<SENTINEL-THREAD>>'
++
++def test_atomic_palette_variants():
++    ansi_regex = re.compile(r'\x1b\[[0-9;]*m')
++    try:
++        raise ValueError('palette_probe')
++    except ValueError as exc:
++        plain = stackprinter.format(exc, style='plaintext')
++        for st in ('darkbg2', 'darkbg3', 'lightbg2', 'lightbg3'):
++            out = stackprinter.format(exc, style=st)
++            assert "\x1b[" in out
++            assert ansi_regex.sub('', out) == plain
++
++def test_atomic_current_stack_source_lines_after():
++    cs_2 = stackprinter.format_current_stack(source_lines_after=2)
++    cs_0 = stackprinter.format_current_stack(source_lines_after=0)
++    assert cs_2 != cs_0
++
++def test_atomic_excepthook_config():
++    from stackprinter.config import FormatConfig
++    cfg = FormatConfig()
++    try:
++        stackprinter.set_excepthook(_config=cfg)
++        with pytest.raises(TypeError):
++            stackprinter.remove_excepthook(_config=cfg)
++    finally:
++        stackprinter.remove_excepthook()
++
++def test_atomic_budget_innermost_identity():
++    target = _budget_stack()
++    out = stackprinter.format(target, max_frames=1, style="plaintext")
++    assert "_budget_l6" in out
++    assert "_budget_l1" not in out
++
++    try:
++        _main_top()
++    except ValueError as exc:
++        chain_out = stackprinter.format(exc, max_frames=1, style="plaintext")
++    assert chain_out.count("frames omitted") == 2
++    assert "_cause_deep" in chain_out and "_main_deep" in chain_out
++    assert ", in _cause_top" not in chain_out and ", in _main_top" not in chain_out
++
++def test_atomic_budget_marker():
++    target = _budget_stack()
++    full = stackprinter.format(target, style="plaintext")
++    total = _count_blocks(full)
++    out = stackprinter.format(target, max_frames=3, style="plaintext")
++    assert _count_blocks(out) == 3
++    assert out.rstrip().splitlines()[-1] == "    ... (%d frames omitted)" % (total - 3)
++
++def test_atomic_budget_none():
++    target = _budget_stack()
++    assert "frames omitted" not in stackprinter.format(target, style="plaintext", max_frames=None)
++
++def test_atomic_budget_explicit_override():
++    from stackprinter.config import FormatConfig
++    target = _budget_stack()
++    out = stackprinter.format(target, _config=FormatConfig(max_frames=1), max_frames=4, style="plaintext")
++    assert _count_blocks(out) == 4
++
++def test_atomic_budget_config_alone():
++    from stackprinter.config import FormatConfig
++    target = _budget_stack()
++    out = stackprinter.format(target, _config=FormatConfig(max_frames=2), style="plaintext")
++    assert _count_blocks(out) == 2
++
++def test_atomic_budget_validation():
++    from stackprinter.config import FormatConfig
++    for bad in (0, -1, "3", 2.5, [2], False):
++        with pytest.raises(ValueError) as info:
++            FormatConfig(max_frames=bad)
++        assert str(info.value) == "max_frames must be a positive integer or None, was %r" % (bad,)
++    with pytest.raises(ValueError):
++        FormatConfig().with_overrides(max_frames=0)
++
++def test_atomic_budget_thread():
++    thread = threading.current_thread()
++    full = stackprinter.format(thread, style="plaintext")
++    total = _count_blocks(full)
++    out = stackprinter.format(thread, max_frames=2, style="plaintext")
++    assert _count_blocks(out) == 2
++    assert out.rstrip().splitlines()[-1] == "    ... (%d frames omitted)" % (total - 2)
++
++def test_atomic_budget_current_stack():
++    out = stackprinter.format_current_stack(max_frames=2, style="plaintext")
++    assert _count_blocks(out) == 2
++    assert any(_MARKER_LINE.match(line) for line in out.splitlines())
++
++def test_atomic_budget_current_stack_config():
++    from stackprinter.config import FormatConfig
++    out = stackprinter.format_current_stack(_config=FormatConfig(max_frames=3), style="plaintext")
++    assert _count_blocks(out) == 3
++
++# ================= Work Orders 1-10 New Atomic Tests (Table 11.3) =================
++
++def test_atomic_thread_config_add_summary_override():
++    from stackprinter.config import FormatConfig
++    t = threading.Thread(target=lambda: None)
++    cfg = FormatConfig()
++    out1 = stackprinter.format(t, _config=cfg, add_summary=True)
++    out2 = stackprinter.format_thread(t, _config=cfg, add_summary=True)
++    assert repr(t) in out1
++    assert repr(t) in out2
++
++def test_atomic_source_lines_after_effect():
++    exc = _sla_probe()
++    out0 = stackprinter.format(exc, style="plaintext", source_lines_after=0)
++    out3 = stackprinter.format(exc, style="plaintext", source_lines_after=3)
++    assert out0 != out3
++    assert "except ValueError" not in out0
++    assert "except ValueError" in out3
++
++def test_atomic_internal_format_stack_rejects_suppressed_exceptions():
++    from stackprinter.formatting import format_stack as _internal_format_stack
++    with pytest.raises(TypeError):
++        _internal_format_stack([sys._getframe()], suppressed_exceptions=[])
++
++def test_atomic_trace_rejects_unknown_kwargs():
++    from stackprinter.tracing import TracePrinter
++    with pytest.raises(TypeError):
++        TracePrinter(unknown_trace_kw=1)
++    with pytest.raises(TypeError):
++        stackprinter.trace(unknown_trace_kw=1)(lambda: None)()
++
++def test_atomic_show_silent_stderr_precedes_validation():
++    old = sys.stderr
++    try:
++        sys.stderr = None
++        exc = ValueError("silent")
++        assert stackprinter.show(exc, config="bad") is None
++        assert stackprinter.show(exc, _config=object()) is None
++        assert stackprinter.show(exc, indent=1) is None
++        assert stackprinter.show(exc, unknown_kw=1) is None
++    finally:
++        sys.stderr = old
++
++def test_atomic_trace_depth_limit_boundary():
++    events = []
++    with stackprinter.TracePrinter(print_function=events.append, depth_limit=2, style="plaintext"):
++        _trace_l1()
++    text = "".join(events)
++    assert "_trace_l1" in text
++    assert ", in _trace_l2" not in text
++
++def test_atomic_styler_alias_frame_parity():
++    from stackprinter.frame_formatting import FrameFormatter
++    from stackprinter.config import FormatConfig
++
++    fr = _frame_probe()
++    for alias, canonical in (("dark", "darkbg"), ("light", "lightbg"), (True, "color")):
++        a = FrameFormatter(FormatConfig(style=alias))(fr)
++        b = FrameFormatter(FormatConfig(style=canonical))(fr)
++        assert a == b

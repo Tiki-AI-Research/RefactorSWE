@@ -1,0 +1,4474 @@
+diff --git a/internal/web/tests/p2p_contract_test.go b/internal/web/tests/p2p_contract_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..647939b75eb1184805c45e8c418971be6fd32bd7
+--- /dev/null
++++ b/internal/web/tests/p2p_contract_test.go
+@@ -0,0 +1,1356 @@
++// Package tests holds the supplemental P2P regression contracts for the
++// ehco web admin server split (case T6).
++//
++// Every node below drives the real admin server over a real loopback
++// listener and asserts only the public contract: exported entry points,
++// routes, methods, middleware ordering, credentials, payload shapes, query
++// parsing, status mapping, SPA fallback boundaries and the log WebSocket.
++// Nothing here depends on unexported identifiers of internal/web, so a
++// faithful split (handlers moved to dedicated types, narrow dependencies,
++// explicit optional hooks) keeps these nodes green.
++//
++// Each node is executed in its own process by internal/web/tests/runner:
++// web.NewServer registers prometheus collectors exactly once per process,
++// and one-process-per-node also keeps a panic or hang from hiding the
++// other nodes.
++package tests
++
++import (
++	"bufio"
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"reflect"
++	"runtime"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/Ehco1996/ehco/internal/cmgr"
++	"github.com/Ehco1996/ehco/internal/cmgr/ms"
++	"github.com/Ehco1996/ehco/internal/config"
++	"github.com/Ehco1996/ehco/internal/constant"
++	"github.com/Ehco1996/ehco/internal/glue"
++	"github.com/Ehco1996/ehco/internal/relay/conf"
++	"github.com/Ehco1996/ehco/internal/web"
++	ehcolog "github.com/Ehco1996/ehco/pkg/log"
++	"github.com/gobwas/ws"
++	"github.com/labstack/echo/v4"
++	"go.uber.org/zap"
++)
++
++const (
++	p2pDeadProxy = "http://127.0.0.1:9"
++	p2pShellMark = `<div id="root">`
++	p2pToken     = "p2p-bearer-token"
++	p2pPassword  = "p2p-dashboard-pass"
++)
++
++// init keeps every node hermetic: any outbound HTTP call (the self-update
++// endpoints are the only ones) must fail immediately instead of silently
++// depending on replay-time network access. Loopback is never proxied.
++func init() {
++	os.Setenv("HTTP_PROXY", p2pDeadProxy)
++	os.Setenv("HTTPS_PROXY", p2pDeadProxy)
++	os.Setenv("ALL_PROXY", p2pDeadProxy)
++	os.Setenv("NO_PROXY", "127.0.0.1,localhost")
++}
++
++// ---------------------------------------------------------------------------
++// harness
++// ---------------------------------------------------------------------------
++
++type p2pOpts struct {
++	cfg    *config.Config
++	relay  glue.Reloader
++	health glue.HealthChecker
++	mgr    cmgr.Cmgr
++}
++
++type p2pEnv struct {
++	t      *testing.T
++	srv    *web.Server
++	cfg    *config.Config
++	base   string
++	client *http.Client
++}
++
++func p2pFreePort(t *testing.T) int {
++	t.Helper()
++	l, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatalf("reserve loopback port: %v", err)
++	}
++	defer l.Close()
++	return l.Addr().(*net.TCPAddr).Port
++}
++
++func p2pStart(t *testing.T, o p2pOpts) *p2pEnv {
++	t.Helper()
++	cfg := o.cfg
++	if cfg == nil {
++		cfg = &config.Config{}
++	}
++	if cfg.WebHost == "" {
++		cfg.WebHost = "127.0.0.1"
++	}
++	cfg.WebPort = p2pFreePort(t)
++	srv, err := web.NewServer(cfg, o.relay, o.health, o.mgr)
++	if err != nil {
++		t.Fatalf("NewServer(web_port=%d): %v", cfg.WebPort, err)
++	}
++	base := fmt.Sprintf("http://127.0.0.1:%d", cfg.WebPort)
++	client := &http.Client{Timeout: 15 * time.Second}
++	startErr := make(chan error, 1)
++	go func() { startErr <- srv.Start() }()
++	deadline := time.Now().Add(20 * time.Second)
++	for {
++		if time.Now().After(deadline) {
++			t.Fatalf("server did not become ready at %s", base)
++		}
++		resp, err := client.Get(base + "/api/v1/auth/info")
++		if err == nil {
++			resp.Body.Close()
++			break
++		}
++		select {
++		case serr := <-startErr:
++			t.Fatalf("server start failed: %v", serr)
++		default:
++		}
++		time.Sleep(25 * time.Millisecond)
++	}
++	t.Cleanup(func() {
++		if err := srv.Stop(); err != nil {
++			t.Logf("stop web server: %v", err)
++		}
++	})
++	return &p2pEnv{t: t, srv: srv, cfg: cfg, base: base, client: client}
++}
++
++type p2pReq struct {
++	hdr     map[string]string
++	cookies []*http.Cookie
++	body    []byte
++}
++
++func p2pJSONReq(method, path, payload string) *p2pReq {
++	return &p2pReq{hdr: map[string]string{"Content-Type": "application/json"}, body: []byte(payload)}
++}
++
++func (e *p2pEnv) do(method, path string, r *p2pReq) (int, http.Header, []byte) {
++	e.t.Helper()
++	var body io.Reader
++	if r != nil && r.body != nil {
++		body = bytes.NewReader(r.body)
++	}
++	req, err := http.NewRequest(method, e.base+path, body)
++	if err != nil {
++		e.t.Fatalf("build request %s %s: %v", method, path, err)
++	}
++	if r != nil {
++		for k, v := range r.hdr {
++			req.Header.Set(k, v)
++		}
++		for _, c := range r.cookies {
++			req.AddCookie(c)
++		}
++	}
++	resp, err := e.client.Do(req)
++	if err != nil {
++		e.t.Fatalf("%s %s: %v", method, path, err)
++	}
++	defer resp.Body.Close()
++	raw, err := io.ReadAll(resp.Body)
++	if err != nil {
++		e.t.Fatalf("read %s %s body: %v", method, path, err)
++	}
++	return resp.StatusCode, resp.Header, raw
++}
++
++func p2pWant(t *testing.T, what string, got, want int) {
++	t.Helper()
++	if got != want {
++		t.Fatalf("%s: got status %d, want %d", what, got, want)
++	}
++}
++
++func p2pJSON(t *testing.T, what string, body []byte) map[string]any {
++	t.Helper()
++	var m map[string]any
++	if err := json.Unmarshal(body, &m); err != nil {
++		t.Fatalf("%s: response is not a JSON object (%q): %v", what, string(body), err)
++	}
++	return m
++}
++
++func p2pKey(t *testing.T, what string, m map[string]any, key string) any {
++	t.Helper()
++	v, ok := m[key]
++	if !ok {
++		t.Fatalf("%s: response %v is missing key %q", what, m, key)
++	}
++	return v
++}
++
++func p2pNoKey(t *testing.T, what string, m map[string]any, key string) {
++	t.Helper()
++	if v, ok := m[key]; ok {
++		t.Fatalf("%s: response must omit %q when the source is absent, got %v", what, key, v)
++	}
++}
++
++func p2pNumber(t *testing.T, what string, m map[string]any, key string) float64 {
++	t.Helper()
++	f, ok := p2pKey(t, what, m, key).(float64)
++	if !ok {
++		t.Fatalf("%s: key %q is not a number: %v", what, key, m[key])
++	}
++	return f
++}
++
++func p2pFindCookie(t *testing.T, what string, hdr http.Header, name string) *http.Cookie {
++	t.Helper()
++	for _, c := range (&http.Response{Header: hdr}).Cookies() {
++		if c.Name == name {
++			return c
++		}
++	}
++	t.Fatalf("%s: no %q cookie in %v", what, name, hdr.Values("Set-Cookie"))
++	return nil
++}
++
++// ---------------------------------------------------------------------------
++// fakes
++// ---------------------------------------------------------------------------
++
++type p2pFakeStatus struct{ snap glue.XraySnapshot }
++
++func (f *p2pFakeStatus) Snapshot() glue.XraySnapshot { return f.snap }
++
++type p2pFakeReloader struct {
++	mu      sync.Mutex
++	calls   int
++	delay   time.Duration
++	err     error
++	started chan bool
++	release <-chan struct{}
++}
++
++func (f *p2pFakeReloader) Reload(force bool) error {
++	if f.started != nil {
++		f.started <- force
++	}
++	if f.release != nil {
++		<-f.release
++	}
++	if f.delay > 0 {
++		time.Sleep(f.delay)
++	}
++	f.mu.Lock()
++	f.calls++
++	f.mu.Unlock()
++	return f.err
++}
++
++func (f *p2pFakeReloader) count() int {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	return f.calls
++}
++
++func (f *p2pFakeReloader) wait(t *testing.T, want int, timeout time.Duration) {
++	t.Helper()
++	deadline := time.Now().Add(timeout)
++	for time.Now().Before(deadline) {
++		if f.count() >= want {
++			return
++		}
++		time.Sleep(20 * time.Millisecond)
++	}
++	t.Fatalf("reload hook: got %d calls, want at least %d within %s", f.count(), want, timeout)
++}
++
++type p2pFakeHealth struct {
++	mu   sync.Mutex
++	fail bool
++}
++
++func (f *p2pFakeHealth) setFail(v bool) {
++	f.mu.Lock()
++	f.fail = v
++	f.mu.Unlock()
++}
++
++func (f *p2pFakeHealth) HealthCheck(ctx context.Context, relayLabel string) (int64, error) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	if f.fail {
++		return 0, errors.New("p2p health failure")
++	}
++	return 42, nil
++}
++
++// p2pFakeConnMgr implements cmgr.Cmgr. The embedded nil interface keeps the
++// unused methods honest: calling one panics instead of silently succeeding.
++type p2pFakeConnMgr struct {
++	cmgr.Cmgr
++
++	mu sync.Mutex
++
++	metricResp *ms.QueryNodeMetricsResp
++	metricErr  error
++	lastMetric *ms.QueryNodeMetricsReq
++
++	healthErr     error
++	healthResp    *ms.DBHealth
++	healthContext context.Context
++	cleanupErr    error
++	cleanupResp   *ms.MaintenanceResult
++	lastDays      int
++	vacuumErr     error
++	vacuumResp    *ms.MaintenanceResult
++	vacuumContext context.Context
++	truncateErr   error
++	lastConfirm   string
++	resetErr      error
++}
++
++func (f *p2pFakeConnMgr) setHealth(err error) {
++	f.mu.Lock()
++	f.healthErr = err
++	f.mu.Unlock()
++}
++
++func (f *p2pFakeConnMgr) metricRequest() *ms.QueryNodeMetricsReq {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	return f.lastMetric
++}
++
++func (f *p2pFakeConnMgr) QueryNodeMetrics(ctx context.Context, req *ms.QueryNodeMetricsReq) (*ms.QueryNodeMetricsResp, error) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	cp := *req
++	f.lastMetric = &cp
++	if f.metricErr != nil {
++		return nil, f.metricErr
++	}
++	if f.metricResp != nil {
++		return f.metricResp, nil
++	}
++	return &ms.QueryNodeMetricsResp{}, nil
++}
++
++func (f *p2pFakeConnMgr) DBHealth(ctx context.Context) (*ms.DBHealth, error) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	f.healthContext = ctx
++	if f.healthErr != nil {
++		return nil, f.healthErr
++	}
++	if f.healthResp != nil {
++		return f.healthResp, nil
++	}
++	return &ms.DBHealth{FileBytes: 1, PageCount: 1, PageSize: 4096}, nil
++}
++
++func (f *p2pFakeConnMgr) DBCleanup(ctx context.Context, days int) (*ms.MaintenanceResult, error) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	f.lastDays = days
++	if f.cleanupErr != nil {
++		return nil, f.cleanupErr
++	}
++	if f.cleanupResp != nil {
++		return f.cleanupResp, nil
++	}
++	return &ms.MaintenanceResult{NodeDeleted: 1}, nil
++}
++
++func (f *p2pFakeConnMgr) DBVacuum(ctx context.Context) (*ms.MaintenanceResult, error) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	f.vacuumContext = ctx
++	if f.vacuumErr != nil {
++		return nil, f.vacuumErr
++	}
++	if f.vacuumResp != nil {
++		return f.vacuumResp, nil
++	}
++	return &ms.MaintenanceResult{BytesBefore: 10, BytesAfter: 5}, nil
++}
++
++func (f *p2pFakeConnMgr) DBTruncate(ctx context.Context, confirm string) (*ms.MaintenanceResult, error) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	f.lastConfirm = confirm
++	if f.truncateErr != nil {
++		return nil, f.truncateErr
++	}
++	return &ms.MaintenanceResult{NodeDeleted: 2}, nil
++}
++
++func (f *p2pFakeConnMgr) DBResetStats() error {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	return f.resetErr
++}
++
++// ---------------------------------------------------------------------------
++// lifecycle / exported surface
++// ---------------------------------------------------------------------------
++
++func TestP2P_Lifecycle_InvalidConfigRejected(t *testing.T) {
++	for _, port := range []int{0, -1, 65536, 70000} {
++		srv, err := web.NewServer(&config.Config{WebPort: port}, nil, nil, nil)
++		if err == nil {
++			t.Fatalf("NewServer(web_port=%d) returned %v, want a construction error", port, srv)
++		}
++	}
++}
++
++func TestP2P_Lifecycle_StartStopServesRoutes(t *testing.T) {
++	e := p2pStart(t, p2pOpts{})
++	st, _, body := e.do(http.MethodGet, "/api/v1/auth/info", nil)
++	p2pWant(t, "GET /api/v1/auth/info", st, http.StatusOK)
++	m := p2pJSON(t, "auth/info", body)
++	if v := p2pKey(t, "auth/info", m, "auth_required"); v != false {
++		t.Fatalf("auth_required = %v, want false for a credential-less config", v)
++	}
++	if v := p2pKey(t, "auth/info", m, "authenticated"); v != true {
++		t.Fatalf("authenticated = %v, want true with auth disabled", v)
++	}
++	if err := e.srv.Stop(); err != nil {
++		t.Fatalf("Stop: %v", err)
++	}
++	e.client.CloseIdleConnections()
++	connection, err := net.DialTimeout("tcp", strings.TrimPrefix(e.base, "http://"), time.Second)
++	if err == nil {
++		connection.Close()
++		t.Fatal("Stop left the HTTP listener accepting connections")
++	}
++}
++
++func TestP2P_Helpers_ExportedReusable(t *testing.T) {
++	constructorType := reflect.TypeOf((func(*config.Config, glue.Reloader, glue.HealthChecker, cmgr.Cmgr) (*web.Server, error))(nil))
++	if actual := reflect.TypeOf(web.NewServer); !actual.AssignableTo(constructorType) {
++		t.Fatalf("NewServer cannot be used as the existing exported constructor factory: got %v, want %v", actual, constructorType)
++	}
++
++	e := web.NewEchoServer()
++	if e == nil {
++		t.Fatal("NewEchoServer returned nil")
++	}
++	if !e.Debug || !e.HidePort || !e.HideBanner {
++		t.Fatalf("NewEchoServer flags changed: Debug=%v HidePort=%v HideBanner=%v", e.Debug, e.HidePort, e.HideBanner)
++	}
++	e.Use(web.NginxLogMiddleware(zap.NewNop().Sugar()))
++	e.GET("/probe", func(c echo.Context) error { return c.String(http.StatusOK, "helper-ok") })
++	rr := httptest.NewRecorder()
++	e.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/probe", nil))
++	if rr.Code != http.StatusOK || rr.Body.String() != "helper-ok" {
++		t.Fatalf("NewEchoServer+NginxLogMiddleware: got %d %q", rr.Code, rr.Body.String())
++	}
++
++	h := web.MakeIndexF()
++	if h == nil {
++		t.Fatal("MakeIndexF returned nil")
++	}
++	rr2 := httptest.NewRecorder()
++	req := httptest.NewRequest(http.MethodGet, "/", nil)
++	req.RemoteAddr = "203.0.113.9:4567"
++	h(rr2, req)
++	if rr2.Code != http.StatusOK || !strings.Contains(rr2.Body.String(), "203.0.113.9") {
++		t.Fatalf("MakeIndexF: got %d %q", rr2.Code, rr2.Body.String())
++	}
++}
++
++func TestP2P_APIGroup_LateMountUnderAuth(t *testing.T) {
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{ApiToken: p2pToken}})
++	g := e.srv.APIGroup()
++	if g == nil {
++		t.Fatal("APIGroup returned nil")
++	}
++	g.GET("/p2p/late-probe", func(c echo.Context) error { return c.String(http.StatusOK, "late-ok") })
++
++	st, _, _ := e.do(http.MethodGet, "/api/v1/p2p/late-probe", nil)
++	p2pWant(t, "anonymous late-mounted route", st, http.StatusUnauthorized)
++
++	st, _, body := e.do(http.MethodGet, "/api/v1/p2p/late-probe", &p2pReq{hdr: map[string]string{"X-Ehco-Token": p2pToken}})
++	p2pWant(t, "authenticated late-mounted route", st, http.StatusOK)
++	if string(body) != "late-ok" {
++		t.Fatalf("late-mounted route body = %q, want %q", string(body), "late-ok")
++	}
++}
++
++// ---------------------------------------------------------------------------
++// credentials / auth outcomes
++// ---------------------------------------------------------------------------
++
++func TestP2P_Auth_PublicPathsAndAnonymousRejection(t *testing.T) {
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{DashboardPass: p2pPassword, ApiToken: p2pToken}})
++
++	protected := []struct{ method, path string }{
++		{http.MethodGet, "/metrics/"},
++		{http.MethodGet, "/debug/pprof/"},
++		{http.MethodGet, "/api/v1/config/"},
++		{http.MethodPost, "/api/v1/config/reload/"},
++		{http.MethodGet, "/api/v1/overview"},
++		{http.MethodGet, "/api/v1/version"},
++		{http.MethodGet, "/api/v1/node_metrics/"},
++		{http.MethodGet, "/api/v1/health_check/"},
++		{http.MethodGet, "/api/v1/db/health"},
++		{http.MethodPost, "/api/v1/db/cleanup"},
++		{http.MethodGet, "/ws/logs"},
++	}
++	for _, p := range protected {
++		st, _, _ := e.do(p.method, p.path, nil)
++		p2pWant(t, fmt.Sprintf("anonymous %s %s", p.method, p.path), st, http.StatusUnauthorized)
++	}
++
++	public := []struct {
++		method, path string
++		body         *p2pReq
++	}{
++		{http.MethodGet, "/", nil},
++		{http.MethodGet, "/index.html", nil},
++		{http.MethodGet, "/favicon.svg", nil},
++		{http.MethodGet, "/favicon.ico", nil},
++		{http.MethodGet, "/robots.txt", nil},
++		{http.MethodGet, "/assets/p2p-not-a-real-bundle.js", nil},
++		{http.MethodGet, "/api/v1/auth/info", nil},
++		{http.MethodPost, "/api/v1/auth/login", p2pJSONReq(http.MethodPost, "/api/v1/auth/login", `{"password":`)},
++		{http.MethodPost, "/api/v1/auth/logout", nil},
++	}
++	for _, p := range public {
++		st, _, _ := e.do(p.method, p.path, p.body)
++		if st == http.StatusUnauthorized {
++			t.Fatalf("public %s %s returned 401; it must stay reachable without credentials", p.method, p.path)
++		}
++	}
++
++	st, _, body := e.do(http.MethodGet, "/api/v1/auth/login", nil)
++	if st == http.StatusUnauthorized {
++		t.Fatalf("GET on a POST-only public path must not 401 (got %d, body %q)", st, body)
++	}
++}
++
++func TestP2P_Auth_SessionLoginLogout(t *testing.T) {
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{DashboardPass: p2pPassword}})
++
++	st, _, _ := e.do(http.MethodGet, "/api/v1/version", nil)
++	p2pWant(t, "anonymous protected route", st, http.StatusUnauthorized)
++
++	st, _, _ = e.do(http.MethodPost, "/api/v1/auth/login", p2pJSONReq(http.MethodPost, "/api/v1/auth/login", `{"password":`))
++	p2pWant(t, "login with malformed body", st, http.StatusBadRequest)
++
++	st, _, _ = e.do(http.MethodPost, "/api/v1/auth/login", p2pJSONReq(http.MethodPost, "/api/v1/auth/login", `{"password":"wrong"}`))
++	p2pWant(t, "login with wrong password", st, http.StatusUnauthorized)
++
++	st, hdr, body := e.do(http.MethodPost, "/api/v1/auth/login", p2pJSONReq(http.MethodPost, "/api/v1/auth/login", `{"password":"`+p2pPassword+`"}`))
++	p2pWant(t, "login with correct password", st, http.StatusOK)
++	m := p2pJSON(t, "login", body)
++	if v := p2pKey(t, "login", m, "authenticated"); v != true {
++		t.Fatalf("login body authenticated = %v, want true", v)
++	}
++	sid := p2pFindCookie(t, "login", hdr, "ehco_sid")
++	if sid.Value == "" {
++		t.Fatal("login did not issue a non-empty ehco_sid session cookie")
++	}
++	if !sid.HttpOnly {
++		t.Fatal("session cookie must stay HttpOnly")
++	}
++	session := &http.Cookie{Name: "ehco_sid", Value: sid.Value}
++
++	st, _, _ = e.do(http.MethodGet, "/api/v1/version", &p2pReq{cookies: []*http.Cookie{session}})
++	p2pWant(t, "protected route with session cookie", st, http.StatusOK)
++
++	st, outHdr, body := e.do(http.MethodPost, "/api/v1/auth/logout", &p2pReq{cookies: []*http.Cookie{session}})
++	p2pWant(t, "logout", st, http.StatusOK)
++	m = p2pJSON(t, "logout", body)
++	if v := p2pKey(t, "logout", m, "authenticated"); v != false {
++		t.Fatalf("logout body authenticated = %v, want false", v)
++	}
++	cleared := p2pFindCookie(t, "logout", outHdr, "ehco_sid")
++	if cleared.Value != "" {
++		t.Fatalf("logout must clear the session cookie, got value %q", cleared.Value)
++	}
++
++	st, _, _ = e.do(http.MethodGet, "/api/v1/version", &p2pReq{cookies: []*http.Cookie{session}})
++	p2pWant(t, "revoked session", st, http.StatusUnauthorized)
++
++	st, _, body = e.do(http.MethodPost, "/api/v1/auth/logout", nil)
++	p2pWant(t, "logout while unauthenticated", st, http.StatusOK)
++	m = p2pJSON(t, "second logout", body)
++	if v := p2pKey(t, "second logout", m, "authenticated"); v != false {
++		t.Fatalf("second logout body authenticated = %v, want false", v)
++	}
++}
++
++func TestP2P_Auth_TokenCredentialsAndForbiddenLogin(t *testing.T) {
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{ApiToken: p2pToken}})
++
++	st, _, _ := e.do(http.MethodGet, "/api/v1/version", nil)
++	p2pWant(t, "anonymous protected route", st, http.StatusUnauthorized)
++
++	st, _, _ = e.do(http.MethodPost, "/api/v1/auth/login", p2pJSONReq(http.MethodPost, "/api/v1/auth/login", `{"password":"anything"}`))
++	p2pWant(t, "login with api token only", st, http.StatusForbidden)
++
++	st, _, _ = e.do(http.MethodGet, "/api/v1/version", &p2pReq{hdr: map[string]string{"Authorization": "Bearer " + p2pToken}})
++	p2pWant(t, "Authorization: Bearer", st, http.StatusOK)
++
++	st, _, _ = e.do(http.MethodGet, "/api/v1/version", &p2pReq{hdr: map[string]string{"X-Ehco-Token": p2pToken}})
++	p2pWant(t, "X-Ehco-Token", st, http.StatusOK)
++
++	st, _, _ = e.do(http.MethodGet, "/api/v1/version", &p2pReq{hdr: map[string]string{"Authorization": "Bearer not-the-token"}})
++	p2pWant(t, "wrong bearer", st, http.StatusUnauthorized)
++
++	st, _, body := e.do(http.MethodGet, "/api/v1/auth/info", &p2pReq{hdr: map[string]string{"Authorization": "Bearer " + p2pToken}})
++	p2pWant(t, "auth/info with bearer", st, http.StatusOK)
++	m := p2pJSON(t, "auth/info", body)
++	if v := p2pKey(t, "auth/info", m, "auth_required"); v != true {
++		t.Fatalf("auth_required = %v, want true", v)
++	}
++	if v := p2pKey(t, "auth/info", m, "authenticated"); v != true {
++		t.Fatalf("authenticated = %v, want true for a valid bearer", v)
++	}
++}
++
++func TestP2P_Auth_NoCredentialsOpenDashboard(t *testing.T) {
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{}})
++
++	st, _, _ := e.do(http.MethodGet, "/api/v1/config/", nil)
++	p2pWant(t, "protected route with no credentials configured", st, http.StatusOK)
++
++	st, _, body := e.do(http.MethodGet, "/api/v1/auth/info", nil)
++	p2pWant(t, "auth/info", st, http.StatusOK)
++	m := p2pJSON(t, "auth/info", body)
++	if v := p2pKey(t, "auth/info", m, "auth_required"); v != false {
++		t.Fatalf("auth_required = %v, want false", v)
++	}
++	if v := p2pKey(t, "auth/info", m, "authenticated"); v != true {
++		t.Fatalf("authenticated = %v, want true", v)
++	}
++
++	st, hdr, body := e.do(http.MethodPost, "/api/v1/auth/login", p2pJSONReq(http.MethodPost, "/api/v1/auth/login", `{"password":"whatever"}`))
++	p2pWant(t, "login with no credentials configured", st, http.StatusOK)
++	m = p2pJSON(t, "login", body)
++	if v := p2pKey(t, "login", m, "authenticated"); v != true {
++		t.Fatalf("login body authenticated = %v, want true", v)
++	}
++	for _, c := range (&http.Response{Header: hdr}).Cookies() {
++		if c.Name == "ehco_sid" && c.Value != "" {
++			t.Fatalf("login must not issue a session when no credentials are configured, got %q", c.Value)
++		}
++	}
++
++	st, _, body = e.do(http.MethodPost, "/api/v1/auth/logout", nil)
++	p2pWant(t, "logout", st, http.StatusOK)
++	m = p2pJSON(t, "logout", body)
++	if v := p2pKey(t, "logout", m, "authenticated"); v != false {
++		t.Fatalf("logout body authenticated = %v, want false", v)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// overview / late wiring / reload
++// ---------------------------------------------------------------------------
++
++func TestP2P_Overview_OmitsAbsentSources(t *testing.T) {
++	dir := t.TempDir()
++	cfgPath := filepath.Join(dir, "ehco.json")
++	if err := os.WriteFile(cfgPath, []byte(`{"web_port":6777,"web_host":"127.0.0.1","relay_configs":[]}`), 0o644); err != nil {
++		t.Fatalf("write config fixture: %v", err)
++	}
++	cfg := config.NewConfig(cfgPath)
++	if err := cfg.LoadConfig(true); err != nil {
++		t.Fatalf("LoadConfig: %v", err)
++	}
++	cfg.RelayConfigs = []*conf.Config{{Label: "p2p-a"}, {Label: "p2p-b"}, {Label: "p2p-c"}}
++
++	manager := &p2pFakeConnMgr{metricResp: &ms.QueryNodeMetricsResp{}}
++	e := p2pStart(t, p2pOpts{cfg: cfg, mgr: manager})
++	st, _, body := e.do(http.MethodGet, "/api/v1/overview", nil)
++	p2pWant(t, "GET /api/v1/overview", st, http.StatusOK)
++	m := p2pJSON(t, "overview", body)
++	if got := p2pNumber(t, "overview", m, "rules"); got != 3 {
++		t.Fatalf("overview rules = %v, want 3", got)
++	}
++	if s, ok := p2pKey(t, "overview", m, "last_reload_at").(string); !ok || s == "" {
++		t.Fatalf("overview last_reload_at = %v, want the non-zero reload timestamp", m["last_reload_at"])
++	}
++	p2pNoKey(t, "overview", m, "xray")
++	p2pNoKey(t, "overview", m, "host")
++	firstSample := ms.NodeMetrics{Timestamp: 1730000000, CPUUsage: 31.5, MemoryUsage: 48.25, DiskUsage: 19, NetworkIn: 721, NetworkOut: 307}
++	manager.mu.Lock()
++	manager.metricResp = &ms.QueryNodeMetricsResp{TOTAL: 2, Data: []ms.NodeMetrics{firstSample, {Timestamp: 1730000001, CPUUsage: 99}}}
++	manager.mu.Unlock()
++	queryStart := time.Now().Unix()
++	st, _, body = e.do(http.MethodGet, "/api/v1/overview", nil)
++	queryEnd := time.Now().Unix()
++	p2pWant(t, "overview with metrics sample", st, http.StatusOK)
++	response := p2pJSON(t, "overview sample", body)
++	hostJSON, err := json.Marshal(p2pKey(t, "overview sample", response, "host"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	p2pJSONEqual(t, "overview first metrics sample", hostJSON, firstSample)
++	request := manager.metricRequest()
++	if request == nil || request.Num != 1 || request.EndTimestamp < queryStart || request.EndTimestamp > queryEnd || request.StartTimestamp != request.EndTimestamp-300 {
++		t.Fatalf("overview did not query the latest five-minute window: %#v", request)
++	}
++	manager.mu.Lock()
++	manager.metricErr = errors.New("metrics unavailable")
++	manager.mu.Unlock()
++	st, _, body = e.do(http.MethodGet, "/api/v1/overview", nil)
++	p2pWant(t, "overview with failed metrics source", st, http.StatusOK)
++	p2pNoKey(t, "overview with failed metrics source", p2pJSON(t, "overview failed source", body), "host")
++}
++
++func TestP2P_Overview_LateWiringTakesEffect(t *testing.T) {
++	relay := &p2pFakeReloader{}
++	xrayReload := &p2pFakeReloader{}
++	xrayStatus := &p2pFakeStatus{snap: glue.XraySnapshot{Conns: 2, Users: 3, UploadTotal: 11, DownloadTotal: 12}}
++
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{}, relay: relay})
++
++	st, _, body := e.do(http.MethodGet, "/api/v1/overview", nil)
++	p2pWant(t, "overview before wiring", st, http.StatusOK)
++	m := p2pJSON(t, "overview before wiring", body)
++	p2pNoKey(t, "overview before wiring", m, "xray")
++	p2pNoKey(t, "overview before wiring", m, "host")
++
++	e.srv.SetXrayStatus(nil)
++	st, _, body = e.do(http.MethodGet, "/api/v1/overview", nil)
++	p2pWant(t, "overview after nil wiring", st, http.StatusOK)
++	p2pNoKey(t, "overview after nil wiring", p2pJSON(t, "overview after nil wiring", body), "xray")
++
++	e.srv.SetXrayStatus(xrayStatus)
++	st, _, body = e.do(http.MethodGet, "/api/v1/overview", nil)
++	p2pWant(t, "overview after late status wiring", st, http.StatusOK)
++	m = p2pJSON(t, "overview after late status wiring", body)
++	raw, ok := p2pKey(t, "overview", m, "xray").(map[string]any)
++	if !ok {
++		t.Fatalf("overview xray = %v, want an object", m["xray"])
++	}
++	if got := p2pNumber(t, "overview xray", raw, "conns"); got != 2 {
++		t.Fatalf("overview xray.conns = %v, want 2", got)
++	}
++	if got := p2pNumber(t, "overview xray", raw, "users"); got != 3 {
++		t.Fatalf("overview xray.users = %v, want 3", got)
++	}
++
++	st, _, body = e.do(http.MethodPost, "/api/v1/config/reload/", nil)
++	p2pWant(t, "reload with relay hook", st, http.StatusOK)
++	if string(body) != "reload success" {
++		t.Fatalf("reload body = %q, want %q", string(body), "reload success")
++	}
++	relay.wait(t, 1, 5*time.Second)
++	if n := xrayReload.count(); n != 0 {
++		t.Fatalf("xray reload hook was invoked %d times before being wired", n)
++	}
++
++	e.srv.SetXrayReloader(nil)
++	e.srv.SetXrayReloader(xrayReload)
++	st, _, _ = e.do(http.MethodPost, "/api/v1/config/reload/", nil)
++	p2pWant(t, "reload after late reloader wiring", st, http.StatusOK)
++	relay.wait(t, 2, 5*time.Second)
++	xrayReload.wait(t, 1, 5*time.Second)
++}
++
++func TestP2P_Reload_NoReloaderReturns400(t *testing.T) {
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{}})
++	st, _, body := e.do(http.MethodPost, "/api/v1/config/reload/", nil)
++	p2pWant(t, "reload without a reloader", st, http.StatusBadRequest)
++	if len(body) == 0 {
++		t.Fatal("reload without a reloader must return an error body")
++	}
++	st, _, _ = e.do(http.MethodGet, "/api/v1/auth/info", nil)
++	p2pWant(t, "server still serving after rejected reload", st, http.StatusOK)
++}
++
++func TestP2P_Reload_NonBlockingSideEffects(t *testing.T) {
++	release := make(chan struct{})
++	var releaseOnce sync.Once
++	unblock := func() { releaseOnce.Do(func() { close(release) }) }
++	defer unblock()
++	relay := &p2pFakeReloader{started: make(chan bool, 1), release: release}
++	xray := &p2pFakeReloader{started: make(chan bool, 1)}
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{}, relay: relay})
++	e.srv.SetXrayReloader(xray)
++
++	start := time.Now()
++	st, _, body := e.do(http.MethodPost, "/api/v1/config/reload/", nil)
++	elapsed := time.Since(start)
++	p2pWant(t, "reload", st, http.StatusOK)
++	if string(body) != "reload success" {
++		t.Fatalf("reload body = %q, want %q", string(body), "reload success")
++	}
++	if elapsed > time.Second {
++		t.Fatalf("reload response blocked on the reload hook for %s; it must not wait for completion", elapsed)
++	}
++	select {
++	case force := <-relay.started:
++		if !force {
++			t.Fatal("relay reload must receive force=true")
++		}
++	case <-time.After(time.Second):
++		t.Fatal("wired relay reloader was not called")
++	}
++	select {
++	case <-xray.started:
++		t.Fatal("xray reload ran before the relay reloader finished")
++	default:
++	}
++	unblock()
++	select {
++	case force := <-xray.started:
++		if !force {
++			t.Fatal("xray reload must receive force=true")
++		}
++	case <-time.After(time.Second):
++		t.Fatal("late-wired xray reloader was not called")
++	}
++}
++
++// ---------------------------------------------------------------------------
++// query contract / db maintenance
++// ---------------------------------------------------------------------------
++
++func TestP2P_NodeMetrics_QueryParamContract(t *testing.T) {
++	mgr := &p2pFakeConnMgr{}
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{}, mgr: mgr})
++
++	before := time.Now().Unix()
++	st, _, _ := e.do(http.MethodGet, "/api/v1/node_metrics/", nil)
++	p2pWant(t, "node_metrics defaults", st, http.StatusOK)
++	after := time.Now().Unix()
++	req := mgr.metricRequest()
++	if req == nil {
++		t.Fatal("node_metrics did not query the connection manager")
++	}
++	if req.StartTimestamp > before-50 || req.StartTimestamp < before-75 {
++		t.Fatalf("default start_ts = %d, want a 60s window ending now (%d..%d)", req.StartTimestamp, before-75, before-50)
++	}
++	if req.EndTimestamp < before-5 || req.EndTimestamp > after+5 {
++		t.Fatalf("default end_ts = %d, want now (%d..%d)", req.EndTimestamp, before-5, after+5)
++	}
++	if req.Num != -1 {
++		t.Fatalf("default Num = %d, want -1 (all samples)", req.Num)
++	}
++	if req.Step != 0 {
++		t.Fatalf("default Step = %d, want 0", req.Step)
++	}
++
++	st, _, _ = e.do(http.MethodGet, "/api/v1/node_metrics/?start_ts=1000&end_ts=2000&step=30&latest=true", nil)
++	p2pWant(t, "node_metrics explicit params", st, http.StatusOK)
++	req = mgr.metricRequest()
++	if req.StartTimestamp != 1000 || req.EndTimestamp != 2000 || req.Step != 30 || req.Num != 1 {
++		t.Fatalf("explicit params lost: %+v", req)
++	}
++
++	st, _, _ = e.do(http.MethodGet, "/api/v1/node_metrics/?start_ts=1000&end_ts=2000&latest=false", nil)
++	p2pWant(t, "node_metrics latest=false", st, http.StatusOK)
++	if req = mgr.metricRequest(); req.Num != -1 || req.Step != 0 {
++		t.Fatalf("latest=false params: %+v", req)
++	}
++
++	st, _, _ = e.do(http.MethodGet, "/api/v1/node_metrics/?start_ts=abc", nil)
++	p2pWant(t, "node_metrics unparsable start_ts falls back to the default window", st, http.StatusOK)
++
++	st, _, _ = e.do(http.MethodGet, "/api/v1/node_metrics/?start_ts=2000&end_ts=2000", nil)
++	p2pWant(t, "node_metrics start == end", st, http.StatusBadRequest)
++	st, _, _ = e.do(http.MethodGet, "/api/v1/node_metrics/?start_ts=3000&end_ts=2000", nil)
++	p2pWant(t, "node_metrics start > end", st, http.StatusBadRequest)
++}
++
++func TestP2P_HealthCheck_Contract(t *testing.T) {
++	health := &p2pFakeHealth{}
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{}, health: health})
++
++	st, _, _ := e.do(http.MethodGet, "/api/v1/health_check/", nil)
++	p2pWant(t, "health_check without relay_label", st, http.StatusBadRequest)
++
++	st, _, body := e.do(http.MethodGet, "/api/v1/health_check/?relay_label=ok-relay", nil)
++	p2pWant(t, "health_check success", st, http.StatusOK)
++	m := p2pJSON(t, "health_check success", body)
++	if got := p2pNumber(t, "health_check success", m, "error_code"); got != 0 {
++		t.Fatalf("error_code = %v, want 0", got)
++	}
++	if got := p2pKey(t, "health_check success", m, "msg"); got != "connect success" {
++		t.Fatalf("msg = %v, want %q", got, "connect success")
++	}
++	if got := p2pNumber(t, "health_check success", m, "latency"); got != 42 {
++		t.Fatalf("latency = %v, want 42", got)
++	}
++
++	health.setFail(true)
++	st, _, body = e.do(http.MethodGet, "/api/v1/health_check/?relay_label=bad-relay", nil)
++	p2pWant(t, "health_check failure", st, http.StatusBadRequest)
++	m = p2pJSON(t, "health_check failure", body)
++	if got := p2pNumber(t, "health_check failure", m, "error_code"); got != -1 {
++		t.Fatalf("error_code = %v, want -1", got)
++	}
++	if got, _ := p2pKey(t, "health_check failure", m, "msg").(string); !strings.Contains(got, "p2p health failure") {
++		t.Fatalf("msg = %q, want the health-check error", got)
++	}
++	p2pKey(t, "health_check failure", m, "latency")
++}
++
++func TestP2P_DB_MaintenanceStatusMapping(t *testing.T) {
++	mgr := &p2pFakeConnMgr{
++		healthErr:   cmgr.ErrMetricsDisabled,
++		cleanupErr:  cmgr.ErrMetricsDisabled,
++		vacuumErr:   cmgr.ErrMetricsDisabled,
++		truncateErr: cmgr.ErrMetricsDisabled,
++		resetErr:    cmgr.ErrMetricsDisabled,
++	}
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{}, mgr: mgr})
++
++	st, _, _ := e.do(http.MethodGet, "/api/v1/db/health", nil)
++	p2pWant(t, "db/health with metrics disabled", st, http.StatusServiceUnavailable)
++	st, _, _ = e.do(http.MethodPost, "/api/v1/db/cleanup", p2pJSONReq(http.MethodPost, "/api/v1/db/cleanup", `{"older_than_days":7}`))
++	p2pWant(t, "db/cleanup with metrics disabled", st, http.StatusServiceUnavailable)
++	st, _, _ = e.do(http.MethodPost, "/api/v1/db/vacuum", nil)
++	p2pWant(t, "db/vacuum with metrics disabled", st, http.StatusServiceUnavailable)
++	st, _, _ = e.do(http.MethodPost, "/api/v1/db/truncate", p2pJSONReq(http.MethodPost, "/api/v1/db/truncate", `{"confirm":"yes I am sure"}`))
++	p2pWant(t, "db/truncate with metrics disabled", st, http.StatusServiceUnavailable)
++	st, _, _ = e.do(http.MethodPost, "/api/v1/db/reset_stats", nil)
++	p2pWant(t, "db/reset_stats with metrics disabled", st, http.StatusServiceUnavailable)
++
++	mgr.mu.Lock()
++	mgr.healthErr, mgr.cleanupErr, mgr.vacuumErr, mgr.truncateErr, mgr.resetErr = nil, nil, nil, nil, nil
++	mgr.healthResp = &ms.DBHealth{FileBytes: 9173, PageCount: 19, PageSize: 8192, FreelistPages: 3, NodeMetricsRows: 47}
++	mgr.vacuumResp = &ms.MaintenanceResult{BytesBefore: 65432, BytesAfter: 12345, DurationMs: 23}
++	mgr.mu.Unlock()
++	expectedHealth, err := json.Marshal(mgr.healthResp)
++	if err != nil {
++		t.Fatal(err)
++	}
++	expectedVacuum, err := json.Marshal(mgr.vacuumResp)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	st, _, body := e.do(http.MethodGet, "/api/v1/db/health", nil)
++	p2pWant(t, "db/health", st, http.StatusOK)
++	p2pJSONEqual(t, "database health source payload", body, json.RawMessage(expectedHealth))
++	mgr.mu.Lock()
++	healthContext := mgr.healthContext
++	mgr.mu.Unlock()
++	p2pRequestContext(t, healthContext)
++
++	st, _, _ = e.do(http.MethodPost, "/api/v1/db/cleanup", p2pJSONReq(http.MethodPost, "/api/v1/db/cleanup", `{"older_than_days":7}`))
++	p2pWant(t, "db/cleanup", st, http.StatusOK)
++	mgr.mu.Lock()
++	days := mgr.lastDays
++	mgr.mu.Unlock()
++	if days != 7 {
++		t.Fatalf("db/cleanup forwarded older_than_days=%d, want 7", days)
++	}
++
++	st, _, body = e.do(http.MethodPost, "/api/v1/db/vacuum", nil)
++	p2pWant(t, "db/vacuum", st, http.StatusOK)
++	p2pJSONEqual(t, "vacuum source payload", body, json.RawMessage(expectedVacuum))
++	mgr.mu.Lock()
++	vacuumContext := mgr.vacuumContext
++	mgr.mu.Unlock()
++	p2pRequestContext(t, vacuumContext)
++
++	st, _, _ = e.do(http.MethodPost, "/api/v1/db/truncate", p2pJSONReq(http.MethodPost, "/api/v1/db/truncate", `{"confirm":"yes I am sure"}`))
++	p2pWant(t, "db/truncate", st, http.StatusOK)
++	mgr.mu.Lock()
++	confirm := mgr.lastConfirm
++	mgr.mu.Unlock()
++	if confirm != "yes I am sure" {
++		t.Fatalf("db/truncate forwarded confirm=%q, want %q", confirm, "yes I am sure")
++	}
++
++	st, _, body = e.do(http.MethodPost, "/api/v1/db/reset_stats", nil)
++	p2pWant(t, "db/reset_stats", st, http.StatusNoContent)
++	if len(body) != 0 {
++		t.Fatalf("db/reset_stats body = %q, want empty", string(body))
++	}
++
++	mgr.mu.Lock()
++	mgr.truncateErr = ms.ErrTruncateNotConfirmed
++	mgr.mu.Unlock()
++	st, _, _ = e.do(http.MethodPost, "/api/v1/db/truncate", p2pJSONReq(http.MethodPost, "/api/v1/db/truncate", `{"confirm":""}`))
++	p2pWant(t, "unconfirmed db/truncate", st, http.StatusBadRequest)
++	mgr.mu.Lock()
++	mgr.truncateErr = fmt.Errorf("wrapped confirmation: %w", ms.ErrTruncateNotConfirmed)
++	mgr.mu.Unlock()
++	st, _, body = e.do(http.MethodPost, "/api/v1/db/truncate", p2pJSONReq(http.MethodPost, "/api/v1/db/truncate", `{"confirm":""}`))
++	p2pWant(t, "wrapped unconfirmed truncate", st, http.StatusBadRequest)
++	if p2pKey(t, "truncate error", p2pJSON(t, "truncate error", body), "message") != mgr.truncateErr.Error() {
++		t.Fatalf("truncate error message changed: %s", body)
++	}
++	wrappedDisabled := fmt.Errorf("wrapped metrics: %w", cmgr.ErrMetricsDisabled)
++	mgr.mu.Lock()
++	mgr.healthErr, mgr.cleanupErr, mgr.vacuumErr, mgr.truncateErr, mgr.resetErr = wrappedDisabled, wrappedDisabled, wrappedDisabled, wrappedDisabled, wrappedDisabled
++	mgr.mu.Unlock()
++	for _, endpoint := range []struct{ method, path, payload string }{
++		{http.MethodGet, "/api/v1/db/health", ""},
++		{http.MethodPost, "/api/v1/db/cleanup", `{"older_than_days":7}`},
++		{http.MethodPost, "/api/v1/db/vacuum", ""},
++		{http.MethodPost, "/api/v1/db/truncate", `{"confirm":"yes I am sure"}`},
++		{http.MethodPost, "/api/v1/db/reset_stats", ""},
++	} {
++		status, _, response := e.do(endpoint.method, endpoint.path, p2pJSONReq(endpoint.method, endpoint.path, endpoint.payload))
++		p2pWant(t, "wrapped disabled metrics "+endpoint.path, status, http.StatusServiceUnavailable)
++		if p2pKey(t, endpoint.path, p2pJSON(t, endpoint.path, response), "message") != wrappedDisabled.Error() {
++			t.Fatalf("domain error message changed for %s: %s", endpoint.path, response)
++		}
++	}
++
++	mgr.mu.Lock()
++	mgr.vacuumErr = errors.New("p2p vacuum exploded")
++	mgr.mu.Unlock()
++	st, _, _ = e.do(http.MethodPost, "/api/v1/db/vacuum", nil)
++	p2pWant(t, "failing db/vacuum", st, http.StatusInternalServerError)
++}
++
++// ---------------------------------------------------------------------------
++// routes / SPA / websocket / updater
++// ---------------------------------------------------------------------------
++
++func TestP2P_Routes_MetricsPprofConfigVersion(t *testing.T) {
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{DashboardPass: p2pPassword, ApiToken: p2pToken}})
++	authorization := &p2pReq{hdr: map[string]string{"Authorization": "Bearer " + p2pToken}}
++	expectedConfiguration, err := json.Marshal(e.cfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	expectedVersion := map[string]any{"version": constant.Version, "git_branch": constant.GitBranch, "git_revision": constant.GitRevision, "build_time": constant.BuildTime, "start_time": constant.StartTime, "go_os": runtime.GOOS, "go_arch": runtime.GOARCH}
++
++	st, _, body := e.do(http.MethodGet, "/metrics/", authorization)
++	p2pWant(t, "GET /metrics/", st, http.StatusOK)
++	if !strings.Contains(string(body), "# HELP") {
++		t.Fatalf("/metrics/ did not return prometheus text exposition: %q", string(body[:min(len(body), 120)]))
++	}
++
++	st, _, _ = e.do(http.MethodGet, "/debug/pprof/", authorization)
++	p2pWant(t, "GET /debug/pprof/", st, http.StatusOK)
++
++	st, _, body = e.do(http.MethodGet, "/api/v1/config/", authorization)
++	p2pWant(t, "GET /api/v1/config/", st, http.StatusOK)
++	p2pJSONEqual(t, "current configuration", body, json.RawMessage(expectedConfiguration))
++
++	st, _, body = e.do(http.MethodGet, "/api/v1/version", authorization)
++	p2pWant(t, "GET /api/v1/version", st, http.StatusOK)
++	m := p2pJSON(t, "version", body)
++	for _, key := range []string{"version", "git_branch", "git_revision", "build_time", "start_time", "go_os", "go_arch"} {
++		p2pKey(t, "version", m, key)
++	}
++	p2pJSONEqual(t, "version fields and their sources", body, expectedVersion)
++
++	st, hdr, _ := e.do(http.MethodPost, "/api/v1/version", authorization)
++	p2pWant(t, "POST /api/v1/version (method preserved)", st, http.StatusMethodNotAllowed)
++	if allow := hdr.Get("Allow"); !strings.Contains(allow, http.MethodGet) {
++		t.Fatalf("POST /api/v1/version Allow = %q, want it to list GET", allow)
++	}
++	st, _, _ = e.do(http.MethodPost, "/api/v1/overview", authorization)
++	p2pWant(t, "POST /api/v1/overview (method preserved)", st, http.StatusMethodNotAllowed)
++}
++
++func TestP2P_SPA_FallbackBoundaryAndAssets(t *testing.T) {
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{}})
++	expectedShell, err := os.ReadFile(filepath.Join("..", "webui", "dist", "index.html"))
++	if err != nil {
++		t.Fatalf("read embedded shell fixture: %v", err)
++	}
++
++	st, hdr, body := e.do(http.MethodGet, "/", nil)
++	p2pWant(t, "GET /", st, http.StatusOK)
++	if ct := hdr.Get("Content-Type"); !strings.Contains(ct, "text/html") {
++		t.Fatalf("GET / content-type = %q, want text/html", ct)
++	}
++	if !strings.Contains(string(body), p2pShellMark) {
++		t.Fatalf("GET / did not return the SPA shell: %q", string(body))
++	}
++
++	st, _, body = e.do(http.MethodGet, "/index.html", nil)
++	p2pWant(t, "GET /index.html", st, http.StatusOK)
++	if !strings.Contains(string(body), p2pShellMark) {
++		t.Fatalf("GET /index.html did not return the SPA shell")
++	}
++
++	st, _, body = e.do(http.MethodGet, "/some/client/side/route", nil)
++	p2pWant(t, "GET catch-all", st, http.StatusOK)
++	if !strings.Contains(string(body), p2pShellMark) {
++		t.Fatalf("client-side route did not fall through to the SPA shell")
++	}
++	for _, path := range []string{"/", "/index.html", "/some/client/side/route"} {
++		status, headers, response := e.do(http.MethodGet, path, nil)
++		p2pWant(t, path, status, http.StatusOK)
++		if headers.Get("Content-Type") != "text/html; charset=utf-8" || headers.Get("Cache-Control") != "no-store" {
++			t.Fatalf("SPA response headers changed for %s: %v", path, headers)
++		}
++		if !bytes.Equal(response, expectedShell) {
++			t.Fatalf("SPA routes do not return the same embedded shell: %s", path)
++		}
++	}
++
++	notShell := []string{"/api/v1/p2p-not-a-route", "/ws/p2p-not-a-route", "/metrics/p2p-not-a-route", "/debug/p2p-not-a-route", "/assets/p2p-not-a-real-bundle.js"}
++	for _, p := range notShell {
++		st, _, body = e.do(http.MethodGet, p, nil)
++		p2pWant(t, "GET "+p, st, http.StatusNotFound)
++		if strings.Contains(string(body), p2pShellMark) {
++			t.Fatalf("GET %s returned the SPA shell; reserved prefixes must stay 404", p)
++		}
++	}
++
++	st, _, body = e.do(http.MethodGet, "/favicon.svg", nil)
++	p2pWant(t, "GET /favicon.svg", st, http.StatusOK)
++	if !strings.Contains(string(body), "<svg") {
++		t.Fatalf("GET /favicon.svg did not return the SVG asset")
++	}
++
++	_, _, shell := e.do(http.MethodGet, "/", nil)
++	if asset := p2pFirstAssetPath(shell); asset != "" {
++		expectedAsset, err := os.ReadFile(filepath.Join("..", "webui", "dist", strings.TrimPrefix(asset, "/")))
++		if err != nil {
++			t.Fatalf("read embedded asset fixture: %v", err)
++		}
++		st, _, body = e.do(http.MethodGet, asset, nil)
++		p2pWant(t, "GET "+asset, st, http.StatusOK)
++		if !bytes.Equal(body, expectedAsset) {
++			t.Fatalf("static asset content changed: %s", asset)
++		}
++	} else {
++		t.Fatal("embedded shell has no positive static asset fixture")
++	}
++}
++
++func p2pFirstAssetPath(html []byte) string {
++	s := string(html)
++	i := strings.Index(s, "assets/")
++	if i < 0 {
++		return ""
++	}
++	rest := s[i:]
++	if end := strings.IndexAny(rest, "\"' \n"); end > 0 {
++		rest = rest[:end]
++	}
++	return "/" + rest
++}
++
++func TestP2P_Update_CheckMapsUpstreamFailureTo502(t *testing.T) {
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{}})
++
++	start := time.Now()
++	st, _, body := e.do(http.MethodGet, "/api/v1/update/check", nil)
++	if st != http.StatusBadGateway {
++		t.Fatalf("update/check with an unreachable upstream: got %d (%q), want 502", st, string(body))
++	}
++	if elapsed := time.Since(start); elapsed > 20*time.Second {
++		t.Fatalf("update/check took %s to surface the upstream failure", elapsed)
++	}
++
++	st, _, _ = e.do(http.MethodGet, "/api/v1/update/check?channel=stable", nil)
++	if st != http.StatusBadGateway {
++		t.Fatalf("update/check?channel=stable: got %d, want 502", st)
++	}
++}
++
++func TestP2P_Update_ApplyReturns202WithoutWaiting(t *testing.T) {
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{}})
++
++	start := time.Now()
++	st, _, body := e.do(http.MethodPost, "/api/v1/update/apply",
++		p2pJSONReq(http.MethodPost, "/api/v1/update/apply", `{"channel":"p2p-not-a-real-channel","force":true,"restart":false}`))
++	elapsed := time.Since(start)
++	p2pWant(t, "update/apply", st, http.StatusAccepted)
++	if len(body) != 0 {
++		t.Fatalf("update/apply body = %q, want empty", string(body))
++	}
++	if elapsed > 5*time.Second {
++		t.Fatalf("update/apply waited %s for the detached update; it must return immediately", elapsed)
++	}
++}
++
++func TestP2P_WebSocket_LogsBroadcast(t *testing.T) {
++	if err := ehcolog.InitGlobalLogger("info"); err != nil {
++		t.Fatalf("InitGlobalLogger: %v", err)
++	}
++	e := p2pStart(t, p2pOpts{cfg: &config.Config{}})
++
++	// A non-upgrade request must not succeed and must not be answered by the
++	// SPA fallback: /ws/logs is a real upgrade endpoint.
++	st, _, body := e.do(http.MethodGet, "/ws/logs", nil)
++	if st == http.StatusOK || st == http.StatusNotFound || strings.Contains(string(body), p2pShellMark) {
++		t.Fatalf("plain GET /ws/logs = %d %q, want the websocket handler to reject the non-upgrade request", st, string(body))
++	}
++
++	wsURL := "ws" + strings.TrimPrefix(e.base, "http") + "/ws/logs"
++	connA, brA, _, err := ws.Dial(context.Background(), wsURL)
++	if err != nil {
++		t.Fatalf("dial /ws/logs (ws.Dial returns an error for any non-101 handshake): %v", err)
++	}
++	defer connA.Close()
++	p2pAwaitLogSubscription(t, connA, brA)
++
++	probeA := fmt.Sprintf("p2p-ws-probe-a-%d", time.Now().UnixNano())
++	zap.L().Info(probeA)
++	p2pReadProbe(t, connA, brA, probeA)
++
++	connB, brB, _, err := ws.Dial(context.Background(), wsURL)
++	if err != nil {
++		t.Fatalf("dial second /ws/logs: %v", err)
++	}
++	defer connB.Close()
++	p2pAwaitLogSubscription(t, connB, brB)
++
++	probeB := fmt.Sprintf("p2p-ws-probe-b-%d", time.Now().UnixNano())
++	zap.L().Info(probeB)
++	p2pReadProbe(t, connA, brA, probeB)
++	p2pReadProbe(t, connB, brB, probeB)
++
++	// A client that dies must not take the remaining subscribers with it.
++	connA.Close()
++	probeC := fmt.Sprintf("p2p-ws-probe-c-%d", time.Now().UnixNano())
++	zap.L().Info(probeC)
++	p2pReadProbe(t, connB, brB, probeC)
++
++	probeD := fmt.Sprintf("p2p-ws-write-failure-%d", time.Now().UnixNano())
++	broken := &p2pBrokenSubscriber{marker: probeD}
++	ehcolog.AddWebSocketConn(broken)
++	defer ehcolog.RemoveWebSocketConn(broken)
++	zap.L().Info(probeD)
++	p2pReadProbe(t, connB, brB, probeD)
++	if writes, closes := broken.failures(); writes != 1 || closes != 1 {
++		t.Fatalf("failed log subscriber was not closed: writes=%d closes=%d", writes, closes)
++	}
++	probeE := fmt.Sprintf("p2p-ws-after-write-failure-%d", time.Now().UnixNano())
++	zap.L().Info(probeE)
++	p2pReadProbe(t, connB, brB, probeE)
++	if writes, closes := broken.failures(); writes != 1 || closes != 1 {
++		t.Fatalf("failed log subscriber remained registered: writes=%d closes=%d", writes, closes)
++	}
++}
++
++type p2pBrokenSubscriber struct {
++	net.Conn
++	marker       string
++	mu           sync.Mutex
++	failedWrites int
++	closeCalls   int
++}
++
++func (connection *p2pBrokenSubscriber) Write(payload []byte) (int, error) {
++	connection.mu.Lock()
++	defer connection.mu.Unlock()
++	if connection.failedWrites > 0 || bytes.Contains(payload, []byte(connection.marker)) {
++		connection.failedWrites++
++		return 0, errors.New("controlled WebSocket subscriber write failure")
++	}
++	return len(payload), nil
++}
++
++func (connection *p2pBrokenSubscriber) Close() error {
++	connection.mu.Lock()
++	defer connection.mu.Unlock()
++	connection.closeCalls++
++	return nil
++}
++
++func (connection *p2pBrokenSubscriber) failures() (int, int) {
++	connection.mu.Lock()
++	defer connection.mu.Unlock()
++	return connection.failedWrites, connection.closeCalls
++}
++
++func p2pReadProbe(t *testing.T, conn net.Conn, br *bufio.Reader, needle string) {
++	t.Helper()
++	// gobwas returns a buffered reader only when the handshake response
++	// carried more bytes than the header block; fall back to the raw conn.
++	var r io.Reader = conn
++	if br != nil {
++		r = br
++	}
++	deadline := time.Now().Add(10 * time.Second)
++	for time.Now().Before(deadline) {
++		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
++		f, err := ws.ReadFrame(r)
++		if err != nil {
++			if ne, ok := err.(net.Error); ok && ne.Timeout() {
++				continue
++			}
++			t.Fatalf("read ws frame while waiting for %q: %v", needle, err)
++		}
++		if strings.Contains(string(f.Payload), needle) {
++			return
++		}
++	}
++	t.Fatalf("log line %q was never broadcast to the websocket client", needle)
++}
++
++func min(a, b int) int {
++	if a < b {
++		return a
++	}
++	return b
++}
++
++func p2pJSONEqual(test *testing.T, label string, actual []byte, expected any) {
++	test.Helper()
++	expectedJSON, err := json.Marshal(expected)
++	if err != nil {
++		test.Fatalf("marshal expected %s: %v", label, err)
++	}
++	var actualValue, expectedValue any
++	if err := json.Unmarshal(actual, &actualValue); err != nil {
++		test.Fatalf("decode actual %s: %v", label, err)
++	}
++	if err := json.Unmarshal(expectedJSON, &expectedValue); err != nil {
++		test.Fatalf("decode expected %s: %v", label, err)
++	}
++	if !reflect.DeepEqual(actualValue, expectedValue) {
++		test.Fatalf("%s payload changed: got %s want %s", label, actual, expectedJSON)
++	}
++}
++
++func p2pRequestContext(test *testing.T, captured context.Context) {
++	test.Helper()
++	if captured == nil || captured.Done() == nil {
++		test.Fatal("source did not receive the HTTP request context")
++	}
++	select {
++	case <-captured.Done():
++	case <-time.After(time.Second):
++		test.Fatal("source context outlived the completed HTTP request")
++	}
++}
++
++// HTTP 101 can reach the client before AddWebSocketConn executes. Readiness
++// probes retry only setup; all delivery/fanout/removal assertions stay one-shot.
++func p2pAwaitLogSubscription(t *testing.T, conn net.Conn, br *bufio.Reader) {
++	t.Helper()
++	marker := fmt.Sprintf("p2p-ws-ready-%d", time.Now().UnixNano())
++	stop, done := make(chan struct{}), make(chan struct{})
++	go func() {
++		defer close(done)
++		ticker := time.NewTicker(25 * time.Millisecond)
++		defer ticker.Stop()
++		for {
++			zap.L().Info(marker)
++			select {
++			case <-stop:
++				return
++			case <-ticker.C:
++			}
++		}
++	}()
++	defer func() { close(stop); <-done }()
++	p2pReadProbe(t, conn, br, marker)
++}
+diff --git a/internal/web/tests/runner/main.go b/internal/web/tests/runner/main.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..10e1c7b1bff487695da0a62e4f672d659c7ff8c5
+--- /dev/null
++++ b/internal/web/tests/runner/main.go
+@@ -0,0 +1,449 @@
++// Command p2prunner executes the frozen P2P selector set for the ehco web
++// admin server split and writes a single standard JUnit XML report.
++//
++// Design constraints:
++//   - stdlib only, so it builds from the frozen module cache with no network;
++//   - every selector runs in its own `go test` process, so a panic, hang or
++//     build failure in one node cannot hide the results of the others;
++//   - the gitignored internal/web/webui/dist embed tree is materialised from
++//     the committed testdata snapshot when it is missing, so the package can
++//     be compiled on a pristine baseline checkout with no SPA toolchain;
++//   - a report is always written for every declared selector. A node that
++//     produced no result is reported as an <error> (NOT_RUN), never as a pass,
++//     a skip or an empty report.
++package main
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"encoding/xml"
++	"flag"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"strings"
++	"time"
++)
++
++type node struct {
++	Selector string // <path>::<exact leaf>, as frozen in the plan
++	Pkg      string // go package to run, e.g. ./internal/web
++	Leaf     string // exact top level test function name
++}
++
++// declaredNodes mirrors evidence/p2p-plan.json, minus the white-box Baseline
++// nodes from internal/web/auth_test.go: those referenced unexported symbols
++// of package web, while the task leaves internal types and layout to the
++// candidate. Their behavior is covered by the black-box TestP2P_Auth_* and
++// session contract nodes below (2026-11-19). p2p_select.txt is only used as a
++// cross-check; execution always covers the full declared set so the report
++// can never silently shrink.
++var declaredNodes = []node{
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Lifecycle_InvalidConfigRejected", Pkg: "./internal/web/tests", Leaf: "TestP2P_Lifecycle_InvalidConfigRejected"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Lifecycle_StartStopServesRoutes", Pkg: "./internal/web/tests", Leaf: "TestP2P_Lifecycle_StartStopServesRoutes"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Helpers_ExportedReusable", Pkg: "./internal/web/tests", Leaf: "TestP2P_Helpers_ExportedReusable"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_APIGroup_LateMountUnderAuth", Pkg: "./internal/web/tests", Leaf: "TestP2P_APIGroup_LateMountUnderAuth"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_PublicPathsAndAnonymousRejection", Pkg: "./internal/web/tests", Leaf: "TestP2P_Auth_PublicPathsAndAnonymousRejection"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_SessionLoginLogout", Pkg: "./internal/web/tests", Leaf: "TestP2P_Auth_SessionLoginLogout"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_TokenCredentialsAndForbiddenLogin", Pkg: "./internal/web/tests", Leaf: "TestP2P_Auth_TokenCredentialsAndForbiddenLogin"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_NoCredentialsOpenDashboard", Pkg: "./internal/web/tests", Leaf: "TestP2P_Auth_NoCredentialsOpenDashboard"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Overview_OmitsAbsentSources", Pkg: "./internal/web/tests", Leaf: "TestP2P_Overview_OmitsAbsentSources"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Overview_LateWiringTakesEffect", Pkg: "./internal/web/tests", Leaf: "TestP2P_Overview_LateWiringTakesEffect"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Reload_NoReloaderReturns400", Pkg: "./internal/web/tests", Leaf: "TestP2P_Reload_NoReloaderReturns400"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Reload_NonBlockingSideEffects", Pkg: "./internal/web/tests", Leaf: "TestP2P_Reload_NonBlockingSideEffects"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_NodeMetrics_QueryParamContract", Pkg: "./internal/web/tests", Leaf: "TestP2P_NodeMetrics_QueryParamContract"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_HealthCheck_Contract", Pkg: "./internal/web/tests", Leaf: "TestP2P_HealthCheck_Contract"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_DB_MaintenanceStatusMapping", Pkg: "./internal/web/tests", Leaf: "TestP2P_DB_MaintenanceStatusMapping"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Routes_MetricsPprofConfigVersion", Pkg: "./internal/web/tests", Leaf: "TestP2P_Routes_MetricsPprofConfigVersion"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Update_CheckMapsUpstreamFailureTo502", Pkg: "./internal/web/tests", Leaf: "TestP2P_Update_CheckMapsUpstreamFailureTo502"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_Update_ApplyReturns202WithoutWaiting", Pkg: "./internal/web/tests", Leaf: "TestP2P_Update_ApplyReturns202WithoutWaiting"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_SPA_FallbackBoundaryAndAssets", Pkg: "./internal/web/tests", Leaf: "TestP2P_SPA_FallbackBoundaryAndAssets"},
++	{Selector: "internal/web/tests/p2p_contract_test.go::TestP2P_WebSocket_LogsBroadcast", Pkg: "./internal/web/tests", Leaf: "TestP2P_WebSocket_LogsBroadcast"},
++}
++
++const (
++	deadProxy        = "http://127.0.0.1:9"
++	perNodeTimeout   = 150 * time.Second
++	goTestFlagReason = "-timeout=120s"
++)
++
++type statusKind string
++
++const (
++	statusPass  statusKind = "pass"
++	statusFail  statusKind = "fail"
++	statusSkip  statusKind = "skip"
++	statusError statusKind = "error"
++)
++
++type nodeResult struct {
++	Node     node
++	Status   statusKind
++	Detail   string
++	Output   string
++	Elapsed  time.Duration
++	Selector string
++}
++
++func main() {
++	reportPath := flag.String("report", "", "JUnit XML output path (the pipeline's {report} placeholder)")
++	selectPath := flag.String("select", "", "optional selector list materialised by the pipeline; used only as a cross-check")
++	flag.Parse()
++
++	if strings.TrimSpace(*reportPath) == "" {
++		fmt.Fprintln(os.Stderr, "p2prunner: --report <path> is required")
++		os.Exit(2)
++	}
++
++	root, err := findRepoRoot()
++	if err != nil {
++		res := errorResults(fmt.Sprintf("locate repository root: %v", err))
++		if werr := writeReport(*reportPath, res); werr != nil {
++			fmt.Fprintf(os.Stderr, "p2prunner: %v (report: %v)\n", err, werr)
++			os.Exit(1)
++		}
++		fmt.Fprintf(os.Stderr, "p2prunner: %v\n", err)
++		fmt.Printf("p2prunner: 0/%d nodes passed (repository root missing)\n", len(res))
++		os.Exit(0)
++	}
++
++	if *selectPath != "" {
++		crossCheckSelectors(*selectPath)
++	}
++
++	ctx := context.Background()
++	results := make([]nodeResult, 0, len(declaredNodes))
++
++	if derr := ensureDist(root); derr != nil {
++		results = errorResults(fmt.Sprintf("materialise internal/web/webui/dist: %v", derr))
++	} else {
++		for _, n := range declaredNodes {
++			r := runNode(ctx, root, n)
++			results = append(results, r)
++			fmt.Printf("p2prunner: %-9s %s\n", r.Status, n.Selector)
++			if r.Status != statusPass {
++				fmt.Printf("p2prunner:   %s\n", firstLine(r.Detail))
++			}
++		}
++	}
++
++	if werr := writeReport(*reportPath, results); werr != nil {
++		fmt.Fprintf(os.Stderr, "p2prunner: write report %s: %v\n", *reportPath, werr)
++		os.Exit(1)
++	}
++	passed := 0
++	for _, r := range results {
++		if r.Status == statusPass {
++			passed++
++		}
++	}
++	fmt.Printf("p2prunner: %d/%d nodes passed; report written to %s\n", passed, len(results), *reportPath)
++	if passed != len(results) {
++		os.Exit(1)
++	}
++	os.Exit(0)
++}
++
++func findRepoRoot() (string, error) {
++	dir, err := os.Getwd()
++	if err != nil {
++		return "", err
++	}
++	for {
++		if b, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil &&
++			strings.Contains(string(b), "module github.com/Ehco1996/ehco") {
++			return dir, nil
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			return "", fmt.Errorf("go.mod of github.com/Ehco1996/ehco not found above %s", dir)
++		}
++		dir = parent
++	}
++}
++
++// ensureDist re-creates the generated SPA embed tree on a pristine
++// checkout. internal/web/webui/dist is gitignored, so a baseline + patch
++// workspace has no UI build; the committed snapshot under
++// internal/web/tests/testdata/dist_snapshot carries the same layout
++// (index.html, favicon.svg, hashed assets) and is copied verbatim.
++func ensureDist(root string) error {
++	dst := filepath.Join(root, "internal", "web", "webui", "dist")
++	if fileExists(filepath.Join(dst, "index.html")) {
++		return nil
++	}
++	src := filepath.Join(root, "internal", "web", "tests", "testdata", "dist_snapshot")
++	if !fileExists(filepath.Join(src, "index.html")) {
++		return fmt.Errorf("neither %s nor the committed dist snapshot exist", dst)
++	}
++	if err := os.MkdirAll(dst, 0o755); err != nil {
++		return err
++	}
++	return os.CopyFS(dst, os.DirFS(src))
++}
++
++func fileExists(p string) bool {
++	fi, err := os.Stat(p)
++	return err == nil && !fi.IsDir()
++}
++
++// crossCheckSelectors reads the pipeline's selector list when it is present
++// and reports mismatches against the declared set. It never shrinks the
++// executed set: the frozen report must keep covering every declared node.
++func crossCheckSelectors(path string) {
++	b, err := os.ReadFile(path)
++	if err != nil {
++		// The placeholder may be passed verbatim when the harness does not
++		// materialise the file; that is not an error.
++		return
++	}
++	known := map[string]bool{}
++	for _, n := range declaredNodes {
++		known[n.Selector] = true
++	}
++	unknown := []string{}
++	for _, line := range strings.Split(string(b), "\n") {
++		line = strings.TrimSpace(line)
++		if line == "" || strings.HasPrefix(line, "#") {
++			continue
++		}
++		if !known[line] {
++			unknown = append(unknown, line)
++		}
++	}
++	if len(unknown) > 0 {
++		fmt.Fprintf(os.Stderr, "p2prunner: warning: %d selectors from %s are not declared: %s\n",
++			len(unknown), path, strings.Join(unknown, ", "))
++	}
++}
++
++type goTestEvent struct {
++	Action  string  `json:"Action"`
++	Test    string  `json:"Test"`
++	Output  string  `json:"Output"`
++	Elapsed float64 `json:"Elapsed"`
++	Package string  `json:"Package"`
++}
++
++func runNode(parent context.Context, root string, n node) nodeResult {
++	ctx, cancel := context.WithTimeout(parent, perNodeTimeout)
++	defer cancel()
++
++	cmd := exec.CommandContext(ctx, "go", "test", "-json", "-count=1", goTestFlagReason,
++		"-run", "^"+regexp.QuoteMeta(n.Leaf)+"$", n.Pkg)
++	cmd.Dir = root
++	cmd.Env = childEnv()
++	var stdout, stderr bytes.Buffer
++	cmd.Stdout = &stdout
++	cmd.Stderr = &stderr
++
++	start := time.Now()
++	runErr := cmd.Run()
++	elapsed := time.Since(start)
++
++	res := nodeResult{Node: n, Selector: n.Selector, Status: statusError, Elapsed: elapsed}
++	var out strings.Builder
++	var status statusKind
++	for _, line := range strings.Split(stdout.String(), "\n") {
++		line = strings.TrimSpace(line)
++		if line == "" {
++			continue
++		}
++		var ev goTestEvent
++		if err := json.Unmarshal([]byte(line), &ev); err != nil {
++			out.WriteString(line)
++			out.WriteString("\n")
++			continue
++		}
++		out.WriteString(ev.Output)
++		if ev.Test == n.Leaf {
++			switch ev.Action {
++			case "pass":
++				status = statusPass
++				res.Elapsed = time.Duration(ev.Elapsed * float64(time.Second))
++			case "fail":
++				status = statusFail
++				res.Elapsed = time.Duration(ev.Elapsed * float64(time.Second))
++			case "skip":
++				status = statusSkip
++				res.Elapsed = time.Duration(ev.Elapsed * float64(time.Second))
++			}
++		}
++	}
++	res.Output = clamp(out.String(), 16*1024)
++
++	if ctx.Err() != nil || regexp.MustCompile(`(?m)^(panic:|fatal error:)`).MatchString(out.String()+stderr.String()) {
++		res.Status = statusError
++		res.Detail = "go test process crash"
++		if ctx.Err() != nil {
++			res.Detail = "go test timed out"
++		}
++		res.Output = clamp(res.Output+"\n"+stderr.String(), 16*1024)
++		return res
++	}
++
++	switch {
++	case status == statusPass:
++		res.Status = statusPass
++		res.Detail = "passed"
++	case status == statusFail:
++		res.Status = statusFail
++		res.Detail = "go test reported the node as failed"
++		res.Output = clamp(res.Output+"\n"+stderr.String(), 16*1024)
++	case status == statusSkip:
++		res.Status = statusSkip
++		res.Detail = "go test reported the node as skipped"
++	default:
++		res.Status = statusError
++		detail := "node produced no result"
++		if runErr != nil {
++			detail = "go test invocation failed: " + runErr.Error()
++		} else if strings.Contains(out.String(), "build failed") {
++			detail = "package build failed"
++		}
++		res.Detail = detail
++		res.Output = clamp(res.Output+"\n"+stderr.String()+"\n"+firstLine(runErr.Error()), 16*1024)
++	}
++	if res.Status != statusPass {
++		fmt.Fprintf(os.Stderr, "p2prunner[%s]: %s\n", n.Selector, firstLine(res.Detail))
++	}
++	return res
++}
++
++func childEnv() []string {
++	env := os.Environ()
++	env = append(env,
++		"HTTP_PROXY="+deadProxy, "HTTPS_PROXY="+deadProxy, "ALL_PROXY="+deadProxy,
++		"NO_PROXY=127.0.0.1,localhost",
++		"GOTOOLCHAIN=local",
++	)
++	return env
++}
++
++func errorResults(detail string) []nodeResult {
++	res := make([]nodeResult, 0, len(declaredNodes))
++	for _, n := range declaredNodes {
++		res = append(res, nodeResult{Node: n, Selector: n.Selector, Status: statusError, Detail: detail, Output: detail})
++	}
++	return res
++}
++
++type xmlMessage struct {
++	Message string `xml:"message,attr"`
++	Type    string `xml:"type,attr,omitempty"`
++	Text    string `xml:",chardata"`
++}
++
++type xmlCase struct {
++	Classname string      `xml:"classname,attr"`
++	Name      string      `xml:"name,attr"`
++	File      string      `xml:"file,attr,omitempty"`
++	Time      string      `xml:"time,attr"`
++	Failure   *xmlMessage `xml:"failure,omitempty"`
++	Error     *xmlMessage `xml:"error,omitempty"`
++	Skipped   *xmlMessage `xml:"skipped,omitempty"`
++	SystemOut string      `xml:"system-out,omitempty"`
++}
++
++type xmlSuite struct {
++	Name      string    `xml:"name,attr"`
++	Tests     int       `xml:"tests,attr"`
++	Failures  int       `xml:"failures,attr"`
++	Errors    int       `xml:"errors,attr"`
++	Skipped   int       `xml:"skipped,attr"`
++	Time      string    `xml:"time,attr"`
++	Timestamp string    `xml:"timestamp,attr"`
++	Cases     []xmlCase `xml:"testcase"`
++}
++
++type xmlSuites struct {
++	XMLName  xml.Name   `xml:"testsuites"`
++	Name     string     `xml:"name,attr"`
++	Tests    int        `xml:"tests,attr"`
++	Failures int        `xml:"failures,attr"`
++	Errors   int        `xml:"errors,attr"`
++	Skipped  int        `xml:"skipped,attr"`
++	Time     string     `xml:"time,attr"`
++	Suites   []xmlSuite `xml:"testsuite"`
++}
++
++func writeReport(path string, results []nodeResult) error {
++	suite := xmlSuite{
++		Name:      "ehco-web-server-p2p",
++		Timestamp: time.Now().UTC().Format(time.RFC3339),
++	}
++	var total time.Duration
++	for _, r := range results {
++		file := r.Selector
++		if i := strings.Index(file, "::"); i >= 0 {
++			file = file[:i]
++		}
++		c := xmlCase{
++			Classname: file,
++			Name:      r.Node.Leaf,
++			File:      file,
++			Time:      fmt.Sprintf("%.3f", r.Elapsed.Seconds()),
++			SystemOut: "selector: " + r.Selector + "\n" + r.Output,
++		}
++		switch r.Status {
++		case statusPass:
++			// no child element
++		case statusFail:
++			suite.Failures++
++			c.Failure = &xmlMessage{Message: r.Detail, Type: "AssertionFailure", Text: r.Output}
++		case statusSkip:
++			suite.Skipped++
++			c.Skipped = &xmlMessage{Message: r.Detail, Text: r.Output}
++		default:
++			suite.Errors++
++			c.Error = &xmlMessage{Message: r.Detail, Type: "not-run", Text: r.Output}
++		}
++		total += r.Elapsed
++		suite.Cases = append(suite.Cases, c)
++	}
++	suite.Tests = len(suite.Cases)
++	suite.Time = fmt.Sprintf("%.3f", total.Seconds())
++
++	out := xmlSuites{
++		Name:     suite.Name,
++		Tests:    suite.Tests,
++		Failures: suite.Failures,
++		Errors:   suite.Errors,
++		Skipped:  suite.Skipped,
++		Time:     suite.Time,
++		Suites:   []xmlSuite{suite},
++	}
++	body, err := xml.MarshalIndent(out, "", "  ")
++	if err != nil {
++		return err
++	}
++	doc := append([]byte(xml.Header), body...)
++	doc = append(doc, '\n')
++	if dir := filepath.Dir(path); dir != "" {
++		if err := os.MkdirAll(dir, 0o755); err != nil {
++			return err
++		}
++	}
++	return os.WriteFile(path, doc, 0o644)
++}
++
++func clamp(s string, max int) string {
++	if len(s) <= max {
++		return s
++	}
++	return s[:max] + "\n... (truncated)"
++}
++
++func firstLine(s string) string {
++	s = strings.TrimSpace(s)
++	if i := strings.IndexByte(s, '\n'); i >= 0 {
++		s = s[:i]
++	}
++	if len(s) > 400 {
++		s = s[:400] + "..."
++	}
++	return s
++}
+diff --git a/internal/web/tests/testdata/dist_snapshot/assets/p2p_probe.js b/internal/web/tests/testdata/dist_snapshot/assets/p2p_probe.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..88428d1bf4031e6221bbe689889367f483df276d
+--- /dev/null
++++ b/internal/web/tests/testdata/dist_snapshot/assets/p2p_probe.js
+@@ -0,0 +1,4 @@
++// Minimal SPA bundle placeholder for the offline P2P harness.
++// The web admin tests only rely on index.html + favicon.svg being present
++// so /assets/<existing> and the SPA shell keep their baseline semantics.
++console.log("ehco p2p probe");
+diff --git a/internal/web/tests/testdata/dist_snapshot/favicon.svg b/internal/web/tests/testdata/dist_snapshot/favicon.svg
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5bc2798740436c24acd1d0bb1a7fb818f6e511a
+--- /dev/null
++++ b/internal/web/tests/testdata/dist_snapshot/favicon.svg
+@@ -0,0 +1,3 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
++  <text x="50%" y="52%" dominant-baseline="central" text-anchor="middle" font-size="26">🐱</text>
++</svg>
+diff --git a/internal/web/tests/testdata/dist_snapshot/index.html b/internal/web/tests/testdata/dist_snapshot/index.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..684a6f0c65a37ce7e7e357a749bdbd6c7e510944
+--- /dev/null
++++ b/internal/web/tests/testdata/dist_snapshot/index.html
+@@ -0,0 +1,14 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <meta name="color-scheme" content="light dark" />
++    <title>ehco admin</title>
++    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
++    <script type="module" crossorigin src="./assets/p2p_probe.js"></script>
++  </head>
++  <body class="bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
++    <div id="root"></div>
++  </body>
++</html>
+diff --git a/tests/f2p/f2p_split_test.go b/tests/f2p/f2p_split_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f6bb6d56de3f4aa976bfc905354a9e1099e11ad2
+--- /dev/null
++++ b/tests/f2p/f2p_split_test.go
+@@ -0,0 +1,862 @@
++// Package f2p hosts the F2P (fail-to-pass) structural selectors for the
++// ehco web admin god-object split (case T6).
++//
++// The frozen P2P suite guards the public HTTP contract, which is preserved by
++// the split. These nodes guard the change itself: the structural requirements
++// REQ-STRUCT-001..003 state that the admin server type must stop owning the
++// handler families, that each family must declare only the dependencies it
++// uses (narrow, purpose-specific contracts rather than the whole server), and
++// that the late-wired optional hooks must be explicit holder state instead of
++// raw god-object properties.
++//
++// Every node reads the production sources of package internal/web (there is no
++// unexported-identifier coupling and no runtime assembly), so a faithful split
++// of any shape passes while the pre-split god object fails:
++//
++//   - the admin Server type declares no request-handler methods,
++//   - it holds none of the handler subsystems' handles (connection manager,
++//     configuration snapshot, relay/health contracts, late-bound hook atoms),
++//   - routes are not mounted from Server methods,
++//   - each family's handler type carries only that family's dependencies.
++//
++// Each node is an exact leaf, independently selectable and independently
++// scored. Unresolved ownership is an infrastructure/coverage error, not a pass.
++package f2p
++
++import (
++	"bytes"
++	"fmt"
++	"go/ast"
++	"go/parser"
++	"go/printer"
++	"go/token"
++	"go/types"
++	"os"
++	"path/filepath"
++	"regexp"
++	"strconv"
++	"strings"
++	"testing"
++)
++
++// ---------------------------------------------------------------------------
++// minimal reader for the production package internal/web
++// ---------------------------------------------------------------------------
++
++type fieldInfo struct {
++	name     string
++	typ      string
++	embedded bool
++}
++
++type structInfo struct {
++	file   string
++	name   string
++	fields []fieldInfo
++}
++
++type paramInfo struct {
++	name string
++	typ  string
++}
++
++type methodInfo struct {
++	file   string
++	recv   string // base type name of the receiver, e.g. "Server"
++	name   string
++	params []paramInfo
++}
++
++type funcInfo struct {
++	file   *ast.File
++	decl   *ast.FuncDecl
++	params []paramInfo
++	locals map[string]string
++}
++
++type pkgInfo struct {
++	valueSources    map[types.Object][]ast.Expr
++	functionDecls   map[types.Object]*ast.FuncDecl
++	syntheticFields map[string]map[string]types.Type
++	tb              testing.TB
++	typePkg         *types.Package
++	typeInfo        *types.Info
++	contracts       map[string]types.Type
++	fset            *token.FileSet
++	root            string
++	dir             string
++	files           []*ast.File
++	fileByPos       map[*ast.File]string // file -> base name
++	imports         map[*ast.File]map[string]string
++	structs         map[string]*structInfo
++	methods         []methodInfo
++	funcs           []*funcInfo
++	routeMounts     []routeMount
++}
++
++type routeMount struct {
++	file     string
++	method   string // GET/POST/...
++	path     string // literal path when available
++	recvText string // rendered receiver expression of the handler value
++	recvType string // resolved receiver type text, "" when unresolved
++}
++
++func findRepoRoot(tb testing.TB) string {
++	tb.Helper()
++	dir, err := os.Getwd()
++	if err != nil {
++		tb.Fatalf("getwd: %v", err)
++	}
++	for {
++		b, err := os.ReadFile(filepath.Join(dir, "go.mod"))
++		if err == nil && strings.Contains(string(b), "module github.com/Ehco1996/ehco") {
++			return dir
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			tb.Fatalf("go.mod of github.com/Ehco1996/ehco not found above %s", dir)
++		}
++		dir = parent
++	}
++}
++
++func exprText(fset *token.FileSet, e ast.Expr) string {
++	if e == nil {
++		return ""
++	}
++	var b bytes.Buffer
++	if err := printer.Fprint(&b, fset, e); err != nil {
++		return ""
++	}
++	return b.String()
++}
++
++// importLocalName approximates the package name a default (unaliased)
++// import binds: the last path element, unless it is a semantic version
++// suffix such as the "v4" of github.com/labstack/echo/v4.
++func importLocalName(path string) string {
++	name := filepath.Base(path)
++	if versionSuffix.MatchString(name) {
++		name = filepath.Base(filepath.Dir(path))
++	}
++	return name
++}
++
++var versionSuffix = regexp.MustCompile(`^v[0-9]+$`)
++
++func baseTypeName(typ string) string {
++	s := strings.TrimSpace(typ)
++	for strings.HasPrefix(s, "*") {
++		s = strings.TrimSpace(strings.TrimPrefix(s, "*"))
++	}
++	if i := strings.IndexByte(s, '['); i >= 0 {
++		s = s[:i]
++	}
++	if i := strings.LastIndexByte(s, '.'); i >= 0 {
++		s = s[i+1:]
++	}
++	return s
++}
++
++func loadPackage(tb testing.TB) *pkgInfo {
++	tb.Helper()
++	root := findRepoRoot(tb)
++	dir := filepath.Join(root, "internal", "web")
++	ents, err := os.ReadDir(dir)
++	if err != nil {
++		tb.Fatalf("read %s: %v", dir, err)
++	}
++	pkg := &pkgInfo{
++		fset:      token.NewFileSet(),
++		root:      root,
++		dir:       dir,
++		fileByPos: map[*ast.File]string{},
++		imports:   map[*ast.File]map[string]string{},
++		structs:   map[string]*structInfo{},
++	}
++	for _, ent := range ents {
++		name := ent.Name()
++		if ent.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
++			continue
++		}
++		f, err := parser.ParseFile(pkg.fset, filepath.Join(dir, name), nil, parser.ParseComments)
++		if err != nil {
++			tb.Fatalf("parse %s: %v", name, err)
++		}
++		pkg.files = append(pkg.files, f)
++		pkg.fileByPos[f] = name
++		m := map[string]string{}
++		for _, imp := range f.Imports {
++			path, err := strconv.Unquote(imp.Path.Value)
++			if err != nil {
++				continue
++			}
++			local := importLocalName(path)
++			if imp.Name != nil {
++				local = imp.Name.Name
++			}
++			m[local] = path
++		}
++		pkg.imports[f] = m
++	}
++	if len(pkg.files) == 0 {
++		tb.Fatalf("no production .go files found in %s", dir)
++	}
++	pkg.loadSemanticTypes(tb)
++	pkg.collect(tb)
++	return pkg
++}
++
++func (p *pkgInfo) collect(tb testing.TB) {
++	for _, f := range p.files {
++		file := p.fileByPos[f]
++		for _, decl := range f.Decls {
++			switch d := decl.(type) {
++			case *ast.GenDecl:
++				if d.Tok != token.TYPE {
++					continue
++				}
++				for _, spec := range d.Specs {
++					ts, ok := spec.(*ast.TypeSpec)
++					if !ok {
++						continue
++					}
++					st, ok := ts.Type.(*ast.StructType)
++					if !ok {
++						continue
++					}
++					info := &structInfo{file: file, name: ts.Name.Name}
++					for _, fld := range st.Fields.List {
++						typ := exprText(p.fset, fld.Type)
++						if len(fld.Names) == 0 {
++							info.fields = append(info.fields, fieldInfo{name: baseTypeName(typ), typ: typ, embedded: true})
++							continue
++						}
++						for _, n := range fld.Names {
++							info.fields = append(info.fields, fieldInfo{name: n.Name, typ: typ})
++						}
++					}
++					p.structs[ts.Name.Name] = info
++				}
++			case *ast.FuncDecl:
++				if d.Name == nil {
++					continue
++				}
++				fn := &funcInfo{file: f, decl: d, locals: map[string]string{}}
++				if d.Type.Params != nil {
++					for _, fld := range d.Type.Params.List {
++						typ := exprText(p.fset, fld.Type)
++						if semantic := p.typeInfo.TypeOf(fld.Type); semantic != nil {
++							typ = semanticTypeText(types.Unalias(semantic))
++						}
++						names := fld.Names
++						if len(names) == 0 {
++							fn.params = append(fn.params, paramInfo{name: "", typ: typ})
++							continue
++						}
++						for _, n := range names {
++							fn.params = append(fn.params, paramInfo{name: n.Name, typ: typ})
++						}
++					}
++				}
++				if d.Body != nil {
++					p.collectLocals(d.Body, fn.locals)
++				}
++				p.funcs = append(p.funcs, fn)
++				if d.Recv != nil && len(d.Recv.List) > 0 {
++					recvType := exprText(p.fset, d.Recv.List[0].Type)
++					if typ := p.typeInfo.TypeOf(d.Recv.List[0].Type); typ != nil {
++						recvType = semanticTypeText(unpoint(typ))
++					}
++					p.methods = append(p.methods, methodInfo{
++						file:   file,
++						recv:   baseTypeName(recvType),
++						name:   d.Name.Name,
++						params: fn.params,
++					})
++				}
++			}
++		}
++	}
++	p.buildHandlerSources()
++	p.collectRoutes()
++}
++
++// collectLocals records every identifier that is explicitly bound to a type
++// inside a function body (parameter declarations are handled by the caller).
++func (p *pkgInfo) collectLocals(body *ast.BlockStmt, out map[string]string) {
++	ast.Inspect(body, func(n ast.Node) bool {
++		switch s := n.(type) {
++		case *ast.DeclStmt:
++			gd, ok := s.Decl.(*ast.GenDecl)
++			if !ok || gd.Tok != token.VAR {
++				break
++			}
++			for _, spec := range gd.Specs {
++				vs, ok := spec.(*ast.ValueSpec)
++				if !ok {
++					continue
++				}
++				typ := exprText(p.fset, vs.Type)
++				if typ == "" && len(vs.Values) == 1 {
++					typ = p.inferValueType(vs.Values[0])
++				}
++				for _, n := range vs.Names {
++					if typ != "" {
++						out[n.Name] = typ
++					}
++				}
++			}
++		case *ast.AssignStmt:
++			if s.Tok != token.DEFINE && s.Tok != token.ASSIGN {
++				break
++			}
++			for i, lhs := range s.Lhs {
++				id, ok := lhs.(*ast.Ident)
++				if !ok || i >= len(s.Rhs) {
++					continue
++				}
++				if typ := p.inferValueType(s.Rhs[i]); typ != "" {
++					out[id.Name] = typ
++				}
++			}
++		}
++		return true
++	})
++}
++
++func (p *pkgInfo) inferValueType(e ast.Expr) string {
++	switch v := e.(type) {
++	case *ast.UnaryExpr:
++		if v.Op == token.AND {
++			return p.inferValueType(v.X)
++		}
++	case *ast.CompositeLit:
++		return exprText(p.fset, v.Type)
++	case *ast.CallExpr:
++		if id, ok := v.Fun.(*ast.Ident); ok && id.Name == "new" && len(v.Args) == 1 {
++			return "*" + exprText(p.fset, v.Args[0])
++		}
++	case *ast.ParenExpr:
++		return p.inferValueType(v.X)
++	}
++	return ""
++}
++
++var routeMethods = map[string]bool{
++	"GET": true, "POST": true, "PUT": true, "DELETE": true,
++	"PATCH": true, "HEAD": true, "OPTIONS": true, "Any": true,
++}
++
++func (p *pkgInfo) collectRoutes() {
++	for _, fn := range p.funcs {
++		if fn.decl.Body == nil {
++			continue
++		}
++		bindings := map[string]string{}
++		for k, v := range fn.locals {
++			bindings[k] = v
++		}
++		for _, prm := range fn.params {
++			if prm.name != "" {
++				bindings[prm.name] = prm.typ
++			}
++		}
++		file := p.fileByPos[fn.file]
++		ast.Inspect(fn.decl.Body, func(n ast.Node) bool {
++			call, ok := n.(*ast.CallExpr)
++			if !ok {
++				return true
++			}
++			sel, ok := call.Fun.(*ast.SelectorExpr)
++			if !ok || !routeMethods[sel.Sel.Name] {
++				return true
++			}
++			rm := routeMount{file: file, method: sel.Sel.Name}
++			if len(call.Args) >= 1 {
++				if lit, ok := call.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
++					if s, err := strconv.Unquote(lit.Value); err == nil {
++						rm.path = s
++					}
++				}
++			}
++
++			if len(call.Args) >= 2 {
++				owners := p.handlerOwners(call.Args[1], map[ast.Expr]bool{})
++				for _, owner := range owners {
++					bound := rm
++					bound.recvType = owner
++					bound.recvText = exprText(p.fset, call.Args[1])
++					p.routeMounts = append(p.routeMounts, bound)
++				}
++				if len(owners) == 0 {
++					p.routeMounts = append(p.routeMounts, rm)
++				}
++			}
++
++			return true
++		})
++	}
++}
++
++func (p *pkgInfo) resolveExprType(e ast.Expr, bindings map[string]string) string {
++	switch v := e.(type) {
++	case *ast.Ident:
++		return bindings[v.Name]
++	case *ast.ParenExpr:
++		return p.resolveExprType(v.X, bindings)
++	case *ast.UnaryExpr:
++		if v.Op == token.AND {
++			return p.resolveExprType(v.X, bindings)
++		}
++	case *ast.CompositeLit:
++		return exprText(p.fset, v.Type)
++	case *ast.CallExpr:
++		return p.inferValueType(v)
++	case *ast.IndexExpr:
++		return p.resolveExprType(v.X, bindings)
++	case *ast.SelectorExpr:
++		base := p.resolveExprType(v.X, bindings)
++		if base == "" {
++			return ""
++		}
++		st, ok := p.structs[baseTypeName(base)]
++		if !ok {
++			return ""
++		}
++		for _, fld := range st.fields {
++			if fld.name == v.Sel.Name {
++				return fld.typ
++			}
++		}
++	}
++	return ""
++}
++
++// isEchoContext reports whether the rendered type text refers to echo.Context
++// in the file where the type was written.
++func (p *pkgInfo) isEchoContext(file string, typ string) bool {
++	typ = strings.TrimSpace(typ)
++	for _, f := range p.files {
++		if p.fileByPos[f] != file {
++			continue
++		}
++		for local, path := range p.imports[f] {
++			if path != "github.com/labstack/echo/v4" {
++				continue
++			}
++			if typ == local+".Context" || (local == "." && typ == "Context") {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++func (p *pkgInfo) serverStruct() *structInfo {
++	return p.structs["Server"]
++}
++
++func (p *pkgInfo) fieldsMatching(si *structInfo, patterns []string) []string {
++	var hits []string
++	for _, fld := range si.fields {
++		for _, pat := range patterns {
++			if regexp.MustCompile(pat).MatchString(p.fieldContractLabels(si, fld)) {
++				label := fld.name
++				if label == "" {
++					label = "(embedded)"
++				}
++				hits = append(hits, fmt.Sprintf("%s.%s: %s", si.name, label, fld.typ))
++				break
++			}
++		}
++	}
++	return hits
++}
++
++// ---------------------------------------------------------------------------
++// shared helpers
++// ---------------------------------------------------------------------------
++
++type family struct {
++	name        string
++	paths       []string
++	methodNames []string
++	forbidden   []string
++}
++
++func typeFamily(pattern string) string { return `\b` + pattern + `\b` }
++
++var (
++	reCMGR       = typeFamily(`cmgr\.Cmgr`)
++	reConfig     = typeFamily(`config\.Config`)
++	reReloader   = typeFamily(`glue\.Reloader`)
++	reHealth     = typeFamily(`glue\.HealthChecker`)
++	reAuthentic  = typeFamily(`authenticator`)
++	reEchoEngine = typeFamily(`echo\.Echo`)
++	reHookAtom   = typeFamily(`atomic\.Pointer`)
++	reServerType = typeFamily(`Server`)
++)
++
++var handlerFamilies = []family{
++	{
++		name:        "auth",
++		paths:       []string{"/auth/info", "/auth/login", "/auth/logout"},
++		methodNames: []string{"AuthInfo", "HandleLogin", "HandleLogout"},
++		forbidden:   []string{reCMGR, reReloader, reHealth, reEchoEngine},
++	},
++	{
++		name:        "config",
++		paths:       []string{"/config/", "/config/reload/"},
++		methodNames: []string{"CurrentConfig", "HandleReload"},
++		forbidden:   []string{reCMGR, reHealth, reAuthentic, reEchoEngine},
++	},
++	{
++		name:        "db",
++		paths:       []string{"/db/health", "/db/cleanup", "/db/vacuum", "/db/truncate", "/db/reset_stats"},
++		methodNames: []string{"GetDBHealth", "PostDBCleanup", "PostDBVacuum", "PostDBTruncate", "PostDBResetStats"},
++		forbidden:   []string{reReloader, reHealth, reAuthentic, reConfig, reEchoEngine},
++	},
++	{
++		name:        "health_check",
++		paths:       []string{"/health_check/"},
++		methodNames: []string{"HandleHealthCheck"},
++		forbidden:   []string{reCMGR, reReloader, reAuthentic, reConfig, reEchoEngine},
++	},
++	{
++		name:        "node_metrics",
++		paths:       []string{"/node_metrics/"},
++		methodNames: []string{"GetNodeMetrics"},
++		forbidden:   []string{reCMGR, reReloader, reAuthentic, reConfig, reEchoEngine},
++	},
++	{
++		name:        "overview",
++		paths:       []string{"/overview"},
++		methodNames: []string{"Overview"},
++		forbidden:   []string{reCMGR, reReloader, reAuthentic, reConfig, reEchoEngine},
++	},
++	{
++		name:        "update",
++		paths:       []string{"/version", "/update/check", "/update/apply"},
++		methodNames: []string{"Version", "UpdateCheck", "UpdateApply"},
++		forbidden:   []string{reCMGR, reReloader, reHealth, reAuthentic, reConfig, reEchoEngine},
++	},
++	{
++		name:        "logs",
++		paths:       []string{"/ws/logs"},
++		methodNames: []string{"handleWebSocketLogs", "HandleWebSocketLogs"},
++		forbidden:   []string{reCMGR, reReloader, reHealth, reAuthentic, reConfig, reEchoEngine},
++	},
++}
++
++// familyTypes returns the receiver types that serve a route family, resolved
++// from the route registration wiring first and from the historic handler
++// method names as a fallback. The result never guesses from type names.
++func (p *pkgInfo) familyTypes(f family) []string {
++	return p.receiverTypesForPaths(f.paths, f.methodNames)
++}
++
++func (p *pkgInfo) receiverTypesForPaths(paths, methodNames []string) []string {
++	pathSet := map[string]bool{}
++	for _, pth := range paths {
++		pathSet[pth] = true
++	}
++	nameSet := map[string]bool{}
++	for _, n := range methodNames {
++		nameSet[n] = true
++	}
++	seen := map[string]bool{}
++	var out []string
++	add := func(typ string) {
++		base := baseTypeName(typ)
++		if base == "" || seen[base] {
++			return
++		}
++		seen[base] = true
++		out = append(out, base)
++	}
++	for _, rm := range p.routeMounts {
++		if rm.path == "" || !pathSet[rm.path] || rm.recvType == "" {
++			continue
++		}
++		add(rm.recvType)
++	}
++	for _, m := range p.methods {
++		if !nameSet[m.name] {
++			continue
++		}
++		isHandler := false
++		for _, prm := range m.params {
++			if p.isEchoContext(m.file, prm.typ) {
++				isHandler = true
++				break
++			}
++		}
++		if isHandler {
++			add(m.recv)
++		}
++	}
++	return out
++}
++
++func (p *pkgInfo) serverTypeMissing(t *testing.T) *structInfo {
++	t.Helper()
++	si := p.serverStruct()
++	if si == nil {
++		t.Fatalf("internal/web no longer declares the admin server type `Server`; the split must keep the public server entry point")
++	}
++	return si
++}
++
++func checkFamilyNarrow(t *testing.T, f family) {
++	t.Helper()
++	p := loadPackage(t)
++	types := p.familyTypes(f)
++	if len(types) == 0 {
++		t.Fatalf("infrastructure error: cannot attribute handler ownership for family %q; unresolved coverage is not a pass", f.name)
++	}
++	var hits []string
++	for _, typ := range types {
++		si := p.structs[typ]
++		if si == nil {
++			continue
++		}
++		hits = append(hits, p.fieldsMatching(si, p.ownerForbidden(si))...)
++		for _, field := range si.fields {
++			if p.hasConcreteServiceDependency(field.typ, si.file, map[string]bool{}) {
++				hits = append(hits, fmt.Sprintf("%s.%s: concrete service dependency %s", si.name, field.name, field.typ))
++			}
++		}
++	}
++	if len(hits) > 0 {
++		t.Fatalf("the %s handler family still depends on state outside its own responsibility (REQ-STRUCT-001/002): handler type(s) %s declare %s",
++			f.name, strings.Join(types, ", "), strings.Join(hits, "; "))
++	}
++}
++
++// ---------------------------------------------------------------------------
++// F2P nodes: the admin server type stops owning the handler families
++
++func (pkg *pkgInfo) hasConcreteServiceDependency(typeText, filename string, visited map[string]bool) bool {
++	expression, err := parser.ParseExpr(typeText)
++	if err != nil {
++		return false
++	}
++	isConcrete := func(path, name string) bool {
++		return (strings.HasSuffix(path, "/internal/cmgr/ms") && name == "MetricsStore") ||
++			(strings.HasSuffix(path, "/internal/relay") && name == "Server") ||
++			(strings.HasSuffix(path, "/pkg/xray") && name == "XrayServer")
++	}
++	imports := map[string]string{}
++	for _, source := range pkg.files {
++		if pkg.fileByPos[source] != filename {
++			continue
++		}
++		for _, declaration := range source.Imports {
++			path, err := strconv.Unquote(declaration.Path.Value)
++			if err != nil {
++				continue
++			}
++			alias := filepath.Base(path)
++			if declaration.Name != nil {
++				alias = declaration.Name.Name
++			}
++			imports[alias] = path
++		}
++	}
++	concrete := false
++	ast.Inspect(expression, func(node ast.Node) bool {
++		switch value := node.(type) {
++		case *ast.SelectorExpr:
++			qualifier, ok := value.X.(*ast.Ident)
++			if !ok {
++				return true
++			}
++			path := imports[qualifier.Name]
++			if isConcrete(path, value.Sel.Name) {
++				concrete = true
++			}
++			return false
++		case *ast.Ident:
++			if isConcrete(imports["."], value.Name) {
++				concrete = true
++				return false
++			}
++			if visited[value.Name] {
++				return false
++			}
++			visited[value.Name] = true
++			for _, source := range pkg.files {
++				for _, declaration := range source.Decls {
++					group, ok := declaration.(*ast.GenDecl)
++					if !ok || group.Tok != token.TYPE {
++						continue
++					}
++					for _, item := range group.Specs {
++						definition := item.(*ast.TypeSpec)
++						if definition.Name.Name == value.Name && pkg.hasConcreteServiceDependency(exprText(pkg.fset, definition.Type), pkg.fileByPos[source], visited) {
++							concrete = true
++						}
++					}
++				}
++			}
++		}
++		return !concrete
++	})
++	return concrete
++}
++
++// ---------------------------------------------------------------------------
++
++// TestF2P_ServerTypeDeclaresNoRequestHandlers verifies REQ-STRUCT-001: the
++// remaining server type stays limited to HTTP lifecycle, middleware and
++// routing, so it must not declare request-entry-point methods that take an
++// echo.Context and hand request handling to the god object.
++func TestF2P_ServerTypeDeclaresNoRequestHandlers(t *testing.T) {
++	p := loadPackage(t)
++	si := p.serverTypeMissing(t)
++	var violations []string
++	for _, m := range p.methods {
++		if m.recv != si.name {
++			continue
++		}
++		for _, prm := range m.params {
++			if p.isEchoContext(m.file, prm.typ) {
++				violations = append(violations, fmt.Sprintf("%s.%s (%s)", m.recv, m.name, m.file))
++				break
++			}
++		}
++	}
++	if len(violations) > 0 {
++		t.Fatalf("the admin server type still owns %d request handler(s) (REQ-STRUCT-001); the six handler families must be moved off %s: %s",
++			len(violations), si.name, strings.Join(violations, ", "))
++	}
++}
++
++// TestF2P_ServerDropsHandlerSubsystemState verifies REQ-STRUCT-001: the
++// connection-manager handle and the configuration snapshot belong to the
++// handler families that use them, not to the surviving admin type.
++func TestF2P_ServerDropsHandlerSubsystemState(t *testing.T) {
++	p := loadPackage(t)
++	si := p.serverTypeMissing(t)
++	hits := p.fieldsMatching(si, []string{reCMGR, reConfig})
++	if len(hits) > 0 {
++		t.Fatalf("the admin server type still owns handler-subsystem state (REQ-STRUCT-001): %s", strings.Join(hits, "; "))
++	}
++}
++
++// TestF2P_ServerDropsRelayAndHealthContracts verifies REQ-STRUCT-001: the
++// relay reload contract and the health-check contract are optional
++// collaborators owned by the handlers that consume them; the admin type must
++// neither embed nor declare them.
++func TestF2P_ServerDropsRelayAndHealthContracts(t *testing.T) {
++	p := loadPackage(t)
++	si := p.serverTypeMissing(t)
++	hits := p.fieldsMatching(si, []string{reReloader, reHealth})
++	if len(hits) > 0 {
++		t.Fatalf("the admin server type still owns the relay/health contracts (REQ-STRUCT-001): %s", strings.Join(hits, "; "))
++	}
++}
++
++// TestF2P_ServerDropsLateWiredHookStorage verifies REQ-STRUCT-003: the status
++// and reload hooks wired after construction must be explicit holder state, so
++// the admin type itself must not carry raw atomic hook slots for them.
++func TestF2P_ServerDropsLateWiredHookStorage(t *testing.T) {
++	p := loadPackage(t)
++	si := p.serverTypeMissing(t)
++	hits := p.fieldsMatching(si, []string{reHookAtom})
++	if len(hits) > 0 {
++		t.Fatalf("the admin server type still stores the late-wired optional hooks itself (REQ-STRUCT-003): %s", strings.Join(hits, "; "))
++	}
++}
++
++// TestF2P_RoutesNotMountedFromServerMethods verifies REQ-STRUCT-001 at the
++// routing surface: the engine must not be wired with method values whose
++// receiver is the admin server value, because every mounted handler must come
++// from a dedicated handler type instead.
++func TestF2P_RoutesNotMountedFromServerMethods(t *testing.T) {
++	p := loadPackage(t)
++	var violations []string
++	for _, rm := range p.routeMounts {
++		if rm.recvType == "" {
++			continue
++		}
++		if baseTypeName(rm.recvType) == "Server" {
++			violations = append(violations, fmt.Sprintf("%s %s -> %s (receiver %s, %s)", rm.method, rm.path, rm.recvText, rm.recvType, rm.file))
++		}
++	}
++	if len(violations) > 0 {
++		t.Fatalf("%d route(s) are still mounted from admin server methods (REQ-STRUCT-001); the wiring must pass dedicated handler types: %s",
++			len(violations), strings.Join(violations, "; "))
++	}
++}
++
++// ---------------------------------------------------------------------------
++// F2P nodes: each family declares only the dependencies it uses
++// ---------------------------------------------------------------------------
++
++// TestF2P_AuthHandlerNarrowDependencies verifies REQ-STRUCT-001/002 for the
++// /api/v1/auth/* consumer: the type that serves auth info/login/logout may
++// hold auth/config/logger state, but not the connection manager, the relay
++// reload contract, the health checker or the HTTP engine.
++func TestF2P_AuthHandlerNarrowDependencies(t *testing.T) {
++	checkFamilyNarrow(t, handlerFamilies[0])
++}
++
++// TestF2P_ConfigHandlerNarrowDependencies verifies REQ-STRUCT-001/002 for the
++// /api/v1/config/ and /api/v1/config/reload/ consumer: the type that serves
++// them may hold the config snapshot and reload contracts, but not the
++// connection manager, the health checker, the authenticator or the engine.
++func TestF2P_ConfigHandlerNarrowDependencies(t *testing.T) {
++	checkFamilyNarrow(t, handlerFamilies[1])
++}
++
++// TestF2P_DBHandlerNarrowDependencies verifies REQ-STRUCT-001/002 for the
++// /api/v1/db/* consumer: the maintenance type may hold its storage
++// capability, but not relay/health contracts, the authenticator, the config
++// snapshot or the engine.
++func TestF2P_DBHandlerNarrowDependencies(t *testing.T) {
++	checkFamilyNarrow(t, handlerFamilies[2])
++}
++
++// TestF2P_HealthCheckHandlerNarrowDependencies verifies REQ-STRUCT-001/002
++// for the /api/v1/health_check/ consumer: the type that serves it may hold
++// the health-check contract, but not the connection manager, relay reload,
++// the authenticator, the config snapshot or the engine.
++func TestF2P_HealthCheckHandlerNarrowDependencies(t *testing.T) {
++	checkFamilyNarrow(t, handlerFamilies[3])
++}
++
++// TestF2P_NodeMetricsHandlerNarrowDependencies verifies REQ-STRUCT-001/002
++// for the /api/v1/node_metrics/ consumer: the type that serves it may hold a
++// node-metrics query capability, but not relay/health contracts, the
++// authenticator, the config snapshot or the engine.
++func TestF2P_NodeMetricsHandlerNarrowDependencies(t *testing.T) {
++	checkFamilyNarrow(t, handlerFamilies[4])
++}
++
++// TestF2P_OverviewHandlerNarrowDependencies verifies REQ-STRUCT-002: the
++// aggregating /api/v1/overview consumer must depend on narrow,
++// purpose-specific sources (rules, status snapshot, node-metrics sample)
++// rather than the assembled server or the whole connection manager.
++func TestF2P_OverviewHandlerNarrowDependencies(t *testing.T) {
++	checkFamilyNarrow(t, handlerFamilies[5])
++}
++
++// TestF2P_UpdateHandlerNarrowDependencies verifies REQ-STRUCT-001/002 for the
++// /api/v1/version, /update/check and /update/apply consumer: the update type
++// may hold a logger (and an updater contract), but not the connection
++// manager, relay/health contracts, the authenticator, the config snapshot or
++// the engine.
++func TestF2P_UpdateHandlerNarrowDependencies(t *testing.T) {
++	checkFamilyNarrow(t, handlerFamilies[6])
++}
++
++// TestF2P_LogStreamHandlerNarrowDependencies verifies REQ-STRUCT-001/002 for
++// the /ws/logs consumer: the log-stream type may hold its logger/fanout
++// state, but not the connection manager, relay/health contracts, the
++// authenticator, the config snapshot or the engine.
++func TestF2P_LogStreamHandlerNarrowDependencies(t *testing.T) {
++	checkFamilyNarrow(t, handlerFamilies[7])
++}
+diff --git a/tests/f2p/runner/main.go b/tests/f2p/runner/main.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..500d6fd97c1b79280d63444724b0602bb86a8c81
+--- /dev/null
++++ b/tests/f2p/runner/main.go
+@@ -0,0 +1,607 @@
++// Command f2prunner executes the F2P (fail-to-pass) structural selector set
++// for the ehco web admin god-object split together with the frozen P2P
++// selectors, and writes one standard JUnit XML report.
++//
++// Design constraints:
++//   - stdlib only, so it builds from the frozen module cache with no network;
++//   - the exact selector set comes from the pipeline's {config} p2p/f2p
++//     arrays (exact leaves, never a test file or a broad pattern); the
++//     frozen P2P-only {p2p_select} list and the F2P owner's declared set are
++//     used only as fallbacks when the config placeholder is not materialised;
++//   - every selector runs in its own `go test` process, so a panic, hang or
++//     build failure in one node cannot hide the results of the others;
++//   - the gitignored internal/web/webui/dist embed tree is materialised from
++//     the committed testdata snapshot when it is missing, so the packages can
++//     be compiled on a pristine baseline checkout with no SPA toolchain;
++//   - a report is always written for every selected node. A node that
++//     produced no result is reported as an <error> (NOT_RUN), never as a
++//     pass, a skip or an empty report.
++package main
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"encoding/xml"
++	"flag"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"strings"
++	"time"
++)
++
++// f2pDeclaredSelectors mirrors the F2P owner's verification plan. It is only
++// used when the pipeline's {config} file is not available.
++var f2pDeclaredSelectors = []string{
++	"tests/f2p/f2p_split_test.go::TestF2P_ServerTypeDeclaresNoRequestHandlers",
++	"tests/f2p/f2p_split_test.go::TestF2P_ServerDropsHandlerSubsystemState",
++	"tests/f2p/f2p_split_test.go::TestF2P_ServerDropsRelayAndHealthContracts",
++	"tests/f2p/f2p_split_test.go::TestF2P_ServerDropsLateWiredHookStorage",
++	"tests/f2p/f2p_split_test.go::TestF2P_RoutesNotMountedFromServerMethods",
++	"tests/f2p/f2p_split_test.go::TestF2P_AuthHandlerNarrowDependencies",
++	"tests/f2p/f2p_split_test.go::TestF2P_ConfigHandlerNarrowDependencies",
++	"tests/f2p/f2p_split_test.go::TestF2P_DBHandlerNarrowDependencies",
++	"tests/f2p/f2p_split_test.go::TestF2P_HealthCheckHandlerNarrowDependencies",
++	"tests/f2p/f2p_split_test.go::TestF2P_NodeMetricsHandlerNarrowDependencies",
++	"tests/f2p/f2p_split_test.go::TestF2P_OverviewHandlerNarrowDependencies",
++	"tests/f2p/f2p_split_test.go::TestF2P_UpdateHandlerNarrowDependencies",
++	"tests/f2p/f2p_split_test.go::TestF2P_LogStreamHandlerNarrowDependencies",
++}
++
++const (
++	statusPass  = "PASS"
++	statusFail  = "FAIL"
++	statusSkip  = "SKIP"
++	statusError = "NOT_RUN"
++	deadProxy   = "http://127.0.0.1:9"
++)
++
++type selector struct {
++	ID  string // <path>::<exact leaf>
++	Pkg string // go package to run, e.g. ./internal/web
++}
++
++func newSelector(id string) (selector, bool) {
++	idx := strings.Index(id, "::")
++	if idx <= 0 || idx+2 >= len(id) {
++		return selector{}, false
++	}
++	file, leaf := id[:idx], id[idx+2:]
++	pkg := "./" + filepath.ToSlash(filepath.Dir(file))
++	if pkg == "./." {
++		return selector{}, false
++	}
++	_ = leaf
++	return selector{ID: id, Pkg: pkg}, true
++}
++
++func leafOf(id string) string {
++	idx := strings.Index(id, "::")
++	if idx < 0 {
++		return id
++	}
++	return id[idx+2:]
++}
++
++func fileOf(id string) string {
++	idx := strings.Index(id, "::")
++	if idx < 0 {
++		return id
++	}
++	return id[:idx]
++}
++
++type nodeResult struct {
++	Sel     selector
++	Status  string
++	Detail  string
++	Output  string
++	Elapsed time.Duration
++}
++
++func main() {
++	reportPath := flag.String("report", "", "JUnit XML output path (the pipeline's {report} placeholder)")
++	configPath := flag.String("config", "", "pipeline config.json carrying the frozen p2p and f2p selector arrays (the {config} placeholder)")
++	selectPath := flag.String("select", "", "optional frozen P2P-only selector list (the {p2p_select} placeholder)")
++	nodeTimeout := flag.Float64("node-timeout", 150, "per-node go test timeout in seconds")
++	f2pOnly := flag.Bool("f2p-only", false, "run only the F2P selectors even when --config carries p2p selectors")
++	flag.Parse()
++
++	if strings.TrimSpace(*reportPath) == "" {
++		fmt.Fprintln(os.Stderr, "f2prunner: --report <path> is required")
++		os.Exit(2)
++	}
++
++	root, err := findRepoRoot()
++	if err != nil {
++		fallbackF2P, fallbackP2P, _ := resolveSelectors("", "", false)
++		res := errorResultsFor(append(fallbackP2P, fallbackF2P...), fmt.Sprintf("locate repository root: %v", err))
++		writeReportOrExit(*reportPath, res)
++		fmt.Fprintf(os.Stderr, "f2prunner: %v\n", err)
++		fmt.Printf("f2prunner: 0/%d nodes passed (repository root missing)\n", len(res))
++		os.Exit(0)
++	}
++
++	f2pSel, p2pSel, srcNotes := resolveSelectors(*configPath, *selectPath, *f2pOnly)
++	fmt.Printf("f2prunner: selector sources: %s\n", strings.Join(srcNotes, "; "))
++	if err := validateSelectors(p2pSel, f2pSel); err != nil {
++		fmt.Fprintf(os.Stderr, "f2prunner: %v\n", err)
++		os.Exit(2)
++	}
++	all := append(append([]string{}, p2pSel...), f2pSel...)
++
++	ctx := context.Background()
++	var results []nodeResult
++	if derr := ensureDist(root); derr != nil {
++		results = errorResultsFor(all, fmt.Sprintf("materialise internal/web/webui/dist: %v", derr))
++	} else {
++		for _, id := range all {
++			sel, ok := newSelector(id)
++			if !ok {
++				results = append(results, nodeResult{Sel: selector{ID: id}, Status: statusError, Detail: "malformed selector"})
++				continue
++			}
++			r := runNode(ctx, root, sel, time.Duration(*nodeTimeout*float64(time.Second)))
++			results = append(results, r)
++			fmt.Printf("f2prunner: %-9s %s\n", r.Status, r.Sel.ID)
++			if r.Status != statusPass {
++				fmt.Printf("f2prunner:   %s\n", firstLine(r.Detail))
++			}
++		}
++	}
++
++	if werr := writeReport(*reportPath, results); werr != nil {
++		fmt.Fprintf(os.Stderr, "f2prunner: write report %s: %v\n", *reportPath, werr)
++		os.Exit(1)
++	}
++	passed := 0
++	for _, r := range results {
++		if r.Status == statusPass {
++			passed++
++		}
++	}
++	fmt.Printf("f2prunner: %d/%d nodes passed; report written to %s\n", passed, len(results), *reportPath)
++	if passed != len(results) {
++		os.Exit(1)
++	}
++	os.Exit(0)
++}
++
++// ---------------------------------------------------------------------------
++// selector resolution
++// ---------------------------------------------------------------------------
++
++// resolveSelectors prefers the pipeline's canonical config.json ({config}),
++// which carries the frozen p2p and f2p exact selector arrays. When the
++// placeholder was not materialised it falls back to the frozen P2P-only
++// {p2p_select} list plus the F2P owner's declared selector set.
++func resolveSelectors(configPath, selectPath string, f2pOnly bool) (f2p, p2p []string, notes []string) {
++	var cfgP2P, cfgF2P []string
++	if strings.TrimSpace(configPath) != "" && !strings.Contains(configPath, "{") {
++		if raw, err := os.ReadFile(configPath); err == nil {
++			cfgP2P, cfgF2P = extractConfigSelectors(raw)
++			if len(cfgP2P) > 0 || len(cfgF2P) > 0 {
++				notes = append(notes, fmt.Sprintf("config=%s (p2p=%d, f2p=%d)", configPath, len(cfgP2P), len(cfgF2P)))
++			} else {
++				notes = append(notes, fmt.Sprintf("config=%s carries no p2p/f2p selectors", configPath))
++			}
++		} else {
++			notes = append(notes, fmt.Sprintf("config=%s unreadable: %v", configPath, err))
++		}
++	} else if strings.TrimSpace(configPath) != "" {
++		notes = append(notes, "config placeholder not materialised")
++	}
++
++	f2p = cfgF2P
++	if len(f2p) == 0 {
++		f2p = append([]string{}, f2pDeclaredSelectors...)
++		notes = append(notes, fmt.Sprintf("f2p=%d declared selectors (built-in)", len(f2p)))
++	}
++	if !f2pOnly {
++		p2p = cfgP2P
++		if len(p2p) == 0 && strings.TrimSpace(selectPath) != "" && !strings.Contains(selectPath, "{") {
++			if b, err := os.ReadFile(selectPath); err == nil {
++				for _, line := range strings.Split(string(b), "\n") {
++					line = strings.TrimSpace(line)
++					if line == "" || strings.HasPrefix(line, "#") {
++						continue
++					}
++					p2p = append(p2p, line)
++				}
++				notes = append(notes, fmt.Sprintf("p2p=%d selectors from p2p_select", len(p2p)))
++			}
++		}
++	}
++	p2p = dedupe(p2p)
++	f2p = dedupe(f2p)
++	if !f2pOnly {
++		notes = append(notes, fmt.Sprintf("p2p=%d selectors", len(p2p)))
++	} else {
++		notes = append(notes, "f2p-only requested")
++	}
++	return f2p, p2p, notes
++}
++
++func dedupe(in []string) []string {
++	seen := map[string]bool{}
++	out := make([]string, 0, len(in))
++	for _, s := range in {
++		s = strings.TrimSpace(s)
++		if s == "" || seen[s] {
++			continue
++		}
++		seen[s] = true
++		out = append(out, s)
++	}
++	return out
++}
++
++func validateSelectors(p2p, f2p []string) error {
++	if len(p2p) == 0 && len(f2p) == 0 {
++		return fmt.Errorf("no selectors to run: {config} was not materialised and no fallback is available")
++	}
++	for _, id := range append(append([]string{}, p2p...), f2p...) {
++		if _, ok := newSelector(id); !ok {
++			return fmt.Errorf("selector %q is not an exact <path>::<leaf> selector", id)
++		}
++	}
++	return nil
++}
++
++// extractConfigSelectors reads the frozen p2p and f2p exact selector arrays
++// from the pipeline's config.json. It accepts plain string arrays as well as
++// arrays of row objects and a gates-style fallback, so the runner follows the
++// declared selection set instead of any test file or broad pattern.
++func extractConfigSelectors(raw []byte) (p2p, f2p []string) {
++	var doc map[string]any
++	if err := json.Unmarshal(raw, &doc); err != nil {
++		return nil, nil
++	}
++	if nested, ok := doc["plan"].(map[string]any); ok {
++		for k, v := range nested {
++			if _, exists := doc[k]; !exists {
++				doc[k] = v
++			}
++		}
++	}
++	p2p = stringArray(doc["p2p"])
++	f2p = stringArray(doc["f2p"])
++	if len(p2p) == 0 || len(f2p) == 0 {
++		if gates, ok := doc["gates"].([]any); ok {
++			for _, g := range gates {
++				gm, ok := g.(map[string]any)
++				if !ok {
++					continue
++				}
++				kind, _ := gm["kind"].(string)
++				tests := stringArray(gm["tests"])
++				switch strings.ToUpper(kind) {
++				case "P2P":
++					p2p = append(p2p, tests...)
++				case "F2P":
++					f2p = append(f2p, tests...)
++				}
++			}
++		}
++	}
++	return dedupe(p2p), dedupe(f2p)
++}
++
++func stringArray(v any) []string {
++	arr, ok := v.([]any)
++	if !ok {
++		if ss, ok := v.([]string); ok {
++			return dedupe(ss)
++		}
++		return nil
++	}
++	var out []string
++	for _, item := range arr {
++		switch e := item.(type) {
++		case string:
++			out = append(out, e)
++		case map[string]any:
++			for _, key := range []string{"selector", "test", "id", "name"} {
++				if s, ok := e[key].(string); ok && strings.Contains(s, "::") {
++					out = append(out, s)
++					break
++				}
++			}
++		}
++	}
++	return dedupe(out)
++}
++
++// ---------------------------------------------------------------------------
++// node execution
++// ---------------------------------------------------------------------------
++
++func findRepoRoot() (string, error) {
++	dir, err := os.Getwd()
++	if err != nil {
++		return "", err
++	}
++	for {
++		if b, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil &&
++			strings.Contains(string(b), "module github.com/Ehco1996/ehco") {
++			return dir, nil
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			return "", fmt.Errorf("go.mod of github.com/Ehco1996/ehco not found above %s", dir)
++		}
++		dir = parent
++	}
++}
++
++// ensureDist re-creates the generated SPA embed tree on a pristine checkout.
++// internal/web/webui/dist is gitignored, so a baseline + patch workspace has
++// no UI build; the committed snapshot under internal/web/tests/testdata/
++// dist_snapshot carries the same layout and is copied verbatim.
++func ensureDist(root string) error {
++	dst := filepath.Join(root, "internal", "web", "webui", "dist")
++	if fileExists(filepath.Join(dst, "index.html")) {
++		return nil
++	}
++	src := filepath.Join(root, "internal", "web", "tests", "testdata", "dist_snapshot")
++	if !fileExists(filepath.Join(src, "index.html")) {
++		return fmt.Errorf("neither %s nor the committed dist snapshot exist", dst)
++	}
++	if err := os.MkdirAll(dst, 0o755); err != nil {
++		return err
++	}
++	return os.CopyFS(dst, os.DirFS(src))
++}
++
++func fileExists(p string) bool {
++	fi, err := os.Stat(p)
++	return err == nil && !fi.IsDir()
++}
++
++type goTestEvent struct {
++	Action  string  `json:"Action"`
++	Test    string  `json:"Test"`
++	Output  string  `json:"Output"`
++	Elapsed float64 `json:"Elapsed"`
++	Package string  `json:"Package"`
++}
++
++func runNode(parent context.Context, root string, sel selector, timeout time.Duration) nodeResult {
++	ctx, cancel := context.WithTimeout(parent, timeout)
++	defer cancel()
++
++	leaf := leafOf(sel.ID)
++	cmd := exec.CommandContext(ctx, "go", "test", "-json", "-count=1",
++		"-run", "^"+regexp.QuoteMeta(leaf)+"$", sel.Pkg)
++	cmd.Dir = root
++	cmd.Env = childEnv()
++	var stdout, stderr bytes.Buffer
++	cmd.Stdout = &stdout
++	cmd.Stderr = &stderr
++
++	start := time.Now()
++	runErr := cmd.Run()
++	elapsed := time.Since(start)
++
++	res := nodeResult{Sel: sel, Status: statusError, Elapsed: elapsed}
++	var out strings.Builder
++	status := ""
++	for _, line := range strings.Split(stdout.String(), "\n") {
++		line = strings.TrimSpace(line)
++		if line == "" {
++			continue
++		}
++		var ev goTestEvent
++		if err := json.Unmarshal([]byte(line), &ev); err != nil {
++			out.WriteString(line)
++			out.WriteString("\n")
++			continue
++		}
++		out.WriteString(ev.Output)
++		if ev.Test == leaf {
++			switch ev.Action {
++			case "pass":
++				status = statusPass
++				res.Elapsed = time.Duration(ev.Elapsed * float64(time.Second))
++			case "fail":
++				status = statusFail
++				res.Elapsed = time.Duration(ev.Elapsed * float64(time.Second))
++			case "skip":
++				status = statusSkip
++				res.Elapsed = time.Duration(ev.Elapsed * float64(time.Second))
++			}
++		}
++	}
++	res.Output = clamp(out.String(), 16*1024)
++
++	if ctx.Err() != nil || regexp.MustCompile(`(?m)^(panic:|fatal error:)`).MatchString(out.String()+stderr.String()) {
++		res.Status = statusError
++		res.Detail = "go test process crash"
++		if ctx.Err() != nil {
++			res.Detail = "go test timed out"
++		}
++		res.Output = clamp(res.Output+"\n"+stderr.String(), 16*1024)
++		return res
++	}
++
++	switch status {
++	case statusPass:
++		res.Status = statusPass
++		res.Detail = "passed"
++	case statusFail:
++		res.Status = statusFail
++		res.Detail = "go test reported the node as failed"
++		res.Output = clamp(res.Output+"\n"+stderr.String(), 16*1024)
++	case statusSkip:
++		res.Status = statusSkip
++		res.Detail = "go test reported the node as skipped"
++	default:
++		res.Status = statusError
++		detail := "node produced no result"
++		if runErr != nil {
++			detail = "go test invocation failed: " + runErr.Error()
++		} else if strings.Contains(out.String(), "build failed") {
++			detail = "package build failed"
++		}
++		res.Detail = detail
++		errText := ""
++		if runErr != nil {
++			errText = firstLine(runErr.Error())
++		}
++		res.Output = clamp(strings.TrimRight(res.Output+"\n"+stderr.String()+"\n"+errText, "\n"), 16*1024)
++	}
++	if res.Status != statusPass {
++		fmt.Fprintf(os.Stderr, "f2prunner[%s]: %s\n", sel.ID, firstLine(res.Detail))
++	}
++	return res
++}
++
++func childEnv() []string {
++	env := os.Environ()
++	env = append(env,
++		"HTTP_PROXY="+deadProxy, "HTTPS_PROXY="+deadProxy, "ALL_PROXY="+deadProxy,
++		"NO_PROXY=127.0.0.1,localhost",
++		"GOTOOLCHAIN=local",
++	)
++	return env
++}
++
++func errorResultsFor(ids []string, detail string) []nodeResult {
++	res := make([]nodeResult, 0, len(ids))
++	for _, id := range ids {
++		sel, ok := newSelector(id)
++		if !ok {
++			sel = selector{ID: id}
++		}
++		res = append(res, nodeResult{Sel: sel, Status: statusError, Detail: detail, Output: detail})
++	}
++	return res
++}
++
++// ---------------------------------------------------------------------------
++// JUnit report
++// ---------------------------------------------------------------------------
++
++type xmlMessage struct {
++	Message string `xml:"message,attr"`
++	Type    string `xml:"type,attr,omitempty"`
++	Text    string `xml:",chardata"`
++}
++
++type xmlCase struct {
++	Classname string      `xml:"classname,attr"`
++	Name      string      `xml:"name,attr"`
++	File      string      `xml:"file,attr,omitempty"`
++	Time      string      `xml:"time,attr"`
++	Failure   *xmlMessage `xml:"failure,omitempty"`
++	Error     *xmlMessage `xml:"error,omitempty"`
++	Skipped   *xmlMessage `xml:"skipped,omitempty"`
++	SystemOut string      `xml:"system-out,omitempty"`
++}
++
++type xmlSuite struct {
++	Name      string    `xml:"name,attr"`
++	Tests     int       `xml:"tests,attr"`
++	Failures  int       `xml:"failures,attr"`
++	Errors    int       `xml:"errors,attr"`
++	Skipped   int       `xml:"skipped,attr"`
++	Time      string    `xml:"time,attr"`
++	Timestamp string    `xml:"timestamp,attr"`
++	Cases     []xmlCase `xml:"testcase"`
++}
++
++type xmlSuites struct {
++	XMLName  xml.Name   `xml:"testsuites"`
++	Name     string     `xml:"name,attr"`
++	Tests    int        `xml:"tests,attr"`
++	Failures int        `xml:"failures,attr"`
++	Errors   int        `xml:"errors,attr"`
++	Skipped  int        `xml:"skipped,attr"`
++	Time     string     `xml:"time,attr"`
++	Suites   []xmlSuite `xml:"testsuite"`
++}
++
++func writeReport(path string, results []nodeResult) error {
++	suite := xmlSuite{
++		Name:      "ehco-web-server-f2p",
++		Timestamp: time.Now().UTC().Format(time.RFC3339),
++	}
++	var total time.Duration
++	for _, r := range results {
++		file := fileOf(r.Sel.ID)
++		c := xmlCase{
++			Classname: file,
++			Name:      leafOf(r.Sel.ID),
++			File:      file,
++			Time:      fmt.Sprintf("%.3f", r.Elapsed.Seconds()),
++			SystemOut: "selector: " + r.Sel.ID + "\n" + r.Output,
++		}
++		switch r.Status {
++		case statusPass:
++			// no child element
++		case statusFail:
++			suite.Failures++
++			c.Failure = &xmlMessage{Message: r.Detail, Type: "AssertionFailure", Text: r.Output}
++		case statusSkip:
++			suite.Skipped++
++			c.Skipped = &xmlMessage{Message: r.Detail, Text: r.Output}
++		default:
++			suite.Errors++
++			c.Error = &xmlMessage{Message: r.Detail, Type: "not-run", Text: r.Output}
++		}
++		total += r.Elapsed
++		suite.Cases = append(suite.Cases, c)
++	}
++	suite.Tests = len(suite.Cases)
++	suite.Time = fmt.Sprintf("%.3f", total.Seconds())
++
++	out := xmlSuites{
++		Name:     suite.Name,
++		Tests:    suite.Tests,
++		Failures: suite.Failures,
++		Errors:   suite.Errors,
++		Skipped:  suite.Skipped,
++		Time:     suite.Time,
++		Suites:   []xmlSuite{suite},
++	}
++	body, err := xml.MarshalIndent(out, "", "  ")
++	if err != nil {
++		return err
++	}
++	doc := append([]byte(xml.Header), body...)
++	doc = append(doc, '\n')
++	if dir := filepath.Dir(path); dir != "" {
++		if err := os.MkdirAll(dir, 0o755); err != nil {
++			return err
++		}
++	}
++	return os.WriteFile(path, doc, 0o644)
++}
++
++func writeReportOrExit(path string, res []nodeResult) {
++	if err := writeReport(path, res); err != nil {
++		fmt.Fprintf(os.Stderr, "f2prunner: write report %s: %v\n", path, err)
++		os.Exit(1)
++	}
++}
++
++func clamp(s string, max int) string {
++	if len(s) <= max {
++		return s
++	}
++	return s[:max] + "\n... (truncated)"
++}
++
++func firstLine(s string) string {
++	s = strings.TrimSpace(s)
++	if i := strings.IndexByte(s, '\n'); i >= 0 {
++		s = s[:i]
++	}
++	if len(s) > 400 {
++		s = s[:400] + "..."
++	}
++	return s
++}
+diff --git a/tests/contracts/probe_test.go.txt b/tests/contracts/probe_test.go.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e68a01d9a1de8d4bbcce2bed4a58078828e2477
+--- /dev/null
++++ b/tests/contracts/probe_test.go.txt
+@@ -0,0 +1,303 @@
++package probes
++
++import (
++	"context"
++	"encoding/json"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"reflect"
++	"strings"
++	"testing"
++	"time"
++	"unsafe"
++
++	"github.com/Ehco1996/ehco/internal/config"
++	"github.com/Ehco1996/ehco/internal/constant"
++	"github.com/Ehco1996/ehco/internal/updater"
++	"github.com/Ehco1996/ehco/internal/web"
++	webLog "github.com/Ehco1996/ehco/pkg/log"
++	"github.com/Ehco1996/ehco/tests/contracts/fixture"
++	"github.com/gobwas/ws"
++	"github.com/labstack/echo/v4"
++	"go.uber.org/zap"
++)
++
++func newEngine(test *testing.T, password string) *echo.Echo {
++	test.Helper()
++	server, err := web.NewServer(&config.Config{WebHost: "127.0.0.1", WebPort: 19876, DashboardPass: password}, nil, nil, nil)
++	if err != nil {
++		test.Fatal(err)
++	}
++	engineType := reflect.TypeOf((*echo.Echo)(nil))
++	visited := map[uintptr]bool{}
++	var find func(reflect.Value, int) *echo.Echo
++	find = func(value reflect.Value, depth int) *echo.Echo {
++		if depth > 12 || !value.IsValid() {
++			return nil
++		}
++		if value.Kind() == reflect.Interface {
++			if value.IsNil() {
++				return nil
++			}
++			return find(value.Elem(), depth+1)
++		}
++		if value.Kind() == reflect.Pointer {
++			if value.IsNil() {
++				return nil
++			}
++			if value.Type() == engineType {
++				return (*echo.Echo)(unsafe.Pointer(value.Pointer()))
++			}
++			address := value.Pointer()
++			if visited[address] {
++				return nil
++			}
++			visited[address] = true
++			return find(value.Elem(), depth+1)
++		}
++		if value.Kind() == reflect.Struct {
++			for field := 0; field < value.NumField(); field++ {
++				if result := find(value.Field(field), depth+1); result != nil {
++					return result
++				}
++			}
++		}
++		return nil
++	}
++	if engine := find(reflect.ValueOf(server), 0); engine != nil {
++		return engine
++	}
++	if engine := find(reflect.ValueOf(server.APIGroup()), 0); engine != nil {
++		return engine
++	}
++	test.Fatal("the public server/routing-group capabilities expose no Echo engine for the contract fixture")
++	return nil
++}
++
++func request(engine *echo.Echo, method, path, body string, cookie *http.Cookie, ctx context.Context) *httptest.ResponseRecorder {
++	incoming := httptest.NewRequest(method, path, strings.NewReader(body))
++	incoming.Header.Set("Content-Type", "application/json")
++	if cookie != nil {
++		incoming.AddCookie(cookie)
++	}
++	if ctx != nil {
++		incoming = incoming.WithContext(ctx)
++	}
++	response := httptest.NewRecorder()
++	engine.ServeHTTP(response, incoming)
++	return response
++}
++
++func sessionCookie(test *testing.T, response *httptest.ResponseRecorder) *http.Cookie {
++	test.Helper()
++	for _, cookie := range response.Result().Cookies() {
++		if cookie.Name == "ehco_sid" {
++			return cookie
++		}
++	}
++	test.Fatalf("session cookie was not issued: status=%d headers=%v", response.Code, response.Header())
++	return nil
++}
++
++func TestSessionExpiry(test *testing.T) {
++	initial := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
++	fixture.SetNow(initial)
++	engine := newEngine(test, "contract-password")
++	login := request(engine, http.MethodPost, "/api/v1/auth/login", `{"password":"contract-password"}`, nil, nil)
++	if login.Code != http.StatusOK {
++		test.Fatalf("login failed: %d %s", login.Code, login.Body.String())
++	}
++	cookie := sessionCookie(test, login)
++	if !cookie.Expires.Equal(initial.Add(7 * 24 * time.Hour)) {
++		test.Fatalf("session lifetime changed: %s", cookie.Expires)
++	}
++	fixture.SetNow(initial.Add(7*24*time.Hour + time.Second))
++	expired := request(engine, http.MethodGet, "/api/v1/version", "", cookie, nil)
++	if expired.Code != http.StatusUnauthorized {
++		test.Fatalf("expired session remained authorized: %d", expired.Code)
++	}
++	fixture.SetNow(initial.Add(time.Hour))
++	reused := request(engine, http.MethodGet, "/api/v1/version", "", cookie, nil)
++	if reused.Code != http.StatusUnauthorized {
++		test.Fatal("expired session was not removed from the authorization state")
++	}
++}
++
++func TestSessionRenewal(test *testing.T) {
++	initial := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
++	fixture.SetNow(initial)
++	engine := newEngine(test, "contract-password")
++	login := request(engine, http.MethodPost, "/api/v1/auth/login", `{"password":"contract-password"}`, nil, nil)
++	cookie := sessionCookie(test, login)
++	fixture.SetNow(initial.Add(2 * 24 * time.Hour))
++	renewed := request(engine, http.MethodGet, "/api/v1/version", "", cookie, nil)
++	if renewed.Code != http.StatusOK {
++		test.Fatalf("valid session was rejected: %d", renewed.Code)
++	}
++	renewedCookie := sessionCookie(test, renewed)
++	if renewedCookie.Value != cookie.Value || !renewedCookie.Expires.Equal(initial.Add(9*24*time.Hour)) {
++		test.Fatalf("session cookie did not slide: %#v", renewedCookie)
++	}
++	fixture.SetNow(initial.Add(8 * 24 * time.Hour))
++	stillValid := request(engine, http.MethodGet, "/api/v1/version", "", cookie, nil)
++	if stillValid.Code != http.StatusOK {
++		test.Fatal("cookie renewal did not extend the stored authorization lifetime")
++	}
++}
++
++type contextKey struct{}
++
++func TestUpdateCheck(test *testing.T) {
++	engine := newEngine(test, "")
++	expected := &updater.CheckResult{Channel: "probe-channel", LatestVersion: "probe-version", ReleaseName: "probe-release", UpdateAvailable: true}
++	expectedValue := *expected
++	for _, selection := range []struct{ path, channel string }{
++		{"/api/v1/update/check", updater.ChannelAuto},
++		{"/api/v1/update/check?channel=nightly", updater.ChannelNightly},
++	} {
++		called := false
++		updater.ContractCheck = func(ctx context.Context, channel, version, revision string) (*updater.CheckResult, error) {
++			called = true
++			if channel != selection.channel || version != constant.Version || revision != constant.GitRevision || ctx.Value(contextKey{}) != "request-context" {
++				test.Fatalf("update/check parameters changed: %q %q %q context=%v", channel, version, revision, ctx.Value(contextKey{}))
++			}
++			return expected, nil
++		}
++		ctx := context.WithValue(context.Background(), contextKey{}, "request-context")
++		response := request(engine, http.MethodGet, selection.path, "", nil, ctx)
++		if !called || response.Code != http.StatusOK {
++			test.Fatalf("update/check did not call its source successfully: %d %s", response.Code, response.Body.String())
++		}
++		var actual updater.CheckResult
++		if err := json.Unmarshal(response.Body.Bytes(), &actual); err != nil || !reflect.DeepEqual(actual, expectedValue) {
++			test.Fatalf("update/check source payload changed: %s", response.Body.String())
++		}
++	}
++}
++
++func TestUpdatePlatform(test *testing.T) {
++	fixture.GOOS = "darwin"
++	engine := newEngine(test, "")
++	called := make(chan struct{}, 1)
++	updater.ContractApply = func(context.Context, updater.ApplyOptions, string, string, *zap.SugaredLogger) error {
++		called <- struct{}{}
++		return nil
++	}
++	response := request(engine, http.MethodPost, "/api/v1/update/apply", `{"force":true}`, nil, nil)
++	if response.Code != http.StatusBadRequest {
++		test.Fatalf("non-Linux update was not rejected: %d", response.Code)
++	}
++	select {
++	case <-called:
++		test.Fatal("non-Linux request executed the update")
++	case <-time.After(50 * time.Millisecond):
++	}
++}
++
++type applyCall struct {
++	options  updater.ApplyOptions
++	version  string
++	revision string
++	ctx      context.Context
++}
++
++func TestUpdateApply(test *testing.T) {
++	fixture.GOOS = "linux"
++	engine := newEngine(test, "")
++	for _, scenario := range []struct {
++		body    string
++		options updater.ApplyOptions
++	}{
++		{`{}`, updater.ApplyOptions{Channel: updater.ChannelAuto}},
++		{`{"channel":"nightly","force":true,"restart":true}`, updater.ApplyOptions{Channel: updater.ChannelNightly, Force: true, Restart: true}},
++	} {
++		func() {
++			started := make(chan applyCall, 1)
++			release := make(chan struct{})
++			finished := make(chan struct{})
++			defer close(release)
++			updater.ContractApply = func(ctx context.Context, options updater.ApplyOptions, version, revision string, logger *zap.SugaredLogger) error {
++				started <- applyCall{options: options, version: version, revision: revision, ctx: ctx}
++				<-release
++				close(finished)
++				return nil
++			}
++			ctx, cancel := context.WithCancel(context.Background())
++			defer cancel()
++			response := make(chan *httptest.ResponseRecorder, 1)
++			go func() { response <- request(engine, http.MethodPost, "/api/v1/update/apply", scenario.body, nil, ctx) }()
++			select {
++			case result := <-response:
++				if result.Code != http.StatusAccepted || result.Body.Len() != 0 {
++					test.Fatalf("update/apply response changed: %d %s", result.Code, result.Body.String())
++				}
++			case <-time.After(time.Second):
++				test.Fatal("update/apply waited for its blocked source")
++			}
++			var call applyCall
++			select {
++			case call = <-started:
++			case <-time.After(time.Second):
++				test.Fatal("update/apply source was never called")
++			}
++			cancel()
++			if call.options != scenario.options || call.version != constant.Version || call.revision != constant.GitRevision {
++				test.Fatalf("update/apply options changed: %#v", call)
++			}
++			if call.ctx.Err() != nil {
++				test.Fatal("background update uses the canceled request context")
++			}
++			test.Cleanup(func() {
++				select {
++				case <-finished:
++				case <-time.After(time.Second):
++					test.Error("background update did not exit after releasing its source")
++				}
++			})
++		}()
++	}
++}
++
++func TestWebSocketLifecycle(test *testing.T) {
++	if err := webLog.InitGlobalLogger("info"); err != nil {
++		test.Fatal(err)
++	}
++	engine := newEngine(test, "")
++	server := httptest.NewServer(engine)
++	defer server.Close()
++	added := make(chan net.Conn, 1)
++	removed := make(chan net.Conn, 1)
++	webLog.ContractAddObserver = func(connection net.Conn) { added <- connection }
++	webLog.ContractRemoveObserver = func(connection net.Conn) { removed <- connection }
++	connection, _, _, err := ws.Dial(context.Background(), "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/logs")
++	if err != nil {
++		test.Fatal(err)
++	}
++	defer connection.Close()
++	var registered net.Conn
++	select {
++	case registered = <-added:
++	case <-time.After(time.Second):
++		test.Fatal("open WebSocket was not registered")
++	}
++	connection.Close()
++	select {
++	case detached := <-removed:
++		if detached != registered {
++			test.Fatal("a different connection was unregistered")
++		}
++	case <-time.After(time.Second):
++		test.Fatal("closed WebSocket was not unregistered")
++	}
++	deadline := time.Now().Add(time.Second)
++	for {
++		if err := registered.SetDeadline(time.Now().Add(time.Second)); err != nil {
++			break
++		}
++		if time.Now().After(deadline) {
++			test.Fatal("server WebSocket connection was not locally closed")
++		}
++		time.Sleep(time.Millisecond)
++	}
++}
+diff --git a/tests/contracts/contracts_test.go b/tests/contracts/contracts_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..89899fb9e3d0938592d69c6b4f163380293f1687
+--- /dev/null
++++ b/tests/contracts/contracts_test.go
+@@ -0,0 +1,253 @@
++package contracts
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"go/ast"
++	"go/format"
++	"go/parser"
++	"go/token"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestP2P_SessionExpiryContract(test *testing.T)      { runProbe(test, "TestSessionExpiry") }
++func TestP2P_SessionRenewalContract(test *testing.T)     { runProbe(test, "TestSessionRenewal") }
++func TestP2P_UpdateCheckContract(test *testing.T)        { runProbe(test, "TestUpdateCheck") }
++func TestP2P_UpdatePlatformContract(test *testing.T)     { runProbe(test, "TestUpdatePlatform") }
++func TestP2P_UpdateApplyContract(test *testing.T)        { runProbe(test, "TestUpdateApply") }
++func TestP2P_WebSocketLifecycleContract(test *testing.T) { runProbe(test, "TestWebSocketLifecycle") }
++
++func runProbe(test *testing.T, name string) {
++	test.Helper()
++	root, err := filepath.Abs(filepath.Join("..", ".."))
++	if err != nil {
++		test.Fatal(err)
++	}
++	directory := test.TempDir()
++	overlay := map[string]string{}
++	writeOverlay := func(target string, content []byte) {
++		test.Helper()
++		path := filepath.Join(directory, fmt.Sprintf("overlay-%d.go", len(overlay)))
++		formatted, err := format.Source(content)
++		if err != nil {
++			test.Fatalf("format contract fixture %s: %v", target, err)
++		}
++		if err := os.WriteFile(path, formatted, 0o600); err != nil {
++			test.Fatal(err)
++		}
++		overlay[filepath.Join(root, filepath.FromSlash(target))] = path
++	}
++	for _, folder := range []string{"internal/web", "internal/updater", "pkg/log"} {
++		err := filepath.WalkDir(filepath.Join(root, folder), func(path string, entry os.DirEntry, walkError error) error {
++			if walkError != nil {
++				return walkError
++			}
++			if entry.IsDir() && (entry.Name() == "tests" || entry.Name() == "webui") {
++				return filepath.SkipDir
++			}
++			if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
++				return nil
++			}
++			fileset := token.NewFileSet()
++			source, err := parser.ParseFile(fileset, path, nil, 0)
++			if err != nil {
++				return err
++			}
++			changed := false
++			if folder == "internal/web" {
++				aliases := importAliases(source)
++				ast.Inspect(source, func(node ast.Node) bool {
++					selector, ok := node.(*ast.SelectorExpr)
++					if !ok {
++						return true
++					}
++					qualifier, ok := selector.X.(*ast.Ident)
++					if !ok {
++						return true
++					}
++					dependency := aliases[qualifier.Name]
++					if (dependency == "time" && selector.Sel.Name == "Now") || (dependency == "runtime" && selector.Sel.Name == "GOOS") {
++						qualifier.Name = "taskContractFixture"
++						changed = true
++					}
++					return true
++				})
++				if changed {
++					addImport(source, "taskContractFixture", "github.com/Ehco1996/ehco/tests/contracts/fixture")
++				}
++			}
++			if folder == "internal/updater" {
++				for _, declaration := range source.Decls {
++					function, ok := declaration.(*ast.FuncDecl)
++					if !ok || function.Recv != nil {
++						continue
++					}
++					switch function.Name.Name {
++					case "Check":
++						function.Body = hookBody(function, "ContractCheck")
++						changed = true
++					case "Apply":
++						function.Body = hookBody(function, "ContractApply")
++						changed = true
++					}
++				}
++			}
++			if folder == "pkg/log" {
++				for _, declaration := range source.Decls {
++					function, ok := declaration.(*ast.FuncDecl)
++					if !ok || function.Recv != nil {
++						continue
++					}
++					observer := ""
++					if function.Name.Name == "AddWebSocketConn" {
++						observer = "ContractAddObserver"
++					}
++					if function.Name.Name == "RemoveWebSocketConn" {
++						observer = "ContractRemoveObserver"
++					}
++					if observer != "" {
++						function.Body.List = append(function.Body.List, fixtureBody("if "+observer+" != nil { "+observer+"(conn) }").List...)
++						changed = true
++					}
++				}
++			}
++			if changed {
++				removeUnusedImports(source, folder == "internal/web")
++				var content bytes.Buffer
++				if err := format.Node(&content, fileset, source); err != nil {
++					return err
++				}
++				relative, err := filepath.Rel(root, path)
++				if err != nil {
++					return err
++				}
++				writeOverlay(filepath.ToSlash(relative), content.Bytes())
++			}
++			return nil
++		})
++		if err != nil {
++			test.Fatalf("prepare contract dependency overlay: %v", err)
++		}
++	}
++	writeOverlay("internal/updater/task_contract_hooks.go", []byte(updaterHooks))
++	writeOverlay("pkg/log/task_contract_hooks.go", []byte(logHooks))
++	probe, err := os.ReadFile(filepath.Join(root, "tests/contracts/probe_test.go.txt"))
++	if err != nil {
++		test.Fatal(err)
++	}
++	writeOverlay("tests/contracts/probes/core_test.go", probe)
++	manifest, err := json.Marshal(map[string]any{"Replace": overlay})
++	if err != nil {
++		test.Fatal(err)
++	}
++	manifestPath := filepath.Join(directory, "overlay.json")
++	if err := os.WriteFile(manifestPath, manifest, 0o600); err != nil {
++		test.Fatal(err)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 110*time.Second)
++	defer cancel()
++	command := exec.CommandContext(ctx, "go", "test", "-overlay", manifestPath, "-count=1", "-timeout=90s", "-run", "^"+name+"$", "./tests/contracts/probes")
++	command.Dir = root
++	output, err := command.CombinedOutput()
++	test.Logf("contract probe %s:\n%s", name, output)
++	if err != nil {
++		test.Fatalf("contract probe %s failed: %v", name, err)
++	}
++}
++
++func importAliases(source *ast.File) map[string]string {
++	aliases := map[string]string{}
++	for _, declaration := range source.Imports {
++		path, _ := strconv.Unquote(declaration.Path.Value)
++		name := filepath.Base(path)
++		if declaration.Name != nil {
++			name = declaration.Name.Name
++		}
++		aliases[name] = path
++	}
++	return aliases
++}
++
++func addImport(source *ast.File, alias, path string) {
++	declaration := &ast.ImportSpec{Name: ast.NewIdent(alias), Path: &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(path)}}
++	source.Imports = append(source.Imports, declaration)
++	source.Decls = append([]ast.Decl{&ast.GenDecl{Tok: token.IMPORT, Specs: []ast.Spec{declaration}}}, source.Decls...)
++}
++
++func removeUnusedImports(source *ast.File, clockOnly bool) {
++	used := map[string]bool{}
++	ast.Inspect(source, func(node ast.Node) bool {
++		if selector, ok := node.(*ast.SelectorExpr); ok {
++			if qualifier, ok := selector.X.(*ast.Ident); ok {
++				used[qualifier.Name] = true
++			}
++		}
++		return true
++	})
++	declarations := []ast.Decl{}
++	imports := []*ast.ImportSpec{}
++	for _, declaration := range source.Decls {
++		group, ok := declaration.(*ast.GenDecl)
++		if !ok || group.Tok != token.IMPORT {
++			declarations = append(declarations, declaration)
++			continue
++		}
++		retained := []ast.Spec{}
++		for _, item := range group.Specs {
++			entry := item.(*ast.ImportSpec)
++			path, _ := strconv.Unquote(entry.Path.Value)
++			name := filepath.Base(path)
++			if entry.Name != nil {
++				name = entry.Name.Name
++			}
++			if name == "_" || name == "." || used[name] || (clockOnly && path != "time" && path != "runtime") {
++				retained = append(retained, entry)
++				imports = append(imports, entry)
++			}
++		}
++		if len(retained) > 0 {
++			group.Specs = retained
++			declarations = append(declarations, group)
++		}
++	}
++	source.Decls = declarations
++	source.Imports = imports
++}
++
++func fixtureBody(statements string) *ast.BlockStmt {
++	source, err := parser.ParseFile(token.NewFileSet(), "fixture.go", "package fixture\nfunc fixture(){"+statements+"}", 0)
++	if err != nil {
++		panic(err)
++	}
++	return source.Decls[0].(*ast.FuncDecl).Body
++}
++
++func hookBody(function *ast.FuncDecl, name string) *ast.BlockStmt {
++	arguments := []string{}
++	for _, parameter := range function.Type.Params.List {
++		for _, identifier := range parameter.Names {
++			arguments = append(arguments, identifier.Name)
++		}
++	}
++	return fixtureBody("return " + name + "(" + strings.Join(arguments, ",") + ")")
++}
++
++const updaterHooks = `package updater
++import("context"; "go.uber.org/zap")
++var ContractCheck func(context.Context, string, string, string) (*CheckResult, error)
++var ContractApply func(context.Context, ApplyOptions, string, string, *zap.SugaredLogger) error
++`
++
++const logHooks = `package log
++import "net"
++var ContractAddObserver func(net.Conn)
++var ContractRemoveObserver func(net.Conn)
++`
+diff --git a/tests/contracts/probes/doc.go b/tests/contracts/probes/doc.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f49ebfd63744701b08460c65184621eddffdbe04
+--- /dev/null
++++ b/tests/contracts/probes/doc.go
+@@ -0,0 +1,1 @@
++package probes
+diff --git a/tests/contracts/fixture/clock.go b/tests/contracts/fixture/clock.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..1a0753dc60779cd3f661913ec29d5c473b4336b5
+--- /dev/null
++++ b/tests/contracts/fixture/clock.go
+@@ -0,0 +1,21 @@
++package fixture
++
++import (
++	"runtime"
++	"sync/atomic"
++	"time"
++)
++
++var clock atomic.Int64
++var GOOS = runtime.GOOS
++
++func Now() time.Time {
++	if timestamp := clock.Load(); timestamp != 0 {
++		return time.Unix(0, timestamp).UTC()
++	}
++	return time.Now()
++}
++
++func SetNow(value time.Time) {
++	clock.Store(value.UnixNano())
++}
+diff --git a/internal/web/tests/f2p_construction_test.go b/internal/web/tests/f2p_construction_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..6eca1321d8bd7882412e82100ab82bf41e2e2fbf
+--- /dev/null
++++ b/internal/web/tests/f2p_construction_test.go
+@@ -0,0 +1,19 @@
++package tests
++
++import (
++	"testing"
++
++	"github.com/Ehco1996/ehco/internal/web"
++)
++
++func TestF2P_Construction_NilConfigRejected(test *testing.T) {
++	defer func() {
++		if recovered := recover(); recovered != nil {
++			test.Fatalf("NewServer with nil configuration panicked instead of returning an error: %v", recovered)
++		}
++	}()
++	server, err := web.NewServer(nil, nil, nil, nil)
++	if err == nil || server != nil {
++		test.Fatalf("NewServer with nil configuration returned (%v, %v), want (nil, error)", server, err)
++	}
++}
+diff --git a/tests/f2p/semantic_types_test.go b/tests/f2p/semantic_types_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..979412b3499b9f6d33fe7ddb2526095adc852a45
+--- /dev/null
++++ b/tests/f2p/semantic_types_test.go
+@@ -0,0 +1,225 @@
++package f2p
++
++import (
++	"bytes"
++	"encoding/json"
++	"fmt"
++	"go/ast"
++	"go/importer"
++	"go/types"
++	"io"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++// Import the candidate's real dependency export data. Type aliases and generic
++// arguments are resolved by Go, not by matching a rendered field declaration.
++func (p *pkgInfo) loadSemanticTypes(t testing.TB) {
++	p.tb = t
++	cmd := exec.Command("go", "list", "-mod=readonly", "-deps", "-export", "-json", "./internal/web")
++	cmd.Dir = p.root
++	var stderr bytes.Buffer
++	cmd.Stderr = &stderr
++	raw, err := cmd.Output()
++	if err != nil {
++		t.Fatalf("infrastructure error: load Go type data: %v: %s", err, stderr.String())
++	}
++	exports := map[string]string{}
++	active := map[string]bool{}
++	dec := json.NewDecoder(bytes.NewReader(raw))
++	for {
++		var item struct {
++			ImportPath, Export, Dir string
++			GoFiles, CgoFiles       []string
++		}
++		err := dec.Decode(&item)
++		if err == io.EOF {
++			break
++		}
++		if err != nil {
++			t.Fatalf("infrastructure error: decode Go export inventory: %v", err)
++		}
++		exports[item.ImportPath] = item.Export
++		if item.ImportPath == "github.com/Ehco1996/ehco/internal/web" {
++			for _, name := range append(item.GoFiles, item.CgoFiles...) {
++				active[filepath.Base(name)] = true
++			}
++		}
++	}
++	if len(active) == 0 {
++		t.Fatal("infrastructure error: missing active web source inventory")
++	}
++	files := p.files[:0]
++	for _, f := range p.files {
++		if active[p.fileByPos[f]] {
++			files = append(files, f)
++		}
++	}
++	p.files = files
++	imp := importer.ForCompiler(p.fset, "gc", func(path string) (io.ReadCloser, error) {
++		name := exports[path]
++		if name == "" {
++			return nil, fmt.Errorf("missing export data for %s", path)
++		}
++		return os.Open(name)
++	})
++	p.typeInfo = &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
++	cfg := types.Config{Importer: imp}
++	p.typePkg, err = cfg.Check("github.com/Ehco1996/ehco/internal/web", p.fset, p.files, p.typeInfo)
++	if err != nil {
++		t.Fatalf("infrastructure error: type-check web ownership: %v", err)
++	}
++	p.contracts = map[string]types.Type{}
++	for _, spec := range []struct{ label, path, name string }{
++		{"cmgr.Cmgr", "github.com/Ehco1996/ehco/internal/cmgr", "Cmgr"},
++		{"config.Config", "github.com/Ehco1996/ehco/internal/config", "Config"},
++		{"glue.Reloader", "github.com/Ehco1996/ehco/internal/glue", "Reloader"},
++		{"glue.HealthChecker", "github.com/Ehco1996/ehco/internal/glue", "HealthChecker"},
++		{"echo.Echo", "github.com/labstack/echo/v4", "Echo"},
++		{"atomic.Pointer", "sync/atomic", "Pointer"},
++	} {
++		pkg, err := imp.Import(spec.path)
++		if err != nil {
++			t.Fatalf("infrastructure error: import contract %s: %v", spec.path, err)
++		}
++		obj := pkg.Scope().Lookup(spec.name)
++		if obj == nil {
++			t.Fatalf("infrastructure error: contract %s missing", spec.label)
++		}
++		p.contracts[spec.label] = obj.Type()
++	}
++	for _, name := range []string{"Server", "authenticator"} {
++		if obj := p.typePkg.Scope().Lookup(name); obj != nil {
++			p.contracts[name] = obj.Type()
++		}
++	}
++}
++
++func unpoint(typ types.Type) types.Type {
++	for {
++		typ = types.Unalias(typ)
++		ptr, ok := typ.(*types.Pointer)
++		if !ok {
++			return typ
++		}
++		typ = ptr.Elem()
++	}
++}
++func semanticTypeText(typ types.Type) string {
++	return types.TypeString(typ, func(pkg *types.Package) string { return pkg.Name() })
++}
++func sameNamedOrigin(a, b types.Type) bool {
++	x, xok := unpoint(a).(*types.Named)
++	y, yok := unpoint(b).(*types.Named)
++	return xok && yok && x.Origin().Obj() == y.Origin().Obj()
++}
++func coversInterface(actual, contract *types.Interface) bool {
++	actual.Complete()
++	contract.Complete()
++	if contract.NumMethods() == 0 {
++		return false
++	}
++	for i := 0; i < contract.NumMethods(); i++ {
++		expected := contract.Method(i)
++		found := false
++		for j := 0; j < actual.NumMethods(); j++ {
++			got := actual.Method(j)
++			if got.Id() == expected.Id() && types.Identical(got.Type(), expected.Type()) {
++				found = true
++				break
++			}
++		}
++		if !found {
++			return false
++		}
++	}
++	return true
++}
++func (p *pkgInfo) fieldType(si *structInfo, field fieldInfo) types.Type {
++	if fields := p.syntheticFields[si.name]; fields != nil {
++		return fields[field.name]
++	}
++	obj := p.typePkg.Scope().Lookup(si.name)
++	if obj == nil {
++		p.tb.Fatalf("infrastructure error: missing type for %s", si.name)
++	}
++	st, ok := unpoint(obj.Type()).Underlying().(*types.Struct)
++	if !ok {
++		p.tb.Fatalf("infrastructure error: nonstruct owner %s", si.name)
++	}
++	for i := 0; i < st.NumFields(); i++ {
++		if st.Field(i).Name() == field.name {
++			return st.Field(i).Type()
++		}
++	}
++	p.tb.Fatalf("infrastructure error: missing semantic field %s.%s", si.name, field.name)
++	return nil
++}
++func (p *pkgInfo) fieldContractLabels(si *structInfo, field fieldInfo) string {
++	typ := unpoint(p.fieldType(si, field))
++	var labels []string
++	for label, contract := range p.contracts {
++		known := unpoint(contract)
++		match := sameNamedOrigin(typ, known) || types.Identical(typ, known)
++		if actual, ok := typ.Underlying().(*types.Interface); ok {
++			if expected, ok := known.Underlying().(*types.Interface); ok {
++				match = match || coversInterface(actual, expected)
++			}
++		} else if _, ok := known.Underlying().(*types.Struct); ok {
++			// A new named type with the entire public Config/Server shape remains wide.
++			if label == "config.Config" || label == "Server" {
++				match = match || types.Identical(typ.Underlying(), known.Underlying())
++			}
++		}
++		if match {
++			labels = append(labels, label)
++		}
++	}
++	// A local optional-holder struct is not its type argument. Its own methods
++	// and state are distinct from a direct business interface or raw atomic slot.
++	return strings.Join(labels, " ")
++}
++func (p *pkgInfo) semanticReceiver(sel *ast.SelectorExpr) string {
++	if selection := p.typeInfo.Selections[sel]; selection != nil {
++		if fn, ok := selection.Obj().(*types.Func); ok {
++			sig := fn.Type().(*types.Signature)
++			if sig.Recv() != nil {
++				return semanticTypeText(sig.Recv().Type())
++			}
++		}
++	}
++	if typ := p.typeInfo.TypeOf(sel.X); typ != nil {
++		return semanticTypeText(typ)
++	}
++	return ""
++}
++
++// Permissions come from the routes the owner actually serves, never its name
++// or a fixed count of families. Wide Config/manager dependencies remain wide.
++func (p *pkgInfo) ownerForbidden(si *structInfo) []string {
++	owned := map[string]bool{}
++	for _, family := range handlerFamilies {
++		for _, owner := range p.familyTypes(family) {
++			if owner == si.name {
++				owned[family.name] = true
++			}
++		}
++	}
++	result := []string{reCMGR, reServerType, reEchoEngine}
++	if !owned["config"] {
++		result = append(result, reReloader)
++	}
++	if !owned["health_check"] {
++		result = append(result, reHealth)
++	}
++	if !owned["auth"] {
++		result = append(result, reAuthentic)
++	}
++	if (!owned["auth"] && !owned["config"]) || owned["health_check"] || owned["node_metrics"] || owned["overview"] {
++		result = append(result, reConfig)
++	}
++	return result
++}
+diff --git a/tests/f2p/closure_ownership_test.go b/tests/f2p/closure_ownership_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..2b7e1e98986a15290fc62f557b67bf5cb99a1a42
+--- /dev/null
++++ b/tests/f2p/closure_ownership_test.go
+@@ -0,0 +1,176 @@
++package f2p
++
++import (
++	"fmt"
++	"go/ast"
++	"go/types"
++)
++
++func (p *pkgInfo) valueObject(expr ast.Expr) types.Object {
++	switch e := expr.(type) {
++	case *ast.Ident:
++		return p.typeInfo.ObjectOf(e)
++	case *ast.SelectorExpr:
++		if s := p.typeInfo.Selections[e]; s != nil {
++			return s.Obj()
++		}
++		return p.typeInfo.ObjectOf(e.Sel)
++	case *ast.ParenExpr:
++		return p.valueObject(e.X)
++	}
++	return nil
++}
++func (p *pkgInfo) buildHandlerSources() {
++	p.valueSources = map[types.Object][]ast.Expr{}
++	p.functionDecls = map[types.Object]*ast.FuncDecl{}
++	p.syntheticFields = map[string]map[string]types.Type{}
++	add := func(obj types.Object, value ast.Expr) {
++		if obj != nil {
++			p.valueSources[obj] = append(p.valueSources[obj], value)
++		}
++	}
++	for _, fn := range p.funcs {
++		p.functionDecls[p.typeInfo.ObjectOf(fn.decl.Name)] = fn.decl
++	}
++	for _, file := range p.files {
++		ast.Inspect(file, func(node ast.Node) bool {
++			switch n := node.(type) {
++			case *ast.AssignStmt:
++				for i, lhs := range n.Lhs {
++					if i < len(n.Rhs) {
++						add(p.valueObject(lhs), n.Rhs[i])
++					}
++				}
++			case *ast.ValueSpec:
++				for i, id := range n.Names {
++					if i < len(n.Values) {
++						add(p.typeInfo.ObjectOf(id), n.Values[i])
++					}
++				}
++			case *ast.CompositeLit:
++				typ := p.typeInfo.TypeOf(n)
++				if typ == nil {
++					break
++				}
++				st, ok := unpoint(typ).Underlying().(*types.Struct)
++				if !ok {
++					break
++				}
++				for i, element := range n.Elts {
++					value := element
++					if kv, ok := element.(*ast.KeyValueExpr); ok {
++						id, ok := kv.Key.(*ast.Ident)
++						if !ok {
++							continue
++						}
++						value = kv.Value
++						for j := 0; j < st.NumFields(); j++ {
++							if st.Field(j).Name() == id.Name {
++								add(st.Field(j), value)
++							}
++						}
++					} else if i < st.NumFields() {
++						add(st.Field(i), value)
++					}
++				}
++			case *ast.CallExpr:
++				if fn, ok := p.valueObject(n.Fun).(*types.Func); ok {
++					sig := fn.Type().(*types.Signature)
++					for i, arg := range n.Args {
++						if i >= sig.Params().Len() {
++							break
++						}
++						param := sig.Params().At(i)
++						if _, ok := param.Type().Underlying().(*types.Signature); ok {
++							add(param, arg)
++						}
++					}
++				}
++			}
++			return true
++		})
++	}
++}
++
++// Resolve the value that will actually handle the request. A function-valued
++// routing field is storage, not the owner of the closure's captured state.
++func (p *pkgInfo) handlerOwners(expr ast.Expr, seen map[ast.Expr]bool) []string {
++	if expr == nil || seen[expr] {
++		return nil
++	}
++	seen[expr] = true
++	var result []string
++	follow := func(value ast.Expr) { result = append(result, p.handlerOwners(value, seen)...) }
++	switch e := expr.(type) {
++	case *ast.ParenExpr:
++		follow(e.X)
++	case *ast.FuncLit:
++		result = append(result, p.captureOwner(e, e.Body))
++	case *ast.CallExpr:
++		if decl := p.functionDecls[p.valueObject(e.Fun)]; decl != nil && decl.Body != nil {
++			ast.Inspect(decl.Body, func(node ast.Node) bool {
++				if _, ok := node.(*ast.FuncLit); ok {
++					return false
++				}
++				if r, ok := node.(*ast.ReturnStmt); ok {
++					for _, value := range r.Results {
++						follow(value)
++					}
++				}
++				return true
++			})
++		} else if _, ok := p.typeInfo.Types[e.Fun]; ok && len(e.Args) == 1 {
++			// Named function-type conversion preserves the underlying callable.
++			if p.typeInfo.Types[e.Fun].IsType() {
++				follow(e.Args[0])
++			}
++		}
++	case *ast.SelectorExpr:
++		if selection := p.typeInfo.Selections[e]; selection != nil && selection.Kind() == types.MethodVal {
++			result = append(result, p.semanticReceiver(e))
++		} else {
++			for _, value := range p.valueSources[p.valueObject(e)] {
++				follow(value)
++			}
++		}
++	case *ast.Ident:
++		if decl := p.functionDecls[p.valueObject(e)]; decl != nil && decl.Body != nil {
++			result = append(result, p.captureOwner(decl, decl.Body))
++		} else {
++			for _, value := range p.valueSources[p.valueObject(e)] {
++				follow(value)
++			}
++		}
++	}
++	return result
++}
++func (p *pkgInfo) captureOwner(scope ast.Node, body *ast.BlockStmt) string {
++	name := fmt.Sprintf("closure_%d", scope.Pos())
++	if p.structs[name] != nil {
++		return name
++	}
++	si := &structInfo{name: name, file: p.fset.Position(scope.Pos()).Filename}
++	fields := map[string]types.Type{}
++	ast.Inspect(body, func(node ast.Node) bool {
++		id, ok := node.(*ast.Ident)
++		if !ok {
++			return true
++		}
++		obj, ok := p.typeInfo.Uses[id].(*types.Var)
++		if !ok || obj.IsField() {
++			return true
++		}
++		if obj.Pos() >= scope.Pos() && obj.Pos() < scope.End() {
++			return true
++		}
++		key := fmt.Sprintf("%s_%d", obj.Name(), obj.Pos())
++		if fields[key] == nil {
++			fields[key] = obj.Type()
++			si.fields = append(si.fields, fieldInfo{name: key, typ: semanticTypeText(obj.Type())})
++		}
++		return true
++	})
++	p.syntheticFields[name] = fields
++	p.structs[name] = si
++	return name
++}
+diff --git a/internal/web/tests/p2p_db_precedence_test.go b/internal/web/tests/p2p_db_precedence_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..61666d09b767c9845bf50b138f89213768db020d
+--- /dev/null
++++ b/internal/web/tests/p2p_db_precedence_test.go
+@@ -0,0 +1,91 @@
++package tests
++
++import (
++	"fmt"
++	"github.com/Ehco1996/ehco/internal/config"
++	"github.com/Ehco1996/ehco/internal/glue"
++	"github.com/Ehco1996/ehco/internal/web"
++	"github.com/prometheus/client_golang/prometheus"
++	"io"
++	"net"
++	"net/http"
++	"strings"
++	"testing"
++	"time"
++)
++
++type auditHTTP struct {
++	server *web.Server
++	url    string
++	client *http.Client
++}
++
++func auditStart(t *testing.T, cfg *config.Config, relay glue.Reloader) *auditHTTP {
++	t.Helper()
++	listener, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	cfg.WebHost = "127.0.0.1"
++	cfg.WebPort = listener.Addr().(*net.TCPAddr).Port
++	listener.Close()
++	registry := prometheus.NewRegistry()
++	prometheus.DefaultRegisterer = registry
++	prometheus.DefaultGatherer = registry
++	server, err := web.NewServer(cfg, relay, nil, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	h := &auditHTTP{server: server, url: fmt.Sprintf("http://127.0.0.1:%d", cfg.WebPort), client: &http.Client{Timeout: 2 * time.Second}}
++	done := make(chan error, 1)
++	go func() { done <- server.Start() }()
++	t.Cleanup(func() {
++		server.Stop()
++		select {
++		case <-done:
++		case <-time.After(2 * time.Second):
++			t.Error("listener failed to stop")
++		}
++	})
++	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
++		response, err := h.client.Get(h.url + "/api/v1/auth/info")
++		if err == nil {
++			io.Copy(io.Discard, response.Body)
++			response.Body.Close()
++			return h
++		}
++	}
++	t.Fatal("HTTP listener did not start")
++	return nil
++}
++func (h *auditHTTP) request(t *testing.T, method, path, body, token string) (int, []byte) {
++	t.Helper()
++	request, err := http.NewRequest(method, h.url+path, strings.NewReader(body))
++	if err != nil {
++		t.Fatal(err)
++	}
++	request.Header.Set("Content-Type", "application/json")
++	if token != "" {
++		request.Header.Set("X-Ehco-Token", token)
++	}
++	response, err := h.client.Do(request)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer response.Body.Close()
++	data, err := io.ReadAll(response.Body)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return response.StatusCode, data
++}
++func TestP2P_DBMalformedInputPrecedesMissingBackend(t *testing.T) {
++	h := auditStart(t, &config.Config{}, nil)
++	for _, path := range []string{"/api/v1/db/cleanup", "/api/v1/db/truncate"} {
++		status, body := h.request(t, "POST", path, `{"broken":`, "")
++		t.Logf("%s -> %d %s", path, status, body)
++		if status != 400 {
++			t.Errorf("malformed JSON must keep the preexisting 400 before consulting an absent backend; got %d", status)
++		}
++	}
++}

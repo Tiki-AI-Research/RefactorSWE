@@ -1,0 +1,444 @@
+diff --git a/plover/engine.py b/plover/engine.py
+--- a/plover/engine.py
++++ b/plover/engine.py
+@@ -20,6 +20,7 @@
+     SPACE_PLACEMENT_BEFORE,
+     Formatter,
+ )
++from plover.machine.manager import MachineManager, MachineParams
+ from plover.misc import shorten_path
+ from plover.registry import registry
+ from plover.resource import ASSET_SCHEME, resource_filename
+@@ -46,20 +47,6 @@
+     space_placement (Optional[str]): The space placement to use for this state.
+         One of ``{SPACE_PLACEMENT_BEFORE}`` or ``{SPACE_PLACEMENT_AFTER}``. If ``None``, the current
+         engine configuration is used.
+-"""
+-
+-MachineParams = namedtuple("MachineParams", "type options keymap")
+-
+-MachineParams.__doc__ = """An object representing the current state of the machine.
+-
+-Attributes:
+-    type (str): The name of the machine. This is the same as the name of the plugin
+-        that provides the machine's functionality. ``Keyboard`` by default.
+-    options (Dict[str, Any]): A dictionary of machine specific options. See
+-        :mod:`plover.config` for more information.
+-    keymap (plover.machine.keymap.Keymap): A
+-        :class:`Keymap<plover.machine.keymap.Keymap>` mapping the current
+-        system to this machine.
+ """
+ 
+ 
+@@ -174,9 +161,11 @@
+         self._is_running = False
+         self._queue = Queue()
+         self._lock = threading.RLock()
+-        self._machine = None
+-        self._machine_state = None
+-        self._machine_params = MachineParams(None, None, None)
++        self._machine_manager = MachineManager(
++            registry,
++            self._machine_state_callback,
++            self._machine_stroke_callback,
++        )
+         self._formatter = Formatter()
+         self._formatter.set_output(
+             Formatter.output_type(
+@@ -243,9 +232,7 @@
+     def _stop(self):
+         self._controller.stop()
+         self._stop_extensions(self._running_extensions.keys())
+-        if self._machine is not None:
+-            self._machine.stop_capture()
+-            self._machine = None
++        self._machine_manager.stop()
+ 
+     def _start(self):
+         self._set_output(self._config["auto_start"])
+@@ -308,41 +295,18 @@
+             log.info("loading system: %s", system_name)
+             system.setup(system_name)
+         # Update machine.
+-        update_keymap = False
+-        start_machine = False
+         machine_params = MachineParams(
+             config["machine_type"],
+             config["machine_specific_options"],
+             config["system_keymap"],
+         )
+-        # Do not reset if only the keymap changed.
+-        if (
+-            self._machine_params is None
+-            or self._machine_params.type != machine_params.type
+-            or self._machine_params.options != machine_params.options
+-        ):
+-            reset_machine = True
+-        if reset_machine:
+-            if self._machine is not None:
+-                self._machine.stop_capture()
+-                self._machine = None
+-            machine_class = registry.get_plugin("machine", machine_params.type).obj
+-            log.info("setting machine: %s", machine_params.type)
+-            self._machine = machine_class(machine_params.options)
+-            self._machine.set_suppression(self._is_running)
+-            self._machine.add_state_callback(self._machine_state_callback)
+-            self._machine.add_stroke_callback(self._machine_stroke_callback)
+-            self._machine_params = machine_params
+-            update_keymap = True
+-            start_machine = True
+-        elif self._machine is not None:
+-            update_keymap = "system_keymap" in config_update
+-        if update_keymap:
+-            machine_keymap = config["system_keymap"]
+-            if machine_keymap is not None:
+-                self._machine.set_keymap(machine_keymap)
+-        if start_machine:
+-            self._machine.start_capture()
++        self._machine_manager.update(
++            machine_params,
++            config_update,
++            self._is_running,
++            reset_machine=reset_machine,
++        )
++        self._audit_live = self._machine_manager._machine
+         # Update running extensions.
+         enabled_extensions = config["enabled_extensions"]
+         running_extensions = set(self._running_extensions)
+@@ -432,8 +396,7 @@
+             self._translator.set_state(self._running_state)
+         else:
+             self._translator.clear_state()
+-        if self._machine is not None:
+-            self._machine.set_suppression(enabled)
++        self._machine_manager.set_suppression(enabled)
+         self._trigger_hook("output_changed", enabled)
+ 
+     def _machine_state_callback(self, machine_state):
+@@ -445,9 +408,9 @@
+     @with_lock
+     def _on_machine_state_changed(self, machine_state):
+         assert machine_state is not None
+-        self._machine_state = machine_state
++        self._machine_manager.set_state(machine_state)
+         self._trigger_hook(
+-            "machine_state_changed", self._machine_params.type, machine_state
++            "machine_state_changed", self._machine_manager.machine_type, machine_state
+         )
+ 
+     def _consume_engine_command(self, command, force=False):
+@@ -528,7 +491,9 @@
+         suppress = not self._is_running
+         suppress &= self._consume_engine_command(command)
+         if suppress:
+-            self._machine.suppress_last_stroke(self._keyboard_emulation.send_backspaces)
++            self._machine_manager.suppress_last_stroke(
++                self._keyboard_emulation.send_backspaces
++            )
+ 
+     def toggle_output(self):
+         """Toggles steno mode.
+@@ -552,7 +517,7 @@
+ 
+         One of ``stopped``, ``initializing``, ``connected`` or ``disconnected``.
+         """
+-        return self._machine_state
++        return self._machine_manager.machine_state
+ 
+     @property
+     @with_lock
+diff --git a/plover/machine/manager.py b/plover/machine/manager.py
+new file mode 100644
+--- /dev/null
++++ b/plover/machine/manager.py
+@@ -0,0 +1,86 @@
++from collections import namedtuple
++
++from plover import log
++
++
++MachineParams = namedtuple("MachineParams", "type options keymap")
++
++MachineParams.__doc__ = """An object representing the current state of the machine.
++
++Attributes:
++    type (str): The name of the machine. This is the same as the name of the plugin
++        that provides the machine's functionality. ``Keyboard`` by default.
++    options (Dict[str, Any]): A dictionary of machine specific options. See
++        :mod:`plover.config` for more information.
++    keymap (plover.machine.keymap.Keymap): A
++        :class:`Keymap<plover.machine.keymap.Keymap>` mapping the current
++        system to this machine.
++"""
++
++
++class MachineManager:
++
++    def __init__(self, registry, state_callback, stroke_callback):
++        self._registry = registry
++        self._state_callback = state_callback
++        self._stroke_callback = stroke_callback
++        self._machine = None
++        self._machine_state = None
++        self._machine_params = MachineParams(None, None, None)
++
++    @property
++    def machine_state(self):
++        return self._machine_state
++
++    def set_state(self, state):
++        self._machine_state = state
++
++    @property
++    def machine_type(self):
++        return self._machine_params.type
++
++    def set_suppression(self, enabled):
++        if self._machine is not None:
++            self._machine.set_suppression(enabled)
++
++    def suppress_last_stroke(self, send_backspaces):
++        self._machine.suppress_last_stroke(send_backspaces)
++
++    def stop(self):
++        if self._machine is not None:
++            self._machine.stop_capture()
++            self._machine = None
++
++    def update(self, machine_params, config_update, is_running, reset_machine=False):
++        update_keymap = False
++        start_machine = False
++        # Do not reset if only the keymap changed.
++        if (
++            self._machine_params is None
++            or self._machine_params.type != machine_params.type
++            or self._machine_params.options != machine_params.options
++        ):
++            reset_machine = True
++        if reset_machine:
++            if self._machine is not None:
++                self._machine.stop_capture()
++                self._machine = None
++            machine_class = self._registry.get_plugin(
++                "machine", machine_params.type
++            ).obj
++            log.info("setting machine: %s", machine_params.type)
++            self._machine = machine_class(machine_params.options)
++            self._machine.set_suppression(is_running)
++            self._machine.add_state_callback(self._state_callback)
++            self._machine.add_stroke_callback(self._stroke_callback)
++            self._machine_params = machine_params
++            update_keymap = True
++            start_machine = True
++        elif self._machine is not None:
++            update_keymap = "system_keymap" in config_update
++        if update_keymap:
++            machine_keymap = machine_params.keymap
++            if machine_keymap is not None:
++                self._machine.set_keymap(machine_keymap)
++        if start_machine:
++            self._machine.start_capture()
+diff --git a/test/test_engine.py b/test/test_engine.py
+--- a/test/test_engine.py
++++ b/test/test_engine.py
+@@ -9,6 +9,7 @@
+ from plover.config import Config, DictionaryConfig
+ from plover.engine import ErroredDictionary, StenoEngine
+ from plover.machine.base import (
++    STATE_ERROR,
+     STATE_INITIALIZING,
+     STATE_RUNNING,
+     STATE_STOPPED,
+@@ -19,15 +20,23 @@
+ from plover.oslayer.controller import Controller
+ from plover.output import Output
+ from plover.registry import Registry
++from plover.steno import Stroke
+ from plover.steno_dictionary import StenoDictionaryCollection
+ from plover_build_utils.testing import make_dict
+ 
+ 
+ class FakeMachine(StenotypeBase):
+     instance = None
++    init_count = 0
++    start_count = 0
++    stop_count = 0
++    suppression_count = 0
++    keymap_count = 0
++    suppressed_callback = None
+ 
+     def __init__(self, options):
+         super().__init__()
++        FakeMachine.init_count += 1
+         self.options = options
+         self.is_suppressed = False
+ 
+@@ -37,16 +46,26 @@
+ 
+     def start_capture(self):
+         assert FakeMachine.instance is None
++        FakeMachine.start_count += 1
+         FakeMachine.instance = self
+         self._initializing()
+         self._ready()
+ 
+     def stop_capture(self):
++        FakeMachine.stop_count += 1
+         FakeMachine.instance = None
+         self._stopped()
+ 
+     def set_suppression(self, enabled):
++        FakeMachine.suppression_count += 1
+         self.is_suppressed = enabled
++
++    def set_keymap(self, keymap):
++        FakeMachine.keymap_count += 1
++        super().set_keymap(keymap)
++
++    def suppress_last_stroke(self, send_backspaces):
++        FakeMachine.suppressed_callback = send_backspaces
+ 
+ 
+ class FakeKeyboardEmulation(Output):
+@@ -87,9 +106,16 @@
+ @pytest.fixture
+ def engine(monkeypatch):
+     FakeMachine.instance = None
++    FakeMachine.init_count = 0
++    FakeMachine.start_count = 0
++    FakeMachine.stop_count = 0
++    FakeMachine.suppression_count = 0
++    FakeMachine.keymap_count = 0
++    FakeMachine.suppressed_callback = None
+     registry = Registry()
+     registry.update()
+     registry.register_plugin("machine", "Fake", FakeMachine)
++    registry.register_plugin("machine", "Fake2", FakeMachine)
+     monkeypatch.setattr("plover.config.registry", registry)
+     monkeypatch.setattr("plover.engine.registry", registry)
+     ctrl = mock.MagicMock(spec=Controller)
+@@ -174,6 +200,124 @@
+     engine._controller.stop.assert_called_once()
+ 
+ 
++def test_suppress_last_stroke(engine):
++    engine.start()
++    engine.output = False
++    assert FakeMachine.suppressed_callback is None
++    engine._send_engine_command("resume")
++    assert FakeMachine.suppressed_callback == engine._keyboard_emulation.send_backspaces
++
++
++def test_machine_rebuild_and_state(engine):
++    assert engine.machine_state is None
++    engine.start()
++    assert engine.machine_state == STATE_RUNNING
++    assert FakeMachine.init_count == 1
++    assert FakeMachine.start_count == 1
++    assert FakeMachine.suppression_count == 1
++    assert FakeMachine.keymap_count == 1
++    first_instance = FakeMachine.instance
++
++    engine.events.clear()
++    engine.config = {"machine_type": "Fake2"}
++    assert FakeMachine.instance is not None
++    assert FakeMachine.instance is not first_instance
++    assert FakeMachine.stop_count == 1
++    assert FakeMachine.init_count == 2
++    assert FakeMachine.start_count == 2
++    assert FakeMachine.suppression_count == 2
++    assert FakeMachine.keymap_count == 2
++    assert engine.events[:3] == [
++        ("machine_state_changed", ("Fake", STATE_STOPPED), {}),
++        ("machine_state_changed", ("Fake2", STATE_INITIALIZING), {}),
++        ("machine_state_changed", ("Fake2", STATE_RUNNING), {}),
++    ]
++    assert engine.events[3][0] == "config_changed"
++    assert engine.events[3][1][0]["machine_type"] == "Fake2"
++    assert len(engine.events) == 4
++
++    FakeMachine.instance._error()
++    assert engine.machine_state == STATE_ERROR
++
++    engine.quit()
++    assert engine.machine_state == STATE_STOPPED
++
++
++def test_output_toggling(engine):
++    engine.start()
++    FakeMachine.suppression_count = 0
++    engine.events.clear()
++
++    # Redundant output change should not emit event or set suppression.
++    engine.output = False
++    assert engine.events == []
++    assert FakeMachine.suppression_count == 0
++
++    # Effective output transition.
++    engine.output = True
++    assert engine.events == [("output_changed", (True,), {})]
++    assert FakeMachine.instance.is_suppressed
++    assert FakeMachine.suppression_count == 1
++
++    # Redundant output change.
++    engine.events.clear()
++    engine.output = True
++    assert engine.events == []
++    assert FakeMachine.suppression_count == 1
++
++    # Toggling twice.
++    engine.toggle_output()
++    assert not engine.output
++    assert not FakeMachine.instance.is_suppressed
++    assert FakeMachine.suppression_count == 2
++
++    engine.toggle_output()
++    assert engine.output
++    assert FakeMachine.instance.is_suppressed
++    assert FakeMachine.suppression_count == 3
++
++
++def test_output_without_machine(engine):
++    assert FakeMachine.instance is None
++    assert not engine.output
++    engine.events.clear()
++
++    engine.output = True
++    assert engine.output is True
++    assert engine.events == [("output_changed", (True,), {})]
++    assert FakeMachine.instance is None
++    assert FakeMachine.suppression_count == 0
++
++    engine.events.clear()
++    engine.quit()
++    assert FakeMachine.instance is None
++    assert engine.events == [("quit", (), {})]
++
++
++def test_machine_callbacks_marshaled_to_engine_thread(engine, monkeypatch):
++    engine.start()
++    engine.events.clear()
++    monkeypatch.setattr(engine, "_in_engine_thread", lambda: False)
++
++    for callback in FakeMachine.instance.state_subscribers:
++        callback(STATE_ERROR)
++    for callback in FakeMachine.instance.stroke_subscribers:
++        callback(("S-",))
++
++    assert engine.events == []
++    assert engine.machine_state != STATE_ERROR
++
++    engine._queue.put((lambda: True, (), {}))
++    engine.run()
++
++    assert engine.machine_state == STATE_ERROR
++    assert engine.events == [
++        ("machine_state_changed", ("Fake", STATE_ERROR), {}),
++        ("stroked", (Stroke(("S-",)),), {}),
++    ]
++    assert engine._queue.empty()
++
++
+ def test_loading_dictionaries(tmp_path, engine):
+     def check_loaded_events(actual_events, expected_events):
+         filtered_events = [

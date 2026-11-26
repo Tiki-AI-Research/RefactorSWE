@@ -1,0 +1,2025 @@
+diff --git a/wooey/tests/f2p_runner.py b/wooey/tests/f2p_runner.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..94c65092de773597291bad6466cf52b286d5be2f
+--- /dev/null
++++ b/wooey/tests/f2p_runner.py
+@@ -0,0 +1,205 @@
++"""Aggregate runner for the frozen P2P + F2P exact selector selection.
++
++This module is a repository-internal support file declared in the verification
++plan's ``test_paths``.  It is invoked by the declared ``command`` and produces
++the JUnit ``{report}``:
++
++    python wooey/tests/f2p_runner.py --report <junit.xml> --config <config.json> \
++        [--selectors <file>] [paths...]
++
++The runner reads the frozen P2P and F2P *exact* selectors from the pipeline
++generated ``{config}`` document (its ``p2p`` and ``f2p`` arrays) and runs them
++through the real pytest producer.  It does not select tests by file, by broad
++pattern, or from the P2P collection inventory; the optional selector-file and
++positional arguments exist only so a single selector can be replayed in
++isolation during development.
++
++It relies only on files and tools that ship with the frozen environment image
++(Django + pytest).  It does not install anything, does not reach the network
++and leaves temporary data to the process ``TMPDIR`` through the standard
++library/pytest defaults.
++"""
++
++from __future__ import absolute_import
++
++import json
++import os
++import sys
++
++HERE = os.path.dirname(os.path.abspath(__file__))
++REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
++
++_SELECTOR_KEYS = ("selector", "selectors", "test", "tests", "node", "node_id")
++
++
++def _parse_args(argv):
++    report = None
++    config_path = None
++    selector_files = []
++    paths = []
++    index = 0
++    while index < len(argv):
++        arg = argv[index]
++        if arg == "--report":
++            index += 1
++            report = argv[index]
++        elif arg.startswith("--report="):
++            report = arg.split("=", 1)[1]
++        elif arg == "--config":
++            index += 1
++            config_path = argv[index]
++        elif arg.startswith("--config="):
++            config_path = arg.split("=", 1)[1]
++        elif arg in ("--selectors", "--selector-file"):
++            index += 1
++            selector_files.append(argv[index])
++        elif arg.startswith("--selectors="):
++            selector_files.append(arg.split("=", 1)[1])
++        elif arg.startswith("--"):
++            raise SystemExit("f2p_runner: unsupported option {!r}".format(arg))
++        else:
++            paths.append(arg)
++        index += 1
++    return report, config_path, selector_files, paths
++
++
++def _extract_selectors(value):
++    """Collect exact selectors from a config value of any nesting shape."""
++    found = []
++    if value is None:
++        return found
++    if isinstance(value, str):
++        return [value]
++    if isinstance(value, dict):
++        for key in _SELECTOR_KEYS:
++            if key in value:
++                found.extend(_extract_selectors(value[key]))
++        return found
++    if isinstance(value, (list, tuple)):
++        for item in value:
++            found.extend(_extract_selectors(item))
++        return found
++    return found
++
++
++def _selector_arrays(config):
++    """Return the frozen ``p2p`` and ``f2p`` exact selector arrays."""
++    arrays = {}
++    for key in ("p2p", "f2p"):
++        if key in config:
++            arrays[key] = _extract_selectors(config[key])
++    if not arrays:
++        # Tolerate the two arrays being nested one level down in the config
++        # document (for example under a plan object); only exact selectors are
++        # ever collected, never test files or broad patterns.
++        for value in config.values():
++            if isinstance(value, dict):
++                for key in ("p2p", "f2p"):
++                    if key in value:
++                        arrays.setdefault(key, []).extend(
++                            _extract_selectors(value[key])
++                        )
++    return arrays
++
++
++def _selectors_from_config(config_path):
++    with open(config_path) as handle:
++        config = json.load(handle)
++    selectors = []
++    arrays = _selector_arrays(config)
++    for key in ("p2p", "f2p"):
++        selectors.extend(arrays.get(key, []))
++    return selectors
++
++
++def _collect_selectors(config_path, selector_files, paths):
++    selectors = []
++    if config_path:
++        if os.path.isfile(config_path):
++            selectors.extend(_selectors_from_config(config_path))
++        else:
++            sys.stderr.write(
++                "f2p_runner: config document {!r} is not available\n".format(
++                    config_path
++                )
++            )
++    for selector_file in selector_files:
++        if not selector_file or not os.path.isfile(selector_file):
++            sys.stderr.write(
++                "f2p_runner: ignoring unavailable selectors file {!r}\n".format(
++                    selector_file
++                )
++            )
++            continue
++        with open(selector_file) as handle:
++            for line in handle:
++                entry = line.strip()
++                if not entry or entry.startswith("#"):
++                    continue
++                selectors.append(entry)
++    selectors.extend(paths)
++    unique = []
++    for selector in selectors:
++        if selector and selector not in unique:
++            unique.append(selector)
++    return unique
++
++
++def main(argv=None):
++    report, config_path, selector_files, paths = _parse_args(
++        list(sys.argv[1:] if argv is None else argv)
++    )
++    if not report:
++        raise SystemExit("f2p_runner: --report <junit.xml> is required")
++
++    selectors = _collect_selectors(config_path, selector_files, paths)
++    if not selectors:
++        raise SystemExit(
++            "f2p_runner: no exact selectors were provided by the config document, "
++            "the selectors file or the command line"
++        )
++
++    os.chdir(REPO_ROOT)
++    if REPO_ROOT not in sys.path:
++        sys.path.insert(0, REPO_ROOT)
++    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "wooey.test_settings")
++
++    import django
++
++    django.setup()
++
++    from django.test.runner import DiscoverRunner
++    from django.test.utils import setup_test_environment
++
++    setup_test_environment()
++    runner = DiscoverRunner(verbosity=0, interactive=False)
++    old_config = runner.setup_databases()
++
++    import pytest
++
++    args = [
++        "-p",
++        "no:cacheprovider",
++        "-q",
++        "--junitxml={}".format(report),
++    ]
++    args.extend(selectors)
++    return_code = pytest.main(args)
++
++    runner.teardown_databases(old_config)
++
++    if not os.path.exists(report):
++        sys.stderr.write(
++            "f2p_runner: pytest did not produce the JUnit report {!r}\n".format(report)
++        )
++        return 2
++    sys.stderr.write(
++        "f2p_runner: pytest rc={} selectors={} report={}\n".format(
++            return_code, len(selectors), report
++        )
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/wooey/tests/p2p_runner.py b/wooey/tests/p2p_runner.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5145fc823ed84113b2d46fac91a834733415cb2
+--- /dev/null
++++ b/wooey/tests/p2p_runner.py
+@@ -0,0 +1,175 @@
++"""Runner for the frozen P2P regression selection.
++
++This module is a repository-internal support file declared in the P2P plan's
++``test_paths``.  It is invoked by the declared ``command`` and is responsible
++for producing the JUnit ``{report}``:
++
++    python wooey/tests/p2p_runner.py --report <junit.xml> \
++        [--selectors <list>] [paths...]
++
++The runner only relies on repository files and tools that ship with the frozen
++environment image (Django + pytest).  It does not install anything, does not
++reach the network and does not use any selection list other than the ones
++passed on the command line.
++
++Two kinds of selection inputs are accepted:
++
++* test file paths or pytest node ids given as positional arguments, and
++* an optional selectors file (the pipeline-provided ``{p2p_select}``) whose
++  non-empty lines are test file paths or ``path::leaf`` selectors.
++
++If the selectors file has not been materialized (for example when the literal
++placeholder is passed through), it is ignored so that the positional selection
++still runs.
++"""
++
++from __future__ import absolute_import
++
++import os
++import sys
++
++HERE = os.path.dirname(os.path.abspath(__file__))
++REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
++
++
++def _parse_args(argv):
++    report = None
++    selector_files = []
++    paths = []
++    index = 0
++    while index < len(argv):
++        arg = argv[index]
++        if arg == "--report":
++            index += 1
++            report = argv[index]
++        elif arg.startswith("--report="):
++            report = arg.split("=", 1)[1]
++        elif arg in ("--selectors", "--selector-file"):
++            index += 1
++            selector_files.append(argv[index])
++        elif arg.startswith("--selectors="):
++            selector_files.append(arg.split("=", 1)[1])
++        elif arg.startswith("--"):
++            raise SystemExit("p2p_runner: unsupported option {!r}".format(arg))
++        else:
++            paths.append(arg)
++        index += 1
++    return report, selector_files, paths
++
++
++def _file_of(selector_or_path):
++    return selector_or_path.split("::", 1)[0]
++
++
++def _collect_from_selector_files(selector_files, paths):
++    for selector_file in selector_files:
++        if not selector_file or not os.path.isfile(selector_file):
++            # Placeholders that were not substituted, or a selectors file that
++            # does not exist yet, must not abort the positional selection.
++            sys.stderr.write(
++                "p2p_runner: ignoring unavailable selectors file {!r}\n".format(
++                    selector_file
++                )
++            )
++            continue
++        with open(selector_file) as handle:
++            for line in handle:
++                entry = line.strip()
++                if not entry or entry.startswith("#"):
++                    continue
++                if entry not in paths:
++                    paths.append(entry)
++    return paths
++
++
++def _resolved_paths(paths):
++    """Resolve positional selections against the repository root when needed."""
++    resolved = []
++    for path in paths:
++        file_path = _file_of(path)
++        if os.path.exists(file_path):
++            resolved.append(path)
++            continue
++        candidate = os.path.join(REPO_ROOT, file_path)
++        if os.path.exists(candidate):
++            suffix = path[len(file_path):]
++            resolved.append(candidate + suffix)
++        else:
++            resolved.append(path)
++    return resolved
++
++
++def _normalized_paths(paths):
++    """Drop redundant selectors whose file is already selected as a whole.
++
++    A ``path::leaf`` entry is only redundant when another entry selects its
++    whole file; a selection made up solely of exact selectors is kept as is.
++    """
++    selected_files = {path for path in paths if "::" not in path}
++    normalized = []
++    for path in paths:
++        if "::" in path and _file_of(path) in selected_files:
++            continue
++        if path not in normalized:
++            normalized.append(path)
++    return normalized
++
++
++def main(argv=None):
++    report, selector_files, paths = _parse_args(
++        list(sys.argv[1:] if argv is None else argv)
++    )
++    if not report:
++        raise SystemExit("p2p_runner: --report <junit.xml> is required")
++
++    paths = _collect_from_selector_files(selector_files, paths)
++    paths = _resolved_paths(paths)
++    paths = _normalized_paths(paths)
++    if not paths:
++        raise SystemExit("p2p_runner: no tests were selected to run")
++
++    os.chdir(REPO_ROOT)
++    if REPO_ROOT not in sys.path:
++        sys.path.insert(0, REPO_ROOT)
++    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "wooey.test_settings")
++
++    import django
++
++    django.setup()
++
++    from django.test.runner import DiscoverRunner
++    from django.test.utils import setup_test_environment
++
++    setup_test_environment()
++    runner = DiscoverRunner(verbosity=0, interactive=False)
++    old_config = runner.setup_databases()
++
++    import pytest
++
++    report_path = report
++    args = [
++        "-p",
++        "no:cacheprovider",
++        "-q",
++        "--junitxml={}".format(report_path),
++    ]
++    args.extend(paths)
++    return_code = pytest.main(args)
++
++    runner.teardown_databases(old_config)
++
++    if not os.path.exists(report_path):
++        sys.stderr.write(
++            "p2p_runner: pytest did not produce the JUnit report {!r}\n".format(
++                report_path
++            )
++        )
++        return 2
++    sys.stderr.write(
++        "p2p_runner: pytest rc={} report={}\n".format(return_code, report_path)
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/wooey/tests/test_f2p_decomposition.py b/wooey/tests/test_f2p_decomposition.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..55ea6817797ff77447c6900d3052b9eab25835f0
+--- /dev/null
++++ b/wooey/tests/test_f2p_decomposition.py
+@@ -0,0 +1,729 @@
++"""F2P tests: the registration entry point delegates its three concerns.
++
++Freeze contract (``grader-verifier-f2p-draft:v2`` payload): the supplemental
++P2P selection already pins the externally visible registration behavior, so the
++F2P obligation is the part of the instruction those tests cannot observe --
++``REQ-STRUCT-001`` and ``REQ-STRUCT-002``.  The frozen instruction requires the
++one public entry point (``wooey.backend.utils.add_wooey_script``) to *delegate*
++to single-purpose parts for
++
++* storage normalization and checksum-based duplicate detection,
++* version lifecycle and default-version decisions,
++* parser and parameter synchronization,
++
++so that each concern can be understood and changed in isolation, instead of
++running interleaved in one pass. The lifecycle part also returns the selected
++persisted version so its result can be consumed without shared coordinator state.
++
++The checks below observe the real call structure of a real registration: the
++tests register scripts through the public entry point against the Django test
++database and the configured storage, and record which frame performs which
++work.  They do not require any helper name, class name or module placement
++(``REQ-STRUCT-004``): every observation is made on the executed code, and the
++only interface names used are the frozen public surface (the entry point, the
++models and the storage helpers that ``REQ-BEH-T1:C7`` already freezes).
++
++Every selector fails on the un-decomposed entry point (its own frame performs
++the concern's work) and passes once the concern is performed by a separate
++collaborator reached through the entry point.
++"""
++
++from __future__ import absolute_import
++
++import os
++import sys
++import types
++from collections.abc import Mapping
++
++from django.core.files import storage as django_storage
++from django.core.files.base import ContentFile
++from django.db import models as django_models
++from django.test import TransactionTestCase
++from packaging.version import parse as parse_version
++
++from .. import settings as wooey_settings
++from ..backend import utils
++from ..models import (
++    Script,
++    ScriptGroup,
++    ScriptParameter,
++    ScriptParameterGroup,
++    ScriptParser,
++    ScriptVersion,
++)
++
++# The repository root, derived from the registration module itself so the
++# attribution works no matter which directory pytest was started from.
++REPO_ROOT = os.path.dirname(
++    os.path.dirname(os.path.dirname(os.path.abspath(utils.__file__)))
++)
++
++# The public entry point that must stay the single external registration entry
++# point (C1/STRUCT-002).  ``__wrapped__`` is followed so a decorated entry point
++# is still recognised; no internal helper is referenced by name anywhere.
++_ENTRY_CODES = frozenset(
++    code
++    for code in (
++        getattr(utils.add_wooey_script, "__code__", None),
++        getattr(getattr(utils.add_wooey_script, "__wrapped__", None), "__code__", None),
++    )
++    if code is not None
++)
++
++
++def _underlying_code(func):
++    """Return the code object of ``func``, following context-manager wrappers."""
++    func = getattr(func, "__wrapped__", func)
++    return getattr(func, "__code__", None)
++
++
++# Public helper functions whose execution marks the storage/checksum concern.
++_CODE_TAGS = {}
++for _func, _tag in (
++    (utils.get_checksum, "storage.checksum"),
++    (utils.get_storage, "storage.handle"),
++    (utils.get_storage_object, "storage.file"),
++    (parse_version, "version.normalize"),
++):
++    _code = _underlying_code(_func)
++    if _code is not None:
++        _CODE_TAGS.setdefault(_code, set()).add(_tag)
++
++# The three concerns of the frozen instruction, keyed by the public models
++# each concern persists.  ``ScriptGroup``/``Script``/``ScriptVersion`` belong to
++# the version lifecycle concern, the three parameter/schema models to the
++# parser and parameter synchronization concern.
++_MODEL_GROUPS = {
++    Script: "version",
++    ScriptVersion: "version",
++    ScriptGroup: "version",
++    ScriptParameter: "schema",
++    ScriptParameterGroup: "schema",
++    ScriptParser: "schema",
++}
++
++_WRITE_NAMES = frozenset(
++    (
++        "create",
++        "update",
++        "bulk_create",
++        "save",
++        "delete",
++        "get_or_create",
++        "update_or_create",
++        "add",
++        "set",
++        "remove",
++        "clear",
++    )
++)
++_READ_NAMES = frozenset(
++    ("get", "filter", "exclude", "all", "first", "last", "exists", "count")
++)
++
++_CONCERN_GROUPS = ("storage", "version", "schema")
++
++
++def _has_kwarg(frame, key):
++    for value in frame.f_locals.values():
++        if type(value) is dict and key in value:
++            return True
++    return key in frame.f_locals
++
++
++def _call_tags(frame):
++    """Classify the work a call frame performs, by public surface only."""
++    tags = set()
++    try:
++        tags.update(_CODE_TAGS.get(frame.f_code, ()))
++        module = frame.f_globals.get("__name__", "") or ""
++        if module.startswith("hashlib"):
++            tags.add("storage.checksum")
++        if module.startswith("packaging"):
++            tags.add("version.normalize")
++        name = frame.f_code.co_name
++        if name in ("__init__", "__new__"):
++            return tags
++        self_obj = frame.f_locals.get("self")
++        model = None
++        if isinstance(self_obj, django_models.Model):
++            model = type(self_obj)
++        elif isinstance(self_obj, (django_models.QuerySet, django_models.Manager)):
++            model = getattr(self_obj, "model", None)
++        elif isinstance(self_obj, django_storage.Storage):
++            if name in ("open", "save", "delete"):
++                tags.add("storage.file")
++            elif name in ("exists", "path", "url", "get_available_name"):
++                tags.add("storage.handle")
++        group = _MODEL_GROUPS.get(model)
++        if group is not None:
++            if name in _WRITE_NAMES:
++                tags.add(group + ".write")
++            elif name in _READ_NAMES:
++                tags.add(group + ".read")
++            if model is ScriptVersion and name in ("get", "filter") and _has_kwarg(
++                frame, "checksum"
++            ):
++                tags.add("duplicate.lookup")
++            if model is ScriptVersion and _has_kwarg(frame, "default_version"):
++                tags.add("version.default")
++            if model is ScriptGroup and name in _WRITE_NAMES:
++                tags.add("group.write")
++        if module.startswith("clinto.parser"):
++            tags.add("parse")
++    except Exception:
++        # Classification must never break the observed registration; an
++        # unclassified call simply contributes no tag.
++        pass
++    return tags
++
++
++def _c_call_tags(cfunc):
++    module = getattr(cfunc, "__module__", "") or ""
++    if module.startswith(("hashlib", "_hashlib")):
++        return {"storage.checksum"}
++    return set()
++
++
++class _CallNode(object):
++    __slots__ = ("code", "name", "qualname", "module", "file", "parent", "children", "ops", "depth", "result")
++
++    def __init__(self, frame, parent):
++        self.code = frame.f_code
++        self.name = self.code.co_name
++        self.qualname = getattr(self.code, "co_qualname", self.name)
++        self.module = frame.f_globals.get("__name__", "") or ""
++        self.file = os.path.abspath(frame.f_code.co_filename)
++        self.parent = parent
++        self.children = []
++        self.result = None
++        self.ops = set()
++        self.depth = parent.depth + 1 if parent is not None else 0
++
++
++class _CallRecorder(object):
++    """Record the executed call tree and attribute work to code frames."""
++
++    def __init__(self, repo_root):
++        self.repo_root = os.path.abspath(repo_root) + os.sep
++        self.roots = []
++        self._stack = []
++
++    def _is_project_frame(self, node):
++        return node.file.startswith(self.repo_root)
++
++    def _attribute(self, tags, exclude=None):
++        """Credit ``tags`` to the nearest project frame that issued the call.
++
++        The frame that *performs* work is the one whose code contains the call;
++        work executed inside a framework frame is credited to the nearest
++        project frame below it, so a collaborator called from the entry point
++        owns its own work while the entry point stays clean.
++        """
++        if not tags:
++            return
++        target = None
++        for node in reversed(self._stack):
++            if node is exclude:
++                continue
++            if self._is_project_frame(node):
++                target = node
++                break
++        if target is None:
++            target = exclude if exclude is not None else (
++                self._stack[-1] if self._stack else None
++            )
++        if target is not None:
++            target.ops.update(tags)
++
++    def _profile(self, frame, event, arg):
++        try:
++            if event == "call":
++                parent = self._stack[-1] if self._stack else None
++                node = _CallNode(frame, parent)
++                if parent is None:
++                    self.roots.append(node)
++                else:
++                    parent.children.append(node)
++                self._stack.append(node)
++                self._attribute(_call_tags(frame), exclude=node)
++            elif event == "c_call":
++                self._attribute(_c_call_tags(arg))
++            elif event == "return":
++                if self._stack:
++                    node = self._stack.pop()
++                    if self._is_project_frame(node):
++                        node.result = arg
++        except Exception:
++            pass
++        return None
++
++    def capture(self, func, *args, **kwargs):
++        sys.setprofile(self._profile)
++        try:
++            return func(*args, **kwargs)
++        finally:
++            sys.setprofile(None)
++
++
++def _walk(node):
++    yield node
++    for child in node.children:
++        for descendant in _walk(child):
++            yield descendant
++
++
++class _RegistrationTrace(object):
++    """The recorded registration call tree, queried by public observations."""
++
++    def __init__(self, recorder):
++        self._nodes = [node for root in recorder.roots for node in _walk(root)]
++        matches = [node for node in self._nodes if node.code in _ENTRY_CODES]
++        self.entry_node = min(matches, key=lambda node: node.depth) if matches else None
++
++    @property
++    def observed(self):
++        return bool(self._nodes)
++
++    @property
++    def entry_ops(self):
++        return set(self.entry_node.ops) if self.entry_node is not None else set()
++
++    def delegated(self, op):
++        """True when ``op`` is performed outside the entry point's own frame.
++
++        The entry point must delegate the concern; if the entry frame itself
++        performs ``op`` the obligation is not met, and the work must also be
++        visible in a separate collaborating frame so the concern has not simply
++        been dropped.
++        """
++        if self.entry_node is None:
++            return False
++        if op in self.entry_node.ops:
++            return False
++        return any(
++            op in node.ops for node in self._nodes if node is not self.entry_node
++        )
++
++    def returns_selected_version(self, version):
++        """The lifecycle part exposes its selected row as a usable result."""
++        def contains(value, seen):
++            if isinstance(value, ScriptVersion):
++                return value.pk == version.pk
++            if id(value) in seen or isinstance(value, django_models.Model):
++                return False
++            seen.add(id(value))
++            if isinstance(value, Mapping):
++                items = list(value.values())
++            elif isinstance(value, (tuple, list, set, frozenset)):
++                items = value
++            else:
++                items = []
++                if not callable(value) and not isinstance(value, types.ModuleType):
++                    if hasattr(value, "__dict__"):
++                        items.extend(list(vars(value).values()))
++                    for cls in type(value).__mro__:
++                        slots = cls.__dict__.get("__slots__", ())
++                        if isinstance(slots, str):
++                            slots = (slots,)
++                        items.extend(getattr(value, name) for name in slots
++                                     if name not in ("__dict__", "__weakref__")
++                                     and hasattr(value, name))
++            return any(contains(item, seen) for item in items)
++
++        for node in self._nodes:
++            if node is self.entry_node or not node.file.startswith(REPO_ROOT + os.sep):
++                continue
++            ops = set(op for child in _walk(node) for op in child.ops)
++            if ("version.write" in ops
++                    and not any(op.startswith(("storage.", "schema.", "duplicate."))
++                                for op in ops)
++                    and contains(node.result, set())):
++                return True
++        return False
++
++    def work_frames(self):
++        """(qualname, module, ops) for every frame that performed classified work."""
++        return [
++            (node.qualname, node.module, set(node.ops))
++            for node in self._nodes
++            if node.ops
++        ]
++
++    def mixing_frames(self, *groups):
++        """Frames whose own work mixes all of the requested concern groups."""
++        offenders = []
++        for qualname, module, ops in self.work_frames():
++            if all(any(op.startswith(group) for op in ops) for group in groups):
++                offenders.append(
++                    "%s (%s): %s" % (qualname, module, ", ".join(sorted(ops)))
++                )
++        return offenders
++
++
++def _script_text(version="1", extra_parameter=False, description="f2p script"):
++    """A small argparse script used to drive real registrations."""
++    lines = [
++        "import argparse",
++        "",
++        "parser = argparse.ArgumentParser(description=%r)" % description,
++        "parser.version = %r" % version,
++        "parser.add_argument('--alpha')",
++    ]
++    if extra_parameter:
++        lines.append("parser.add_argument('--beta')")
++    lines.extend(
++        [
++            "",
++            "if __name__ == '__main__':",
++            "    parser.parse_args()",
++        ]
++    )
++    return "\n".join(lines) + "\n"
++
++
++def _multi_group_script_text(description="f2p subparser script"):
++    """An argparse script with subparsers, i.e. several parameter groups."""
++    return (
++        "import argparse\n"
++        "\n"
++        "parser = argparse.ArgumentParser(description=%r)\n"
++        "parser.version = '1'\n"
++        "parser.add_argument('--alpha')\n"
++        "subparsers = parser.add_subparsers(dest='subcommand')\n"
++        "first = subparsers.add_parser('first')\n"
++        "first.add_argument('--beta')\n"
++        "second = subparsers.add_parser('second')\n"
++        "second.add_argument('--gamma', type=int)\n"
++        "second.add_argument('--delta', choices=['x', 'y'])\n"
++    ) % description
++
++
++class RegistrationDecompositionTests(TransactionTestCase):
++    """F2P acceptance surface for the delegated registration flow."""
++
++    def setUp(self):
++        self.storage = utils.get_storage(
++            local=not wooey_settings.WOOEY_EPHEMERAL_FILES
++        )
++        self._saved_names = []
++        super(RegistrationDecompositionTests, self).setUp()
++
++    def tearDown(self):
++        names = list(self._saved_names)
++        try:
++            names.extend(
++                version.script_path.name for version in ScriptVersion.objects.all()
++            )
++        except Exception:
++            pass
++        storages = (
++            self.storage,
++            utils.get_storage(local=True),
++            utils.get_storage(local=False),
++        )
++        for name in names:
++            if not name:
++                continue
++            for storage in storages:
++                try:
++                    storage.delete(name)
++                except Exception:
++                    pass
++        super(RegistrationDecompositionTests, self).tearDown()
++
++    def _store(self, name, text):
++        stored = self.storage.save(
++            os.path.join(wooey_settings.WOOEY_SCRIPT_DIR, name),
++            ContentFile(text.encode("utf-8")),
++        )
++        self._saved_names.append(stored)
++        return stored
++
++    def _capture(self, **kwargs):
++        recorder = _CallRecorder(REPO_ROOT)
++        result = recorder.capture(utils.add_wooey_script, **kwargs)
++        trace = _RegistrationTrace(recorder)
++        self.assertTrue(
++            trace.observed and trace.entry_node is not None,
++            "the public entry point frame was not observed during %r" % (kwargs,),
++        )
++        return result, trace
++
++    # ------------------------------------------------------------------
++    # Concern 1: storage normalization and checksum-based duplicate detection
++    # ------------------------------------------------------------------
++
++    def test_new_path_registration_delegates_checksum_computation(self):
++        """N path+name mode: the entry frame must not compute the checksum."""
++        path = self._store("f2p_checksum_entry.py", _script_text())
++        result, trace = self._capture(
++            script_path=path, script_name="f2p_checksum_entry"
++        )
++        self.assertIs(result["valid"], True, result.get("errors"))
++        self.assertTrue(
++            trace.delegated("storage.checksum"),
++            "add_wooey_script must delegate checksum computation to a separate "
++            "storage-normalization part; entry frame work was %s"
++            % (sorted(trace.entry_ops),),
++        )
++
++    def test_new_path_registration_delegates_stored_file_access(self):
++        """N path+name mode: file access and storage paths are delegated."""
++        path = self._store("f2p_stored_file_entry.py", _script_text())
++        result, trace = self._capture(
++            script_path=path, script_name="f2p_stored_file_entry"
++        )
++        self.assertIs(result["valid"], True, result.get("errors"))
++        self.assertTrue(
++            trace.delegated("storage.file"),
++            "add_wooey_script must delegate stored-file access to a separate "
++            "storage-normalization part; entry frame work was %s"
++            % (sorted(trace.entry_ops),),
++        )
++        self.assertTrue(
++            trace.delegated("storage.handle"),
++            "add_wooey_script must delegate storage path resolution and handle "
++            "access to the storage-normalization part; entry frame work was %s"
++            % (sorted(trace.entry_ops),),
++        )
++
++    def test_duplicate_registration_delegates_checksum_duplicate_lookup(self):
++        """Duplicate state: the entry frame must not run the duplicate query."""
++        path = self._store("f2p_duplicate.py", _script_text())
++        first, _ = self._capture(script_path=path, script_name="f2p_duplicate")
++        self.assertIs(first["valid"], True, first.get("errors"))
++        duplicate, trace = self._capture(
++            script_path=path, script_name="f2p_duplicate"
++        )
++        self.assertIs(duplicate["valid"], False)
++        self.assertTrue(
++            trace.delegated("duplicate.lookup"),
++            "add_wooey_script must delegate the checksum duplicate lookup to a "
++            "separate duplicate-detection part; entry frame work was %s"
++            % (sorted(trace.entry_ops),),
++        )
++
++    def test_legacy_duplicate_checksums_keep_entry_free_of_model_work(self):
++        """Legacy duplicate state: no model query or write in the entry frame."""
++        path = self._store("f2p_legacy.py", _script_text())
++        first, _ = self._capture(script_path=path, script_name="f2p_legacy")
++        self.assertIs(first["valid"], True, first.get("errors"))
++        original = first["script"]
++        legacy = ScriptVersion(
++            script=original.script,
++            script_version=str(original.script_version),
++            script_iteration=original.script_iteration + 5,
++            script_path=original.script_path.name,
++            checksum=original.checksum,
++            default_version=False,
++            is_active=True,
++        )
++        ScriptVersion.objects.bulk_create([legacy])
++        duplicate, trace = self._capture(
++            script_path=path, script_name="f2p_legacy"
++        )
++        self.assertIs(duplicate["valid"], False)
++        model_ops = {
++            op
++            for op in trace.entry_ops
++            if op.startswith(("version.", "schema.", "duplicate.", "group."))
++        }
++        self.assertEqual(
++            model_ops,
++            set(),
++            "add_wooey_script must not run model/duplicate work in its own "
++            "frame; entry frame work was %s" % (sorted(trace.entry_ops),),
++        )
++
++    # ------------------------------------------------------------------
++    # Concern 2: version lifecycle and default-version decisions
++    # ------------------------------------------------------------------
++
++    def test_path_only_call_mode_delegates_version_record_reads(self):
++        """N path-only mode: the entry frame must not query the script records."""
++        path = self._store("f2p_path_only_read.py", _script_text())
++        result, trace = self._capture(script_path=path)
++        self.assertIs(result["valid"], True, result.get("errors"))
++        self.assertTrue(
++            trace.delegated("version.read"),
++            "add_wooey_script must delegate script/version lookups to a "
++            "separate lifecycle part; entry frame work was %s"
++            % (sorted(trace.entry_ops),),
++        )
++
++    def test_changed_content_iteration_delegates_version_record_write(self):
++        """Version writes are delegated and expose the selected row as a result."""
++        first_path = self._store("f2p_iter_first.py", _script_text())
++        first, _ = self._capture(
++            script_path=first_path, script_name="f2p_iter"
++        )
++        self.assertIs(first["valid"], True, first.get("errors"))
++        changed_path = self._store(
++            "f2p_iter_second.py", _script_text(extra_parameter=True)
++        )
++        second, trace = self._capture(
++            script_path=changed_path, script_name="f2p_iter"
++        )
++        self.assertIs(second["valid"], True, second.get("errors"))
++        self.assertEqual(second["script"].script_iteration, 2)
++        self.assertTrue(
++            trace.delegated("version.write"),
++            "add_wooey_script must delegate version-record writes to a separate "
++            "lifecycle part; entry frame work was %s"
++            % (sorted(trace.entry_ops),),
++        )
++
++        self.assertTrue(
++            trace.returns_selected_version(second["script"]),
++            "the version lifecycle part must return the selected persisted "
++            "version, directly or in a result container; storing it only on "
++            "a shared coordinator does not expose the concern result",
++        )
++
++    def test_declared_version_change_delegates_default_flag_decision(self):
++        """Declared version change: no default-flag decision in the entry frame."""
++        first_path = self._store("f2p_versions_first.py", _script_text(version="1"))
++        first, _ = self._capture(
++            script_path=first_path, script_name="f2p_versions"
++        )
++        self.assertIs(first["valid"], True, first.get("errors"))
++        second_path = self._store(
++            "f2p_versions_second.py", _script_text(version="2", extra_parameter=True)
++        )
++        second, trace = self._capture(
++            script_path=second_path, script_name="f2p_versions"
++        )
++        self.assertIs(second["valid"], True, second.get("errors"))
++        self.assertEqual(str(second["script"].script_version), "2")
++        self.assertTrue(
++            trace.delegated("version.default"),
++            "add_wooey_script must delegate the default-version decision to a "
++            "separate lifecycle part; entry frame work was %s"
++            % (sorted(trace.entry_ops),),
++        )
++
++    def test_path_only_call_mode_delegates_version_string_normalization(self):
++        """N path-only mode: the entry frame must not normalize version strings."""
++        path = self._store("f2p_path_only_normalize.py", _script_text(version="3"))
++        result, trace = self._capture(script_path=path)
++        self.assertIs(result["valid"], True, result.get("errors"))
++        self.assertTrue(
++            trace.delegated("version.normalize"),
++            "add_wooey_script must delegate declared-version handling to a "
++            "separate lifecycle part; entry frame work was %s"
++            % (sorted(trace.entry_ops),),
++        )
++
++    # ------------------------------------------------------------------
++    # Concern 3: parser and parameter synchronization
++    # ------------------------------------------------------------------
++
++    def test_parse_failure_path_delegates_version_record_reads(self):
++        """Parse-failure state: the entry frame must not query the records."""
++        bad_script = (
++            "import argparse\n"
++            "import f2p_missing_module_for_parse_failure\n"
++            "\n"
++            "parser = argparse.ArgumentParser(description='f2p bad import')\n"
++            "parser.add_argument('--one')\n"
++            "\n"
++            "if __name__ == '__main__':\n"
++            "    parser.parse_args()\n"
++        )
++        path = self._store("f2p_parse_failure.py", bad_script)
++        result, trace = self._capture(
++            script_path=path, script_name="f2p_parse_failure"
++        )
++        self.assertIs(result["valid"], False)
++        self.assertTrue(
++            trace.delegated("version.read"),
++            "add_wooey_script must delegate the pre-parse script/version lookup "
++            "to a separate part on the parse-failure path; entry frame work was "
++            "%s" % (sorted(trace.entry_ops),),
++        )
++
++    def test_multi_group_schema_delegates_parameter_record_writes(self):
++        """Multi-group schema: no parameter/schema record write in the entry."""
++        path = self._store("f2p_schema_writes.py", _multi_group_script_text())
++        result, trace = self._capture(
++            script_path=path, script_name="f2p_schema_writes"
++        )
++        self.assertIs(result["valid"], True, result.get("errors"))
++        self.assertTrue(
++            trace.delegated("schema.write"),
++            "add_wooey_script must delegate parameter/schema writes to a "
++            "separate synchronization part; entry frame work was %s"
++            % (sorted(trace.entry_ops),),
++        )
++
++    def test_multi_group_schema_delegates_parameter_record_reads(self):
++        """Multi-group schema: no parameter/schema record read in the entry."""
++        path = self._store("f2p_schema_reads.py", _multi_group_script_text())
++        result, trace = self._capture(
++            script_path=path, script_name="f2p_schema_reads"
++        )
++        self.assertIs(result["valid"], True, result.get("errors"))
++        self.assertTrue(
++            trace.delegated("schema.read"),
++            "add_wooey_script must delegate parameter/schema reuse lookups to a "
++            "separate synchronization part; entry frame work was %s"
++            % (sorted(trace.entry_ops),),
++        )
++
++    # ------------------------------------------------------------------
++    # Single-purpose collaborators: no restored single-pass frame
++    # ------------------------------------------------------------------
++
++    def test_successful_registration_has_no_all_concerns_frame(self):
++        """Success path: no executed frame may mix all three concerns."""
++        path = self._store("f2p_single_pass.py", _multi_group_script_text())
++        result, trace = self._capture(
++            script_path=path, script_name="f2p_single_pass"
++        )
++        self.assertIs(result["valid"], True, result.get("errors"))
++        self.assertEqual(
++            trace.mixing_frames(*_CONCERN_GROUPS),
++            [],
++            "no frame may perform storage, version and schema work together",
++        )
++
++    def test_parameter_sync_frame_does_not_compute_checksums(self):
++        """Multi-group schema: checksum work must not live in a schema frame."""
++        path = self._store("f2p_checksum_schema.py", _multi_group_script_text())
++        result, trace = self._capture(
++            script_path=path, script_name="f2p_checksum_schema"
++        )
++        self.assertIs(result["valid"], True, result.get("errors"))
++        self.assertEqual(
++            trace.mixing_frames("storage.checksum", "schema"),
++            [],
++            "checksum work and parameter/schema work must sit in separate parts",
++        )
++
++    def test_duplicate_lookup_frame_does_not_write_versions(self):
++        """Success path: the duplicate lookup frame must not write versions."""
++        path = self._store("f2p_duplicate_lifecycle.py", _script_text())
++        result, trace = self._capture(
++            script_path=path, script_name="f2p_duplicate_lifecycle"
++        )
++        self.assertIs(result["valid"], True, result.get("errors"))
++        self.assertEqual(
++            trace.mixing_frames("duplicate.lookup", "version.write"),
++            [],
++            "duplicate detection and version writes must sit in separate parts",
++        )
++
++    def test_version_normalization_frame_does_not_touch_parameter_records(self):
++        """Declared version change: normalization must not touch parameters."""
++        path = self._store("f2p_normalize_schema.py", _script_text(version="2"))
++        result, trace = self._capture(
++            script_path=path, script_name="f2p_normalize_schema"
++        )
++        self.assertIs(result["valid"], True, result.get("errors"))
++        self.assertEqual(
++            trace.mixing_frames("version.normalize", "schema"),
++            [],
++            "declared-version handling and parameter synchronization must sit "
++            "in separate parts",
++        )
+diff --git a/wooey/tests/test_p2p_registration.py b/wooey/tests/test_p2p_registration.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f16e5def5f36ca3df59ff321ac612532d97a1b3e
+--- /dev/null
++++ b/wooey/tests/test_p2p_registration.py
+@@ -0,0 +1,892 @@
++"""Supplemental P2P regression tests for the script registration entry point.
++
++The frozen instruction keeps ``wooey.backend.utils.add_wooey_script`` as the one
++external registration entry point and freezes its observable behavior:
++signature and return mapping, duplicate handling, iteration numbering and
++default-version decisions, parameter reuse/linking and the storage/checksum
++side effects.  The repository's original tests cover parts of that contract;
++these supplemental tests add the remaining observable cases (public import
++surface, parse failures, declared version changes, ``set_default_version``
++semantics, current-script listings, checksum persistence and parameter
++attributes).
++
++Everything asserted here is part of the public contract: the entry point, the
++persisted ``Script``/``ScriptVersion``/``ScriptParameter`` records and the
++configured storage.  The helper surface checked below is derived from the
++Baseline repository's own imports (frozen contract C7); no internal helper
++introduced by an implementation, no class name and no module placement is
++required by these tests, so a legitimate refactor of the registration flow
++keeps passing (C8).
++"""
++
++import importlib
++import inspect
++import os
++
++from django.core.files.base import ContentFile
++from django.test import TransactionTestCase
++
++from .. import errors as wooey_errors
++from ..backend import utils
++from ..models import (
++    Script,
++    ScriptParameter,
++    ScriptParameterGroup,
++    ScriptParser,
++    ScriptVersion,
++)
++from . import config, mixins
++
++
++# Helpers the Baseline repository's other modules import from, or read on, the
++# registration module (``wooey/backend/utils.py``).  Derived from the Baseline
++# tree: every ``from ...backend.utils import <name>`` statement and every
++# ``utils.<name>`` attribute read outside the registration module itself and
++# outside this supplemental file.  Frozen contract C7 requires these to stay
++# importable from the registration module path.  Helpers that no Baseline
++# module uses are deliberately not listed, so the placement and naming of
++# internal helpers stays free (C8).
++_REGISTRATION_MODULE_CONSUMERS = (
++    "add_wooey_script",
++    "can_user_view_script",
++    "create_job_fileinfo",
++    "create_wooey_job",
++    "default_storage",
++    "ensure_list",
++    "flatten",
++    "get_available_file",
++    "get_checksum",
++    "get_current_scripts",
++    "get_file_info",
++    "get_file_previews",
++    "get_file_previews_by_ids",
++    "get_form_groups",
++    "get_job_commands",
++    "get_master_form",
++    "get_query",
++    "get_storage",
++    "get_storage_object",
++    "get_upload_path",
++    "mkdirs",
++    "purge_output",
++    "sanitize_name",
++    "sanitize_string",
++    "test_delimited",
++    "test_fastx",
++    "tokenize_html_attributes",
++    "valid_user",
++    "validate_form",
++)
++
++# Baseline production modules that call into the registration module (models,
++# forms, signals, tasks, the API, the views and the management command).
++# Importing them asserts the frozen call sites still load against the
++# registration module path (contracts C7 and STRUCT-002).  Data migrations are
++# intentionally not imported here.
++_REGISTRATION_CALL_SITE_MODULES = (
++    "wooey.api.scripts",
++    "wooey.forms.factory",
++    "wooey.management.commands.addscript",
++    "wooey.models.core",
++    "wooey.models.widgets",
++    "wooey.signals",
++    "wooey.tasks",
++    "wooey.templatetags.wooey_tags",
++    "wooey.views.views",
++    "wooey.views.wooey_celery",
++)
++
++
++def _script_source(version=None, extra_parameter=False):
++    """Return the source of a small argparse script for a declared version."""
++    lines = [
++        "import argparse",
++        "",
++        "parser = argparse.ArgumentParser(description='p2p versioned script')",
++    ]
++    if version is not None:
++        lines.append("parser.version = {!r}".format(version))
++    lines.append("parser.add_argument('--alpha')")
++    if extra_parameter:
++        lines.append("parser.add_argument('--beta')")
++    lines.extend(
++        [
++            "",
++            "if __name__ == '__main__':",
++            "    parser.parse_args()",
++        ]
++    )
++    return "\n".join(lines) + "\n"
++
++
++class P2PRegistrationTests(
++    mixins.ScriptFactoryMixin, mixins.FileMixin, TransactionTestCase
++):
++    def save_script(self, name, source=None, text=None):
++        if text is None:
++            with open(source, "rb") as handle:
++                text = handle.read().decode("utf-8")
++        return self.storage.save(
++            self.filename_func(name), ContentFile(text.encode("utf-8"))
++        )
++
++    def test_entry_point_signature_and_storage_helper_imports(self):
++        """C1/C7: entry-point identity and the helper surface the repository imports.
++
++        The entry point must stay importable from ``wooey.backend.utils``
++        under the same name, order and defaults (C1), and every helper the
++        Baseline repository already imports from that module path must stay
++        importable there (C7).  The consumer names and call-site modules below
++        come from the Baseline tree itself, so this test does not depend on any
++        particular internal decomposition (C8).
++        """
++        signature = inspect.signature(utils.add_wooey_script)
++        self.assertEqual(
++            list(signature.parameters),
++            [
++                "script_version",
++                "script_path",
++                "group",
++                "script_name",
++                "set_default_version",
++                "ignore_bad_imports",
++            ],
++        )
++        defaults = {
++            name: parameter.default
++            for name, parameter in signature.parameters.items()
++        }
++        self.assertIsNone(defaults["script_version"])
++        self.assertIsNone(defaults["script_path"])
++        self.assertIsNone(defaults["group"])
++        self.assertIsNone(defaults["script_name"])
++        self.assertIs(defaults["set_default_version"], True)
++        self.assertIsNone(defaults["ignore_bad_imports"])
++
++        for helper in _REGISTRATION_MODULE_CONSUMERS:
++            self.assertTrue(
++                hasattr(utils, helper),
++                "wooey.backend.utils no longer exposes {!r}".format(helper),
++            )
++
++        for module_name in _REGISTRATION_CALL_SITE_MODULES:
++            importlib.import_module(module_name)
++
++    def test_path_and_name_call_modes_register_new_script(self):
++        """C2/B1: path-only and path-plus-name registrations create a new version.
++
++        Both supported storage-path call modes must succeed, report
++        ``valid``/``errors``/``script`` and persist the requested script name.
++        """
++        path_only_source = os.path.join(
++            config.WOOEY_TEST_SCRIPTS, "versioned_script", "v1.py"
++        )
++        path_only = self.save_script("p2p_path_only.py", source=path_only_source)
++        expected_name = os.path.splitext(os.path.basename(path_only))[0]
++        # An earlier local cache entry may already occupy the storage name.
++        local_storage = utils.get_storage(local=True)
++        cached_path = local_storage.save(
++            path_only, ContentFile(b"# stale local cache\n")
++        )
++        self.addCleanup(local_storage.delete, cached_path)
++        result = utils.add_wooey_script(script_path=path_only)
++        self.assertIs(result["valid"], True)
++        self.assertIsNone(result["errors"])
++        self.assertIsInstance(result["script"], ScriptVersion)
++        self.assertEqual(result["script"].script.script_name, expected_name)
++        self.assertEqual(
++            ScriptVersion.objects.get(pk=result["script"].pk).script.script_name,
++            expected_name,
++        )
++
++        named_source = os.path.join(
++            config.WOOEY_TEST_SCRIPTS, "versioned_script", "v2.py"
++        )
++        named_path = self.save_script("p2p_other_file.py", source=named_source)
++        result = utils.add_wooey_script(script_path=named_path, script_name="p2p_named")
++        self.assertIs(result["valid"], True)
++        self.assertIsNone(result["errors"])
++        self.assertIsInstance(result["script"], ScriptVersion)
++        self.assertEqual(result["script"].script.script_name, "p2p_named")
++
++        # The existing-record call mode has the same successful return mapping.
++        # Fetch a fresh instance so signal suppression flags from path creation
++        # cannot accidentally prevent the real record synchronization.
++        existing = ScriptVersion.objects.get(pk=result["script"].pk)
++        existing_pk = existing.pk
++        version_count = ScriptVersion.objects.count()
++        synchronized = utils.add_wooey_script(script_version=existing)
++        self.assertIs(synchronized["valid"], True)
++        self.assertIsNone(synchronized["errors"])
++        self.assertIsInstance(synchronized["script"], ScriptVersion)
++        self.assertEqual(synchronized["script"].pk, existing_pk)
++        self.assertEqual(ScriptVersion.objects.count(), version_count)
++
++        # A subsequent upload through the real model signals still creates a
++        # new version, rather than confusing it with direct synchronization.
++        uploaded = ScriptVersion.objects.get(pk=existing_pk)
++        uploaded.script_path = self.save_script(
++            "p2p_signal_upgrade.py",
++            text=_script_source(version="1", extra_parameter=True),
++        )
++        uploaded.save()
++        self.assertNotEqual(uploaded.pk, existing_pk)
++        self.assertEqual(ScriptVersion.objects.count(), version_count + 1)
++        self.assertTrue(ScriptVersion.objects.filter(pk=existing_pk).exists())
++        uploaded.refresh_from_db()
++        self.assertIn(
++            "beta", {parameter.script_param for parameter in uploaded.get_parameters()}
++        )
++
++    def test_success_mapping_persists_iteration_one_file_and_checksum(self):
++        """C3/B1/B7: success mapping, first iteration, stored file and checksum.
++
++        A new registration must return the created version, start its iteration
++        at 1, leave the file readable through the configured storage and store
++        a checksum derived from the file content.
++        """
++        source = os.path.join(
++            config.WOOEY_TEST_SCRIPTS, "versioned_script", "v1.py"
++        )
++        with open(source, "rb") as handle:
++            content = handle.read()
++        stored = self.save_script("p2p_iteration_one.py", source=source)
++
++        result = utils.add_wooey_script(
++            script_path=stored, script_name="p2p_iteration_one"
++        )
++        self.assertIs(result["valid"], True)
++        self.assertIsNone(result["errors"])
++        version = result["script"]
++        self.assertIsInstance(version, ScriptVersion)
++
++        persisted = ScriptVersion.objects.get(pk=version.pk)
++        self.assertEqual(persisted.script_iteration, 1)
++        self.assertEqual(str(persisted.script_version), "1")
++        self.assertIs(persisted.default_version, True)
++        self.assertEqual(persisted.script.script_name, "p2p_iteration_one")
++
++        local_storage = utils.get_storage(local=True)
++        self.assertTrue(local_storage.exists(version.script_path.name))
++        with local_storage.open(version.script_path.name, "rb") as handle:
++            self.assertEqual(utils.get_checksum(buff=handle.read()), version.checksum)
++        self.assertEqual(utils.get_checksum(buff=content), version.checksum)
++        self.assertNotEqual(version.checksum, "")
++
++    def test_duplicate_detection_returns_stored_version_untouched(self):
++        """C4/B2: duplicate content returns the stored version unchanged.
++
++        Re-registering byte-identical content must report the duplicate-script
++        error, return the already stored version and leave its label,
++        iteration, default flag, checksum and parameter links untouched.
++        """
++        source = os.path.join(
++            config.WOOEY_TEST_SCRIPTS, "versioned_script", "v1.py"
++        )
++        first_path = self.save_script("p2p_duplicate.py", source=source)
++        first = utils.add_wooey_script(
++            script_path=first_path, script_name="p2p_duplicate"
++        )
++        self.assertIs(first["valid"], True)
++        first_version = first["script"]
++
++        changed_source = os.path.join(
++            config.WOOEY_TEST_SCRIPTS, "versioned_script", "v2.py"
++        )
++        changed_path = self.save_script(
++            "p2p_duplicate_second.py", source=changed_source
++        )
++        second = utils.add_wooey_script(
++            script_path=changed_path, script_name="p2p_duplicate"
++        )
++        self.assertIs(second["valid"], True)
++        second_version = second["script"]
++
++        def snapshot(version):
++            version.refresh_from_db()
++            return (
++                str(version.script_version),
++                version.script_iteration,
++                version.default_version,
++                version.checksum,
++                version.script_path.name,
++                tuple(sorted(item.pk for item in version.get_parameters())),
++            )
++
++        before = (snapshot(first_version), snapshot(second_version))
++        versions_before = ScriptVersion.objects.count()
++
++        duplicate_path = self.save_script("p2p_duplicate_copy.py", source=source)
++        # Empty optional names use the filename, just like an omitted name.
++        # The original path therefore resolves to the same stored script.
++        for path, name in ((duplicate_path, "p2p_duplicate"), (first_path, "")):
++            duplicate = utils.add_wooey_script(
++                script_path=path, script_name=name
++            )
++            self.assertIs(duplicate["valid"], False)
++            self.assertEqual(
++                str(duplicate["errors"]),
++                str(ScriptVersion.error_messages["duplicate_script"]),
++            )
++            self.assertEqual(duplicate["script"].pk, first_version.pk)
++            self.assertEqual(ScriptVersion.objects.count(), versions_before)
++            self.assertEqual(
++                (snapshot(first_version), snapshot(second_version)), before
++            )
++
++    def test_duplicate_detection_with_legacy_duplicate_checksums(self):
++        """C4/B2: duplicate lookup also holds for legacy duplicate checksums.
++
++        When several stored versions carry the same checksum, the duplicate
++        result must still return one of the stored versions without creating or
++        modifying records. Direct synchronization of the selected checksum
++        match must still synchronize that same record, rather than reject it.
++        """
++        source = os.path.join(
++            config.WOOEY_TEST_SCRIPTS, "versioned_script", "v1.py"
++        )
++        stored = self.save_script("p2p_legacy.py", source=source)
++        result = utils.add_wooey_script(script_path=stored, script_name="p2p_legacy")
++        self.assertIs(result["valid"], True)
++        original = result["script"]
++
++        # Simulate legacy data: several stored versions carry the same checksum.
++        legacy = ScriptVersion(
++            script=original.script,
++            script_version=str(original.script_version),
++            script_iteration=original.script_iteration + 5,
++            script_path=self.save_script("p2p_legacy_selected.py", source=source),
++            checksum=original.checksum,
++            default_version=False,
++            is_active=True,
++        )
++        ScriptVersion.objects.bulk_create([legacy])
++        newest_legacy = (
++            ScriptVersion.objects.filter(script=original.script)
++            .order_by("script_version", "script_iteration")
++            .last()
++        )
++
++        again = self.save_script("p2p_legacy_again.py", source=source)
++        duplicate = utils.add_wooey_script(
++            script_path=again, script_name="p2p_legacy"
++        )
++
++        self.assertIs(duplicate["valid"], False)
++        self.assertEqual(
++            str(duplicate["errors"]),
++            str(ScriptVersion.error_messages["duplicate_script"]),
++        )
++        self.assertEqual(duplicate["script"].pk, newest_legacy.pk)
++        self.assertEqual(duplicate["script"].pk, legacy.pk)
++
++        # The legacy lookup selects this row itself. A same-record match is
++        # allowed in direct synchronization, even when other rows also match.
++        before_pks = set(
++            ScriptVersion.objects.filter(script=original.script)
++            .values_list("pk", flat=True)
++        )
++        selected = ScriptVersion.objects.get(pk=newest_legacy.pk)
++        synced = utils.add_wooey_script(
++            script_version=selected, set_default_version=False
++        )
++        self.assertIs(synced["valid"], True, synced.get("errors"))
++        self.assertIsNone(synced["errors"])
++        self.assertEqual(synced["script"].pk, selected.pk)
++        selected.refresh_from_db()
++        self.assertEqual(selected.checksum, original.checksum)
++        self.assertEqual(selected.script_iteration, 2)
++        self.assertIs(selected.default_version, True)
++        self.assertEqual(
++            set(selected.scriptparameter_set.values_list("script_param", flat=True)),
++            set(original.scriptparameter_set.values_list("script_param", flat=True)),
++        )
++        self.assertEqual(
++            set(ScriptVersion.objects.filter(script=original.script)
++                .values_list("pk", flat=True)),
++            before_pks,
++        )
++
++    def test_parse_failure_reports_parser_error_and_persists_nothing(self):
++        """C5: parse failures report the parser error and persist nothing.
++
++        A script that cannot be parsed must return ``valid`` false with the
++        parser error and must not create script, version or parameter rows.
++        """
++        bad_script = (
++            "import argparse\n"
++            "import p2p_missing_module_for_parse_failure\n"
++            "\n"
++            "parser = argparse.ArgumentParser(description='p2p bad import')\n"
++            "parser.add_argument('--one')\n"
++            "\n"
++            "if __name__ == '__main__':\n"
++            "    parser.parse_args()\n"
++        )
++        stored = self.save_script("p2p_bad_import.py", text=bad_script)
++
++        scripts_before = Script.objects.count()
++        versions_before = ScriptVersion.objects.count()
++        parameters_before = ScriptParameter.objects.count()
++
++        result = utils.add_wooey_script(
++            script_path=stored, script_name="p2p_bad_import"
++        )
++
++        self.assertIs(result["valid"], False)
++        self.assertIsInstance(result["errors"], wooey_errors.ParserError)
++        self.assertIsNone(result.get("script"))
++        self.assertFalse(Script.objects.filter(script_name="p2p_bad_import").exists())
++        self.assertEqual(Script.objects.count(), scripts_before)
++        self.assertEqual(ScriptVersion.objects.count(), versions_before)
++        self.assertEqual(ScriptParameter.objects.count(), parameters_before)
++
++    def test_iteration_numbering_and_declared_version_change(self):
++        """B3: iteration numbering for same and changed declared versions.
++
++        Changed content for the same declared version string must take the next
++        iteration; a changed declared version string must restart at 1.
++        """
++        first_path = self.save_script(
++            "p2p_versions.py", text=_script_source("1")
++        )
++        first = utils.add_wooey_script(
++            script_path=first_path, script_name="p2p_versions"
++        )
++        self.assertIs(first["valid"], True)
++        self.assertEqual(str(first["script"].script_version), "1")
++        self.assertEqual(first["script"].script_iteration, 1)
++
++        # A caller may replace the source and register it again using only
++        # its storage path; staging must still update the original script.
++        self.storage.delete(first_path)
++        same_version_path = self.save_script(
++            "p2p_versions.py",
++            text=_script_source("1", extra_parameter=True),
++        )
++        self.assertEqual(same_version_path, first_path)
++        second = utils.add_wooey_script(script_path=same_version_path)
++        self.assertIs(second["valid"], True)
++        self.assertEqual(second["script"].script_id, first["script"].script_id)
++        self.assertEqual(str(second["script"].script_version), "1")
++        self.assertEqual(second["script"].script_iteration, 2)
++
++        new_version_path = self.save_script(
++            "p2p_versions_v2.py", text=_script_source("2")
++        )
++        third = utils.add_wooey_script(
++            script_path=new_version_path, script_name="p2p_versions"
++        )
++        self.assertIs(third["valid"], True)
++        self.assertEqual(str(third["script"].script_version), "2")
++        self.assertEqual(third["script"].script_iteration, 1)
++
++    def test_set_default_version_false_keeps_existing_default(self):
++        """C6/B3: the set_default_version flag keeps its meaning.
++
++        ``set_default_version=False`` must leave the previous default in place,
++        while a default-updating registration must make the newest version the
++        only default for that script.
++        """
++        v1_source = os.path.join(
++            config.WOOEY_TEST_SCRIPTS, "versioned_script", "v1.py"
++        )
++        first_path = self.save_script("p2p_defaults_v1.py", source=v1_source)
++        first = utils.add_wooey_script(
++            script_path=first_path, script_name="p2p_defaults"
++        )
++        self.assertIs(first["valid"], True)
++        first_version = first["script"]
++        self.assertIs(first_version.default_version, True)
++
++        v2_source = os.path.join(
++            config.WOOEY_TEST_SCRIPTS, "versioned_script", "v2.py"
++        )
++        second_path = self.save_script("p2p_defaults_v2.py", source=v2_source)
++        second = utils.add_wooey_script(
++            script_path=second_path,
++            script_name="p2p_defaults",
++            set_default_version=False,
++        )
++        self.assertIs(second["valid"], True)
++        second_version = second["script"]
++        self.assertEqual(second_version.script_iteration, 2)
++        self.assertIs(second_version.default_version, False)
++        first_version.refresh_from_db()
++        self.assertIs(first_version.default_version, True)
++
++        v3_source = os.path.join(
++            config.WOOEY_TEST_SCRIPTS, "versioned_script", "v3.py"
++        )
++        third_path = self.save_script("p2p_defaults_v3.py", source=v3_source)
++        third = utils.add_wooey_script(
++            script_path=third_path,
++            script_name="p2p_defaults",
++            set_default_version=True,
++        )
++        self.assertIs(third["valid"], True)
++        third_version = third["script"]
++        self.assertIs(third_version.default_version, True)
++        first_version.refresh_from_db()
++        second_version.refresh_from_db()
++        self.assertIs(first_version.default_version, False)
++        self.assertIs(second_version.default_version, False)
++        self.assertEqual(
++            list(
++                ScriptVersion.objects.filter(
++                    script=third_version.script, default_version=True
++                ).values_list("pk", flat=True)
++            ),
++            [third_version.pk],
++        )
++
++    def test_first_path_registration_is_default_even_when_flag_is_false(self):
++        """C6/B1: the first version is default even for a false path flag."""
++        stored = self.save_script(
++            "p2p_first_false.py", text=_script_source("1")
++        )
++        result = utils.add_wooey_script(
++            script_path=stored,
++            script_name="p2p_first_false",
++            set_default_version=False,
++        )
++        self.assertIs(result["valid"], True)
++        self.assertIsNone(result["errors"])
++        version = ScriptVersion.objects.get(pk=result["script"].pk)
++        self.assertEqual(version.script.script_name, "p2p_first_false")
++        self.assertEqual(version.script_iteration, 1)
++        self.assertIs(version.default_version, True)
++        self.assertEqual(
++            list(ScriptVersion.objects.filter(script=version.script)
++                 .values_list("pk", flat=True)),
++            [version.pk],
++        )
++
++    def test_direct_sync_false_promotes_existing_nondefault_record_in_place(self):
++        """C6/B3: direct sync promotes the row, without clearing old defaults."""
++        first_path = self.save_script(
++            "p2p_sync_false_first.py", text=_script_source("1")
++        )
++        first_result = utils.add_wooey_script(
++            script_path=first_path, script_name="p2p_sync_false"
++        )
++        self.assertIs(first_result["valid"], True)
++        first = first_result["script"]
++        next_path = self.save_script(
++            "p2p_sync_false_next.py",
++            text=_script_source("1", extra_parameter=True),
++        )
++        next_result = utils.add_wooey_script(
++            script_path=next_path,
++            script_name="p2p_sync_false",
++            set_default_version=False,
++        )
++        self.assertIs(next_result["valid"], True)
++        target_pk = next_result["script"].pk
++        target = ScriptVersion.objects.get(pk=target_pk)
++        first.refresh_from_db()
++        self.assertIs(first.default_version, True)
++        self.assertIs(target.default_version, False)
++        version_pks = set(
++            ScriptVersion.objects.filter(script=first.script)
++            .values_list("pk", flat=True)
++        )
++        checksum = target.checksum
++
++        # Direct sync uses the count of other versions, unlike path
++        # registration's max-iteration rule. Gaps make the two distinguishable.
++        ScriptVersion.objects.filter(pk=first.pk).update(script_iteration=5)
++        ScriptVersion.objects.filter(pk=target_pk).update(script_iteration=9)
++        target = ScriptVersion.objects.get(pk=target_pk)
++        result = utils.add_wooey_script(
++            script_version=target, set_default_version=False
++        )
++        self.assertIs(result["valid"], True)
++        self.assertIsNone(result["errors"])
++        self.assertEqual(result["script"].pk, target_pk)
++        target.refresh_from_db()
++        first.refresh_from_db()
++        self.assertIs(target.default_version, True)
++        self.assertIs(first.default_version, True)
++        self.assertEqual(target.script_iteration, 2)
++        self.assertEqual(first.script_iteration, 5)
++        self.assertEqual(str(target.script_version), "1")
++        self.assertEqual(target.checksum, checksum)
++        self.assertEqual(
++            set(ScriptVersion.objects.filter(script=first.script)
++                .values_list("pk", flat=True)),
++            version_pks,
++        )
++
++    def _sync_record_with_legacy_schema_links(self):
++        """Synchronize a real row whose current links predate its schema."""
++        path = self.save_script(
++            "{}.py".format(self._testMethodName), text=_script_source("1")
++        )
++        initial = utils.add_wooey_script(
++            script_path=path, script_name="p2p_sync_links"
++        )
++        self.assertIs(initial["valid"], True)
++        version = ScriptVersion.objects.get(pk=initial["script"].pk)
++        alpha = version.scriptparameter_set.get(script_param="alpha")
++        parser_name = alpha.parser.name
++        group_name = alpha.parameter_group.group_name
++        legacy_parser = ScriptParser.objects.create(name="legacy_parser")
++        legacy_group = ScriptParameterGroup.objects.create(group_name="legacy_group")
++        legacy_parameter = ScriptParameter.objects.create(
++            parser=legacy_parser,
++            parameter_group=legacy_group,
++            short_param="--legacy",
++            script_param="legacy",
++            is_output=False,
++            form_field="CharField",
++            input_type="str",
++            param_order=1,
++        )
++
++        # Model a persisted record with only old schema links. The current
++        # file still describes alpha, so sync must both retain old links and
++        # add missing current-schema links, not merely leave everything alone.
++        version.scriptparser_set.set([legacy_parser])
++        version.scriptparametergroup_set.set([legacy_group])
++        version.scriptparameter_set.set([legacy_parameter])
++        self.assertNotEqual(parser_name, legacy_parser.name)
++        self.assertNotEqual(group_name, legacy_group.group_name)
++        self.assertEqual(
++            list(version.scriptparser_set.values_list("pk", flat=True)),
++            [legacy_parser.pk],
++        )
++        self.assertEqual(
++            list(version.scriptparametergroup_set.values_list("pk", flat=True)),
++            [legacy_group.pk],
++        )
++        self.assertEqual(
++            list(version.scriptparameter_set.values_list("pk", flat=True)),
++            [legacy_parameter.pk],
++        )
++        before_pks = set(
++            ScriptVersion.objects.filter(script=version.script)
++            .values_list("pk", flat=True)
++        )
++        result = utils.add_wooey_script(script_version=version)
++        self.assertIs(result["valid"], True)
++        self.assertIsNone(result["errors"])
++        self.assertEqual(result["script"].pk, version.pk)
++        version.refresh_from_db()
++        self.assertEqual(
++            set(ScriptVersion.objects.filter(script=version.script)
++                .values_list("pk", flat=True)),
++            before_pks,
++        )
++        return (
++            version, legacy_parser, legacy_group, legacy_parameter,
++            parser_name, group_name,
++        )
++
++    def test_direct_sync_appends_parser_links_without_clearing_existing_links(self):
++        """B5: direct sync preserves old parser links and adds the parsed one."""
++        version, old_parser, _, _, parser_name, _ = (
++            self._sync_record_with_legacy_schema_links()
++        )
++        self.assertTrue(version.scriptparser_set.filter(pk=old_parser.pk).exists())
++        self.assertEqual(
++            set(version.scriptparser_set.values_list("name", flat=True)),
++            {old_parser.name, parser_name},
++        )
++
++    def test_direct_sync_appends_group_links_without_clearing_existing_links(self):
++        """B5: direct sync preserves old group links and adds the parsed group."""
++        version, _, old_group, _, _, group_name = (
++            self._sync_record_with_legacy_schema_links()
++        )
++        self.assertTrue(
++            version.scriptparametergroup_set.filter(pk=old_group.pk).exists()
++        )
++        self.assertEqual(
++            set(version.scriptparametergroup_set.values_list("group_name", flat=True)),
++            {old_group.group_name, group_name},
++        )
++
++    def test_direct_sync_appends_parameter_links_without_clearing_existing_links(self):
++        """B5: direct sync preserves old parameter links and adds schema inputs."""
++        version, _, _, old_parameter, parser_name, group_name = (
++            self._sync_record_with_legacy_schema_links()
++        )
++        self.assertTrue(
++            version.scriptparameter_set.filter(pk=old_parameter.pk).exists()
++        )
++        self.assertEqual(
++            set(version.scriptparameter_set.values_list("script_param", flat=True)),
++            {"legacy", "alpha"},
++        )
++        alpha = version.scriptparameter_set.get(script_param="alpha")
++        self.assertEqual(alpha.parser.name, parser_name)
++        self.assertEqual(alpha.parameter_group.group_name, group_name)
++
++    def test_listing_reports_newest_default_version(self):
++        """B4: the public listing reports the newest defaulted version as latest.
++
++        After a default-updating registration the current-script listing must
++        report the newest version as latest and must not report the superseded
++        one; a registration without default updating keeps the previous latest.
++        """
++        def latest_version_pk(script_name):
++            for script in utils.get_current_scripts():
++                if script.script_name == script_name:
++                    return script.latest_version.pk
++            return None
++
++        v1_source = os.path.join(
++            config.WOOEY_TEST_SCRIPTS, "versioned_script", "v1.py"
++        )
++        first_path = self.save_script("p2p_listing_v1.py", source=v1_source)
++        first = utils.add_wooey_script(
++            script_path=first_path, script_name="p2p_listing"
++        )
++        self.assertIs(first["valid"], True)
++        first_version = first["script"]
++        self.assertEqual(latest_version_pk("p2p_listing"), first_version.pk)
++
++        v2_source = os.path.join(
++            config.WOOEY_TEST_SCRIPTS, "versioned_script", "v2.py"
++        )
++        second_path = self.save_script("p2p_listing_v2.py", source=v2_source)
++        second = utils.add_wooey_script(
++            script_path=second_path, script_name="p2p_listing"
++        )
++        self.assertIs(second["valid"], True)
++        second_version = second["script"]
++        self.assertEqual(latest_version_pk("p2p_listing"), second_version.pk)
++        current_latest = [
++            script.latest_version for script in utils.get_current_scripts()
++        ]
++        self.assertIn(second_version, current_latest)
++        self.assertNotIn(first_version, current_latest)
++
++        v3_source = os.path.join(
++            config.WOOEY_TEST_SCRIPTS, "versioned_script", "v3.py"
++        )
++        third_path = self.save_script("p2p_listing_v3.py", source=v3_source)
++        third = utils.add_wooey_script(
++            script_path=third_path,
++            script_name="p2p_listing",
++            set_default_version=False,
++        )
++        self.assertIs(third["valid"], True)
++        third_version = third["script"]
++        self.assertNotEqual(third_version.pk, second_version.pk)
++        self.assertEqual(latest_version_pk("p2p_listing"), second_version.pk)
++
++    def test_parameter_reuse_and_schema_attributes(self):
++        """B5/B6: parameter reuse, unlinking and schema-derived attributes.
++
++        Unchanged parameters must be relinked as the same records on the new
++        version, parameters missing from the new schema must not be linked, and
++        schema-derived attributes (choices, required/output flags, form field,
++        short parameter and argument ordering) must match the Baseline values.
++        """
++        choices_source = os.path.join(config.WOOEY_TEST_SCRIPTS, "choices.py")
++        choices_path = self.save_script("p2p_choices.py", source=choices_source)
++        first = utils.add_wooey_script(
++            script_path=choices_path, script_name="p2p_parameters"
++        )
++        self.assertIs(first["valid"], True)
++        first_version = first["script"]
++        first_parameters = {
++            parameter.script_param: parameter
++            for parameter in first_version.get_parameters()
++        }
++        self.assertEqual(
++            set(first_parameters),
++            {
++                "one_choice",
++                "two_choices",
++                "at_least_one_choice",
++                "all_choices",
++                "need_at_least_one_numbers",
++                "choices_str",
++                "multiple_file_choices",
++                "more_multiple_file_choices",
++            },
++        )
++
++        one_choice = first_parameters["one_choice"]
++        self.assertEqual(one_choice.short_param, "--one-choice")
++        self.assertEqual(one_choice.form_field, "IntegerField")
++        self.assertEqual(one_choice.choices, "[0, 1, 2, 3]")
++        self.assertIs(one_choice.required, False)
++        self.assertIs(one_choice.is_output, True)
++        self.assertEqual(one_choice.param_order, 1)
++
++        two_choices = first_parameters["two_choices"]
++        two_choices.refresh_from_db()
++        self.assertEqual(two_choices.choices, "[0, 1, 2, 3]")
++        self.assertEqual(two_choices.choice_limit, "2")
++
++        required_choice = first_parameters["need_at_least_one_numbers"]
++        self.assertIs(required_choice.required, True)
++        self.assertIs(required_choice.collapse_arguments, False)
++
++        file_choice = first_parameters["multiple_file_choices"]
++        self.assertEqual(file_choice.form_field, "FileField")
++        self.assertEqual(file_choice.input_type, "file")
++        self.assertIs(file_choice.is_output, False)
++
++        self.assertEqual(
++            [parameter.script_param for parameter in first_version.get_parameters()],
++            [
++                "one_choice",
++                "two_choices",
++                "at_least_one_choice",
++                "all_choices",
++                "need_at_least_one_numbers",
++                "choices_str",
++                "multiple_file_choices",
++                "more_multiple_file_choices",
++            ],
++        )
++
++        choices_2_source = os.path.join(config.WOOEY_TEST_SCRIPTS, "choices_2.py")
++        choices_2_path = self.save_script(
++            "p2p_choices_2.py", source=choices_2_source
++        )
++        second = utils.add_wooey_script(
++            script_path=choices_2_path, script_name="p2p_parameters"
++        )
++        self.assertIs(second["valid"], True)
++        second_version = second["script"]
++        second_parameters = {
++            parameter.script_param: parameter
++            for parameter in second_version.get_parameters()
++        }
++
++        self.assertNotIn("one_choice", second_parameters)
++        self.assertIn("one_choice_added", second_parameters)
++        for name in (
++            "two_choices",
++            "at_least_one_choice",
++            "all_choices",
++            "need_at_least_one_numbers",
++            "choices_str",
++            "multiple_file_choices",
++            "more_multiple_file_choices",
++        ):
++            self.assertEqual(
++                second_parameters[name].pk,
++                first_parameters[name].pk,
++                "parameter {!r} was not reused between versions".format(name),
++            )
++            second_parameters[name].refresh_from_db()
++            self.assertIn(second_version, second_parameters[name].script_version.all())
++        self.assertEqual(
++            second_parameters["two_choices"].choices,
++            first_parameters["two_choices"].choices,
++        )
++        self.assertEqual(second_parameters["two_choices"].choice_limit, "2")
++        self.assertEqual(
++            second_parameters["two_choices"].param_order,
++            first_parameters["two_choices"].param_order,
++        )
++        self.assertNotEqual(
++            second_parameters["one_choice_added"].pk, one_choice.pk
++        )

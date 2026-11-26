@@ -1,0 +1,1772 @@
+diff --git a/internal/x11/win/client.go b/internal/x11/win/client.go
+index 922202a62ce1ef0dbfbfff105545cae5769c2f51..31d22ab079c0d61ee5f21037025ed0b60ddf045a 100644
+--- a/internal/x11/win/client.go
++++ b/internal/x11/win/client.go
+@@ -199,7 +199,9 @@ func (c *client) Geometry() (int, int, uint, uint) {
+ 	if c.frame == nil {
+ 		return 0, 0, 0, 0
+ 	}
+-	return int(c.frame.x), int(c.frame.y), uint(c.frame.width), uint(c.frame.height)
++	x, y := c.frame.pos()
++	w, h := c.frame.size()
++	return int(x), int(y), uint(w), uint(h)
+ }
+ 
+ func (c *client) Maximize() {
+@@ -218,7 +220,8 @@ func (c *client) Move(pos fyne.Position) {
+ 
+ 	targetX := int16(pos.X * screen.CanvasScale())
+ 	targetY := int16(pos.Y * screen.CanvasScale())
+-	c.frame.updateGeometry(targetX, targetY, c.frame.width, c.frame.height, false)
++	w, h := c.frame.size()
++	c.frame.updateGeometry(targetX, targetY, w, h, false)
+ }
+ 
+ func (c *client) NotifyBorderChange() {
+@@ -254,19 +257,27 @@ func (c *client) NotifyMaximize() {
+ }
+ 
+ func (c *client) NotifyMouseDrag(x, y int16) {
+-	c.frame.mouseDrag(x, y)
++	if c.frame != nil && c.frame.interaction != nil {
++		c.frame.interaction.mouseDrag(x, y)
++	}
+ }
+ 
+ func (c *client) NotifyMouseMotion(x, y int16) {
+-	c.frame.mouseMotion(x, y)
++	if c.frame != nil && c.frame.interaction != nil {
++		c.frame.interaction.mouseMotion(x, y)
++	}
+ }
+ 
+ func (c *client) NotifyMousePress(x, y int16, b xproto.Button) {
+-	c.frame.mousePress(x, y, b)
++	if c.frame != nil && c.frame.interaction != nil {
++		c.frame.interaction.mousePress(x, y, b)
++	}
+ }
+ 
+ func (c *client) NotifyMouseRelease(x, y int16, b xproto.Button) {
+-	c.frame.mouseRelease(x, y, b)
++	if c.frame != nil && c.frame.interaction != nil {
++		c.frame.interaction.mouseRelease(x, y, b)
++	}
+ }
+ 
+ func (c *client) NotifyMoveResizeEnded() {
+@@ -314,10 +325,11 @@ func (c *client) Parent() fynedesk.Window {
+ 
+ func (c *client) Position() fyne.Position {
+ 	screen := fynedesk.Instance().Screens().ScreenForWindow(c)
++	x, y := c.frame.pos()
+ 
+ 	return fyne.NewPos(
+-		float32(c.frame.x)/screen.CanvasScale(),
+-		float32(c.frame.y)/screen.CanvasScale())
++		float32(x)/screen.CanvasScale(),
++		float32(y)/screen.CanvasScale())
+ }
+ 
+ func (c *client) Resize(s fyne.Size) {
+@@ -325,8 +337,9 @@ func (c *client) Resize(s fyne.Size) {
+ 		return
+ 	}
+ 	screen := fynedesk.Instance().Screens().ScreenForWindow(c)
++	x, y := c.frame.pos()
+ 
+-	c.frame.updateGeometry(c.frame.x, c.frame.y, uint16(s.Width*screen.Scale), uint16(s.Height*screen.Scale), false)
++	c.frame.updateGeometry(x, y, uint16(s.Width*screen.Scale), uint16(s.Height*screen.Scale), false)
+ }
+ 
+ func (c *client) Size() fyne.Size {
+@@ -334,10 +347,11 @@ func (c *client) Size() fyne.Size {
+ 		return fyne.Size{}
+ 	}
+ 	screen := fynedesk.Instance().Screens().ScreenForWindow(c)
++	w, h := c.frame.size()
+ 
+ 	return fyne.NewSize(
+-		float32(c.frame.width)/screen.CanvasScale(),
+-		float32(c.frame.height)/screen.CanvasScale())
++		float32(w)/screen.CanvasScale(),
++		float32(h)/screen.CanvasScale())
+ }
+ 
+ func (c *client) QueueMoveResizeGeometry(x int, y int, width uint, height uint) {
+@@ -376,7 +390,7 @@ func (c *client) SettingsChanged() {
+ 		return
+ 	}
+ 
+-	c.frame.canvas = nil // force a full re-build of the border widgets
++	c.frame.invalidateCanvas() // force a full re-build of the border widgets
+ 	c.frame.updateScale()
+ }
+ 
+diff --git a/internal/x11/win/decoration.go b/internal/x11/win/decoration.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..cd8a6756a5a743309219c58f935d77fe084e8ae1
+--- /dev/null
++++ b/internal/x11/win/decoration.go
+@@ -0,0 +1,227 @@
++//go:build linux || openbsd || freebsd || netbsd
++// +build linux openbsd freebsd netbsd
++
++package win
++
++import (
++	"image"
++
++	"fyne.io/fyne/v2"
++	"fyne.io/fyne/v2/test"
++	"fyne.io/fyne/v2/theme"
++	"fyne.io/fyne/v2/tools/playground"
++
++	"github.com/BurntSushi/xgb/xproto"
++
++	"fyshos.com/fynedesk"
++	"fyshos.com/fynedesk/internal/x11"
++	wmTheme "fyshos.com/fynedesk/theme"
++	"fyshos.com/fynedesk/wm"
++)
++
++type decoration struct {
++	client *client
++	frame  *frame
++
++	borderTop, borderTopRight             xproto.Pixmap
++	borderTopGC, borderTopRightGC, rectGC xproto.Gcontext
++	borderTopWidth                        uint16
++	canvas                                test.WindowlessCanvas
++}
++
++func newDecoration(c *client, f *frame) *decoration {
++	return &decoration{
++		client: c,
++		frame:  f,
++	}
++}
++
++func (d *decoration) applyBorderlessTheme() {
++	w, h := d.frame.size()
++	xproto.ConfigureWindow(d.client.wm.Conn(), d.client.win, xproto.ConfigWindowX|xproto.ConfigWindowY|
++		xproto.ConfigWindowWidth|xproto.ConfigWindowHeight,
++		[]uint32{uint32(0), uint32(0), uint32(w), uint32(h)})
++}
++
++func (d *decoration) copyDecorationPixels(width, height, xoff, yoff uint32, img image.Image, pid xproto.Pixmap, draw xproto.Gcontext, depth byte) {
++	// DATA is BGRx
++	data := make([]byte, width*height*4)
++	i := uint32(0)
++	for y := uint32(0); y < height; y++ {
++		for x := uint32(0); x < width; x++ {
++			r, g, b, _ := img.At(int(xoff+x), int(yoff+y)).RGBA()
++
++			data[i] = byte(b)
++			data[i+1] = byte(g)
++			data[i+2] = byte(r)
++			data[i+3] = 0xff
++
++			i += 4
++		}
++	}
++	xproto.PutImage(d.client.wm.Conn(), xproto.ImageFormatZPixmap, xproto.Drawable(pid), draw,
++		uint16(width), uint16(height), 0, int16(yoff), 0, depth, data)
++}
++
++func (d *decoration) createPixmaps(depth byte) error {
++	heightPix := x11.TitleHeight(x11.XWin(d.client))
++	rightWidthPix := d.topRightPixelWidth()
++	w, _ := d.frame.size()
++	d.borderTopWidth = w - rightWidthPix
++
++	pid, err := xproto.NewPixmapId(d.client.wm.Conn())
++	if err != nil {
++		return err
++	}
++
++	xproto.CreatePixmap(d.client.wm.Conn(), depth, pid,
++		xproto.Drawable(d.client.wm.X().Screen().Root), d.borderTopWidth, heightPix)
++	d.borderTop = pid
++
++	pid, err = xproto.NewPixmapId(d.client.wm.Conn())
++	if err != nil {
++		return err
++	}
++
++	xproto.CreatePixmap(d.client.wm.Conn(), depth, pid,
++		xproto.Drawable(d.client.wm.X().Screen().Root), rightWidthPix, heightPix)
++	d.borderTopRight = pid
++
++	backR, backG, backB, _ := theme.DisabledButtonColor().RGBA()
++	if d.client.Focused() {
++		backR, backG, backB, _ = theme.BackgroundColor().RGBA()
++	}
++	bgColor := uint32(uint8(backR))<<16 | uint32(uint8(backG))<<8 | uint32(uint8(backB))
++
++	d.rectGC, _ = xproto.NewGcontextId(d.client.wm.Conn())
++	xproto.CreateGC(d.client.wm.Conn(), d.rectGC, xproto.Drawable(d.client.id), xproto.GcForeground, []uint32{bgColor})
++
++	d.borderTopGC, _ = xproto.NewGcontextId(d.client.wm.Conn())
++	xproto.CreateGC(d.client.wm.Conn(), d.borderTopGC, xproto.Drawable(d.borderTop), xproto.GcForeground, []uint32{bgColor})
++	d.borderTopRightGC, _ = xproto.NewGcontextId(d.client.wm.Conn())
++	xproto.CreateGC(d.client.wm.Conn(), d.borderTopRightGC, xproto.Drawable(d.borderTopRight), xproto.GcForeground, []uint32{bgColor})
++
++	return nil
++}
++
++func (d *decoration) decorate(force bool) {
++	depth := d.client.wm.X().Screen().RootDepth
++	refresh := force
++
++	if refresh {
++		d.freePixmaps()
++	}
++	if d.borderTop == 0 {
++		err := d.createPixmaps(depth)
++		if err != nil {
++			fyne.LogError("New Pixmap Error", err)
++			return
++		}
++		refresh = true
++	}
++
++	if refresh || d.canvas == nil {
++		d.drawDecoration(d.borderTop, d.borderTopGC, d.borderTopRight, d.borderTopRightGC, depth)
++	}
++
++	w, h := d.frame.size()
++	heightPix := x11.TitleHeight(x11.XWin(d.client))
++	rect := xproto.Rectangle{X: 0, Y: 0, Width: w, Height: h}
++	xproto.PolyFillRectangleChecked(d.client.wm.Conn(), xproto.Drawable(d.client.id), d.rectGC, []xproto.Rectangle{rect})
++
++	rightWidthPix := d.topRightPixelWidth()
++	minWidth := d.canvas.Content().MinSize().Width
++	widthPix := uint16(minWidth*d.canvas.Scale()) - rightWidthPix
++	xproto.CopyArea(d.client.wm.Conn(), xproto.Drawable(d.borderTop), xproto.Drawable(d.client.id), d.borderTopGC,
++		0, 0, 0, 0, widthPix, heightPix)
++	xproto.CopyArea(d.client.wm.Conn(), xproto.Drawable(d.borderTopRight), xproto.Drawable(d.client.id), d.borderTopRightGC,
++		0, 0, int16(w-rightWidthPix), 0, rightWidthPix, heightPix)
++}
++
++func (d *decoration) drawDecoration(pidTop xproto.Pixmap, drawTop xproto.Gcontext, pidTopRight xproto.Pixmap, drawTopRight xproto.Gcontext, depth byte) {
++	screen := fynedesk.Instance().Screens().ScreenForWindow(d.client)
++	scale := screen.CanvasScale()
++
++	canMaximize := true
++	if windowSizeFixed(d.client.wm.X(), d.client.win) ||
++		!windowSizeCanMaximize(d.client.wm.X(), d.client) {
++		canMaximize = false
++	}
++
++	if d.canvas == nil {
++		canvas := playground.NewSoftwareCanvas()
++		canvas.SetPadded(false)
++
++		canvas.SetContent(wm.NewBorder(d.client, d.client.Properties().Icon(), canMaximize))
++		d.canvas = canvas
++	} else {
++		b := d.canvas.Content().(*wm.Border)
++		b.SetTitle(d.client.props.Title())
++		b.SetMaximized(d.client.maximized)
++		b.SetIcon(d.client.Properties().Icon())
++		b.Refresh()
++	}
++	d.canvas.SetScale(scale)
++
++	heightPix := x11.TitleHeight(x11.XWin(d.client))
++	rightWidthPix := d.topRightPixelWidth()
++	minWidth := d.canvas.Content().MinSize().Width
++	winPixWidth := d.borderTopWidth + rightWidthPix
++	d.canvas.Resize(fyne.NewSize(float32(winPixWidth)/scale, wmTheme.TitleHeight))
++	widthPix := uint16(minWidth*d.canvas.Scale()) - rightWidthPix
++	img := d.canvas.Capture()
++
++	// Draw in pixel rows so we don't overflow count usable by PutImageChecked
++	for i := uint16(0); i < heightPix; i++ {
++		d.copyDecorationPixels(uint32(widthPix), 1, 0, uint32(i), img, pidTop, drawTop, depth)
++	}
++	d.copyDecorationPixels(uint32(rightWidthPix), uint32(heightPix), uint32(winPixWidth-rightWidthPix), 0, img, pidTopRight, drawTopRight, depth)
++}
++
++func (d *decoration) freePixmaps() {
++	if d.borderTop != 0 {
++		xproto.FreePixmap(d.client.wm.Conn(), d.borderTop)
++		d.borderTop = 0
++	}
++	if d.borderTopRight != 0 {
++		xproto.FreePixmap(d.client.wm.Conn(), d.borderTopRight)
++		d.borderTopRight = 0
++	}
++
++	if d.rectGC != 0 {
++		xproto.FreeGC(d.client.wm.Conn(), d.rectGC)
++		d.rectGC = 0
++	}
++	if d.borderTopGC != 0 {
++		xproto.FreeGC(d.client.wm.Conn(), d.borderTopGC)
++		d.borderTopGC = 0
++	}
++	if d.borderTopRightGC != 0 {
++		xproto.FreeGC(d.client.wm.Conn(), d.borderTopRightGC)
++		d.borderTopRightGC = 0
++	}
++}
++
++func (d *decoration) topRightPixelWidth() uint16 {
++	screen := fynedesk.Instance().Screens().ScreenForWindow(d.client)
++	scale := screen.CanvasScale()
++
++	iconPix := x11.ButtonWidth(x11.XWin(d.client))
++	iconAndBorderPix := iconPix + x11.BorderWidth(x11.XWin(d.client))*2 + uint16(theme.Padding()*scale)
++	if fynedesk.Instance().Settings().BorderButtonPosition() == "Right" {
++		iconAndBorderPix = 3*iconAndBorderPix - uint16(theme.Padding()*scale)
++	}
++
++	return iconAndBorderPix - uint16(theme.Padding()*scale)
++}
++
++func (d *decoration) invalidateCanvas() {
++	d.canvas = nil
++}
++
++func (d *decoration) findObjectAt(x, y int, matches func(fyne.CanvasObject) bool) fyne.CanvasObject {
++	if d.canvas == nil {
++		return nil
++	}
++	return wm.FindObjectAtPixelPositionMatching(x, y, d.canvas, matches)
++}
+diff --git a/internal/x11/win/frame.go b/internal/x11/win/frame.go
+index b43ba0f83d51da04e9c2814ca01dae639bfd3cee..4a42d5ded604b45fd5c43554161a94418bfa5ab8 100644
+--- a/internal/x11/win/frame.go
++++ b/internal/x11/win/frame.go
+@@ -4,16 +4,7 @@
+ package win
+ 
+ import (
+-	"context"
+-	"image"
+-	"math"
+-	"time"
+-
+ 	"fyne.io/fyne/v2"
+-	"fyne.io/fyne/v2/driver/desktop"
+-	"fyne.io/fyne/v2/test"
+-	"fyne.io/fyne/v2/theme"
+-	"fyne.io/fyne/v2/tools/playground"
+ 
+ 	"github.com/BurntSushi/xgb/xproto"
+ 	"github.com/BurntSushi/xgbutil/ewmh"
+@@ -26,32 +17,16 @@ import (
+ 	"fyshos.com/fynedesk/wm"
+ )
+ 
+-const unmaximizeThreshold = 84
+-
+ type frame struct {
+-	x, y                                int16
+-	width, height                       uint16
+-	childWidth, childHeight             uint16
+-	resizeStartWidth, resizeStartHeight uint16
+-	mouseX, mouseY                      int16
+-	moveX, moveY                        int16
+-	resizeStartX, resizeStartY          int16
+-	resizeBottom, resizeTop             bool
+-	resizeLeft, resizeRight             bool
+-	moveOnly, ignoreDrag                bool
+-
+-	borderTop, borderTopRight             xproto.Pixmap
+-	borderTopGC, borderTopRightGC, rectGC xproto.Gcontext
+-	borderTopWidth                        uint16
+-
+-	hovered    desktop.Hoverable
+-	clickCount int
+-	cancelFunc context.CancelFunc
++	x, y                    int16
++	width, height           uint16
++	childWidth, childHeight uint16
+ 
+ 	pendingGeometry chan *configureGeometry
+ 
+-	canvas test.WindowlessCanvas
+-	client *client
++	client      *client
++	decoration  *decoration
++	interaction *interaction
+ }
+ 
+ type configureGeometry struct {
+@@ -108,6 +83,8 @@ func newFrame(c *client) *frame {
+ 		}
+ 	}
+ 	framed := &frame{client: c}
++	framed.decoration = newDecoration(c, framed)
++	framed.interaction = newInteraction(c, framed)
+ 	framed.x = x
+ 	framed.y = y
+ 	values := []uint32{xproto.EventMaskStructureNotify | xproto.EventMaskSubstructureNotify |
+@@ -169,6 +146,27 @@ func newFrame(c *client) *frame {
+ 	return framed
+ }
+ 
++func (f *frame) pos() (int16, int16) {
++	return f.x, f.y
++}
++
++func (f *frame) size() (uint16, uint16) {
++	return f.width, f.height
++}
++
++func (f *frame) findMatchingObject(x, y int, matches func(fyne.CanvasObject) bool) fyne.CanvasObject {
++	if f.decoration == nil {
++		return nil
++	}
++	return f.decoration.findObjectAt(x, y, matches)
++}
++
++func (f *frame) invalidateCanvas() {
++	if f.decoration != nil {
++		f.decoration.invalidateCanvas()
++	}
++}
++
+ func (f *frame) addBorder() {
+ 	borderWidth := x11.BorderWidth(x11.XWin(f.client))
+ 	titleHeight := x11.TitleHeight(x11.XWin(f.client))
+@@ -206,20 +204,14 @@ func (f *frame) addBorder() {
+ 	f.notifyInnerGeometry()
+ }
+ 
+-func (f *frame) applyBorderlessTheme() {
+-	xproto.ConfigureWindow(f.client.wm.Conn(), f.client.win, xproto.ConfigWindowX|xproto.ConfigWindowY|
+-		xproto.ConfigWindowWidth|xproto.ConfigWindowHeight,
+-		[]uint32{uint32(0), uint32(0), uint32(f.width), uint32(f.height)})
+-}
+-
+ func (f *frame) applyTheme(force bool) {
+ 	if f.client.Fullscreened() || !f.client.Properties().Decorated() {
+-		f.applyBorderlessTheme()
++		f.decoration.applyBorderlessTheme()
+ 		return
+ 	}
+ 
+ 	f.checkScale()
+-	f.decorate(force)
++	f.decoration.decorate(force)
+ }
+ 
+ func (f *frame) checkScale() {
+@@ -263,163 +255,6 @@ func (f *frame) endConfigureLoop() {
+ 	}
+ }
+ 
+-func (f *frame) copyDecorationPixels(width, height, xoff, yoff uint32, img image.Image, pid xproto.Pixmap, draw xproto.Gcontext, depth byte) {
+-	// DATA is BGRx
+-	data := make([]byte, width*height*4)
+-	i := uint32(0)
+-	for y := uint32(0); y < height; y++ {
+-		for x := uint32(0); x < width; x++ {
+-			r, g, b, _ := img.At(int(xoff+x), int(yoff+y)).RGBA()
+-
+-			data[i] = byte(b)
+-			data[i+1] = byte(g)
+-			data[i+2] = byte(r)
+-			data[i+3] = 0xff
+-
+-			i += 4
+-		}
+-	}
+-	xproto.PutImage(f.client.wm.Conn(), xproto.ImageFormatZPixmap, xproto.Drawable(pid), draw,
+-		uint16(width), uint16(height), 0, int16(yoff), 0, depth, data)
+-}
+-
+-func (f *frame) createPixmaps(depth byte) error {
+-	heightPix := x11.TitleHeight(x11.XWin(f.client))
+-	rightWidthPix := f.topRightPixelWidth()
+-	f.borderTopWidth = f.width - rightWidthPix
+-
+-	pid, err := xproto.NewPixmapId(f.client.wm.Conn())
+-	if err != nil {
+-		return err
+-	}
+-
+-	xproto.CreatePixmap(f.client.wm.Conn(), depth, pid,
+-		xproto.Drawable(f.client.wm.X().Screen().Root), f.borderTopWidth, heightPix)
+-	f.borderTop = pid
+-
+-	pid, err = xproto.NewPixmapId(f.client.wm.Conn())
+-	if err != nil {
+-		return err
+-	}
+-
+-	xproto.CreatePixmap(f.client.wm.Conn(), depth, pid,
+-		xproto.Drawable(f.client.wm.X().Screen().Root), rightWidthPix, heightPix)
+-	f.borderTopRight = pid
+-
+-	backR, backG, backB, _ := theme.DisabledButtonColor().RGBA()
+-	if f.client.Focused() {
+-		backR, backG, backB, _ = theme.BackgroundColor().RGBA()
+-	}
+-	bgColor := uint32(uint8(backR))<<16 | uint32(uint8(backG))<<8 | uint32(uint8(backB))
+-
+-	f.rectGC, _ = xproto.NewGcontextId(f.client.wm.Conn())
+-	xproto.CreateGC(f.client.wm.Conn(), f.rectGC, xproto.Drawable(f.client.id), xproto.GcForeground, []uint32{bgColor})
+-
+-	f.borderTopGC, _ = xproto.NewGcontextId(f.client.wm.Conn())
+-	xproto.CreateGC(f.client.wm.Conn(), f.borderTopGC, xproto.Drawable(f.borderTop), xproto.GcForeground, []uint32{bgColor})
+-	f.borderTopRightGC, _ = xproto.NewGcontextId(f.client.wm.Conn())
+-	xproto.CreateGC(f.client.wm.Conn(), f.borderTopRightGC, xproto.Drawable(f.borderTopRight), xproto.GcForeground, []uint32{bgColor})
+-
+-	return nil
+-}
+-
+-func (f *frame) decorate(force bool) {
+-	depth := f.client.wm.X().Screen().RootDepth
+-	refresh := force
+-
+-	if refresh {
+-		f.freePixmaps()
+-	}
+-	if f.borderTop == 0 {
+-		err := f.createPixmaps(depth)
+-		if err != nil {
+-			fyne.LogError("New Pixmap Error", err)
+-			return
+-		}
+-		refresh = true
+-	}
+-
+-	if refresh || f.canvas == nil {
+-		f.drawDecoration(f.borderTop, f.borderTopGC, f.borderTopRight, f.borderTopRightGC, depth)
+-	}
+-
+-	heightPix := x11.TitleHeight(x11.XWin(f.client))
+-	rect := xproto.Rectangle{X: 0, Y: 0, Width: f.width, Height: f.height}
+-	xproto.PolyFillRectangleChecked(f.client.wm.Conn(), xproto.Drawable(f.client.id), f.rectGC, []xproto.Rectangle{rect})
+-
+-	rightWidthPix := f.topRightPixelWidth()
+-	minWidth := f.canvas.Content().MinSize().Width
+-	widthPix := uint16(minWidth*f.canvas.Scale()) - rightWidthPix
+-	xproto.CopyArea(f.client.wm.Conn(), xproto.Drawable(f.borderTop), xproto.Drawable(f.client.id), f.borderTopGC,
+-		0, 0, 0, 0, widthPix, heightPix)
+-	xproto.CopyArea(f.client.wm.Conn(), xproto.Drawable(f.borderTopRight), xproto.Drawable(f.client.id), f.borderTopRightGC,
+-		0, 0, int16(f.width-rightWidthPix), 0, rightWidthPix, heightPix)
+-}
+-
+-func (f *frame) drawDecoration(pidTop xproto.Pixmap, drawTop xproto.Gcontext, pidTopRight xproto.Pixmap, drawTopRight xproto.Gcontext, depth byte) {
+-	screen := fynedesk.Instance().Screens().ScreenForWindow(f.client)
+-	scale := screen.CanvasScale()
+-
+-	canMaximize := true
+-	if windowSizeFixed(f.client.wm.X(), f.client.win) ||
+-		!windowSizeCanMaximize(f.client.wm.X(), f.client) {
+-		canMaximize = false
+-	}
+-
+-	if f.canvas == nil {
+-		canvas := playground.NewSoftwareCanvas()
+-		canvas.SetPadded(false)
+-
+-		canvas.SetContent(wm.NewBorder(f.client, f.client.Properties().Icon(), canMaximize))
+-		f.canvas = canvas
+-	} else {
+-		b := f.canvas.Content().(*wm.Border)
+-		b.SetTitle(f.client.props.Title())
+-		b.SetMaximized(f.client.maximized)
+-		b.SetIcon(f.client.Properties().Icon())
+-		b.Refresh()
+-	}
+-	f.canvas.SetScale(scale)
+-
+-	heightPix := x11.TitleHeight(x11.XWin(f.client))
+-	rightWidthPix := f.topRightPixelWidth()
+-	minWidth := f.canvas.Content().MinSize().Width
+-	winPixWidth := f.borderTopWidth + rightWidthPix
+-	f.canvas.Resize(fyne.NewSize(float32(winPixWidth)/scale, wmTheme.TitleHeight))
+-	widthPix := uint16(minWidth*f.canvas.Scale()) - rightWidthPix
+-	img := f.canvas.Capture()
+-
+-	// Draw in pixel rows so we don't overflow count usable by PutImageChecked
+-	for i := uint16(0); i < heightPix; i++ {
+-		f.copyDecorationPixels(uint32(widthPix), 1, 0, uint32(i), img, pidTop, drawTop, depth)
+-	}
+-	f.copyDecorationPixels(uint32(rightWidthPix), uint32(heightPix), uint32(winPixWidth-rightWidthPix), 0, img, pidTopRight, drawTopRight, depth)
+-}
+-
+-func (f *frame) freePixmaps() {
+-	if f.borderTop != 0 {
+-		xproto.FreePixmap(f.client.wm.Conn(), f.borderTop)
+-		f.borderTop = 0
+-	}
+-	if f.borderTopRight != 0 {
+-		xproto.FreePixmap(f.client.wm.Conn(), f.borderTopRight)
+-		f.borderTopRight = 0
+-	}
+-
+-	if f.rectGC != 0 {
+-		xproto.FreeGC(f.client.wm.Conn(), f.rectGC)
+-		f.rectGC = 0
+-	}
+-	if f.borderTopGC != 0 {
+-		xproto.FreeGC(f.client.wm.Conn(), f.borderTopGC)
+-		f.borderTopGC = 0
+-	}
+-	if f.borderTopRightGC != 0 {
+-		xproto.FreeGC(f.client.wm.Conn(), f.borderTopRightGC)
+-		f.borderTopRightGC = 0
+-	}
+-}
+-
+ func (f *frame) getInnerWindowCoordinates(w uint16, h uint16) (uint32, uint32, uint32, uint32) {
+ 	if f.client.Fullscreened() || !f.client.Properties().Decorated() {
+ 		constrainW, constrainH := w, h
+@@ -502,279 +337,6 @@ func (f *frame) maximizeApply() {
+ 	f.applyTheme(true)
+ }
+ 
+-func (f *frame) mouseDrag(x, y int16) {
+-	if f.client.Fullscreened() || f.ignoreDrag {
+-		return
+-	}
+-	moveDeltaX := x - f.mouseX
+-	moveDeltaY := y - f.mouseY
+-	if moveDeltaX == 0 && moveDeltaY == 0 {
+-		return
+-	}
+-
+-	if f.client.Maximized() {
+-		screen := fynedesk.Instance().Screens().ScreenForWindow(f.client)
+-		scale := screen.CanvasScale()
+-		outsideBar := y > f.y+int16(x11.TitleHeight(x11.XWin(f.client))) || y < f.y
+-
+-		if outsideBar && uint16(math.Abs(float64(moveDeltaY))) >
+-			uint16(math.Ceil(float64(unmaximizeThreshold)*float64(scale))) {
+-			diff := f.mouseX - f.x
+-			scale := float64(f.client.restoreWidth) / float64(f.width)
+-
+-			f.client.restoreX = f.mouseX - int16(math.Ceil(float64(diff)*scale))
+-			f.client.restoreY = f.mouseY
+-
+-			f.moveX = f.client.restoreX
+-			f.moveY = f.client.restoreY
+-			f.client.Unmaximize()
+-		}
+-		return
+-	}
+-
+-	f.mouseX = x
+-	f.mouseY = y
+-
+-	if f.moveOnly {
+-		f.moveX += moveDeltaX
+-		f.moveY += moveDeltaY
+-		f.queueGeometry(f.moveX, f.moveY, f.width, f.height, false)
+-	}
+-	if f.resizeTop || f.resizeBottom || f.resizeLeft || f.resizeRight && !windowSizeFixed(f.client.wm.X(), f.client.win) {
+-		deltaX := x - f.resizeStartX
+-		deltaY := y - f.resizeStartY
+-		width := int16(f.resizeStartWidth)
+-		height := int16(f.resizeStartHeight)
+-		if f.resizeTop {
+-			f.moveY += moveDeltaY
+-			height -= deltaY
+-		} else if f.resizeBottom {
+-			height += deltaY
+-		}
+-		if f.resizeLeft {
+-			f.moveX += moveDeltaX
+-			width -= deltaX
+-		} else if f.resizeRight {
+-			width += deltaX
+-		}
+-
+-		// avoid uint underflow
+-		if width < 0 {
+-			width = 0
+-		}
+-		if height < 0 {
+-			height = 0
+-		}
+-		f.queueGeometry(f.moveX, f.moveY, uint16(width), uint16(height), false)
+-	}
+-}
+-
+-func (f *frame) mouseMotion(x, y int16) {
+-	relX := x - f.x
+-	relY := y - f.y
+-
+-	refresh := false
+-	obj := wm.FindObjectAtPixelPositionMatching(int(relX), int(relY), f.canvas,
+-		func(obj fyne.CanvasObject) bool {
+-			_, ok := obj.(desktop.Cursorable)
+-			if ok {
+-				return true
+-			}
+-
+-			_, ok = obj.(desktop.Hoverable)
+-			return ok
+-		},
+-	)
+-
+-	cursor := x11.DefaultCursor
+-	if obj != nil {
+-		if cur, ok := obj.(desktop.Cursorable); ok {
+-			if cur.Cursor() == wm.CloseCursor {
+-				cursor = x11.CloseCursor
+-			}
+-		}
+-		if hov, ok := obj.(desktop.Hoverable); ok {
+-			if f.hovered == nil {
+-				hov.MouseIn(&desktop.MouseEvent{})
+-				f.hovered = hov
+-				refresh = true
+-			} else if obj.(desktop.Hoverable) != f.hovered {
+-				f.hovered.MouseOut()
+-				hov.MouseIn(&desktop.MouseEvent{})
+-				f.hovered = hov
+-				refresh = true
+-			} else {
+-				hov.MouseMoved(&desktop.MouseEvent{})
+-			}
+-		}
+-	} else if !f.client.Maximized() && !f.client.Fullscreened() && !windowSizeFixed(f.client.wm.X(), f.client.win) {
+-		cursor = f.lookupResizeCursor(relX, relY)
+-	}
+-
+-	if obj == nil && f.hovered != nil {
+-		f.hovered.MouseOut()
+-		f.hovered = nil
+-		refresh = true
+-	}
+-	if refresh {
+-		f.applyTheme(true)
+-	}
+-	xproto.ChangeWindowAttributes(f.client.wm.Conn(), f.client.id, xproto.CwCursor,
+-		[]uint32{uint32(cursor)})
+-}
+-
+-func (f *frame) lookupResizeCursor(x, y int16) xproto.Cursor {
+-	cornerSize := x11.ButtonWidth(x11.XWin(f.client))
+-	edgeSize := x11.BorderWidth(x11.XWin(f.client))
+-
+-	if y < int16(x11.TitleHeight(x11.XWin(f.client))) { // top left or right
+-		if x < int16(edgeSize) {
+-			return x11.ResizeTopLeftCursor
+-		} else if x >= int16(f.width-edgeSize) {
+-			return x11.ResizeTopRightCursor
+-		}
+-	} else if y >= int16(f.height-cornerSize) { // bottom
+-		if x < int16(cornerSize) {
+-			return x11.ResizeBottomLeftCursor
+-		} else if x >= int16(f.width-cornerSize) {
+-			return x11.ResizeBottomRightCursor
+-		} else {
+-			return x11.ResizeBottomCursor
+-		}
+-	} else { // center (sides)
+-		if x < int16(cornerSize) {
+-			return x11.ResizeLeftCursor
+-		} else if x >= int16(f.width-cornerSize) {
+-			return x11.ResizeRightCursor
+-		}
+-	}
+-
+-	return x11.DefaultCursor
+-}
+-
+-func (f *frame) mousePress(x, y int16, b xproto.Button) {
+-	if b != xproto.ButtonIndex1 {
+-		return
+-	}
+-	if !f.client.Focused() {
+-		f.client.RaiseToTop()
+-		f.client.Focus()
+-		return
+-	}
+-	if f.client.Fullscreened() {
+-		return
+-	}
+-
+-	relX := x - f.x
+-	relY := y - f.y
+-	obj := wm.FindObjectAtPixelPositionMatching(int(relX), int(relY), f.canvas,
+-		func(obj fyne.CanvasObject) bool {
+-			_, ok := obj.(fyne.Tappable)
+-			return ok
+-		},
+-	)
+-	if obj != nil {
+-		f.ignoreDrag = true
+-		return
+-	}
+-
+-	buttonWidth := x11.ButtonWidth(x11.XWin(f.client))
+-	borderWidth := x11.BorderWidth(x11.XWin(f.client))
+-	titleHeight := x11.TitleHeight(x11.XWin(f.client))
+-	f.mouseX = x
+-	f.mouseY = y
+-	f.resizeStartX = x
+-	f.resizeStartY = y
+-	f.moveX = f.x
+-	f.moveY = f.y
+-	f.resizeStartWidth = f.width
+-	f.resizeStartHeight = f.height
+-	f.resizeBottom = false
+-	f.resizeLeft = false
+-	f.resizeRight = false
+-	f.resizeTop = false
+-	f.moveOnly = false
+-
+-	if relY < int16(titleHeight) && relX >= int16(borderWidth) && relX < int16(f.width-borderWidth) {
+-		f.moveOnly = true
+-	} else if !windowSizeFixed(f.client.wm.X(), f.client.win) && !f.client.Maximized() {
+-		if relY < int16(titleHeight) {
+-			if relX < int16(borderWidth) {
+-				f.resizeLeft = true
+-				f.resizeTop = true
+-			} else if relX >= int16(f.width-borderWidth) {
+-				f.resizeRight = true
+-				f.resizeTop = true
+-			}
+-		} else {
+-			if relY >= int16(f.height-buttonWidth) {
+-				f.resizeBottom = true
+-			}
+-			if relX < int16(buttonWidth) {
+-				f.resizeLeft = true
+-			} else if relX >= int16(f.width-buttonWidth) {
+-				f.resizeRight = true
+-			}
+-		}
+-	}
+-
+-	f.client.wm.RaiseToTop(f.client)
+-}
+-
+-func (f *frame) mouseRelease(x, y int16, b xproto.Button) {
+-	f.ignoreDrag = false
+-	if b != xproto.ButtonIndex1 {
+-		return
+-	}
+-	titleHeight := x11.TitleHeight(x11.XWin(f.client))
+-
+-	relX := x - f.x
+-	relY := y - f.y
+-	barYMax := int16(titleHeight)
+-	if relY > barYMax {
+-		return
+-	}
+-	f.clickCount++
+-
+-	if f.cancelFunc != nil {
+-		f.cancelFunc()
+-		return
+-	}
+-	go f.mouseReleaseWaitForDoubleClick(int(relX), int(relY))
+-}
+-
+-func (f *frame) mouseReleaseWaitForDoubleClick(relX int, relY int) {
+-	var ctx context.Context
+-	ctx, f.cancelFunc = context.WithDeadline(context.TODO(), time.Now().Add(time.Millisecond*300))
+-	defer f.cancelFunc()
+-
+-	<-ctx.Done()
+-	if f.clickCount == 2 {
+-		obj := wm.FindObjectAtPixelPositionMatching(relX, relY, f.canvas,
+-			func(obj fyne.CanvasObject) bool {
+-				_, ok := obj.(fyne.DoubleTappable)
+-				return ok
+-			},
+-		)
+-		if obj != nil {
+-			obj.(fyne.DoubleTappable).DoubleTapped(&fyne.PointEvent{})
+-		}
+-	} else {
+-		obj := wm.FindObjectAtPixelPositionMatching(relX, relY, f.canvas,
+-			func(obj fyne.CanvasObject) bool {
+-				_, ok := obj.(fyne.Tappable)
+-				return ok
+-			},
+-		)
+-		if obj != nil {
+-			obj.(fyne.Tappable).Tapped(&fyne.PointEvent{})
+-		}
+-	}
+-
+-	f.clickCount = 0
+-	f.cancelFunc = nil
+-}
+-
+ // Notify the child window that it's geometry has changed to update menu positions etc.
+ // This should be used sparingly as it can impact performance on the child window.
+ func (f *frame) notifyInnerGeometry() {
+@@ -825,19 +387,6 @@ func (f *frame) show() {
+ 	c.Focus()
+ }
+ 
+-func (f *frame) topRightPixelWidth() uint16 {
+-	screen := fynedesk.Instance().Screens().ScreenForWindow(f.client)
+-	scale := screen.CanvasScale()
+-
+-	iconPix := x11.ButtonWidth(x11.XWin(f.client))
+-	iconAndBorderPix := iconPix + x11.BorderWidth(x11.XWin(f.client))*2 + uint16(theme.Padding()*scale)
+-	if fynedesk.Instance().Settings().BorderButtonPosition() == "Right" {
+-		iconAndBorderPix = 3*iconAndBorderPix - uint16(theme.Padding()*scale)
+-	}
+-
+-	return iconAndBorderPix - uint16(theme.Padding()*scale)
+-}
+-
+ func (f *frame) unmaximizeApply() {
+ 	if windowSizeFixed(f.client.wm.X(), f.client.win) ||
+ 		!windowSizeCanMaximize(f.client.wm.X(), f.client) {
+diff --git a/internal/x11/win/interaction.go b/internal/x11/win/interaction.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a2f3e8e4a1e5e7b504a36b48d983c19e45dc609
+--- /dev/null
++++ b/internal/x11/win/interaction.go
+@@ -0,0 +1,355 @@
++//go:build linux || openbsd || freebsd || netbsd
++// +build linux openbsd freebsd netbsd
++
++package win
++
++import (
++	"context"
++	"math"
++	"time"
++
++	"fyne.io/fyne/v2"
++	"fyne.io/fyne/v2/driver/desktop"
++
++	"github.com/BurntSushi/xgb/xproto"
++
++	"fyshos.com/fynedesk"
++	"fyshos.com/fynedesk/internal/x11"
++	"fyshos.com/fynedesk/wm"
++)
++
++const unmaximizeThreshold = 84
++
++type interaction struct {
++	client *client
++	frame  *frame
++
++	mouseX, mouseY                      int16
++	moveX, moveY                        int16
++	resizeStartX, resizeStartY          int16
++	resizeStartWidth, resizeStartHeight uint16
++	resizeBottom, resizeTop             bool
++	resizeLeft, resizeRight             bool
++	moveOnly, ignoreDrag                bool
++
++	hovered    desktop.Hoverable
++	clickCount int
++	cancelFunc context.CancelFunc
++}
++
++func newInteraction(c *client, f *frame) *interaction {
++	return &interaction{
++		client: c,
++		frame:  f,
++	}
++}
++
++func classifyPress(relX, relY int16, width, height, titleHeight, borderWidth, buttonWidth uint16, canResize func() bool) (moveOnly, top, bottom, left, right bool) {
++	if relY < int16(titleHeight) && relX >= int16(borderWidth) && relX < int16(width-borderWidth) {
++		moveOnly = true
++	} else if canResize != nil && canResize() {
++		if relY < int16(titleHeight) {
++			if relX < int16(borderWidth) {
++				left = true
++				top = true
++			} else if relX >= int16(width-borderWidth) {
++				right = true
++				top = true
++			}
++		} else {
++			if relY >= int16(height-buttonWidth) {
++				bottom = true
++			}
++			if relX < int16(buttonWidth) {
++				left = true
++			} else if relX >= int16(width-buttonWidth) {
++				right = true
++			}
++		}
++	}
++	return
++}
++
++func shouldUnmaximize(y, frameY int16, titleHeight uint16, moveDeltaY int16, scale float32) bool {
++	outsideBar := y > frameY+int16(titleHeight) || y < frameY
++	threshold := uint16(math.Ceil(float64(unmaximizeThreshold) * float64(scale)))
++	return outsideBar && uint16(math.Abs(float64(moveDeltaY))) > threshold
++}
++
++func calculateRestoreCoordinates(mouseX, mouseY, frameX int16, frameWidth, restoreWidth uint16) (int16, int16) {
++	diff := mouseX - frameX
++	scale := float64(restoreWidth) / float64(frameWidth)
++	restoreX := mouseX - int16(math.Ceil(float64(diff)*scale))
++	restoreY := mouseY
++	return restoreX, restoreY
++}
++
++func decideResizeCursor(x, y int16, width, height, titleHeight, edgeSize, cornerSize uint16) xproto.Cursor {
++	if y < int16(titleHeight) { // top left or right
++		if x < int16(edgeSize) {
++			return x11.ResizeTopLeftCursor
++		} else if x >= int16(width-edgeSize) {
++			return x11.ResizeTopRightCursor
++		}
++	} else if y >= int16(height-cornerSize) { // bottom
++		if x < int16(cornerSize) {
++			return x11.ResizeBottomLeftCursor
++		} else if x >= int16(width-cornerSize) {
++			return x11.ResizeBottomRightCursor
++		} else {
++			return x11.ResizeBottomCursor
++		}
++	} else { // center (sides)
++		if x < int16(cornerSize) {
++			return x11.ResizeLeftCursor
++		} else if x >= int16(width-cornerSize) {
++			return x11.ResizeRightCursor
++		}
++	}
++
++	return x11.DefaultCursor
++}
++
++func (i *interaction) lookupResizeCursor(x, y int16) xproto.Cursor {
++	cornerSize := x11.ButtonWidth(x11.XWin(i.client))
++	edgeSize := x11.BorderWidth(x11.XWin(i.client))
++	titleHeight := x11.TitleHeight(x11.XWin(i.client))
++	w, h := i.frame.size()
++
++	return decideResizeCursor(x, y, w, h, titleHeight, edgeSize, cornerSize)
++}
++
++func (i *interaction) mouseDrag(x, y int16) {
++	if i.client.Fullscreened() || i.ignoreDrag {
++		return
++	}
++	moveDeltaX := x - i.mouseX
++	moveDeltaY := y - i.mouseY
++	if moveDeltaX == 0 && moveDeltaY == 0 {
++		return
++	}
++
++	frameX, frameY := i.frame.pos()
++	frameWidth, frameHeight := i.frame.size()
++
++	if i.client.Maximized() {
++		screen := fynedesk.Instance().Screens().ScreenForWindow(i.client)
++		scale := screen.CanvasScale()
++		titleHeight := uint16(x11.TitleHeight(x11.XWin(i.client)))
++
++		if shouldUnmaximize(y, frameY, titleHeight, moveDeltaY, scale) {
++			restoreX, restoreY := calculateRestoreCoordinates(i.mouseX, i.mouseY, frameX, frameWidth, i.client.restoreWidth)
++
++			i.client.restoreX = restoreX
++			i.client.restoreY = restoreY
++
++			i.moveX = i.client.restoreX
++			i.moveY = i.client.restoreY
++			i.client.Unmaximize()
++		}
++		return
++	}
++
++	i.mouseX = x
++	i.mouseY = y
++
++	if i.moveOnly {
++		i.moveX += moveDeltaX
++		i.moveY += moveDeltaY
++		i.frame.queueGeometry(i.moveX, i.moveY, frameWidth, frameHeight, false)
++	}
++	if i.resizeTop || i.resizeBottom || i.resizeLeft || i.resizeRight && !windowSizeFixed(i.client.wm.X(), i.client.win) {
++		deltaX := x - i.resizeStartX
++		deltaY := y - i.resizeStartY
++		width := int16(i.resizeStartWidth)
++		height := int16(i.resizeStartHeight)
++		if i.resizeTop {
++			i.moveY += moveDeltaY
++			height -= deltaY
++		} else if i.resizeBottom {
++			height += deltaY
++		}
++		if i.resizeLeft {
++			i.moveX += moveDeltaX
++			width -= deltaX
++		} else if i.resizeRight {
++			width += deltaX
++		}
++
++		// avoid uint underflow
++		if width < 0 {
++			width = 0
++		}
++		if height < 0 {
++			height = 0
++		}
++		i.frame.queueGeometry(i.moveX, i.moveY, uint16(width), uint16(height), false)
++	}
++}
++
++func (i *interaction) mouseMotion(x, y int16) {
++	frameX, frameY := i.frame.pos()
++	relX := x - frameX
++	relY := y - frameY
++
++	refresh := false
++	obj := i.frame.findMatchingObject(int(relX), int(relY),
++		func(obj fyne.CanvasObject) bool {
++			_, ok := obj.(desktop.Cursorable)
++			if ok {
++				return true
++			}
++
++			_, ok = obj.(desktop.Hoverable)
++			return ok
++		},
++	)
++
++	cursor := x11.DefaultCursor
++	if obj != nil {
++		if cur, ok := obj.(desktop.Cursorable); ok {
++			if cur.Cursor() == wm.CloseCursor {
++				cursor = x11.CloseCursor
++			}
++		}
++		if hov, ok := obj.(desktop.Hoverable); ok {
++			if i.hovered == nil {
++				hov.MouseIn(&desktop.MouseEvent{})
++				i.hovered = hov
++				refresh = true
++			} else if obj.(desktop.Hoverable) != i.hovered {
++				i.hovered.MouseOut()
++				hov.MouseIn(&desktop.MouseEvent{})
++				i.hovered = hov
++				refresh = true
++			} else {
++				hov.MouseMoved(&desktop.MouseEvent{})
++			}
++		}
++	} else if !i.client.Maximized() && !i.client.Fullscreened() && !windowSizeFixed(i.client.wm.X(), i.client.win) {
++		cursor = i.lookupResizeCursor(relX, relY)
++	}
++
++	if obj == nil && i.hovered != nil {
++		i.hovered.MouseOut()
++		i.hovered = nil
++		refresh = true
++	}
++	if refresh {
++		// hover refresh omitted
++	}
++	xproto.ChangeWindowAttributes(i.client.wm.Conn(), i.client.id, xproto.CwCursor,
++		[]uint32{uint32(cursor)})
++}
++
++func (i *interaction) mousePress(x, y int16, b xproto.Button) {
++	if b != xproto.ButtonIndex1 {
++		return
++	}
++	if !i.client.Focused() {
++		i.client.RaiseToTop()
++		i.client.Focus()
++		return
++	}
++	if i.client.Fullscreened() {
++		return
++	}
++
++	frameX, frameY := i.frame.pos()
++	relX := x - frameX
++	relY := y - frameY
++	obj := i.frame.findMatchingObject(int(relX), int(relY),
++		func(obj fyne.CanvasObject) bool {
++			_, ok := obj.(fyne.Tappable)
++			return ok
++		},
++	)
++	if obj != nil {
++		i.ignoreDrag = true
++		return
++	}
++
++	buttonWidth := x11.ButtonWidth(x11.XWin(i.client))
++	borderWidth := x11.BorderWidth(x11.XWin(i.client))
++	titleHeight := x11.TitleHeight(x11.XWin(i.client))
++	width, height := i.frame.size()
++
++	i.mouseX = x
++	i.mouseY = y
++	i.resizeStartX = x
++	i.resizeStartY = y
++	i.moveX = frameX
++	i.moveY = frameY
++	i.resizeStartWidth = width
++	i.resizeStartHeight = height
++	i.resizeBottom = false
++	i.resizeLeft = false
++	i.resizeRight = false
++	i.resizeTop = false
++	i.moveOnly = false
++
++	canResize := func() bool {
++		return !windowSizeFixed(i.client.wm.X(), i.client.win) && !i.client.Maximized()
++	}
++
++	i.moveOnly, i.resizeTop, i.resizeBottom, i.resizeLeft, i.resizeRight = classifyPress(
++		relX, relY, width, height, titleHeight, borderWidth, buttonWidth, canResize,
++	)
++
++	i.client.wm.RaiseToTop(i.client)
++}
++
++func (i *interaction) mouseRelease(x, y int16, b xproto.Button) {
++	i.ignoreDrag = false
++	if b != xproto.ButtonIndex1 {
++		return
++	}
++	titleHeight := x11.TitleHeight(x11.XWin(i.client))
++
++	frameX, frameY := i.frame.pos()
++	relX := x - frameX
++	relY := y - frameY
++	barYMax := int16(titleHeight)
++	if relY > barYMax {
++		return
++	}
++	i.clickCount++
++
++	if i.cancelFunc != nil {
++		i.cancelFunc()
++		return
++	}
++	go i.mouseReleaseWaitForDoubleClick(int(relX), int(relY))
++}
++
++func (i *interaction) mouseReleaseWaitForDoubleClick(relX int, relY int) {
++	var ctx context.Context
++	ctx, i.cancelFunc = context.WithDeadline(context.TODO(), time.Now().Add(time.Millisecond*300))
++	defer i.cancelFunc()
++
++	<-ctx.Done()
++	if i.clickCount == 2 {
++		obj := i.frame.findMatchingObject(relX, relY,
++			func(obj fyne.CanvasObject) bool {
++				_, ok := obj.(fyne.DoubleTappable)
++				return ok
++			},
++		)
++		if obj != nil {
++			obj.(fyne.DoubleTappable).DoubleTapped(&fyne.PointEvent{})
++		}
++	} else {
++		obj := i.frame.findMatchingObject(relX, relY,
++			func(obj fyne.CanvasObject) bool {
++				_, ok := obj.(fyne.Tappable)
++				return ok
++			},
++		)
++		if obj != nil {
++			obj.(fyne.Tappable).Tapped(&fyne.PointEvent{})
++		}
++	}
++
++	i.clickCount = 0
++	i.cancelFunc = nil
++}
+diff --git a/internal/x11/win/interaction_test.go b/internal/x11/win/interaction_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..ebd1ac583de1806430a68be8199812587985c429
+--- /dev/null
++++ b/internal/x11/win/interaction_test.go
+@@ -0,0 +1,483 @@
++//go:build linux || openbsd || freebsd || netbsd
++// +build linux openbsd freebsd netbsd
++
++package win
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++)
++
++func TestClassifyPress_TitleBarCenter_MoveOnly(t *testing.T) {
++	width := uint16(200)
++	height := uint16(150)
++	titleHeight := uint16(30)
++	borderWidth := uint16(5)
++	buttonWidth := uint16(10)
++
++	alwaysCanResize := func() bool { return true }
++
++	tests := []struct {
++		name         string
++		relX         int16
++		relY         int16
++		wantMoveOnly bool
++		wantTop      bool
++		wantBottom   bool
++		wantLeft     bool
++		wantRight    bool
++	}{
++		{
++			name:         "center of title bar",
++			relX:         100,
++			relY:         15,
++			wantMoveOnly: true,
++		},
++		{
++			name:         "left boundary of center title bar (relX == borderWidth)",
++			relX:         int16(borderWidth),
++			relY:         15,
++			wantMoveOnly: true,
++		},
++		{
++			name:         "right boundary of center title bar (relX == width - borderWidth - 1)",
++			relX:         int16(width - borderWidth - 1),
++			relY:         15,
++			wantMoveOnly: true,
++		},
++		{
++			name:         "relX == width - borderWidth switches to top right resize",
++			relX:         int16(width - borderWidth),
++			relY:         15,
++			wantMoveOnly: false,
++			wantTop:      true,
++			wantRight:    true,
++		},
++		{
++			name:         "bottom boundary of title bar (relY == titleHeight - 1)",
++			relX:         100,
++			relY:         int16(titleHeight - 1),
++			wantMoveOnly: true,
++		},
++		{
++			name:         "relY == titleHeight enters window body",
++			relX:         100,
++			relY:         int16(titleHeight),
++			wantMoveOnly: false,
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			moveOnly, top, bottom, left, right := classifyPress(
++				tt.relX, tt.relY, width, height, titleHeight, borderWidth, buttonWidth, alwaysCanResize,
++			)
++			assert.Equal(t, tt.wantMoveOnly, moveOnly, "moveOnly mismatch")
++			assert.Equal(t, tt.wantTop, top, "top mismatch")
++			assert.Equal(t, tt.wantBottom, bottom, "bottom mismatch")
++			assert.Equal(t, tt.wantLeft, left, "left mismatch")
++			assert.Equal(t, tt.wantRight, right, "right mismatch")
++		})
++	}
++}
++
++func TestClassifyPress_EdgesAndCorners_ResizeFlags(t *testing.T) {
++	width := uint16(200)
++	height := uint16(150)
++	titleHeight := uint16(30)
++	borderWidth := uint16(5)
++	buttonWidth := uint16(10)
++
++	canResize := func() bool { return true }
++
++	tests := []struct {
++		name         string
++		relX         int16
++		relY         int16
++		wantMoveOnly bool
++		wantTop      bool
++		wantBottom   bool
++		wantLeft     bool
++		wantRight    bool
++	}{
++		{
++			name:     "top-left corner strip in title bar (relX < borderWidth)",
++			relX:     int16(borderWidth - 1),
++			relY:     10,
++			wantTop:  true,
++			wantLeft: true,
++		},
++		{
++			name:      "top-right corner strip in title bar (relX >= width - borderWidth)",
++			relX:      int16(width - borderWidth),
++			relY:      10,
++			wantTop:   true,
++			wantRight: true,
++		},
++		{
++			name:     "left edge strip below title bar (relX < buttonWidth)",
++			relX:     int16(buttonWidth - 1),
++			relY:     50,
++			wantLeft: true,
++		},
++		{
++			name:      "right edge strip below title bar (relX >= width - buttonWidth)",
++			relX:      int16(width - buttonWidth),
++			relY:      50,
++			wantRight: true,
++		},
++		{
++			name:       "bottom edge strip center (relY >= height - buttonWidth)",
++			relX:       100,
++			relY:       int16(height - buttonWidth),
++			wantBottom: true,
++		},
++		{
++			name:       "bottom-left corner combines bottom and left",
++			relX:       int16(buttonWidth - 1),
++			relY:       int16(height - buttonWidth),
++			wantBottom: true,
++			wantLeft:   true,
++		},
++		{
++			name:       "bottom-right corner combines bottom and right",
++			relX:       int16(width - buttonWidth),
++			relY:       int16(height - buttonWidth),
++			wantBottom: true,
++			wantRight:  true,
++		},
++		{
++			name: "boundary relX == buttonWidth has no horizontal resize",
++			relX: int16(buttonWidth),
++			relY: 50,
++		},
++		{
++			name:       "boundary relY == height - buttonWidth has bottom resize",
++			relX:       100,
++			relY:       int16(height - buttonWidth),
++			wantBottom: true,
++		},
++		{
++			name: "boundary relY == height - buttonWidth - 1 has no bottom resize",
++			relX: 100,
++			relY: int16(height - buttonWidth - 1),
++		},
++		{
++			name: "window center below title has no flags",
++			relX: 100,
++			relY: 70,
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			moveOnly, top, bottom, left, right := classifyPress(
++				tt.relX, tt.relY, width, height, titleHeight, borderWidth, buttonWidth, canResize,
++			)
++			assert.Equal(t, tt.wantMoveOnly, moveOnly, "moveOnly mismatch")
++			assert.Equal(t, tt.wantTop, top, "top mismatch")
++			assert.Equal(t, tt.wantBottom, bottom, "bottom mismatch")
++			assert.Equal(t, tt.wantLeft, left, "left mismatch")
++			assert.Equal(t, tt.wantRight, right, "right mismatch")
++		})
++	}
++}
++
++func TestClassifyPress_FixedOrMaximized_DisablesResize(t *testing.T) {
++	width := uint16(200)
++	height := uint16(150)
++	titleHeight := uint16(30)
++	borderWidth := uint16(5)
++	buttonWidth := uint16(10)
++
++	cannotResize := func() bool { return false }
++
++	tests := []struct {
++		name         string
++		relX         int16
++		relY         int16
++		wantMoveOnly bool
++	}{
++		{
++			name:         "title bar center still selects moveOnly",
++			relX:         100,
++			relY:         15,
++			wantMoveOnly: true,
++		},
++		{
++			name: "top-left corner selects no flags",
++			relX: 2,
++			relY: 10,
++		},
++		{
++			name: "top-right corner selects no flags",
++			relX: 198,
++			relY: 10,
++		},
++		{
++			name: "left edge selects no flags",
++			relX: 5,
++			relY: 50,
++		},
++		{
++			name: "right edge selects no flags",
++			relX: 195,
++			relY: 50,
++		},
++		{
++			name: "bottom edge selects no flags",
++			relX: 100,
++			relY: 145,
++		},
++		{
++			name: "bottom-left corner selects no flags",
++			relX: 5,
++			relY: 145,
++		},
++		{
++			name: "bottom-right corner selects no flags",
++			relX: 195,
++			relY: 145,
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			moveOnly, top, bottom, left, right := classifyPress(
++				tt.relX, tt.relY, width, height, titleHeight, borderWidth, buttonWidth, cannotResize,
++			)
++			assert.Equal(t, tt.wantMoveOnly, moveOnly, "moveOnly mismatch")
++			assert.False(t, top, "top must be false")
++			assert.False(t, bottom, "bottom must be false")
++			assert.False(t, left, "left must be false")
++			assert.False(t, right, "right must be false")
++		})
++	}
++}
++
++func TestClassifyPress_TitleBarCenter_DoesNotQueryCanResize(t *testing.T) {
++	width := uint16(200)
++	height := uint16(150)
++	titleHeight := uint16(30)
++	borderWidth := uint16(5)
++	buttonWidth := uint16(10)
++
++	t.Run("title bar center does not query canResize", func(t *testing.T) {
++		queried := false
++		canResize := func() bool {
++			queried = true
++			return true
++		}
++
++		moveOnly, top, bottom, left, right := classifyPress(
++			100, 15, width, height, titleHeight, borderWidth, buttonWidth, canResize,
++		)
++		assert.True(t, moveOnly)
++		assert.False(t, top)
++		assert.False(t, bottom)
++		assert.False(t, left)
++		assert.False(t, right)
++		assert.False(t, queried, "canResize must not be queried for title bar center")
++	})
++
++	t.Run("outside title bar center queries canResize", func(t *testing.T) {
++		queried := false
++		canResize := func() bool {
++			queried = true
++			return true
++		}
++
++		classifyPress(
++			2, 10, width, height, titleHeight, borderWidth, buttonWidth, canResize,
++		)
++		assert.True(t, queried, "canResize must be queried when outside title bar center")
++	})
++}
++
++func TestShouldUnmaximize_ThresholdBoundaries(t *testing.T) {
++	frameY := int16(100)
++	titleHeight := uint16(30)
++	outsideY := int16(150)
++
++	tests := []struct {
++		name       string
++		scale      float32
++		moveDeltaY int16
++		want       bool
++	}{
++		{
++			name:       "scale=1 threshold 84 not unmaximized (delta=84)",
++			scale:      1.0,
++			moveDeltaY: 84,
++			want:       false,
++		},
++		{
++			name:       "scale=1 threshold 84 unmaximized (delta=85)",
++			scale:      1.0,
++			moveDeltaY: 85,
++			want:       true,
++		},
++		{
++			name:       "scale=1 negative delta not unmaximized (delta=-84)",
++			scale:      1.0,
++			moveDeltaY: -84,
++			want:       false,
++		},
++		{
++			name:       "scale=1 negative delta unmaximized (delta=-85)",
++			scale:      1.0,
++			moveDeltaY: -85,
++			want:       true,
++		},
++		{
++			name:       "scale=2 threshold 168 not unmaximized (delta=168)",
++			scale:      2.0,
++			moveDeltaY: 168,
++			want:       false,
++		},
++		{
++			name:       "scale=2 threshold 168 unmaximized (delta=169)",
++			scale:      2.0,
++			moveDeltaY: 169,
++			want:       true,
++		},
++		{
++			name:       "scale=2 negative delta not unmaximized (delta=-168)",
++			scale:      2.0,
++			moveDeltaY: -168,
++			want:       false,
++		},
++		{
++			name:       "scale=2 negative delta unmaximized (delta=-169)",
++			scale:      2.0,
++			moveDeltaY: -169,
++			want:       true,
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got := shouldUnmaximize(outsideY, frameY, titleHeight, tt.moveDeltaY, tt.scale)
++			assert.Equal(t, tt.want, got)
++		})
++	}
++}
++
++func TestShouldUnmaximize_TitleBarBoundaries(t *testing.T) {
++	frameY := int16(100)
++	titleHeight := uint16(30)
++	largeDeltaY := int16(200)
++	scale := float32(1.0)
++
++	tests := []struct {
++		name string
++		y    int16
++		want bool
++	}{
++		{
++			name: "top of title bar (y == frameY) is inside bar",
++			y:    frameY,
++			want: false,
++		},
++		{
++			name: "middle of title bar is inside bar",
++			y:    frameY + 15,
++			want: false,
++		},
++		{
++			name: "bottom of title bar (y == frameY + titleHeight) is inside bar",
++			y:    frameY + int16(titleHeight),
++			want: false,
++		},
++		{
++			name: "just above title bar (y == frameY - 1) is outside bar",
++			y:    frameY - 1,
++			want: true,
++		},
++		{
++			name: "just below title bar (y == frameY + titleHeight + 1) is outside bar",
++			y:    frameY + int16(titleHeight) + 1,
++			want: true,
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got := shouldUnmaximize(tt.y, frameY, titleHeight, largeDeltaY, scale)
++			assert.Equal(t, tt.want, got)
++		})
++	}
++}
++
++func TestCalculateRestoreCoordinates(t *testing.T) {
++	tests := []struct {
++		name         string
++		mouseX       int16
++		mouseY       int16
++		frameX       int16
++		frameWidth   uint16
++		restoreWidth uint16
++		wantX        int16
++		wantY        int16
++	}{
++		{
++			name:         "proportional restore coordinates 50% width",
++			mouseX:       500,
++			mouseY:       200,
++			frameX:       100,
++			frameWidth:   1000,
++			restoreWidth: 500,
++			wantX:        300,
++			wantY:        200,
++		},
++		{
++			name:         "pointer to the left of frame (mouseX < frameX)",
++			mouseX:       50,
++			mouseY:       200,
++			frameX:       100,
++			frameWidth:   1000,
++			restoreWidth: 500,
++			wantX:        75,
++			wantY:        200,
++		},
++		{
++			name:         "fractional ceil upward rounding",
++			mouseX:       300,
++			mouseY:       150,
++			frameX:       100,
++			frameWidth:   1000,
++			restoreWidth: 333,
++			wantX:        233,
++			wantY:        150,
++		},
++		{
++			name:         "restoreWidth == 0 keeps pointer horizontal position",
++			mouseX:       300,
++			mouseY:       150,
++			frameX:       100,
++			frameWidth:   1000,
++			restoreWidth: 0,
++			wantX:        300,
++			wantY:        150,
++		},
++		{
++			name:         "pointer at frameX",
++			mouseX:       100,
++			mouseY:       150,
++			frameX:       100,
++			frameWidth:   1000,
++			restoreWidth: 500,
++			wantX:        100,
++			wantY:        150,
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			gotX, gotY := calculateRestoreCoordinates(tt.mouseX, tt.mouseY, tt.frameX, tt.frameWidth, tt.restoreWidth)
++			assert.Equal(t, tt.wantX, gotX, "restoreX mismatch")
++			assert.Equal(t, tt.wantY, gotY, "restoreY mismatch")
++		})
++	}
++}

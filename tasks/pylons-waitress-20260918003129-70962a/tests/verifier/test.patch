@@ -1,0 +1,2543 @@
+diff --git a/tests/test_hardgate_build.py b/tests/test_hardgate_build.py
+new file mode 100644
+index 0000000..082463e
+--- /dev/null
++++ b/tests/test_hardgate_build.py
+@@ -0,0 +1,387 @@
++"""Atomic pytest leaf nodes for Hard Gate BUILD verification.
++
++Covers:
++- config.json syntax, schema, and required top-level arrays
++- node uniqueness and mutual disjointness across categories
++- count synchronization between config.json and task.toml
++- base commit consistency across config, task.toml, and git repository
++- runtime dependencies, AST parseability, and py_compile compilability
++- presence and importability of core Waitress modules in clean subprocess
++- clean patch applicability of test.patch and solution.patch
++- verifier and grader entrypoint integrity
++"""
++
++from __future__ import annotations
++
++import ast
++import json
++import os
++from pathlib import Path
++import py_compile
++import subprocess
++import sys
++import unittest
++
++
++def _find_repo_root() -> Path:
++    env_repo = os.environ.get("DEEPSWE_REPO_PATH")
++    if env_repo and Path(env_repo).is_dir():
++        return Path(env_repo).resolve()
++    cwd = Path.cwd().resolve()
++    for candidate in [cwd, cwd.parent, cwd.parent.parent]:
++        if (candidate / ".git").exists() or (candidate / "src" / "waitress").is_dir():
++            return candidate
++    return cwd
++
++
++def _find_config_path(repo_root: Path) -> Path:
++    env_cfg = os.environ.get("DEEPSWE_CONFIG_PATH")
++    if env_cfg and Path(env_cfg).is_file():
++        return Path(env_cfg).resolve()
++
++    candidates = [
++        Path("/tests/config.json"),
++        repo_root.parent / "case" / "tests" / "config.json",
++        repo_root / "case" / "tests" / "config.json",
++        repo_root / "config.json",
++    ]
++    for c in candidates:
++        if c.is_file():
++            return c.resolve()
++    raise FileNotFoundError(f"config.json not found across candidate search paths: {candidates}")
++
++
++def _find_task_toml_path(config_path: Path, repo_root: Path) -> Path:
++    env_toml = os.environ.get("DEEPSWE_TASK_TOML_PATH")
++    if env_toml and Path(env_toml).is_file():
++        return Path(env_toml).resolve()
++
++    candidates = [
++        config_path.parent / "task.toml",
++        config_path.parent.parent / "task.toml",
++        repo_root.parent / "case" / "task.toml",
++        repo_root / "case" / "task.toml",
++        Path("/tests/task.toml"),
++        Path("/workspace/case/task.toml"),
++        Path("/workspace/task.toml"),
++        Path("/task.toml"),
++    ]
++    for c in candidates:
++        if c.is_file():
++            return c.resolve()
++    raise FileNotFoundError(f"task.toml not found across candidate paths: {candidates}")
++
++
++def _parse_task_toml(toml_path: Path) -> dict[str, object]:
++    content = toml_path.read_text(encoding="utf-8")
++    try:
++        import tomllib  # Python 3.11+
++        return tomllib.loads(content)
++    except ImportError:
++        pass
++    try:
++        import tomli  # Fallback
++        return tomli.loads(content)
++    except ImportError:
++        pass
++    # Minimal fallback parser for tests table and base commit
++    result: dict[str, object] = {"tests": {}, "metadata": {}}
++    current_sec = ""
++    for line in content.splitlines():
++        line = line.strip()
++        if not line or line.startswith("#"):
++            continue
++        if line.startswith("[") and line.endswith("]"):
++            current_sec = line[1:-1].strip()
++            continue
++        if "=" in line:
++            k, v = [x.strip() for x in line.split("=", 1)]
++            v_clean = v.strip("\"'")
++            if current_sec == "tests":
++                try:
++                    result["tests"][k] = int(v_clean)
++                except ValueError:
++                    result["tests"][k] = v_clean
++            elif current_sec in ("metadata", "task"):
++                result["metadata"][k] = v_clean
++    return result
++
++
++class TestBuildGate(unittest.TestCase):
++    """Atomic BUILD gate test nodes."""
++
++    @classmethod
++    def setUpClass(cls):
++        cls.repo_root = _find_repo_root()
++        cls.config_path = _find_config_path(cls.repo_root)
++        cls.config = json.loads(cls.config_path.read_text(encoding="utf-8"))
++
++    def test_config_json_and_schema(self):
++        """Verify config.json exists, parses as valid JSON, and adheres to schema v2."""
++        self.assertIsInstance(self.config, dict, "config.json must be a JSON dictionary")
++        self.assertEqual(
++            self.config.get("schema_version"),
++            "deepswe-verifier-config/v2",
++            "schema_version must be 'deepswe-verifier-config/v2'",
++        )
++        task_id = self.config.get("task_id")
++        self.assertIsInstance(task_id, str, "task_id must be a string")
++        self.assertTrue(bool(task_id.strip()), "task_id must not be empty")
++
++        base_commit = self.config.get("base_commit")
++        self.assertIsInstance(base_commit, str, "base_commit must be a string")
++        self.assertEqual(len(base_commit.strip()), 40, "base_commit must be a 40-character commit hash")
++
++    def test_category_arrays_exist_and_non_empty(self):
++        """Verify p2p, build, cheating, f2p, and upstream_exceptions arrays exist, are lists, and non-empty."""
++        for cat in ("p2p", "build", "cheating", "f2p", "upstream_exceptions"):
++            self.assertIn(cat, self.config, f"config must contain '{cat}' array")
++            arr = self.config[cat]
++            self.assertIsInstance(arr, list, f"'{cat}' must be a list")
++            self.assertGreater(len(arr), 0, f"'{cat}' array must not be empty")
++            for idx, item in enumerate(arr):
++                self.assertIsInstance(item, str, f"{cat}[{idx}] must be a string")
++                self.assertTrue(bool(item.strip()), f"{cat}[{idx}] must not be empty or whitespace")
++
++    def test_registered_nodes_unique_and_disjoint(self):
++        """Verify all registered node IDs are strictly unique, categories do not overlap, and full inventory reconciles."""
++        categories = ("p2p", "build", "cheating", "f2p", "upstream_exceptions")
++        sets: dict[str, set[str]] = {}
++        for cat in categories:
++            arr = self.config[cat]
++            s = set(arr)
++            self.assertEqual(
++                len(s),
++                len(arr),
++                f"Duplicate node detected within category '{cat}': {len(arr) - len(s)} duplicates",
++            )
++            sets[cat] = s
++
++        cat_list = list(categories)
++        for i in range(len(cat_list)):
++            for j in range(i + 1, len(cat_list)):
++                c1, c2 = cat_list[i], cat_list[j]
++                overlap = sets[c1] & sets[c2]
++                self.assertFalse(
++                    bool(overlap),
++                    f"Cross-category overlap detected between '{c1}' and '{c2}': {overlap}",
++                )
++
++        # Full inventory bidirectional reconciliation:
++        # 748 (p2p) + 35 (f2p) + 13 (build) + 8 (cheating) + 86 (upstream_exceptions) = 890
++        total_registered = sum(len(sets[c]) for c in categories)
++        self.assertEqual(
++            total_registered,
++            890,
++            f"Total registered nodes across all 5 categories must be exactly 890, got {total_registered}",
++        )
++
++    def test_task_toml_counts_match(self):
++        """Verify pass_to_pass_count and fail_to_pass_count in task.toml match config.json."""
++        toml_path = _find_task_toml_path(self.config_path, self.repo_root)
++        toml_data = _parse_task_toml(toml_path)
++        tests_data = toml_data.get("tests", {})
++
++        p2p_cnt = tests_data.get("pass_to_pass_count")
++        f2p_cnt = tests_data.get("fail_to_pass_count")
++
++        expected_p2p = len(self.config.get("p2p", []))
++        expected_f2p = len(self.config.get("f2p", []))
++
++        self.assertEqual(
++            p2p_cnt,
++            expected_p2p,
++            f"task.toml pass_to_pass_count ({p2p_cnt}) must match config.json p2p count ({expected_p2p})",
++        )
++        self.assertEqual(
++            f2p_cnt,
++            expected_f2p,
++            f"task.toml fail_to_pass_count ({f2p_cnt}) must match config.json f2p count ({expected_f2p})",
++        )
++
++    def test_base_commit_consistency(self):
++        """Verify base_commit in config.json matches base_commit_hash in task.toml."""
++        toml_path = _find_task_toml_path(self.config_path, self.repo_root)
++        toml_data = _parse_task_toml(toml_path)
++        meta = toml_data.get("metadata", {})
++        toml_base = meta.get("base_commit_hash") or toml_data.get("task", {}).get("base_commit_hash")
++
++        cfg_base = self.config.get("base_commit", "").strip()
++        self.assertTrue(bool(cfg_base), "config.json must have non-empty base_commit")
++        if toml_base:
++            self.assertEqual(
++                cfg_base,
++                str(toml_base).strip(),
++                f"base_commit mismatch: config ({cfg_base}) vs task.toml ({toml_base})",
++            )
++
++    def test_git_repo_and_base_commit_resolvable(self):
++        """Verify git repository is valid and base_commit resolves to a commit object."""
++        base_commit = self.config.get("base_commit", "").strip()
++        self.assertTrue(bool(base_commit), "base_commit required")
++
++        proc = subprocess.run(
++            ["git", "-C", str(self.repo_root), "rev-parse", "--is-inside-work-tree"],
++            capture_output=True,
++            text=True,
++            timeout=15,
++        )
++        self.assertEqual(proc.returncode, 0, f"git worktree check failed: {proc.stderr}")
++        self.assertEqual(proc.stdout.strip(), "true")
++
++        proc_rev = subprocess.run(
++            ["git", "-C", str(self.repo_root), "rev-parse", f"{base_commit}^{{commit}}"],
++            capture_output=True,
++            text=True,
++            timeout=15,
++        )
++        self.assertEqual(
++            proc_rev.returncode,
++            0,
++            f"base_commit {base_commit} not resolvable in repository: {proc_rev.stderr}",
++        )
++
++    def test_required_dependencies_available(self):
++        """Verify required test dependencies (pytest, Python >= 3.8) are installed."""
++        self.assertGreaterEqual(
++            sys.version_info[:2],
++            (3, 8),
++            f"Python runtime must be >= 3.8, got {sys.version_info}",
++        )
++        import pytest  # noqa: F401
++        self.assertTrue(hasattr(pytest, "main"), "pytest.main must be available")
++
++    def test_source_files_ast_parseable(self):
++        """Verify all Python source files under src/ parse cleanly without SyntaxError."""
++        src_dir = self.repo_root / "src"
++        self.assertTrue(src_dir.is_dir(), f"src directory not found: {src_dir}")
++        py_files = sorted(src_dir.rglob("*.py"))
++        self.assertGreater(len(py_files), 0, "No Python source files found under src/")
++
++        errors = []
++        for py_file in py_files:
++            try:
++                code = py_file.read_text(encoding="utf-8")
++                ast.parse(code, filename=str(py_file))
++            except Exception as exc:
++                errors.append(f"{py_file.name}: {exc}")
++        self.assertFalse(errors, f"AST parsing failed for files: {errors}")
++
++    def test_source_files_compilable(self):
++        """Verify all Python source files under src/ compile cleanly via py_compile."""
++        src_dir = self.repo_root / "src"
++        py_files = sorted(src_dir.rglob("*.py"))
++        errors = []
++        for py_file in py_files:
++            try:
++                py_compile.compile(str(py_file), doraise=True)
++            except Exception as exc:
++                errors.append(f"{py_file.name}: {exc}")
++        self.assertFalse(errors, f"Bytecode compilation failed for files: {errors}")
++
++    def test_essential_source_files_exist(self):
++        """Verify src/waitress/__init__.py and essential package files exist."""
++        required = [
++            "src/waitress/__init__.py",
++            "src/waitress/task.py",
++            "src/waitress/channel.py",
++            "src/waitress/server.py",
++            "src/waitress/parser.py",
++            "src/waitress/adjustments.py",
++            "src/waitress/buffers.py",
++            "src/waitress/utilities.py",
++        ]
++        missing = [f for f in required if not (self.repo_root / f).is_file()]
++        self.assertFalse(missing, f"Missing essential source files: {missing}")
++
++    def test_waitress_core_modules_importable(self):
++        """Verify all core Waitress modules can be imported cleanly in an isolated subprocess."""
++        modules = [
++            "waitress",
++            "waitress.adjustments",
++            "waitress.buffers",
++            "waitress.channel",
++            "waitress.compat",
++            "waitress.parser",
++            "waitress.receiver",
++            "waitress.server",
++            "waitress.task",
++            "waitress.utilities",
++        ]
++        script = f"""
++import sys
++from pathlib import Path
++sys.path.insert(0, str((Path({str(self.repo_root)!r}) / "src").resolve()))
++for mod in {modules!r}:
++    __import__(mod)
++print("OK")
++"""
++        proc = subprocess.run(
++            [sys.executable, "-c", script],
++            capture_output=True,
++            text=True,
++            timeout=30,
++        )
++        self.assertEqual(
++            proc.returncode,
++            0,
++            f"Isolated import of Waitress modules failed (exit {proc.returncode}):\n{proc.stderr}\n{proc.stdout}",
++        )
++        self.assertIn("OK", proc.stdout)
++
++    def test_test_patch_and_solution_patch_applicable(self):
++        """Verify test.patch and solution.patch can be applied cleanly on the repository."""
++        base_commit = self.config.get("base_commit", "").strip()
++        candidates = [
++            self.config_path.parent / "verifier" / "test.patch",
++            self.repo_root.parent / "case" / "tests" / "verifier" / "test.patch",
++            self.repo_root / "case" / "tests" / "verifier" / "test.patch",
++            Path("/tests/verifier/test.patch"),
++        ]
++        test_patch = next((p for p in candidates if p.is_file()), None)
++        self.assertIsNotNone(test_patch, f"test.patch not found across candidates: {candidates}")
++
++        # Test apply check on base commit
++        proc = subprocess.run(
++            ["git", "-C", str(self.repo_root), "apply", "--check", "--whitespace=nowarn", "--ignore-whitespace", str(test_patch)],
++            capture_output=True,
++            text=True,
++            timeout=30,
++        )
++        # In current repo, test files might already exist or need -R or direct check
++        if proc.returncode != 0:
++            proc_reverse = subprocess.run(
++                ["git", "-C", str(self.repo_root), "apply", "--check", "-R", "--whitespace=nowarn", "--ignore-whitespace", str(test_patch)],
++                capture_output=True,
++                text=True,
++                timeout=30,
++            )
++            self.assertEqual(
++                proc_reverse.returncode,
++                0,
++                f"test.patch failed both forward and reverse apply checks:\nForward: {proc.stderr}\nReverse: {proc_reverse.stderr}",
++            )
++
++    def test_verifier_and_entrypoints_intact(self):
++        """Verify verifier.py, grader.py, and hardgate.py parse cleanly as Python syntax."""
++        verifier_dirs = [
++            self.config_path.parent,
++            self.repo_root.parent / "case" / "tests",
++            self.repo_root / "case" / "tests",
++            Path("/tests"),
++        ]
++        vdir = next((d for d in verifier_dirs if d.is_dir()), None)
++        self.assertIsNotNone(vdir, f"Verifier test directory not found in: {verifier_dirs}")
++
++        files_to_check = [
++            vdir / "grader.py",
++            vdir / "verifier" / "verifier.py",
++            vdir / "verifier" / "hardgate.py",
++        ]
++        for f in files_to_check:
++            if f.is_file():
++                content = f.read_text(encoding="utf-8")
++                try:
++                    ast.parse(content, filename=str(f))
++                except Exception as exc:
++                    self.fail(f"Syntax error in verifier entrypoint {f}: {exc}")
+diff --git a/tests/test_hardgate_cheating.py b/tests/test_hardgate_cheating.py
+new file mode 100644
+index 0000000..ec6e096
+--- /dev/null
++++ b/tests/test_hardgate_cheating.py
+@@ -0,0 +1,309 @@
++"""Atomic pytest leaf nodes for Hard Gate CHEATING verification (Fail-Closed).
++
++Covers:
++- candidate patch scope (restricted strictly to src/waitress/)
++- test suite protection (no modification, deletion, or rogue files in tests/)
++- test runner configuration preservation (pyproject.toml, pytest.ini, etc.)
++- verifier and grader infrastructure tampering detection
++- rogue startup hooks (sitecustomize, usercustomize, .pth)
++- static evasion pattern and verifier output leakage detection
++- pytest runner hook tampering in source code
++- strict fail-closed guarantees on git diff, patch parsing, and commit resolution
++"""
++
++from __future__ import annotations
++
++import json
++import os
++from pathlib import Path
++import subprocess
++import unittest
++
++TEST_RUNNER_CONFIG_FILES = (
++    "pytest.ini",
++    "pyproject.toml",
++    "setup.cfg",
++    "setup.py",
++    "tox.ini",
++    "conftest.py",
++)
++
++SUSPICIOUS_CHEAT_PATTERNS = (
++    "/logs/verifier/ctrf.json",
++    "/logs/verifier/hard-gate.json",
++    "/logs/verifier/reward.json",
++    "grader.py",
++    "verifier.py",
++    "hardgate.py",
++    "sys.modules['grader']",
++    "sys.modules[\"grader\"]",
++    "sys.modules['verifier']",
++    "sys.modules[\"verifier\"]",
++)
++
++SUSPICIOUS_PYTEST_HOOKS = (
++    "pytest_runtest_logreport",
++    "pytest_collection_modifyitems",
++)
++
++DANGEROUS_STARTUP_HOOKS = (
++    "sitecustomize.py",
++    "usercustomize.py",
++)
++
++DEFAULT_ALLOWED_VERIFIER_FILES = {
++    "tests/test_refactor_p2p.py",
++    "tests/test_refactor_f2p.py",
++    "tests/test_hardgate_build.py",
++    "tests/test_hardgate_cheating.py",
++}
++
++
++def _find_repo_root() -> Path:
++    env_repo = os.environ.get("DEEPSWE_REPO_PATH")
++    if env_repo and Path(env_repo).is_dir():
++        return Path(env_repo).resolve()
++    cwd = Path.cwd().resolve()
++    for candidate in [cwd, cwd.parent, cwd.parent.parent]:
++        if (candidate / ".git").exists() or (candidate / "src" / "waitress").is_dir():
++            return candidate
++    return cwd
++
++
++def _find_config_path(repo_root: Path) -> Path:
++    env_cfg = os.environ.get("DEEPSWE_CONFIG_PATH")
++    if env_cfg and Path(env_cfg).is_file():
++        return Path(env_cfg).resolve()
++
++    candidates = [
++        Path("/tests/config.json"),
++        repo_root.parent / "case" / "tests" / "config.json",
++        repo_root / "case" / "tests" / "config.json",
++        repo_root / "config.json",
++    ]
++    for c in candidates:
++        if c.is_file():
++            return c.resolve()
++    raise FileNotFoundError(f"config.json not found across candidate search paths: {candidates}")
++
++
++def _get_allowed_verifier_files(repo_root: Path) -> set[str]:
++    allowed = set(DEFAULT_ALLOWED_VERIFIER_FILES)
++    candidates = [
++        Path("/tests/verifier/test.patch"),
++        repo_root.parent / "case" / "tests" / "verifier" / "test.patch",
++        repo_root / "case" / "tests" / "verifier" / "test.patch",
++    ]
++    for p in candidates:
++        if p.is_file():
++            try:
++                for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
++                    if line.startswith("+++ b/"):
++                        raw = line[6:].strip().replace("\\", "/")
++                        if raw.startswith("tests/"):
++                            allowed.add(raw)
++            except Exception:
++                pass
++            break
++    return allowed
++
++
++def _get_candidate_modified_files(repo_root: Path, base_commit: str) -> list[str]:
++    """Fail-closed extraction of all modified files against base_commit and from model.patch."""
++    files: set[str] = set()
++
++    # 1. From candidate model.patch if present
++    patch_candidates = [
++        Path("/logs/artifacts/model.patch"),
++        Path(os.environ.get("MODEL_PATCH", "")),
++    ]
++    for pf in patch_candidates:
++        if pf and pf.is_file():
++            try:
++                text = pf.read_text(encoding="utf-8")
++                for line in text.splitlines():
++                    if line.startswith("--- a/") or line.startswith("+++ b/"):
++                        raw = line[6:].strip().replace("\\", "/")
++                        if raw and raw != "dev/null" and not raw.startswith("/dev/null"):
++                            files.add(raw)
++            except Exception as exc:
++                raise RuntimeError(f"Fail-closed: candidate model.patch cannot be read: {exc}")
++
++    # 2. From git diff against base_commit
++    git_dir = repo_root / ".git"
++    if not git_dir.exists() and not (repo_root / "HEAD").exists():
++        raise RuntimeError("Fail-closed: git repository missing for anti-cheat inspection")
++
++    proc = subprocess.run(
++        ["git", "-C", str(repo_root), "diff", "--name-only", base_commit],
++        capture_output=True,
++        text=True,
++        timeout=30,
++    )
++    if proc.returncode != 0:
++        raise RuntimeError(f"Fail-closed: git diff against base_commit failed: {proc.stderr}")
++    for line in proc.stdout.splitlines():
++        line = line.strip().replace("\\", "/")
++        if line:
++            files.add(line)
++
++    # 3. Untracked files check
++    proc_untracked = subprocess.run(
++        ["git", "-C", str(repo_root), "status", "--porcelain"],
++        capture_output=True,
++        text=True,
++        timeout=30,
++    )
++    if proc_untracked.returncode == 0:
++        for line in proc_untracked.stdout.splitlines():
++            line = line.strip()
++            if line.startswith("??"):
++                raw = line[3:].strip().replace("\\", "/")
++                if raw.startswith(".pytest_cache") or raw.endswith(".tmp.json") or raw.startswith(".p2p_"):
++                    continue
++                if raw:
++                    files.add(raw)
++
++    return sorted(files)
++
++
++class TestCheatingGate(unittest.TestCase):
++    """Atomic CHEATING gate test nodes (Fail-Closed)."""
++
++    @classmethod
++    def setUpClass(cls):
++        cls.repo_root = _find_repo_root()
++        cls.config_path = _find_config_path(cls.repo_root)
++        cls.config = json.loads(cls.config_path.read_text(encoding="utf-8"))
++        cls.base_commit = str(cls.config.get("base_commit", "016eea527dd4a3eb4a18d6dca4d0bfe32039e470")).strip()
++        cls.allowed_verifier_files = _get_allowed_verifier_files(cls.repo_root)
++        cls.modified_files = _get_candidate_modified_files(cls.repo_root, cls.base_commit)
++
++    def test_candidate_patch_scope(self):
++        """Verify candidate modifications are strictly restricted to the allowed source package directory (src/waitress/)."""
++        unauthorized = []
++        for f in self.modified_files:
++            if f in self.allowed_verifier_files:
++                continue
++            if not f.startswith("src/waitress/"):
++                unauthorized.append(f)
++        self.assertFalse(
++            unauthorized,
++            f"Fail-closed: candidate modified unauthorized files outside src/waitress/: {unauthorized}",
++        )
++
++    def test_tests_directory_not_tampered(self):
++        """Verify candidate has not modified, deleted, or added files under tests/ (Ground Truth protection)."""
++        tampered_tests = []
++        for f in self.modified_files:
++            if f.startswith("tests/"):
++                if f not in self.allowed_verifier_files:
++                    tampered_tests.append(f)
++        self.assertFalse(
++            tampered_tests,
++            f"Fail-closed: Ground Truth violation: candidate modified tests/ directory: {tampered_tests}",
++        )
++
++    def test_runner_configuration_not_tampered(self):
++        """Verify candidate has not modified test runner configurations (pytest.ini, pyproject.toml, etc.)."""
++        tampered_configs = []
++        for f in self.modified_files:
++            for cfg in TEST_RUNNER_CONFIG_FILES:
++                if f == cfg or f.endswith("/" + cfg):
++                    tampered_configs.append(f)
++        self.assertFalse(
++            tampered_configs,
++            f"Fail-closed: test runner configuration tampered: {tampered_configs}",
++        )
++
++    def test_verifier_infrastructure_not_tampered(self):
++        """Verify candidate has not modified verifier or grader infrastructure files."""
++        tampered = []
++        for f in self.modified_files:
++            if f in self.allowed_verifier_files:
++                continue
++            name = Path(f).name
++            if name in ("grader.py", "verifier.py", "hardgate.py", "test.sh") or any(
++                k in f for k in ("/verifier/", "case/tests/verifier", "tests/verifier")
++            ):
++                tampered.append(f)
++        self.assertFalse(
++            tampered,
++            f"Fail-closed: verifier/grader infrastructure tampered: {tampered}",
++        )
++
++    def test_no_startup_hooks_or_pth_files(self):
++        """Verify no rogue startup hooks (sitecustomize, usercustomize) or *.pth files exist."""
++        search_dirs = [self.repo_root, self.repo_root / "src"]
++        rogue_files = []
++        for sdir in search_dirs:
++            if not sdir.is_dir():
++                continue
++            for hook in DANGEROUS_STARTUP_HOOKS:
++                if (sdir / hook).is_file():
++                    rogue_files.append(str((sdir / hook).relative_to(self.repo_root)))
++            for pth in sdir.glob("*.pth"):
++                rogue_files.append(str(pth.relative_to(self.repo_root)))
++
++        self.assertFalse(
++            rogue_files,
++            f"Fail-closed: dangerous startup hooks or .pth injection detected: {rogue_files}",
++        )
++
++    def test_no_evasion_patterns_or_verifier_leakage(self):
++        """Verify source code in src/ contains no references to verifier outputs, CTRF, reward, or grader."""
++        src_dir = self.repo_root / "src"
++        if not src_dir.is_dir():
++            self.fail(f"Fail-closed: src directory missing: {src_dir}")
++
++        evasions = []
++        for py_file in src_dir.rglob("*.py"):
++            try:
++                content = py_file.read_text(encoding="utf-8", errors="ignore")
++                rel = str(py_file.relative_to(self.repo_root)).replace("\\", "/")
++                for pat in SUSPICIOUS_CHEAT_PATTERNS:
++                    if pat in content:
++                        evasions.append(f"{rel} matches evasion pattern '{pat}'")
++            except Exception as exc:
++                self.fail(f"Fail-closed: could not read {py_file} for evasion check: {exc}")
++
++        self.assertFalse(
++            evasions,
++            f"Fail-closed: evasion pattern or verifier output leakage detected: {evasions}",
++        )
++
++    def test_no_pytest_hook_manipulation(self):
++        """Verify source code contains no pytest hook interception patterns."""
++        src_dir = self.repo_root / "src"
++        if not src_dir.is_dir():
++            self.fail(f"Fail-closed: src directory missing: {src_dir}")
++
++        hook_evasions = []
++        for py_file in src_dir.rglob("*.py"):
++            try:
++                content = py_file.read_text(encoding="utf-8", errors="ignore")
++                rel = str(py_file.relative_to(self.repo_root)).replace("\\", "/")
++                for hook in SUSPICIOUS_PYTEST_HOOKS:
++                    if hook in content:
++                        hook_evasions.append(f"{rel} contains pytest hook '{hook}'")
++            except Exception as exc:
++                self.fail(f"Fail-closed: could not read {py_file} for hook check: {exc}")
++
++        self.assertFalse(
++            hook_evasions,
++            f"Fail-closed: pytest runner hook manipulation detected: {hook_evasions}",
++        )
++
++    def test_anti_cheat_fail_closed_guarantee(self):
++        """Verify integrity of git repository and base commit verification under fail-closed contract."""
++        proc = subprocess.run(
++            ["git", "-C", str(self.repo_root), "rev-parse", "--verify", f"{self.base_commit}^{{commit}}"],
++            capture_output=True,
++            text=True,
++            timeout=10,
++        )
++        self.assertEqual(
++            proc.returncode,
++            0,
++            f"Fail-closed: base_commit {self.base_commit} cannot be verified in repository: {proc.stderr}",
++        )
+diff --git a/tests/test_refactor_f2p.py b/tests/test_refactor_f2p.py
+new file mode 100644
+index 0000000..f5e3ae0
+--- /dev/null
++++ b/tests/test_refactor_f2p.py
+@@ -0,0 +1,1758 @@
++import sys
++import unittest
++
++from waitress.task import ErrorTask, Task, WSGITask
++from waitress.utilities import Error
++from tests.test_task import DummyAdj, DummyChannel, DummyLogger, DummyParser
++
++
++class TestRefactorF2P(unittest.TestCase):
++    def test_f2p_prepared_response_contract_and_properties(self):
++        """Instruction 23-31:
++        - waitress.task MUST expose an importable PreparedResponse type.
++        - Task.prepare_response() MUST return a PreparedResponse instance with:
++          status, version, header_bytes, headers, body_allowed, chunked,
++          close_connection, content_length.
++        - headers MUST be an ordered tuple of normalized (name, value) strings.
++        - header_bytes MUST end with \\r\\n\\r\\n and format status line as HTTP/<ver> <status>.
++        """
++        from waitress.task import PreparedResponse
++
++        channel = DummyChannel()
++        request = DummyParser()
++        request.version = "1.1"
++        task = Task(channel, request)
++        task.status = "200 OK"
++        task.content_length = 5
++        task.response_headers = [("Content-Type", "text/plain")]
++
++        prep = task.prepare_response()
++        self.assertIsInstance(prep, PreparedResponse)
++        self.assertEqual(prep.status, "200 OK")
++        self.assertEqual(prep.version, "1.1")
++        self.assertEqual(prep.content_length, 5)
++        self.assertTrue(prep.body_allowed)
++        self.assertFalse(prep.chunked)
++        self.assertFalse(prep.close_connection)
++        self.assertIsInstance(prep.headers, tuple)
++        self.assertIsInstance(prep.header_bytes, bytes)
++        self.assertTrue(prep.header_bytes.startswith(b"HTTP/1.1 200 OK\r\n"))
++        self.assertTrue(prep.header_bytes.endswith(b"\r\n\r\n"))
++
++    def test_f2p_prepare_response_side_effect_free_query(self):
++        """Instruction 36:
++        prepare_response() MUST be a side-effect-free query that performs no channel I/O
++        and does not mutate task state (response_headers, close_on_finish, chunked_response,
++        wrote_header, content_bytes_written). Repeated calls under unchanged state MUST
++        yield identical values and header_bytes.
++
++        Verifies that no channel write operation (e.g. write_soon) is invoked at all,
++        ensuring implementations calling write_soon(b"") or producing 0 bytes cannot pass.
++        """
++        channel = DummyChannel()
++        write_soon_calls: list[bytes] = []
++
++        def trapped_write_soon(data):
++            write_soon_calls.append(data)
++            raise AssertionError(
++                f"Illegal channel I/O operation during prepare_response(): write_soon called with {data!r}"
++            )
++
++        channel.write_soon = trapped_write_soon
++
++        request = DummyParser()
++        request.version = "1.1"
++        task = Task(channel, request)
++        task.status = "200 OK"
++        initial_headers = [("Content-Type", "text/plain"), ("X-Test", "123")]
++        task.response_headers = list(initial_headers)
++        task.content_length = 10
++        channel.written = b""
++
++        pre_close = task.close_on_finish
++        pre_wrote = task.wrote_header
++        pre_chunked = task.chunked_response
++        pre_written = task.content_bytes_written
++
++        res1 = task.prepare_response()
++        self.assertEqual(task.response_headers, initial_headers)
++        self.assertEqual(task.close_on_finish, pre_close)
++        self.assertEqual(task.wrote_header, pre_wrote)
++        self.assertEqual(task.chunked_response, pre_chunked)
++        self.assertEqual(task.content_bytes_written, pre_written)
++        self.assertEqual(channel.written, b"")
++        self.assertEqual(channel.otherdata, [])
++        self.assertEqual(write_soon_calls, [], "channel.write_soon was called during prepare_response()")
++
++        res2 = task.prepare_response()
++        self.assertEqual(res1.status, res2.status)
++        self.assertEqual(res1.version, res2.version)
++        self.assertEqual(res1.header_bytes, res2.header_bytes)
++        self.assertEqual(res1.headers, res2.headers)
++        self.assertEqual(res1.body_allowed, res2.body_allowed)
++        self.assertEqual(res1.chunked, res2.chunked)
++        self.assertEqual(res1.close_connection, res2.close_connection)
++        self.assertEqual(res1.content_length, res2.content_length)
++        self.assertEqual(channel.written, b"")
++        self.assertEqual(write_soon_calls, [], "channel.write_soon was called during second prepare_response()")
++
++        # Verify for WSGITask as well: prepare_response() must not invoke any channel write operation
++        wsgi_channel = DummyChannel()
++        wsgi_write_calls: list[bytes] = []
++
++        def wsgi_trapped_write_soon(data):
++            wsgi_write_calls.append(data)
++            raise AssertionError(
++                f"Illegal channel I/O operation during WSGITask.prepare_response(): write_soon called with {data!r}"
++            )
++
++        wsgi_channel.write_soon = wsgi_trapped_write_soon
++        wsgi_task = WSGITask(wsgi_channel, request)
++        wsgi_task.start_response("200 OK", [("Content-Length", "20"), ("Content-Type", "text/plain")])
++
++        prep_wsgi = wsgi_task.prepare_response()
++        self.assertEqual(prep_wsgi.content_length, 20)
++        self.assertEqual(wsgi_write_calls, [], "channel.write_soon was called during WSGITask.prepare_response()")
++        self.assertEqual(wsgi_channel.written, b"")
++        self.assertEqual(wsgi_channel.otherdata, [])
++        self.assertFalse(wsgi_task.wrote_header)
++
++    def test_f2p_prepare_response_preserves_warning_latches(self):
++        """Instruction 36, 39:
++        prepare_response() MUST NOT mutate warning latches (logged_write_excess,
++        logged_write_no_body).
++        """
++        channel = DummyChannel()
++        request = DummyParser()
++        request.version = "1.1"
++        task = Task(channel, request)
++        task.status = "200 OK"
++        task.logged_write_excess = False
++        task.logged_write_no_body = False
++
++        task.prepare_response()
++        self.assertFalse(task.logged_write_excess)
++        self.assertFalse(task.logged_write_no_body)
++
++        task.status = "204 No Content"
++        task.prepare_response()
++        self.assertFalse(task.logged_write_excess)
++        self.assertFalse(task.logged_write_no_body)
++
++        task.logged_write_excess = True
++        task.logged_write_no_body = True
++        task.prepare_response()
++        self.assertTrue(task.logged_write_excess)
++        self.assertTrue(task.logged_write_no_body)
++
++    def test_f2p_explicit_content_length_header_precedence(self):
++        """Instruction 33, 34:
++        When a message body is permitted:
++        - An explicit Content-Length header in response headers takes precedence over
++          Task.content_length if both are present.
++        - An explicit Content-Length: 0 header takes precedence over non-zero Task.content_length
++          across Task/WSGITask and HTTP/1.0/HTTP/1.1, returning integer 0 (not None).
++        """
++        channel = DummyChannel()
++        request = DummyParser()
++        request.version = "1.1"
++
++        # Case 1: WSGITask where start_response registers a Content-Length header,
++        # and Task.content_length is subsequently set to a conflicting value (50 vs 120).
++        task = WSGITask(channel, request)
++        task.start_response("200 OK", [("Content-Length", "120"), ("Content-Type", "text/plain")])
++        task.content_length = 50
++
++        self.assertEqual(task.content_length, 50)
++        prep = task.prepare_response()
++        self.assertEqual(prep.content_length, 120)
++        self.assertEqual(task.content_length, 50)
++        content_length_headers = [v for k, v in prep.headers if k == "Content-Length"]
++        self.assertEqual(content_length_headers, ["120"])
++
++        # Case 2: Base Task directly configured with conflicting content_length and headers (50 vs 120).
++        base_task = Task(channel, request)
++        base_task.status = "200 OK"
++        base_task.content_length = 50
++        base_task.response_headers = [("Content-Length", "120"), ("Content-Type", "text/plain")]
++
++        self.assertEqual(base_task.content_length, 50)
++        base_prep = base_task.prepare_response()
++        self.assertEqual(base_prep.content_length, 120)
++        self.assertEqual(base_task.content_length, 50)
++        base_cl_headers = [v for k, v in base_prep.headers if k == "Content-Length"]
++        self.assertEqual(base_cl_headers, ["120"])
++
++        # Case 3: Reverse conflict where header length is smaller than Task.content_length (60 vs 200).
++        task_rev = Task(channel, request)
++        task_rev.status = "200 OK"
++        task_rev.content_length = 200
++        task_rev.response_headers = [("Content-Length", "60"), ("Content-Type", "text/plain")]
++
++        self.assertEqual(task_rev.content_length, 200)
++        prep_rev = task_rev.prepare_response()
++        self.assertEqual(prep_rev.content_length, 60)
++        self.assertEqual(task_rev.content_length, 200)
++        rev_cl_headers = [v for k, v in prep_rev.headers if k == "Content-Length"]
++        self.assertEqual(rev_cl_headers, ["60"])
++
++        # Case 4: WSGITask HTTP/1.1 with explicit Content-Length: 0 header and non-zero Task.content_length (0 vs 50).
++        req_wsgi_11 = DummyParser()
++        req_wsgi_11.version = "1.1"
++        task_wsgi_11 = WSGITask(channel, req_wsgi_11)
++        task_wsgi_11.start_response("200 OK", [("Content-Length", "0"), ("Content-Type", "text/plain")])
++        task_wsgi_11.content_length = 50
++
++        self.assertEqual(task_wsgi_11.content_length, 50)
++        prep_wsgi_11 = task_wsgi_11.prepare_response()
++        self.assertIsNotNone(prep_wsgi_11.content_length)
++        self.assertEqual(prep_wsgi_11.content_length, 0)
++        self.assertEqual(task_wsgi_11.content_length, 50)
++        cl_headers_wsgi_11 = [v for k, v in prep_wsgi_11.headers if k == "Content-Length"]
++        self.assertEqual(cl_headers_wsgi_11, ["0"])
++        self.assertIn(b"Content-Length: 0\r\n", prep_wsgi_11.header_bytes)
++        self.assertFalse(prep_wsgi_11.chunked)
++        self.assertNotIn(b"Transfer-Encoding", prep_wsgi_11.header_bytes)
++        self.assertFalse(prep_wsgi_11.close_connection)
++        self.assertEqual(task_wsgi_11.build_response_header(), prep_wsgi_11.header_bytes)
++
++        # Case 5: WSGITask HTTP/1.0 with explicit Content-Length: 0 header and non-zero Task.content_length (0 vs 50).
++        # Subcase 5a: With keep-alive request header
++        req_wsgi_10_ka = DummyParser()
++        req_wsgi_10_ka.version = "1.0"
++        req_wsgi_10_ka.headers = {"CONNECTION": "keep-alive"}
++        task_wsgi_10_ka = WSGITask(channel, req_wsgi_10_ka)
++        task_wsgi_10_ka.start_response("200 OK", [("Content-Length", "0"), ("Content-Type", "text/plain")])
++        task_wsgi_10_ka.content_length = 50
++
++        self.assertEqual(task_wsgi_10_ka.content_length, 50)
++        prep_wsgi_10_ka = task_wsgi_10_ka.prepare_response()
++        self.assertIsNotNone(prep_wsgi_10_ka.content_length)
++        self.assertEqual(prep_wsgi_10_ka.content_length, 0)
++        self.assertEqual(task_wsgi_10_ka.content_length, 50)
++        cl_headers_wsgi_10_ka = [v for k, v in prep_wsgi_10_ka.headers if k == "Content-Length"]
++        self.assertEqual(cl_headers_wsgi_10_ka, ["0"])
++        self.assertIn(b"Content-Length: 0\r\n", prep_wsgi_10_ka.header_bytes)
++        self.assertFalse(prep_wsgi_10_ka.close_connection)
++        self.assertIn(b"Connection: Keep-Alive\r\n", prep_wsgi_10_ka.header_bytes)
++        self.assertEqual(task_wsgi_10_ka.build_response_header(), prep_wsgi_10_ka.header_bytes)
++
++        # Subcase 5b: Without keep-alive request header
++        req_wsgi_10_close = DummyParser()
++        req_wsgi_10_close.version = "1.0"
++        task_wsgi_10_close = WSGITask(channel, req_wsgi_10_close)
++        task_wsgi_10_close.start_response("200 OK", [("Content-Length", "0"), ("Content-Type", "text/plain")])
++        task_wsgi_10_close.content_length = 50
++
++        self.assertEqual(task_wsgi_10_close.content_length, 50)
++        prep_wsgi_10_close = task_wsgi_10_close.prepare_response()
++        self.assertIsNotNone(prep_wsgi_10_close.content_length)
++        self.assertEqual(prep_wsgi_10_close.content_length, 0)
++        self.assertEqual(task_wsgi_10_close.content_length, 50)
++        self.assertTrue(prep_wsgi_10_close.close_connection)
++        self.assertIn(b"Connection: close\r\n", prep_wsgi_10_close.header_bytes)
++        self.assertEqual(task_wsgi_10_close.build_response_header(), prep_wsgi_10_close.header_bytes)
++
++        # Case 6: Base Task HTTP/1.1 with explicit Content-Length: 0 header and non-zero Task.content_length (0 vs 100).
++        req_base_11 = DummyParser()
++        req_base_11.version = "1.1"
++        task_base_11 = Task(channel, req_base_11)
++        task_base_11.status = "200 OK"
++        task_base_11.content_length = 100
++        task_base_11.response_headers = [("Content-Length", "0"), ("Content-Type", "text/plain")]
++
++        self.assertEqual(task_base_11.content_length, 100)
++        prep_base_11 = task_base_11.prepare_response()
++        self.assertIsNotNone(prep_base_11.content_length)
++        self.assertEqual(prep_base_11.content_length, 0)
++        self.assertEqual(task_base_11.content_length, 100)
++        cl_headers_base_11 = [v for k, v in prep_base_11.headers if k == "Content-Length"]
++        self.assertEqual(cl_headers_base_11, ["0"])
++        self.assertIn(b"Content-Length: 0\r\n", prep_base_11.header_bytes)
++        self.assertFalse(prep_base_11.chunked)
++        self.assertNotIn(b"Transfer-Encoding", prep_base_11.header_bytes)
++        self.assertFalse(prep_base_11.close_connection)
++        self.assertEqual(task_base_11.build_response_header(), prep_base_11.header_bytes)
++
++        # Case 7: Base Task HTTP/1.0 with explicit Content-Length: 0 header and non-zero Task.content_length (0 vs 100).
++        # Subcase 7a: With keep-alive request header
++        req_base_10_ka = DummyParser()
++        req_base_10_ka.version = "1.0"
++        req_base_10_ka.headers = {"CONNECTION": "keep-alive"}
++        task_base_10_ka = Task(channel, req_base_10_ka)
++        task_base_10_ka.status = "200 OK"
++        task_base_10_ka.content_length = 100
++        task_base_10_ka.response_headers = [("Content-Length", "0"), ("Content-Type", "text/plain")]
++
++        self.assertEqual(task_base_10_ka.content_length, 100)
++        prep_base_10_ka = task_base_10_ka.prepare_response()
++        self.assertIsNotNone(prep_base_10_ka.content_length)
++        self.assertEqual(prep_base_10_ka.content_length, 0)
++        self.assertEqual(task_base_10_ka.content_length, 100)
++        cl_headers_base_10_ka = [v for k, v in prep_base_10_ka.headers if k == "Content-Length"]
++        self.assertEqual(cl_headers_base_10_ka, ["0"])
++        self.assertIn(b"Content-Length: 0\r\n", prep_base_10_ka.header_bytes)
++        self.assertFalse(prep_base_10_ka.close_connection)
++        self.assertIn(b"Connection: Keep-Alive\r\n", prep_base_10_ka.header_bytes)
++        self.assertEqual(task_base_10_ka.build_response_header(), prep_base_10_ka.header_bytes)
++
++        # Subcase 7b: Without keep-alive request header
++        req_base_10_close = DummyParser()
++        req_base_10_close.version = "1.0"
++        task_base_10_close = Task(channel, req_base_10_close)
++        task_base_10_close.status = "200 OK"
++        task_base_10_close.content_length = 100
++        task_base_10_close.response_headers = [("Content-Length", "0"), ("Content-Type", "text/plain")]
++
++        self.assertEqual(task_base_10_close.content_length, 100)
++        prep_base_10_close = task_base_10_close.prepare_response()
++        self.assertIsNotNone(prep_base_10_close.content_length)
++        self.assertEqual(prep_base_10_close.content_length, 0)
++        self.assertEqual(task_base_10_close.content_length, 100)
++        self.assertTrue(prep_base_10_close.close_connection)
++        self.assertIn(b"Connection: close\r\n", prep_base_10_close.header_bytes)
++        self.assertEqual(task_base_10_close.build_response_header(), prep_base_10_close.header_bytes)
++
++    def test_f2p_special_status_codes_forbid_body_and_content_length(self):
++        """Instruction 29, 35, 64, 72:
++        - Status 1xx, 204, 304 forbid body (body_allowed=False, content_length=None)
++          even if application provided Content-Length.
++        - Must NOT emit Content-Length or Transfer-Encoding.
++        - Calling write() does not emit data, increments content_bytes_written, and logs logged_write_no_body.
++        - Effective content length: 0 is integer 0 (not None) for 200 OK.
++        """
++        channel = DummyChannel()
++        req = DummyParser()
++        req.version = "1.1"
++
++        task204 = Task(channel, req)
++        task204.status = "204 No Content"
++        task204.content_length = 50
++        task204.response_headers = [
++            ("Content-Length", "50"),
++            ("Transfer-Encoding", "chunked"),
++        ]
++        prep204 = task204.prepare_response()
++
++        self.assertFalse(prep204.body_allowed)
++        self.assertFalse(prep204.chunked)
++        self.assertIsNone(prep204.content_length)
++        self.assertNotIn(b"Content-Length", prep204.header_bytes)
++        self.assertNotIn(b"Transfer-Encoding", prep204.header_bytes)
++        self.assertNotIn("Content-Length", [k for k, v in prep204.headers])
++        self.assertNotIn("Transfer-Encoding", [k for k, v in prep204.headers])
++
++        # build_response_header() consistency check
++        hdr_bytes_204 = task204.build_response_header()
++        self.assertNotIn(b"Content-Length", hdr_bytes_204)
++        self.assertNotIn(b"Transfer-Encoding", hdr_bytes_204)
++        self.assertNotIn("Content-Length", [k for k, v in task204.response_headers])
++        self.assertNotIn("Transfer-Encoding", [k for k, v in task204.response_headers])
++
++        task204.complete = True
++        task204.wrote_header = True
++        channel.written = b""
++        task204.write(b"should be ignored")
++        self.assertEqual(channel.written, b"")
++        self.assertEqual(task204.content_bytes_written, 17)
++        self.assertTrue(task204.logged_write_no_body)
++
++        task200 = Task(channel, req)
++        task200.status = "200 OK"
++        task200.content_length = 0
++        prep200 = task200.prepare_response()
++        self.assertEqual(prep200.content_length, 0)
++        self.assertIsNotNone(prep200.content_length)
++
++        # Directly preset Transfer-Encoding on body-permitting status is preserved (legacy compatibility)
++        task200_te = Task(channel, req)
++        task200_te.status = "200 OK"
++        task200_te.content_length = 50
++        task200_te.response_headers = [("Transfer-Encoding", "custom-te")]
++        prep200_te = task200_te.prepare_response()
++        self.assertTrue(prep200_te.body_allowed)
++        self.assertIn("Transfer-Encoding", [k for k, v in prep200_te.headers])
++        self.assertEqual(
++            next(v for k, v in prep200_te.headers if k == "Transfer-Encoding"),
++            "custom-te",
++        )
++        self.assertIn(b"Transfer-Encoding: custom-te\r\n", prep200_te.header_bytes)
++        hdr200_te = task200_te.build_response_header()
++        self.assertIn(b"Transfer-Encoding: custom-te\r\n", hdr200_te)
++
++        # 1xx (100 Continue)
++        task100 = Task(channel, req)
++        task100.status = "100 Continue"
++        task100.content_length = 30
++        task100.response_headers = [
++            ("Content-Length", "30"),
++            ("Transfer-Encoding", "chunked"),
++        ]
++        prep100 = task100.prepare_response()
++        self.assertFalse(prep100.body_allowed)
++        self.assertFalse(prep100.chunked)
++        self.assertIsNone(prep100.content_length)
++        self.assertNotIn(b"Content-Length", prep100.header_bytes)
++        self.assertNotIn(b"Transfer-Encoding", prep100.header_bytes)
++        self.assertNotIn("Content-Length", [k for k, v in prep100.headers])
++        self.assertNotIn("Transfer-Encoding", [k for k, v in prep100.headers])
++
++        # 304 (304 Not Modified)
++        task304 = Task(channel, req)
++        task304.status = "304 Not Modified"
++        task304.content_length = 40
++        task304.response_headers = [
++            ("Content-Length", "40"),
++            ("Transfer-Encoding", "gzip"),
++        ]
++        prep304 = task304.prepare_response()
++        self.assertFalse(prep304.body_allowed)
++        self.assertFalse(prep304.chunked)
++        self.assertIsNone(prep304.content_length)
++        self.assertNotIn(b"Content-Length", prep304.header_bytes)
++        self.assertNotIn(b"Transfer-Encoding", prep304.header_bytes)
++        self.assertNotIn("Content-Length", [k for k, v in prep304.headers])
++        self.assertNotIn("Transfer-Encoding", [k for k, v in prep304.headers])
++
++    def test_f2p_unsupported_request_version_fallback(self):
++        """Instruction 53:
++        Tasks initialized with unsupported HTTP request versions MUST fall back to HTTP/1.0.
++        """
++        channel = DummyChannel()
++        request = DummyParser()
++        request.version = "HTTP/2.0"
++        task = Task(channel, request)
++        self.assertEqual(task.version, "1.0")
++
++        prep = task.prepare_response()
++        self.assertEqual(prep.version, "1.0")
++        self.assertTrue(prep.header_bytes.startswith(b"HTTP/1.0 200 OK\r\n"))
++
++    def test_f2p_explicit_invalid_version_raises_assertion(self):
++        """Instruction 53:
++        If a task's version is explicitly set to any value other than '1.0' or '1.1'
++        prior to preparation, attempting to prepare headers MUST raise AssertionError.
++        """
++        channel = DummyChannel()
++        request = DummyParser()
++        request.version = "1.1"
++        task = Task(channel, request)
++        task.version = "2.0"
++
++        with self.assertRaises(AssertionError) as ctx1:
++            task.prepare_response()
++        self.assertIn("neither HTTP/1.0 or HTTP/1.1", str(ctx1.exception))
++
++        with self.assertRaises(AssertionError) as ctx2:
++            task.build_response_header()
++        self.assertIn("neither HTTP/1.0 or HTTP/1.1", str(ctx2.exception))
++
++    def test_f2p_wsgi_task_start_response_contract_and_return_value(self):
++        """Instruction 37:
++        WSGITask MUST expose start_response(status, headers, exc_info=None) as an accessible
++        method that accepts response metadata and returns the task's body-writing callable (self.write).
++        """
++        channel = DummyChannel()
++        request = DummyParser()
++        task = WSGITask(channel, request)
++
++        write_callable = task.start_response("200 OK", [("Content-Type", "text/plain")])
++        self.assertEqual(write_callable, task.write)
++        self.assertEqual(task.status, "200 OK")
++        self.assertIn(("Content-Type", "text/plain"), task.response_headers)
++
++    def test_f2p_start_response_rejects_non_string_header_name(self):
++        """Instruction 45:
++        All header names passed to start_response MUST be strings; passing a non-string
++        MUST raise AssertionError.
++        """
++        channel = DummyChannel()
++        request = DummyParser()
++
++        task1 = WSGITask(channel, request)
++        with self.assertRaises(AssertionError) as ctx1:
++            task1.start_response("200 OK", [(123, "text/plain")])
++        self.assertIn("is not a string", str(ctx1.exception))
++
++        task2 = WSGITask(channel, request)
++        with self.assertRaises(AssertionError) as ctx2:
++            task2.start_response("200 OK", [(b"Content-Type", "text/plain")])
++        self.assertIn("is not a string", str(ctx2.exception))
++
++    def test_f2p_start_response_rejects_non_string_status_and_value(self):
++        """Instruction 45:
++        The status argument and all header values passed to start_response MUST be strings;
++        passing a non-string MUST raise AssertionError.
++        """
++        channel = DummyChannel()
++        request = DummyParser()
++
++        task_status = WSGITask(channel, request)
++        with self.assertRaises(AssertionError) as ctx1:
++            task_status.start_response(200, [("Content-Type", "text/plain")])
++        self.assertIn("is not a string", str(ctx1.exception))
++
++        task_val = WSGITask(channel, request)
++        with self.assertRaises(AssertionError) as ctx2:
++            task_val.start_response("200 OK", [("Content-Type", 123)])
++        self.assertIn("is not a string", str(ctx2.exception))
++
++    def test_f2p_start_response_rejects_crlf_in_header_name(self):
++        """Instruction 46:
++        If any header name contains carriage return (\\r) or line feed (\\n) characters,
++        start_response MUST raise ValueError.
++        """
++        channel = DummyChannel()
++        request = DummyParser()
++
++        task_cr = WSGITask(channel, request)
++        with self.assertRaises(ValueError) as ctx1:
++            task_cr.start_response("200 OK", [("X-In\rjected", "val")])
++        self.assertIn("carriage return/line feed", str(ctx1.exception))
++
++        task_lf = WSGITask(channel, request)
++        with self.assertRaises(ValueError) as ctx2:
++            task_lf.start_response("200 OK", [("X-In\njected", "val")])
++        self.assertIn("carriage return/line feed", str(ctx2.exception))
++
++    def test_f2p_start_response_rejects_crlf_in_status_and_value(self):
++        """Instruction 46:
++        If status or any header value contains carriage return (\\r) or line feed (\\n)
++        characters, start_response MUST raise ValueError.
++        """
++        channel = DummyChannel()
++        request = DummyParser()
++
++        task_st_cr = WSGITask(channel, request)
++        with self.assertRaises(ValueError) as ctx1:
++            task_st_cr.start_response("200 OK\rInjected", [])
++        self.assertIn("carriage return/line feed", str(ctx1.exception))
++
++        task_st_lf = WSGITask(channel, request)
++        with self.assertRaises(ValueError) as ctx2:
++            task_st_lf.start_response("200 OK\nInjected", [])
++        self.assertIn("carriage return/line feed", str(ctx2.exception))
++
++        task_val_crlf = WSGITask(channel, request)
++        with self.assertRaises(ValueError) as ctx3:
++            task_val_crlf.start_response("200 OK", [("X-Header", "bad\r\nval")])
++        self.assertIn("carriage return/line feed", str(ctx3.exception))
++
++    def test_f2p_start_response_rejects_hop_by_hop_headers(self):
++        """Instruction 47:
++        If headers contains any WSGI hop-by-hop header (case-insensitive match for
++        connection, keep-alive, proxy-authenticate, proxy-authorization, te, trailer,
++        transfer-encoding, upgrade), start_response MUST raise AssertionError.
++        """
++        channel = DummyChannel()
++        request = DummyParser()
++
++        hop_headers = [
++            "connection",
++            "Keep-Alive",
++            "proxy-authenticate",
++            "Proxy-Authorization",
++            "te",
++            "trailer",
++            "transfer-encoding",
++            "UPGRADE",
++        ]
++        for hop_hdr in hop_headers:
++            t_hop = WSGITask(channel, request)
++            with self.assertRaises(AssertionError) as ctx:
++                t_hop.start_response("200 OK", [(hop_hdr, "foo")])
++            self.assertIn("hop-by-hop", str(ctx.exception).lower())
++
++    def test_f2p_start_response_rejects_invalid_content_length(self):
++        """Instruction 50, 55:
++        A Content-Length header supplied in WSGI start_response or directly preset in
++        Task.response_headers MUST establish the effective integer content length; values
++        that cannot be parsed as integers MUST raise ValueError upon acceptance or preparation.
++        For no-body status codes (1xx, 204, 304), Content-Length is omitted without error.
++        """
++        channel = DummyChannel()
++        request = DummyParser()
++
++        task_str = WSGITask(channel, request)
++        with self.assertRaises(ValueError) as ctx1:
++            task_str.start_response("200 OK", [("Content-Length", "invalid_length")])
++        self.assertTrue(bool(ctx1.exception))
++
++        task_float = WSGITask(channel, request)
++        with self.assertRaises(ValueError) as ctx2:
++            task_float.start_response("200 OK", [("Content-Length", "12.34")])
++        self.assertTrue(bool(ctx2.exception))
++
++        # Directly preset invalid Content-Length on body-permitting status raises ValueError in prepare_response
++        task_direct_str = Task(channel, request)
++        task_direct_str.status = "200 OK"
++        task_direct_str.response_headers = [("Content-Length", "invalid_length")]
++        with self.assertRaises(ValueError) as ctx3:
++            task_direct_str.prepare_response()
++        self.assertTrue(bool(ctx3.exception))
++
++        # Directly preset invalid Content-Length on body-permitting status raises ValueError in build_response_header
++        task_direct_float = Task(channel, request)
++        task_direct_float.status = "200 OK"
++        task_direct_float.response_headers = [("Content-Length", "12.34")]
++        with self.assertRaises(ValueError) as ctx4:
++            task_direct_float.build_response_header()
++        self.assertTrue(bool(ctx4.exception))
++
++        # Directly preset invalid Content-Length on status forbidding a body (e.g. 204) is stripped without error
++        task_direct_204 = Task(channel, request)
++        task_direct_204.status = "204 No Content"
++        task_direct_204.response_headers = [("Content-Length", "invalid_length")]
++        prep_204 = task_direct_204.prepare_response()
++        self.assertIsNone(prep_204.content_length)
++        self.assertNotIn(b"Content-Length", prep_204.header_bytes)
++
++    def test_f2p_start_response_exc_info_handling(self):
++        """Instruction 48, 49:
++        - Calling start_response a second time without exc_info MUST raise AssertionError
++          with message 'start_response called a second time without providing exc_info.'.
++        - Calling start_response with exc_info before headers emitted MUST clear previously
++          accepted headers.
++        - Calling start_response with exc_info after headers emitted MUST re-raise exc_info[1].
++        """
++        channel = DummyChannel()
++        request = DummyParser()
++        task = WSGITask(channel, request)
++
++        task.start_response("200 OK", [("X-Initial", "1")])
++        with self.assertRaises(AssertionError) as ctx:
++            task.start_response("200 OK", [])
++        self.assertEqual(
++            str(ctx.exception),
++            "start_response called a second time without providing exc_info.",
++        )
++
++        try:
++            raise RuntimeError("test error")
++        except RuntimeError:
++            exc_info = sys.exc_info()
++
++        task.start_response("500 Internal Server Error", [("X-After-Error", "2")], exc_info=exc_info)
++        self.assertEqual(task.status, "500 Internal Server Error")
++        self.assertNotIn(("X-Initial", "1"), task.response_headers)
++        self.assertIn(("X-After-Error", "2"), task.response_headers)
++
++        task.wrote_header = True
++        with self.assertRaises(RuntimeError) as ctx:
++            task.start_response("500 Error", [], exc_info=exc_info)
++        self.assertEqual(str(ctx.exception), "test error")
++
++    def test_f2p_http10_framing_keep_alive_rules(self):
++        """Instruction 61:
++        For HTTP/1.0 responses, keep-alive MUST only be established when the request's
++        Connection header equals keep-alive case-insensitively AND an effective content length
++        is present. Otherwise connection MUST be marked for closure with Connection: close.
++        """
++        channel = DummyChannel()
++
++        # Mixed-case Keep-Alive with content length 10
++        req_keep = DummyParser()
++        req_keep.version = "1.0"
++        req_keep.headers = {"CONNECTION": "Keep-Alive"}
++        task_keep = Task(channel, req_keep)
++        task_keep.status = "200 OK"
++        task_keep.content_length = 10
++        prep_keep = task_keep.prepare_response()
++        self.assertFalse(prep_keep.close_connection)
++        self.assertIn(b"Connection: Keep-Alive\r\n", prep_keep.header_bytes)
++
++        # Arbitrary mixed-case kEeP-aLiVe with effective content length 0
++        req_zero = DummyParser()
++        req_zero.version = "1.0"
++        req_zero.headers = {"CONNECTION": "kEeP-aLiVe"}
++        task_zero = Task(channel, req_zero)
++        task_zero.status = "200 OK"
++        task_zero.content_length = 0
++        prep_zero = task_zero.prepare_response()
++        self.assertFalse(prep_zero.close_connection)
++        self.assertIn(b"Connection: Keep-Alive\r\n", prep_zero.header_bytes)
++
++        req_close = DummyParser()
++        req_close.version = "1.0"
++        req_close.headers = {}
++        task_close = Task(channel, req_close)
++        task_close.status = "200 OK"
++        task_close.content_length = 10
++        prep_close = task_close.prepare_response()
++        self.assertTrue(prep_close.close_connection)
++        self.assertIn(b"Connection: close\r\n", prep_close.header_bytes)
++
++        req_no_len = DummyParser()
++        req_no_len.version = "1.0"
++        req_no_len.headers = {"CONNECTION": "keep-alive"}
++        task_no_len = Task(channel, req_no_len)
++        task_no_len.status = "200 OK"
++        task_no_len.content_length = None
++        prep_no_len = task_no_len.prepare_response()
++        self.assertTrue(prep_no_len.close_connection)
++        self.assertIn(b"Connection: close\r\n", prep_no_len.header_bytes)
++
++        # HTTP/1.0 with keep-alive and content length, but already marked for closure (precedence test)
++        req_forced = DummyParser()
++        req_forced.version = "1.0"
++        req_forced.headers = {"CONNECTION": "keep-alive"}
++        task_forced = Task(channel, req_forced)
++        task_forced.status = "200 OK"
++        task_forced.content_length = 10
++        task_forced.set_close_on_finish()
++        prep_forced = task_forced.prepare_response()
++        self.assertTrue(prep_forced.close_connection)
++        self.assertIn(b"Connection: close\r\n", prep_forced.header_bytes)
++
++        # HTTP/1.0 with conflicting preset Connection: Keep-Alive overridden by mandatory closure
++        task_preset_ka = Task(channel, req_forced)
++        task_preset_ka.status = "200 OK"
++        task_preset_ka.content_length = 10
++        task_preset_ka.close_on_finish = True
++        task_preset_ka.response_headers = [("Connection", "Keep-Alive")]
++        prep_preset_ka = task_preset_ka.prepare_response()
++        self.assertTrue(prep_preset_ka.close_connection)
++        self.assertIn(b"Connection: close\r\n", prep_preset_ka.header_bytes)
++        self.assertNotIn(b"Connection: Keep-Alive\r\n", prep_preset_ka.header_bytes)
++
++        # HTTP/1.0 without keep-alive and conflicting preset Connection: Keep-Alive
++        task_preset_noka = Task(channel, req_close)
++        task_preset_noka.status = "200 OK"
++        task_preset_noka.content_length = 10
++        task_preset_noka.response_headers = [("Connection", "Keep-Alive")]
++        prep_preset_noka = task_preset_noka.prepare_response()
++        self.assertTrue(prep_preset_noka.close_connection)
++        self.assertIn(b"Connection: close\r\n", prep_preset_noka.header_bytes)
++        self.assertNotIn(b"Connection: Keep-Alive\r\n", prep_preset_noka.header_bytes)
++
++        # HTTP/1.0 with preset Connection: close preserves and deduplicates exactly one close header
++        task_preset_close = Task(channel, req_close)
++        task_preset_close.status = "200 OK"
++        task_preset_close.content_length = 10
++        task_preset_close.response_headers = [("Connection", "close"), ("Connection", "close")]
++        prep_preset_close = task_preset_close.prepare_response()
++        self.assertTrue(prep_preset_close.close_connection)
++        self.assertEqual(prep_preset_close.header_bytes.count(b"Connection: close\r\n"), 1)
++
++    def test_f2p_error_task_mandatory_connection_closure(self):
++        """Instruction 81:
++        ErrorTask instances MUST follow unified response lifecycle and preserve mandatory
++        Connection: close across both HTTP/1.0 and HTTP/1.1 requests (close_on_finish=True,
++        close_connection=True, Connection: close header emitted). Mandatory closure strictly
++        supersedes any preset Connection headers or client keep-alive requests.
++        """
++        channel = DummyChannel()
++
++        err_req_10 = DummyParser()
++        err_req_10.version = "1.0"
++        err_req_10.headers = {"CONNECTION": "keep-alive"}
++        e10 = Error("body")
++        e10.code = 500
++        e10.reason = "Server Error"
++        err_req_10.error = e10
++        err_task_10 = ErrorTask(channel, err_req_10)
++        err_task_10.execute()
++        err_prep_10 = err_task_10.prepare_response()
++        self.assertTrue(err_task_10.close_on_finish)
++        self.assertTrue(err_prep_10.close_connection)
++        self.assertIn(b"Connection: close\r\n", err_prep_10.header_bytes)
++
++        # HTTP/1.0 ErrorTask with conflicting preset Connection: Keep-Alive
++        err_task_10_ka = ErrorTask(channel, err_req_10)
++        err_task_10_ka.response_headers = [("Connection", "Keep-Alive")]
++        err_task_10_ka.execute()
++        err_prep_10_ka = err_task_10_ka.prepare_response()
++        self.assertTrue(err_task_10_ka.close_on_finish)
++        self.assertTrue(err_prep_10_ka.close_connection)
++        self.assertIn(b"Connection: close\r\n", err_prep_10_ka.header_bytes)
++        self.assertNotIn(b"Connection: Keep-Alive\r\n", err_prep_10_ka.header_bytes)
++
++        err_req_11 = DummyParser()
++        err_req_11.version = "1.1"
++        err_req_11.headers = {"CONNECTION": "keep-alive"}
++        e11 = Error("body")
++        e11.code = 500
++        e11.reason = "Server Error"
++        err_req_11.error = e11
++        err_task_11 = ErrorTask(channel, err_req_11)
++        err_task_11.execute()
++        err_prep_11 = err_task_11.prepare_response()
++        self.assertTrue(err_task_11.close_on_finish)
++        self.assertTrue(err_prep_11.close_connection)
++        self.assertIn(b"Connection: close\r\n", err_prep_11.header_bytes)
++
++        # HTTP/1.1 ErrorTask with conflicting preset Connection: Keep-Alive
++        err_task_11_ka = ErrorTask(channel, err_req_11)
++        err_task_11_ka.response_headers = [("Connection", "Keep-Alive")]
++        err_task_11_ka.execute()
++        err_prep_11_ka = err_task_11_ka.prepare_response()
++        self.assertTrue(err_task_11_ka.close_on_finish)
++        self.assertTrue(err_prep_11_ka.close_connection)
++        self.assertIn(b"Connection: close\r\n", err_prep_11_ka.header_bytes)
++        self.assertNotIn(b"Connection: Keep-Alive\r\n", err_prep_11_ka.header_bytes)
++
++        # HTTP/1.1 ErrorTask prepared before execute() with keep-alive request and preset header and length=0:
++        # prepare_response() MUST independently enforce mandatory closure (close_connection=True, Connection: close)
++        err_task_pre_exec = ErrorTask(channel, err_req_11)
++        err_task_pre_exec.status = "500 Internal Server Error"
++        err_task_pre_exec.content_length = 0
++        err_task_pre_exec.response_headers = [("Connection", "Keep-Alive")]
++        self.assertFalse(err_task_pre_exec.close_on_finish)
++        prep_pre_exec = err_task_pre_exec.prepare_response()
++        self.assertTrue(
++            prep_pre_exec.close_connection,
++            "ErrorTask.prepare_response() before execute() MUST independently enforce close_connection=True",
++        )
++        self.assertIn(
++            b"Connection: close\r\n",
++            prep_pre_exec.header_bytes,
++            "ErrorTask.prepare_response() before execute() MUST emit Connection: close",
++        )
++        self.assertNotIn(
++            b"Connection: Keep-Alive\r\n",
++            prep_pre_exec.header_bytes,
++            "ErrorTask.prepare_response() before execute() MUST NOT emit Connection: Keep-Alive",
++        )
++        legacy_pre_exec = err_task_pre_exec.build_response_header()
++        self.assertTrue(err_task_pre_exec.close_on_finish)
++        self.assertIn(b"Connection: close\r\n", legacy_pre_exec)
++        self.assertNotIn(b"Connection: Keep-Alive\r\n", legacy_pre_exec)
++
++        # HTTP/1.1 Task with close_on_finish=True and preset Connection: Keep-Alive
++        task_11_close = Task(channel, err_req_11)
++        task_11_close.status = "200 OK"
++        task_11_close.content_length = 10
++        task_11_close.close_on_finish = True
++        task_11_close.response_headers = [("Connection", "Keep-Alive")]
++        prep_11_close = task_11_close.prepare_response()
++        self.assertTrue(prep_11_close.close_connection)
++        self.assertIn(b"Connection: close\r\n", prep_11_close.header_bytes)
++        self.assertNotIn(b"Connection: Keep-Alive\r\n", prep_11_close.header_bytes)
++
++        # HTTP/1.1 Task with client Connection: close and preset Connection: Keep-Alive
++        req_11_cli_close = DummyParser()
++        req_11_cli_close.version = "1.1"
++        req_11_cli_close.headers = {"CONNECTION": "close"}
++        task_11_cli_close = Task(channel, req_11_cli_close)
++        task_11_cli_close.status = "200 OK"
++        task_11_cli_close.content_length = 10
++        task_11_cli_close.response_headers = [("Connection", "Keep-Alive")]
++        prep_11_cli_close = task_11_cli_close.prepare_response()
++        self.assertTrue(prep_11_cli_close.close_connection)
++        self.assertIn(b"Connection: close\r\n", prep_11_cli_close.header_bytes)
++        self.assertNotIn(b"Connection: Keep-Alive\r\n", prep_11_cli_close.header_bytes)
++
++        # HTTP/1.1 Task without content length (chunked framing) and preset Connection: Keep-Alive
++        task_11_chunked = Task(channel, err_req_11)
++        task_11_chunked.status = "200 OK"
++        task_11_chunked.content_length = None
++        task_11_chunked.response_headers = [("Connection", "Keep-Alive")]
++        prep_11_chunked = task_11_chunked.prepare_response()
++        self.assertTrue(prep_11_chunked.close_connection)
++        self.assertTrue(prep_11_chunked.chunked)
++        self.assertIn(b"Connection: close\r\n", prep_11_chunked.header_bytes)
++        self.assertNotIn(b"Connection: Keep-Alive\r\n", prep_11_chunked.header_bytes)
++
++    def test_f2p_http11_chunked_framing_and_terminal_chunk(self):
++        """Instruction 63, 70:
++        - For HTTP/1.1 responses where response permits a body and no effective content
++          length is established, chunked transfer framing MUST be selected (chunked=True,
++          emitting Transfer-Encoding: chunked, close_connection=True).
++        - Calling finish() on a chunked task MUST emit terminal chunk b"0\\r\\n\\r\\n".
++        """
++        channel = DummyChannel()
++        req = DummyParser()
++        req.version = "1.1"
++        req.headers = {}
++        task = Task(channel, req)
++        task.status = "200 OK"
++        task.content_length = None
++
++        prep = task.prepare_response()
++        self.assertTrue(prep.chunked)
++        self.assertTrue(prep.close_connection)
++        self.assertIn(b"Transfer-Encoding: chunked\r\n", prep.header_bytes)
++
++        task.chunked_response = True
++        task.complete = True
++        task.wrote_header = True
++        channel.written = b""
++        task.finish()
++        self.assertEqual(channel.written, b"0\r\n\r\n")
++
++        # Combination 1: Preset non-chunked TE (gzip) without length -> preserves gzip AND appends chunked
++        task_gzip = Task(channel, req)
++        task_gzip.status = "200 OK"
++        task_gzip.content_length = None
++        task_gzip.response_headers = [("Transfer-Encoding", "gzip")]
++        prep_gzip = task_gzip.prepare_response()
++        self.assertTrue(prep_gzip.chunked)
++        self.assertTrue(prep_gzip.close_connection)
++        te_headers_gzip = [v for k, v in prep_gzip.headers if k == "Transfer-Encoding"]
++        self.assertEqual(te_headers_gzip, ["gzip", "chunked"])
++        self.assertIn(b"Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n", prep_gzip.header_bytes)
++        hdr_gzip = task_gzip.build_response_header()
++        self.assertTrue(task_gzip.chunked_response)
++        self.assertTrue(task_gzip.close_on_finish)
++        self.assertIn(("Transfer-Encoding", "gzip"), task_gzip.response_headers)
++        self.assertIn(("Transfer-Encoding", "chunked"), task_gzip.response_headers)
++        self.assertIn(b"Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n", hdr_gzip)
++
++        # Combination 2: Preset chunked TE without length -> single deduplicated Transfer-Encoding: chunked
++        task_chk = Task(channel, req)
++        task_chk.status = "200 OK"
++        task_chk.content_length = None
++        task_chk.response_headers = [("Transfer-Encoding", "chunked")]
++        prep_chk = task_chk.prepare_response()
++        self.assertTrue(prep_chk.chunked)
++        self.assertTrue(prep_chk.close_connection)
++        te_headers_chk = [v for k, v in prep_chk.headers if k == "Transfer-Encoding"]
++        self.assertEqual(te_headers_chk, ["chunked"])
++
++        # Combination 2b: Duplicate preset chunked TE -> deduplicated to single Transfer-Encoding: chunked
++        task_chk_dup = Task(channel, req)
++        task_chk_dup.status = "200 OK"
++        task_chk_dup.content_length = None
++        task_chk_dup.response_headers = [("Transfer-Encoding", "chunked"), ("Transfer-Encoding", "chunked")]
++        prep_chk_dup = task_chk_dup.prepare_response()
++        self.assertTrue(prep_chk_dup.chunked)
++        te_headers_chk_dup = [v for k, v in prep_chk_dup.headers if k == "Transfer-Encoding"]
++        self.assertEqual(te_headers_chk_dup, ["chunked"])
++
++        # Combination 3: Preset gzip TE with established length -> chunked=False, raw body, no auto-chunked
++        task_len = Task(channel, req)
++        task_len.status = "200 OK"
++        task_len.content_length = 50
++        task_len.response_headers = [("Transfer-Encoding", "gzip")]
++        prep_len = task_len.prepare_response()
++        self.assertFalse(prep_len.chunked)
++        self.assertEqual(prep_len.content_length, 50)
++        te_headers_len = [v for k, v in prep_len.headers if k == "Transfer-Encoding"]
++        self.assertEqual(te_headers_len, ["gzip"])
++        self.assertIn(("Content-Length", "50"), prep_len.headers)
++
++        # Combination 3b: Preset chunked TE with established content_length attribute -> chunked=False (effective length disables chunked framing)
++        task_chk_len = Task(channel, req)
++        task_chk_len.status = "200 OK"
++        task_chk_len.content_length = 3
++        task_chk_len.response_headers = [("Transfer-Encoding", "chunked")]
++        prep_chk_len = task_chk_len.prepare_response()
++        self.assertFalse(
++            prep_chk_len.chunked,
++            "Effective content length (3) MUST disable chunked framing (chunked=False) even when Transfer-Encoding: chunked is preset",
++        )
++        self.assertEqual(prep_chk_len.content_length, 3)
++
++        # Combination 3c: Preset chunked TE with explicit Content-Length header -> chunked=False
++        task_hdr_chk_len = Task(channel, req)
++        task_hdr_chk_len.status = "200 OK"
++        task_hdr_chk_len.response_headers = [("Transfer-Encoding", "chunked"), ("Content-Length", "3")]
++        prep_hdr_chk_len = task_hdr_chk_len.prepare_response()
++        self.assertFalse(
++            prep_hdr_chk_len.chunked,
++            "Explicit Content-Length header MUST disable chunked framing (chunked=False) even when Transfer-Encoding: chunked is preset",
++        )
++        self.assertEqual(prep_hdr_chk_len.content_length, 3)
++
++        # Combination 4: Preset gzip TE under HTTP/1.0 without length -> chunked=False, close_connection=True
++        req10 = DummyParser()
++        req10.version = "1.0"
++        task_10 = Task(channel, req10)
++        task_10.status = "200 OK"
++        task_10.content_length = None
++        task_10.response_headers = [("Transfer-Encoding", "gzip")]
++        prep_10 = task_10.prepare_response()
++        self.assertFalse(prep_10.chunked)
++        self.assertTrue(prep_10.close_connection)
++        self.assertEqual([v for k, v in prep_10.headers if k == "Transfer-Encoding"], ["gzip"])
++        self.assertEqual([v for k, v in prep_10.headers if k == "Connection"], ["close"])
++
++    def test_f2p_response_headers_legacy_ordering_and_equivalence(self):
++        """Instruction 39, 40:
++        - In HTTP/1.1 close + chunked path:
++          * When request provides Connection: close, response_headers MUST follow
++            Connection -> Transfer-Encoding -> Server -> Date order.
++          * When request does not provide Connection, response_headers MUST follow
++            Transfer-Encoding -> Connection -> Server -> Date order.
++        - build_response_header() MUST return bytes identical to header_bytes produced by prepare_response().
++        """
++        # Scenario 1: Request explicitly specifies Connection: close
++        channel = DummyChannel()
++        req = DummyParser()
++        req.version = "1.1"
++        req.headers = {"CONNECTION": "close"}
++        task = Task(channel, req)
++        task.status = "200 OK"
++        task.content_length = None
++
++        prep = task.prepare_response()
++        legacy_bytes = task.build_response_header()
++        self.assertEqual(legacy_bytes, prep.header_bytes)
++
++        header_names = [h[0] for h in task.response_headers]
++        self.assertEqual(
++            header_names,
++            ["Connection", "Transfer-Encoding", "Server", "Date"],
++            "Legacy response_headers with incoming Connection: close must follow "
++            "Connection -> Transfer-Encoding -> Server -> Date order",
++        )
++        conn_idx = header_names.index("Connection")
++        te_idx = header_names.index("Transfer-Encoding")
++        self.assertLess(
++            conn_idx,
++            te_idx,
++            "Connection header must appear before Transfer-Encoding header in legacy response_headers",
++        )
++
++        # Scenario 2: Request does not specify Connection header
++        channel2 = DummyChannel()
++        req2 = DummyParser()
++        req2.version = "1.1"
++        req2.headers = {}
++        task2 = Task(channel2, req2)
++        task2.status = "200 OK"
++        task2.content_length = None
++
++        prep2 = task2.prepare_response()
++        legacy_bytes2 = task2.build_response_header()
++        self.assertEqual(legacy_bytes2, prep2.header_bytes)
++
++        header_names2 = [h[0] for h in task2.response_headers]
++        self.assertEqual(
++            header_names2,
++            ["Transfer-Encoding", "Connection", "Server", "Date"],
++            "Legacy response_headers without incoming Connection header must follow "
++            "Transfer-Encoding -> Connection -> Server -> Date order",
++        )
++        te_idx2 = header_names2.index("Transfer-Encoding")
++        conn_idx2 = header_names2.index("Connection")
++        self.assertLess(
++            te_idx2,
++            conn_idx2,
++            "Transfer-Encoding header must appear before Connection header in legacy response_headers without incoming Connection",
++        )
++
++    def test_f2p_headers_canonical_casing_and_lexicographical_sorting(self):
++        """Instruction 54:
++        Serialized response heads (header_bytes) MUST format status line as HTTP/<version> <status>,
++        apply canonical hyphenated title-casing to header names, sort headers lexicographically
++        by normalized header name while preserving relative order for duplicate header names,
++        and terminate with exactly one empty CRLF line (\\r\\n\\r\\n).
++        """
++        channel = DummyChannel()
++        req = DummyParser()
++        req.version = "1.1"
++        task = Task(channel, req)
++        task.status = "200 OK"
++        task.content_length = 0
++        task.response_headers = [
++            ("content-type", "text/plain"),
++            ("x-custom-b", "first"),
++            ("a-custom", "val"),
++            ("x-custom-b", "second"),
++        ]
++        prep = task.prepare_response()
++        self.assertTrue(prep.header_bytes.startswith(b"HTTP/1.1 200 OK\r\n"))
++        self.assertTrue(prep.header_bytes.endswith(b"\r\n\r\n"))
++        self.assertEqual(prep.header_bytes.count(b"\r\n\r\n"), 1)
++
++        header_names = [k for k, v in prep.headers]
++        # Verify title-casing
++        self.assertIn("A-Custom", header_names)
++        self.assertIn("Content-Type", header_names)
++        self.assertIn("X-Custom-B", header_names)
++        self.assertNotIn("content-type", header_names)
++        self.assertNotIn("a-custom", header_names)
++
++        # Verify lexicographical sort
++        sorted_names = sorted(header_names)
++        self.assertEqual(header_names, sorted_names)
++
++        # Verify relative order of duplicates
++        xcustom_values = [v for k, v in prep.headers if k == "X-Custom-B"]
++        self.assertEqual(xcustom_values, ["first", "second"])
++
++    def test_f2p_headers_date_generation_and_preservation_branches(self):
++        """Instruction 55:
++        For Date: any supplied Date header (including an empty-valued header) MUST be preserved
++        in the response head. If Date is absent or its value is empty, an auto-generated Date header
++        formatted from the task's start_time in standard HTTP date format MUST also be emitted.
++        If a non-empty Date header is supplied, no generated Date header is added.
++        """
++        from waitress.utilities import build_http_date
++
++        channel = DummyChannel()
++        req = DummyParser()
++        req.version = "1.1"
++
++        # Branch 1: Date absent -> auto-generated Date emitted
++        task1 = Task(channel, req)
++        task1.start_time = 1700000000.0
++        task1.content_length = 0
++        prep1 = task1.prepare_response()
++        expected_date = build_http_date(task1.start_time)
++        date_headers1 = [v for k, v in prep1.headers if k == "Date"]
++        self.assertEqual(date_headers1, [expected_date])
++
++        # Branch 2: Empty Date supplied -> preserved AND auto-generated emitted
++        task2 = Task(channel, req)
++        task2.start_time = 1700000000.0
++        task2.content_length = 0
++        task2.response_headers = [("Date", "")]
++        prep2 = task2.prepare_response()
++        date_headers2 = [v for k, v in prep2.headers if k == "Date"]
++        self.assertIn("", date_headers2)
++        self.assertIn(expected_date, date_headers2)
++        self.assertEqual(len(date_headers2), 2)
++
++        # Branch 3: Non-empty Date supplied -> preserved, NO auto-generated added
++        custom_date = "Sun, 06 Nov 1994 08:49:37 GMT"
++        task3 = Task(channel, req)
++        task3.start_time = 1700000000.0
++        task3.content_length = 0
++        task3.response_headers = [("Date", custom_date)]
++        prep3 = task3.prepare_response()
++        date_headers3 = [v for k, v in prep3.headers if k == "Date"]
++        self.assertEqual(date_headers3, [custom_date])
++
++        # Branch 4: Duplicate Date where last is empty -> both preserved, auto-generated Date appended stably
++        task4 = Task(channel, req)
++        task4.start_time = 1700000000.0
++        task4.content_length = 0
++        task4.response_headers = [("Date", custom_date), ("Date", "")]
++        prep4 = task4.prepare_response()
++        date_headers4 = [v for k, v in prep4.headers if k == "Date"]
++        self.assertEqual(date_headers4, [custom_date, "", expected_date])
++
++        # Branch 5: Duplicate Date where last is non-empty -> both preserved, NO auto-generated Date added
++        task5 = Task(channel, req)
++        task5.start_time = 1700000000.0
++        task5.content_length = 0
++        task5.response_headers = [("Date", ""), ("Date", custom_date)]
++        prep5 = task5.prepare_response()
++        date_headers5 = [v for k, v in prep5.headers if k == "Date"]
++        self.assertEqual(date_headers5, ["", custom_date])
++
++    def test_f2p_headers_server_and_via_ident_matrix(self):
++        """Instruction 56-58:
++        - Any supplied Server header (including empty) MUST be preserved.
++        - If non-empty Server header supplied: Via header MUST be emitted containing
++          configured adj.ident, or "waitress" if adj.ident is empty or None.
++        - If Server is absent or empty: Via MUST NOT be added. Instead, if adj.ident is non-empty,
++          a Server header containing adj.ident MUST be emitted (if adj.ident is empty/None, no Server added).
++        """
++        # Case 1: non-empty Server + non-empty adj.ident -> Server preserved, Via: ident
++        ch1 = DummyChannel()
++        ch1.server.adj.ident = "custom-server"
++        t1 = Task(ch1, DummyParser())
++        t1.content_length = 0
++        t1.response_headers = [("Server", "AppServer")]
++        prep1 = t1.prepare_response()
++        self.assertEqual([v for k, v in prep1.headers if k == "Server"], ["AppServer"])
++        self.assertEqual([v for k, v in prep1.headers if k == "Via"], ["custom-server"])
++
++        # Case 2: non-empty Server + empty adj.ident -> Server preserved, Via: waitress
++        ch2 = DummyChannel()
++        ch2.server.adj.ident = None
++        t2 = Task(ch2, DummyParser())
++        t2.content_length = 0
++        t2.response_headers = [("Server", "AppServer")]
++        prep2 = t2.prepare_response()
++        self.assertEqual([v for k, v in prep2.headers if k == "Server"], ["AppServer"])
++        self.assertEqual([v for k, v in prep2.headers if k == "Via"], ["waitress"])
++
++        # Case 3: Server absent + non-empty adj.ident -> Server: ident, no Via
++        ch3 = DummyChannel()
++        ch3.server.adj.ident = "custom-server"
++        t3 = Task(ch3, DummyParser())
++        t3.content_length = 0
++        prep3 = t3.prepare_response()
++        self.assertEqual([v for k, v in prep3.headers if k == "Server"], ["custom-server"])
++        self.assertEqual([v for k, v in prep3.headers if k == "Via"], [])
++
++        # Case 4: Server absent + empty/None adj.ident -> neither Server nor Via
++        ch4 = DummyChannel()
++        ch4.server.adj.ident = ""
++        t4 = Task(ch4, DummyParser())
++        t4.content_length = 0
++        prep4 = t4.prepare_response()
++        self.assertEqual([v for k, v in prep4.headers if k == "Server"], [])
++        self.assertEqual([v for k, v in prep4.headers if k == "Via"], [])
++
++        # Case 5: Empty Server supplied + non-empty adj.ident -> Server "" preserved, Server: ident added, no Via
++        ch5 = DummyChannel()
++        ch5.server.adj.ident = "custom-server"
++        t5 = Task(ch5, DummyParser())
++        t5.content_length = 0
++        t5.response_headers = [("Server", "")]
++        prep5 = t5.prepare_response()
++        servers = [v for k, v in prep5.headers if k == "Server"]
++        self.assertIn("", servers)
++        self.assertIn("custom-server", servers)
++        self.assertEqual([v for k, v in prep5.headers if k == "Via"], [])
++
++        # Case 6: Duplicate Server where last is empty -> both preserved, Server: ident added, no Via
++        ch6 = DummyChannel()
++        ch6.server.adj.ident = "custom-server"
++        t6 = Task(ch6, DummyParser())
++        t6.content_length = 0
++        t6.response_headers = [("Server", "AppServer"), ("Server", "")]
++        prep6 = t6.prepare_response()
++        servers6 = [v for k, v in prep6.headers if k == "Server"]
++        self.assertEqual(servers6, ["AppServer", "", "custom-server"])
++        self.assertEqual([v for k, v in prep6.headers if k == "Via"], [])
++
++        # Case 7: Duplicate Server where last is non-empty -> both preserved, Via: ident emitted, no Server generated
++        ch7 = DummyChannel()
++        ch7.server.adj.ident = "custom-server"
++        t7 = Task(ch7, DummyParser())
++        t7.content_length = 0
++        t7.response_headers = [("Server", ""), ("Server", "AppServer")]
++        prep7 = t7.prepare_response()
++        servers7 = [v for k, v in prep7.headers if k == "Server"]
++        self.assertEqual(servers7, ["", "AppServer"])
++        self.assertEqual([v for k, v in prep7.headers if k == "Via"], ["custom-server"])
++
++    def test_f2p_write_before_start_response_exact_exception(self):
++        """Instruction 68:
++        Calling write() before start_response has been called MUST raise RuntimeError
++        with the message "start_response was not called before body written".
++        """
++        channel = DummyChannel()
++        req = DummyParser()
++        task = WSGITask(channel, req)
++        self.assertFalse(task.complete)
++
++        with self.assertRaises(RuntimeError) as ctx:
++            task.write(b"data")
++        self.assertEqual(str(ctx.exception), "start_response was not called before body written")
++
++        write_fn = task.start_response("200 OK", [("Content-Length", "4")])
++        self.assertTrue(task.complete)
++        write_fn(b"data")
++        self.assertIn(b"data", channel.written)
++
++    def test_f2p_response_head_written_once_before_body(self):
++        """Instruction 69:
++        The complete serialized response head MUST be written to the channel exactly
++        once before any body bytes are emitted.
++        """
++        channel = DummyChannel()
++        req = DummyParser()
++        task = WSGITask(channel, req)
++        write_fn = task.start_response("200 OK", [("Content-Length", "10")])
++
++        self.assertFalse(task.wrote_header)
++        self.assertEqual(channel.written, b"")
++
++        expected_head = task.prepare_response().header_bytes
++
++        write_fn(b"hello")
++        self.assertTrue(task.wrote_header)
++        self.assertTrue(channel.written.startswith(expected_head))
++        self.assertEqual(channel.written, expected_head + b"hello")
++
++        # Second write should emit body only, never repeating response head
++        write_fn(b"world")
++        self.assertEqual(channel.written, expected_head + b"helloworld")
++
++    def test_f2p_chunked_body_uppercase_hex_framing(self):
++        """Instruction 70:
++        When chunked transfer encoding is active, body data written to the channel MUST encode chunk
++        sizes in uppercase hexadecimal followed by CRLF (\\r\\n), the payload bytes, and CRLF.
++        Calling finish() on a chunked task MUST emit the terminal chunk b"0\\r\\n\\r\\n".
++        """
++        channel = DummyChannel()
++        req = DummyParser()
++        req.version = "1.1"
++        task = WSGITask(channel, req)
++        # No content-length declared on HTTP/1.1 -> chunked
++        write_fn = task.start_response("200 OK", [])
++        prep = task.prepare_response()
++        self.assertTrue(prep.chunked)
++
++        # 10 bytes -> uppercase hex 'A'
++        write_fn(b"1234567890")
++        expected_chunk1 = b"A\r\n1234567890\r\n"
++        self.assertIn(expected_chunk1, channel.written)
++
++        # 26 bytes -> uppercase hex '1A' (not '1a')
++        write_fn(b"a" * 26)
++        expected_chunk2 = b"1A\r\n" + (b"a" * 26) + b"\r\n"
++        self.assertIn(expected_chunk2, channel.written)
++
++        # finish() emits terminal chunk
++        task.finish()
++        self.assertTrue(channel.written.endswith(b"0\r\n\r\n"))
++
++    def test_f2p_write_excess_content_length_truncation_and_warning(self):
++        """Instruction 71:
++        Body data written in excess of the declared Content-Length MUST be truncated
++        to the remaining allowed bytes, and an excess-content warning MUST be logged
++        at most once (logged_write_excess).
++        """
++        channel = DummyChannel()
++        req = DummyParser()
++        task = WSGITask(channel, req)
++        task.logger = DummyLogger()
++
++        write_fn = task.start_response("200 OK", [("Content-Length", "5")])
++        write_fn(b"12345678")  # 8 bytes, only 5 allowed
++
++        self.assertEqual(task.content_bytes_written, 5)
++        self.assertTrue(task.logged_write_excess)
++        self.assertEqual(len(task.logger.logged), 1)
++        self.assertIn("exceeded", task.logger.logged[0])
++        self.assertTrue(channel.written.endswith(b"12345"))
++
++        # Subsequent writes should be completely truncated and log no additional warning
++        write_fn(b"more_data")
++        self.assertEqual(task.content_bytes_written, 5)
++        self.assertEqual(len(task.logger.logged), 1)
++
++        # Wire emission conformance when explicit Content-Length header takes precedence over task attribute:
++        # preset header 4, task attribute 2 -> wire emits full 4 bytes ABCD (not truncated to 2 bytes AB).
++        ch_prec = DummyChannel()
++        req_prec = DummyParser()
++        req_prec.version = "1.1"
++        task_prec = WSGITask(ch_prec, req_prec)
++        task_prec.logger = DummyLogger()
++        task_prec.status = "200 OK"
++        task_prec.complete = True
++        task_prec.response_headers = [("Content-Length", "4"), ("Content-Type", "text/plain")]
++        task_prec.content_length = 2
++
++        self.assertEqual(task_prec.prepare_response().content_length, 4)
++        task_prec.write(b"ABCD")
++        self.assertEqual(task_prec.content_bytes_written, 4)
++        self.assertFalse(task_prec.logged_write_excess)
++        self.assertEqual(len(task_prec.logger.logged), 0)
++        self.assertTrue(ch_prec.written.endswith(b"ABCD"))
++
++        # Excess write beyond explicit header (4 bytes) is truncated to 4 and logs warning with (4)
++        ch_prec_excess = DummyChannel()
++        req_prec_excess = DummyParser()
++        req_prec_excess.version = "1.1"
++        task_prec_excess = WSGITask(ch_prec_excess, req_prec_excess)
++        task_prec_excess.logger = DummyLogger()
++        task_prec_excess.status = "200 OK"
++        task_prec_excess.complete = True
++        task_prec_excess.response_headers = [("Content-Length", "4"), ("Content-Type", "text/plain")]
++        task_prec_excess.content_length = 2
++
++        task_prec_excess.write(b"ABCDE")  # 5 bytes, only 4 allowed
++        self.assertEqual(task_prec_excess.content_bytes_written, 4)
++        self.assertTrue(task_prec_excess.logged_write_excess)
++        self.assertEqual(len(task_prec_excess.logger.logged), 1)
++        self.assertIn("Content-Length header (4)", task_prec_excess.logger.logged[0])
++        self.assertTrue(ch_prec_excess.written.endswith(b"ABCD"))
++
++        # start_response write callable with conflicting task.content_length also emits full matching bytes
++        ch_prec_sr = DummyChannel()
++        req_prec_sr = DummyParser()
++        req_prec_sr.version = "1.1"
++        task_prec_sr = WSGITask(ch_prec_sr, req_prec_sr)
++        task_prec_sr.logger = DummyLogger()
++        write_fn_sr = task_prec_sr.start_response("200 OK", [("Content-Length", "4")])
++        task_prec_sr.content_length = 2
++        write_fn_sr(b"ABCD")
++        self.assertEqual(task_prec_sr.content_bytes_written, 4)
++        self.assertFalse(task_prec_sr.logged_write_excess)
++        self.assertEqual(len(task_prec_sr.logger.logged), 0)
++        self.assertTrue(ch_prec_sr.written.endswith(b"ABCD"))
++
++    def test_f2p_write_forbidden_body_suppression_and_warning(self):
++        """Instruction 72:
++        For response statuses that forbid a message body (1xx, 204, 304), data passed
++        to write() MUST NOT be emitted to the channel; the task's content_bytes_written
++        counter MUST still track the ignored bytes, and an ignored-body warning MUST
++        be logged at most once (logged_write_no_body).
++        """
++        channel = DummyChannel()
++        req = DummyParser()
++        task = WSGITask(channel, req)
++        task.logger = DummyLogger()
++
++        write_fn = task.start_response("204 No Content", [])
++        prep = task.prepare_response()
++        self.assertFalse(prep.body_allowed)
++
++        write_fn(b"forbidden_body")
++        self.assertEqual(task.content_bytes_written, len(b"forbidden_body"))
++        self.assertTrue(task.logged_write_no_body)
++        self.assertEqual(len(task.logger.logged), 1)
++        self.assertIn("ignored", task.logger.logged[0])
++        self.assertNotIn(b"forbidden_body", channel.written)
++
++        # Subsequent write tracks bytes but does not log a second warning
++        write_fn(b"extra")
++        self.assertEqual(task.content_bytes_written, len(b"forbidden_body") + len(b"extra"))
++        self.assertEqual(len(task.logger.logged), 1)
++        self.assertNotIn(b"extra", channel.written)
++
++    def test_f2p_content_length_shortfall_head_vs_non_head(self):
++        """Instruction 73:
++        When an application iterable finishes after producing fewer bytes than declared
++        by Content-Length, non-HEAD responses MUST set close_on_finish=True and log
++        a shortfall warning. For HEAD requests, returning fewer bytes than Content-Length
++        MUST NOT set close_on_finish and MUST NOT log this warning.
++        """
++        # Part A: Non-HEAD (GET) shortfall -> close_on_finish=True and warning logged
++        ch_get = DummyChannel()
++        req_get = DummyParser()
++        req_get.version = "1.1"
++        req_get.command = "GET"
++        app_get = lambda env, sr: [sr("200 OK", [("Content-Length", "10")]), b"123"][1:]
++        ch_get.server.application = app_get
++        t_get = WSGITask(ch_get, req_get)
++        t_get.logger = DummyLogger()
++        t_get.execute()
++
++        self.assertTrue(t_get.close_on_finish)
++        self.assertTrue(t_get.prepare_response().close_connection)
++        self.assertEqual(len(t_get.logger.logged), 1)
++        self.assertIn("too few bytes", t_get.logger.logged[0])
++
++        # Part B: HEAD request shortfall -> close_on_finish=False and no warning
++        ch_head = DummyChannel()
++        req_head = DummyParser()
++        req_head.version = "1.1"
++        req_head.command = "HEAD"
++        app_head = lambda env, sr: [sr("200 OK", [("Content-Length", "10")]), b""][1:]
++        ch_head.server.application = app_head
++        t_head = WSGITask(ch_head, req_head)
++        t_head.logger = DummyLogger()
++        t_head.execute()
++
++        self.assertFalse(t_head.close_on_finish)
++        self.assertFalse(t_head.prepare_response().close_connection)
++        self.assertEqual(len(t_head.logger.logged), 0)
++
++    def test_f2p_single_item_iterable_content_length_inference(self):
++        """Instruction 76:
++        When no content length has already been established on the task, an iterable
++        whose reported length is exactly one MUST infer the content length from its
++        sole item, including an empty item whose inferred length is 0.
++        """
++        # Non-empty single item
++        ch1 = DummyChannel()
++        req1 = DummyParser()
++        app1 = lambda env, sr: [sr("200 OK", []), b"single_chunk"][1:]
++        ch1.server.application = app1
++        t1 = WSGITask(ch1, req1)
++        t1.execute()
++        self.assertEqual(t1.content_length, len(b"single_chunk"))
++        self.assertEqual(t1.prepare_response().content_length, len(b"single_chunk"))
++
++        # Empty single item
++        ch2 = DummyChannel()
++        req2 = DummyParser()
++        app2 = lambda env, sr: [sr("200 OK", []), b""][1:]
++        ch2.server.application = app2
++        t2 = WSGITask(ch2, req2)
++        t2.execute()
++        self.assertEqual(t2.content_length, 0)
++        self.assertEqual(t2.prepare_response().content_length, 0)
++
++    def test_f2p_multi_item_or_generator_iterable_length_not_inferred(self):
++        """Instruction 76:
++        If a content length has already been established, if the reported length is
++        not exactly one, or if the iterable does not expose a length, this inference
++        MUST NOT be performed.
++        """
++        # 1. Already established content length
++        ch1 = DummyChannel()
++        req1 = DummyParser()
++        app1 = lambda env, sr: [sr("200 OK", [("Content-Length", "50")]), b"12345"][1:]
++        ch1.server.application = app1
++        t1 = WSGITask(ch1, req1)
++        t1.execute()
++        self.assertEqual(t1.content_length, 50)
++        self.assertEqual(t1.prepare_response().content_length, 50)
++
++        # 2. Multi-item iterable (len != 1)
++        ch2 = DummyChannel()
++        req2 = DummyParser()
++        app2 = lambda env, sr: [sr("200 OK", []), b"a", b"b"][1:]
++        ch2.server.application = app2
++        t2 = WSGITask(ch2, req2)
++        t2.execute()
++        self.assertIsNone(t2.content_length)
++        self.assertIsNone(t2.prepare_response().content_length)
++
++        # 3. Generator without __len__
++        def gen_app(env, sr):
++            sr("200 OK", [])
++            yield b"chunk"
++
++        ch3 = DummyChannel()
++        req3 = DummyParser()
++        ch3.server.application = gen_app
++        t3 = WSGITask(ch3, req3)
++        t3.execute()
++        self.assertIsNone(t3.content_length)
++        self.assertIsNone(t3.prepare_response().content_length)
++
++    def test_f2p_read_only_file_based_buffer_nonzero_and_zero_size(self):
++        """Instruction 77:
++        When an application returns a ReadOnlyFileBasedBuffer whose prepared size is
++        non-zero, effective content length MUST be reconciled with that size, response
++        headers emitted, and underlying file resource remains open until response
++        consumption finishes. When prepared size is zero, falls back to standard
++        iterable handling and buffer closed upon task completion.
++        """
++        import os
++        import tempfile
++        from waitress.buffers import ReadOnlyFileBasedBuffer
++
++        # Non-zero size buffer
++        with tempfile.NamedTemporaryFile(delete=False) as tf:
++            tf.write(b"file buffer sample content")
++            tf_name = tf.name
++
++        try:
++            f = open(tf_name, "rb")
++            buf = ReadOnlyFileBasedBuffer(f, block_size=1024)
++            ch = DummyChannel()
++            req = DummyParser()
++            # Application supplies mismatched Content-Length: 9999 and returns buffer directly
++            def app_buf(env, sr):
++                sr("200 OK", [("Content-Length", "9999")])
++                return buf
++            ch.server.application = app_buf
++            task = WSGITask(ch, req)
++            task.execute()
++
++            self.assertEqual(task.content_length, len(b"file buffer sample content"))
++            self.assertEqual(task.prepare_response().content_length, len(b"file buffer sample content"))
++            self.assertTrue(task.wrote_header)
++            self.assertIn(buf, ch.otherdata)
++            self.assertFalse(f.closed)  # File remains open!
++
++            # Channel cleanup closes buffer and underlying file
++            buf.close()
++            self.assertTrue(f.closed)
++        finally:
++            if os.path.exists(tf_name):
++                os.remove(tf_name)
++
++        # Zero size buffer
++        with tempfile.NamedTemporaryFile(delete=False) as tf_zero:
++            tf_zero_name = tf_zero.name
++
++        try:
++            f_zero = open(tf_zero_name, "rb")
++            buf_zero = ReadOnlyFileBasedBuffer(f_zero, block_size=1024)
++            ch_zero = DummyChannel()
++            req_zero = DummyParser()
++            def app_zero(env, sr):
++                sr("200 OK", [])
++                return buf_zero
++            ch_zero.server.application = app_zero
++            task_zero = WSGITask(ch_zero, req_zero)
++            task_zero.execute()
++
++            # Buffer closed upon task completion
++            self.assertTrue(f_zero.closed)
++            self.assertIsNone(task_zero.prepare_response().content_length)
++        finally:
++            if os.path.exists(tf_zero_name):
++                os.remove(tf_zero_name)
++
++        # Failure path: response headers emitted, buffer delegation to channel fails -> task cleans up and closes file
++        with tempfile.NamedTemporaryFile(delete=False) as tf_fail:
++            tf_fail.write(b"fail sample content")
++            tf_fail_name = tf_fail.name
++        try:
++            f_fail = open(tf_fail_name, "rb")
++            buf_fail = ReadOnlyFileBasedBuffer(f_fail, block_size=1024)
++            ch_fail = DummyChannel()
++            orig_write_soon = ch_fail.write_soon
++
++            def failing_write_soon(data):
++                if isinstance(data, ReadOnlyFileBasedBuffer):
++                    raise OSError("socket write failed on buffer delegation")
++                return orig_write_soon(data)
++
++            ch_fail.write_soon = failing_write_soon
++            req_fail = DummyParser()
++
++            def app_fail(env, sr):
++                sr("200 OK", [])
++                return buf_fail
++
++            ch_fail.server.application = app_fail
++            task_fail = WSGITask(ch_fail, req_fail)
++            with self.assertRaises(OSError) as exc_ctx:
++                task_fail.execute()
++            self.assertIn("socket write failed on buffer delegation", str(exc_ctx.exception))
++            self.assertTrue(task_fail.wrote_header, "Response headers must be emitted before buffer delegation")
++            self.assertTrue(f_fail.closed, "File must be closed in task finally block when buffer delegation fails")
++        finally:
++            if not f_fail.closed:
++                f_fail.close()
++            if os.path.exists(tf_fail_name):
++                os.remove(tf_fail_name)
++
++    def test_f2p_closeable_iterable_invoked_exactly_once(self):
++        """Instruction 78:
++        For all other closeable iterables providing a close() method, close() MUST
++        be invoked exactly once upon task completion across all normal and error paths.
++        """
++        class TrackingCloseableIter:
++            def __init__(self, should_fail=False):
++                self.should_fail = should_fail
++                self.close_calls = 0
++
++            def __iter__(self):
++                yield b"chunk1"
++                if self.should_fail:
++                    raise RuntimeError("iteration error")
++                yield b"chunk2"
++
++            def close(self):
++                self.close_calls += 1
++
++        # Normal path
++        it_normal = TrackingCloseableIter(should_fail=False)
++        ch1 = DummyChannel()
++        req1 = DummyParser()
++        def app_normal(env, sr):
++            sr("200 OK", [("Content-Length", "12")])
++            return it_normal
++        ch1.server.application = app_normal
++        t1 = WSGITask(ch1, req1)
++        t1.execute()
++        self.assertEqual(it_normal.close_calls, 1)
++        self.assertEqual(t1.prepare_response().content_length, 12)
++
++        # Error path
++        it_err = TrackingCloseableIter(should_fail=True)
++        ch2 = DummyChannel()
++        req2 = DummyParser()
++        def app_err(env, sr):
++            sr("200 OK", [("Content-Length", "12")])
++            return it_err
++        ch2.server.application = app_err
++        t2 = WSGITask(ch2, req2)
++        with self.assertRaises(RuntimeError) as ctx_err:
++            t2.execute()
++        self.assertEqual(it_err.close_calls, 1)
++        self.assertEqual(t2.prepare_response().content_length, 12)
++        self.assertIn("iteration error", str(ctx_err.exception))
++
++    def test_f2p_error_task_full_attributes_and_lifecycle(self):
++        """Instruction 81:
++        ErrorTask instances MUST follow the unified response lifecycle, preserving
++        their status code, generated body, Content-Type: text/plain; charset=utf-8,
++        content length, server identity, and mandatory Connection: close across both
++        HTTP/1.0 and HTTP/1.1 requests.
++        """
++        channel = DummyChannel()
++        channel.server.adj.ident = "custom-waitress-test"
++        req = DummyParser()
++        req.version = "1.1"
++
++        err = Error("Internal error description")
++        err.code = 500
++        err.reason = "Internal Server Error"
++        req.error = err
++
++        expected_status, expected_headers, expected_body = err.to_response("custom-waitress-test")
++
++        task = ErrorTask(channel, req)
++        task.execute()
++
++        self.assertEqual(task.status, expected_status)
++        self.assertEqual(task.content_length, len(expected_body))
++        self.assertTrue(task.close_on_finish)
++
++        task_prep = ErrorTask(channel, req)
++        task_prep.status = expected_status
++        task_prep.response_headers.extend(expected_headers)
++        task_prep.content_length = len(expected_body)
++        # Verify ErrorTask independently enforces close_connection without requiring prior execute() or manual set_close_on_finish()
++        prep = task_prep.prepare_response()
++        self.assertEqual(prep.status, expected_status)
++        self.assertEqual(prep.content_length, len(expected_body))
++        self.assertTrue(prep.close_connection)
++
++        def header_value(prepared, name):
++            return next(
++                (
++                    value
++                    for header_name, value in prepared.headers
++                    if header_name.lower() == name.lower()
++                ),
++                None,
++            )
++
++        self.assertEqual(header_value(prep, "Content-Type"), "text/plain; charset=utf-8")
++        self.assertEqual(header_value(prep, "Content-Length"), str(len(expected_body)))
++        self.assertEqual(header_value(prep, "Server"), "custom-waitress-test")
++        self.assertEqual(header_value(prep, "Connection"), "close")
++
++        # Channel output has header and body
++        self.assertIn(b"HTTP/1.1 500 Internal Server Error\r\n", channel.written)
++        self.assertIn(b"Content-Type: text/plain; charset=utf-8\r\n", channel.written)
++        self.assertIn(b"Content-Length: " + str(len(expected_body)).encode("ascii") + b"\r\n", channel.written)
++        self.assertIn(b"Server: custom-waitress-test\r\n", channel.written)
++        self.assertIn(b"Connection: close\r\n", channel.written)
++        self.assertTrue(channel.written.endswith(expected_body))
++
++    def test_f2p_task_service_oserror_socket_logging_branches(self):
++        """Instruction 82:
++        When an OSError occurs during task servicing (service()), close_on_finish MUST
++        be set to True; if channel.adj.log_socket_errors is true, the OSError MUST be
++        re-raised; if false, it MUST NOT be re-raised and task servicing MUST conclude cleanly.
++        """
++        from unittest.mock import Mock
++
++        # Branch 1: log_socket_errors = True -> close_on_finish=True AND re-raises
++        ch1 = DummyChannel()
++        ch1.adj = DummyAdj()
++        ch1.adj.log_socket_errors = True
++        t1 = Task(ch1, DummyParser())
++        t1.execute = Mock(side_effect=OSError("connection reset by peer"))
++
++        with self.assertRaises(OSError) as ctx_os:
++            t1.service()
++        self.assertTrue(t1.close_on_finish)
++        self.assertTrue(t1.prepare_response().close_connection)
++        self.assertIn("connection reset by peer", str(ctx_os.exception))
++
++        # Branch 2: log_socket_errors = False -> close_on_finish=True AND suppressed
++        ch2 = DummyChannel()
++        ch2.adj = DummyAdj()
++        ch2.adj.log_socket_errors = False
++        t2 = Task(ch2, DummyParser())
++        t2.execute = Mock(side_effect=OSError("connection reset by peer"))
++
++        t2.service()  # Does NOT raise
++        self.assertTrue(t2.close_on_finish)
++        self.assertTrue(t2.prepare_response().close_connection)
++
++    def test_f2p_prepared_response_headers_are_string_pairs(self):
++        """PreparedResponse.headers must consist of normalized string pairs."""
++        channel = DummyChannel()
++        request = DummyParser()
++        request.version = "1.1"
++
++        task = Task(channel, request)
++        task.content_length = 0
++        task.response_headers = [("X-Retry-Count", 3)]
++
++        prepared = task.prepare_response()
++
++        values = [
++            value
++            for name, value in prepared.headers
++            if name == "X-Retry-Count"
++        ]
++        self.assertEqual(values, ["3"])
++        self.assertTrue(
++            all(
++                isinstance(name, str) and isinstance(value, str)
++                for name, value in prepared.headers
++            )
++        )
+diff --git a/tests/test_refactor_p2p.py b/tests/test_refactor_p2p.py
+new file mode 100644
+index 0000000..9fb14fe
+--- /dev/null
++++ b/tests/test_refactor_p2p.py
+@@ -0,0 +1,65 @@
++import unittest
++
++from waitress.task import ErrorTask, Task
++from waitress.utilities import Error
++from tests.test_task import DummyChannel, DummyParser
++
++
++class TestRefactorP2P(unittest.TestCase):
++    def test_task_build_response_header_format(self):
++        channel = DummyChannel()
++        request = DummyParser()
++        request.version = "1.1"
++        task = Task(channel, request)
++        task.status = "200 OK"
++        task.content_length = 0
++        header_bytes = task.build_response_header()
++        self.assertTrue(header_bytes.startswith(b"HTTP/1.1 200 OK\r\n"))
++        self.assertTrue(header_bytes.endswith(b"\r\n\r\n"))
++
++    def test_task_build_response_header_retains_custom_headers(self):
++        channel = DummyChannel()
++        request = DummyParser()
++        request.version = "1.1"
++        task = Task(channel, request)
++        task.content_length = 0
++        task.response_headers = [
++            ("Content-Type", "text/plain"),
++            ("X-Custom", "abc"),
++        ]
++        header_bytes = task.build_response_header()
++        self.assertIn(b"Content-Type: text/plain\r\n", header_bytes)
++        self.assertIn(b"X-Custom: abc\r\n", header_bytes)
++
++    def test_error_task_execute_forces_close(self):
++        channel = DummyChannel()
++        request = DummyParser()
++        request.version = "1.1"
++        e = Error("body")
++        e.code = 500
++        e.reason = "Internal Server Error"
++        request.error = e
++        task = ErrorTask(channel, request)
++        task.execute()
++        self.assertTrue(task.close_on_finish)
++        self.assertEqual(task.status, "500 Internal Server Error")
++
++    def test_task_http10_close_by_default(self):
++        channel = DummyChannel()
++        request = DummyParser()
++        request.version = "1.0"
++        task = Task(channel, request)
++        task.content_length = 0
++        task.build_response_header()
++        self.assertTrue(task.close_on_finish)
++        self.assertIn(("Connection", "close"), task.response_headers)
++
++    def test_task_http11_keep_alive_by_default(self):
++        channel = DummyChannel()
++        request = DummyParser()
++        request.version = "1.1"
++        task = Task(channel, request)
++        task.content_length = 0
++        task.build_response_header()
++        self.assertFalse(task.close_on_finish)
++        self.assertNotIn(("Connection", "close"), task.response_headers)

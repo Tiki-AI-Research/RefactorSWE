@@ -1,0 +1,625 @@
+diff --git a/core/types/auxpow.go b/core/types/auxpow.go
+--- a/core/types/auxpow.go
++++ b/core/types/auxpow.go
+@@ -7,13 +7,10 @@
+ 	"errors"
+ 	"io"
+ 
+-	btcchainhash "github.com/btcsuite/btcd/chaincfg/chainhash"
+ 	"github.com/dominant-strategies/go-quai/common"
+ 	"github.com/dominant-strategies/go-quai/common/hexutil"
+ 	"github.com/dominant-strategies/go-quai/crypto/musig2"
+ 	"github.com/dominant-strategies/go-quai/log"
+-	ltcchainhash "github.com/dominant-strategies/ltcd/chaincfg/chainhash"
+-	bchchainhash "github.com/gcash/bchd/chaincfg/chainhash"
+ 	"google.golang.org/protobuf/proto"
+ )
+ 
+@@ -313,21 +310,24 @@
+ 	SetHeight(height uint32)        // Only implemented for kawpow
+ }
+ 
++type auxPowDescriptor struct {
++	newHeader    func(version int32, prevBlockHash [32]byte, merkleRootHash [32]byte, time uint32, bits uint32, nonce uint32, height uint32) AuxHeaderData
++	decodeHeader func(r io.Reader) (AuxHeaderData, error)
++	txHash       func(tx []byte) common.Hash
++}
++
++var auxPowRegistry = make(map[PowID]auxPowDescriptor)
++
++func registerAuxPow(id PowID, desc auxPowDescriptor) {
++	auxPowRegistry[id] = desc
++}
++
+ func NewBlockHeader(powid PowID, version int32, prevBlockHash [32]byte, merkleRootHash [32]byte, time uint32, bits uint32, nonce uint32, height uint32) *AuxPowHeader {
+-	ah := &AuxPowHeader{}
+-	switch powid {
+-	case Kawpow:
+-		ah.inner = NewRavencoinBlockHeader(version, prevBlockHash, merkleRootHash, time, bits, height)
+-	case SHA_BTC:
+-		ah.inner = NewBitcoinBlockHeader(version, prevBlockHash, merkleRootHash, time, bits, nonce)
+-	case SHA_BCH:
+-		ah.inner = NewBitcoinCashBlockHeader(version, prevBlockHash, merkleRootHash, time, bits, nonce)
+-	case Scrypt:
+-		ah.inner = NewLitecoinBlockHeader(version, prevBlockHash, merkleRootHash, time, bits, nonce)
+-	default:
++	desc, ok := auxPowRegistry[powid]
++	if !ok || desc.newHeader == nil {
+ 		return nil
+ 	}
+-	return ah
++	return &AuxPowHeader{inner: desc.newHeader(version, prevBlockHash, merkleRootHash, time, bits, nonce, height)}
+ }
+ 
+ func (ah *AuxPowHeader) BlockHash() common.Hash {
+@@ -717,28 +717,9 @@
+ 
+ 	ap.powID = PowID(*dec.PowID)
+ 
+-	switch ap.powID {
+-	case Kawpow:
+-		header := &RavencoinBlockHeader{}
+-		if err := header.Deserialize(bytes.NewReader(*dec.Header)); err != nil {
+-			return err
+-		}
+-		ap.header = NewAuxPowHeader(header)
+-	case SHA_BTC:
+-		header := &BitcoinHeaderWrapper{}
+-		if err := header.Deserialize(bytes.NewReader(*dec.Header)); err != nil {
+-			return err
+-		}
+-		ap.header = NewAuxPowHeader(header)
+-	case SHA_BCH:
+-		header := &BitcoinCashHeaderWrapper{}
+-		if err := header.Deserialize(bytes.NewReader(*dec.Header)); err != nil {
+-			return err
+-		}
+-		ap.header = NewAuxPowHeader(header)
+-	case Scrypt:
+-		header := &LitecoinHeaderWrapper{}
+-		if err := header.Deserialize(bytes.NewReader(*dec.Header)); err != nil {
++	if desc, ok := auxPowRegistry[ap.powID]; ok && desc.decodeHeader != nil {
++		header, err := desc.decodeHeader(bytes.NewReader(*dec.Header))
++		if err != nil {
+ 			return err
+ 		}
+ 		ap.header = NewAuxPowHeader(header)
+@@ -790,34 +771,15 @@
+ 
+ 	ap.SetPowID(PowID(data.GetChainId()))
+ 
+-	switch ap.PowID() {
+-	case Kawpow:
+-		header := &RavencoinBlockHeader{}
+-		if err := header.Deserialize(bytes.NewReader(data.GetHeader())); err != nil {
+-			return err
+-		}
+-		ap.SetHeader(NewAuxPowHeader(header))
+-	case SHA_BTC:
+-		header := &BitcoinHeaderWrapper{}
+-		if err := header.Deserialize(bytes.NewReader(data.GetHeader())); err != nil {
+-			return err
+-		}
+-		ap.SetHeader(NewAuxPowHeader(header))
+-	case SHA_BCH:
+-		header := &BitcoinCashHeaderWrapper{}
+-		if err := header.Deserialize(bytes.NewReader(data.GetHeader())); err != nil {
+-			return err
+-		}
+-		ap.SetHeader(NewAuxPowHeader(header))
+-	case Scrypt:
+-		header := &LitecoinHeaderWrapper{}
+-		if err := header.Deserialize(bytes.NewReader(data.GetHeader())); err != nil {
+-			return err
+-		}
+-		ap.SetHeader(NewAuxPowHeader(header))
+-	default:
++	desc, ok := auxPowRegistry[ap.PowID()]
++	if !ok || desc.decodeHeader == nil {
+ 		return errors.New("unsupported powId for AuxPow header")
+ 	}
++	header, err := desc.decodeHeader(bytes.NewReader(data.GetHeader()))
++	if err != nil {
++		return err
++	}
++	ap.SetHeader(NewAuxPowHeader(header))
+ 	ap.SetSignature(data.GetSignature())
+ 
+ 	// Decode merkle branch
+@@ -834,13 +796,8 @@
+ }
+ 
+ func AuxPowTxHash(PowID PowID, tx []byte) common.Hash {
+-	switch PowID {
+-	case SHA_BTC, Kawpow:
+-		return common.Hash(btcchainhash.DoubleHashH(tx))
+-	case SHA_BCH:
+-		return common.Hash(bchchainhash.DoubleHashH(tx))
+-	case Scrypt:
+-		return common.Hash(ltcchainhash.DoubleHashH(tx))
++	if desc, ok := auxPowRegistry[PowID]; ok && desc.txHash != nil {
++		return desc.txHash(tx)
+ 	}
+ 	return common.Hash{}
+ }
+diff --git a/core/types/auxpow_test.go b/core/types/auxpow_test.go
+--- a/core/types/auxpow_test.go
++++ b/core/types/auxpow_test.go
+@@ -3,11 +3,18 @@
+ import (
+ 	"bytes"
+ 	"crypto/sha256"
++	"encoding/json"
++	"fmt"
++	"math/big"
+ 	"testing"
+ 	"time"
+ 
++	btchash "github.com/btcsuite/btcd/chaincfg/chainhash"
+ 	"github.com/dominant-strategies/go-quai/common"
++	"github.com/dominant-strategies/go-quai/common/hexutil"
+ 	"github.com/dominant-strategies/go-quai/event"
++	ltchash "github.com/dominant-strategies/ltcd/chaincfg/chainhash"
++	bchhash "github.com/gcash/bchd/chaincfg/chainhash"
+ 	"github.com/stretchr/testify/require"
+ 	"google.golang.org/protobuf/proto"
+ )
+@@ -527,3 +534,358 @@
+ 	t.Logf("✅ Hash method works correctly: %x", hash1)
+ 	t.Log("✅ Hash is consistent regardless of signature content")
+ }
++
++func TestAuxPowChainDispatchInvariants(t *testing.T) {
++	var (
++		version        int32  = 0x20000000
++		prevBlockHash         = [32]byte{0x01, 0x02, 0x03}
++		merkleRootHash        = [32]byte{0x04, 0x05, 0x06}
++		timestamp      uint32 = 1600000000
++		bits           uint32 = 0x1d00ffff
++		nonce          uint32 = 123456
++		height         uint32 = 789101
++		txPayload             = []byte("test-auxpow-tx-dispatch-invariants")
++	)
++
++	tests := []struct {
++		name           string
++		powID          PowID
++		expectedLen    int
++		directHeader   func() AuxHeaderData
++		expectedTxHash common.Hash
++	}{
++		{
++			name:        "Kawpow",
++			powID:       Kawpow,
++			expectedLen: 120,
++			directHeader: func() AuxHeaderData {
++				return NewRavencoinBlockHeader(version, prevBlockHash, merkleRootHash, timestamp, bits, height)
++			},
++			expectedTxHash: common.Hash(btchash.DoubleHashH(txPayload)),
++		},
++		{
++			name:        "SHA_BTC",
++			powID:       SHA_BTC,
++			expectedLen: 80,
++			directHeader: func() AuxHeaderData {
++				return NewBitcoinBlockHeader(version, prevBlockHash, merkleRootHash, timestamp, bits, nonce)
++			},
++			expectedTxHash: common.Hash(btchash.DoubleHashH(txPayload)),
++		},
++		{
++			name:        "SHA_BCH",
++			powID:       SHA_BCH,
++			expectedLen: 80,
++			directHeader: func() AuxHeaderData {
++				return NewBitcoinCashBlockHeader(version, prevBlockHash, merkleRootHash, timestamp, bits, nonce)
++			},
++			expectedTxHash: common.Hash(bchhash.DoubleHashH(txPayload)),
++		},
++		{
++			name:        "Scrypt",
++			powID:       Scrypt,
++			expectedLen: 80,
++			directHeader: func() AuxHeaderData {
++				return NewLitecoinBlockHeader(version, prevBlockHash, merkleRootHash, timestamp, bits, nonce)
++			},
++			expectedTxHash: common.Hash(ltchash.DoubleHashH(txPayload)),
++		},
++	}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			// 1. Header construction & serialization invariance
++			hdr := NewBlockHeader(tc.powID, version, prevBlockHash, merkleRootHash, timestamp, bits, nonce, height)
++			require.NotNil(t, hdr)
++			directHdr := tc.directHeader()
++			var directBuf bytes.Buffer
++			require.NoError(t, directHdr.Serialize(&directBuf))
++			require.Equal(t, tc.expectedLen, len(hdr.Bytes()))
++			require.Equal(t, directBuf.Bytes(), hdr.Bytes())
++
++			// 2. Hash computation invariance
++			require.Equal(t, directHdr.BlockHash(), hdr.BlockHash())
++			require.Equal(t, directHdr.PowHash(), hdr.PowHash())
++			require.Equal(t, directHdr.GetSealHash(), hdr.SealHash())
++
++			// 3. Tx hash invariance
++			require.Equal(t, tc.expectedTxHash, AuxPowTxHash(tc.powID, txPayload))
++
++			// 4. ProtoDecode via dispatch
++			chainID := uint32(tc.powID)
++			protoData := &ProtoAuxPow{
++				ChainId: &chainID,
++				Header:  hdr.Bytes(),
++			}
++			ap := &AuxPow{}
++			require.NoError(t, ap.ProtoDecode(protoData))
++			require.Equal(t, tc.powID, ap.PowID())
++			require.NotNil(t, ap.Header())
++			require.Equal(t, hdr.Bytes(), ap.Header().Bytes())
++		})
++	}
++
++	// 5. Unsupported PowID negative invariance
++	for _, unsupportedID := range []PowID{Progpow, PowID(99)} {
++		require.Nil(t, NewBlockHeader(unsupportedID, version, prevBlockHash, merkleRootHash, timestamp, bits, nonce, height))
++		require.Equal(t, common.Hash{}, AuxPowTxHash(unsupportedID, txPayload))
++
++		chainID := uint32(unsupportedID)
++		ap := &AuxPow{}
++		err := ap.ProtoDecode(&ProtoAuxPow{ChainId: &chainID})
++		require.EqualError(t, err, "unsupported powId for AuxPow header")
++	}
++}
++
++func TestAuxPowJSONDecodeInvariants(t *testing.T) {
++	var (
++		version        int32  = 0x20000000
++		prevBlockHash         = [32]byte{0x01, 0x02, 0x03}
++		merkleRootHash        = [32]byte{0x04, 0x05, 0x06}
++		timestamp      uint32 = 1600000000
++		bits           uint32 = 0x1d00ffff
++		nonce          uint32 = 123456
++		height         uint32 = 789101
++		sig                   = []byte{0xde, 0xad, 0xbe, 0xef}
++		auxpow2               = []byte{0x01, 0x02}
++		tx                    = []byte("sample-tx")
++		branch                = [][]byte{{0xaa, 0xbb}}
++	)
++
++	supportedChains := []struct {
++		name        string
++		powID       PowID
++		expectedLen int
++	}{
++		{"Kawpow", Kawpow, 120},
++		{"SHA_BTC", SHA_BTC, 80},
++		{"SHA_BCH", SHA_BCH, 80},
++		{"Scrypt", Scrypt, 80},
++	}
++
++	for _, sc := range supportedChains {
++		t.Run(sc.name, func(t *testing.T) {
++			hdr := NewBlockHeader(sc.powID, version, prevBlockHash, merkleRootHash, timestamp, bits, nonce, height)
++			require.NotNil(t, hdr)
++			require.Equal(t, sc.expectedLen, len(hdr.Bytes()))
++
++			payload := map[string]interface{}{
++				"powId":        hexutil.Uint64(sc.powID),
++				"header":       hexutil.Bytes(hdr.Bytes()),
++				"auxpow2":      hexutil.Bytes(auxpow2),
++				"signature":    hexutil.Bytes(sig),
++				"merkleBranch": []hexutil.Bytes{hexutil.Bytes(branch[0])},
++				"transaction":  hexutil.Bytes(tx),
++			}
++			jsonBytes, err := json.Marshal(payload)
++			require.NoError(t, err)
++
++			var ap AuxPow
++			require.NoError(t, json.Unmarshal(jsonBytes, &ap))
++			require.Equal(t, sc.powID, ap.PowID())
++			require.NotNil(t, ap.Header())
++			require.Equal(t, hdr.Bytes(), ap.Header().Bytes())
++			require.Equal(t, auxpow2, ap.AuxPow2())
++			require.Equal(t, sig, ap.Signature())
++			require.Equal(t, branch, ap.MerkleBranch())
++			require.Equal(t, tx, ap.Transaction())
++
++			if sc.powID == Kawpow {
++				require.Equal(t, height, ap.Header().Height())
++			}
++		})
++	}
++
++	// Unsupported PowID JSON decode: error must be nil, header unset (nil), other fields populated
++	for _, unsuppID := range []PowID{Progpow, PowID(99)} {
++		t.Run(fmt.Sprintf("Unsupported_%d", unsuppID), func(t *testing.T) {
++			dummyHeader := bytes.Repeat([]byte{0x77}, 80)
++			payload := map[string]interface{}{
++				"powId":        hexutil.Uint64(unsuppID),
++				"header":       hexutil.Bytes(dummyHeader),
++				"auxpow2":      hexutil.Bytes(auxpow2),
++				"signature":    hexutil.Bytes(sig),
++				"merkleBranch": []hexutil.Bytes{hexutil.Bytes(branch[0])},
++				"transaction":  hexutil.Bytes(tx),
++			}
++			jsonBytes, err := json.Marshal(payload)
++			require.NoError(t, err)
++
++			var ap AuxPow
++			require.NoError(t, json.Unmarshal(jsonBytes, &ap))
++			require.Equal(t, unsuppID, ap.PowID())
++			require.Nil(t, ap.Header())
++			require.Equal(t, auxpow2, ap.AuxPow2())
++			require.Equal(t, sig, ap.Signature())
++			require.Equal(t, branch, ap.MerkleBranch())
++			require.Equal(t, tx, ap.Transaction())
++		})
++	}
++}
++
++func TestAuxPowMalformedHeaderRobustnessAndOrdering(t *testing.T) {
++	malformedHeaderBytes := []byte{0x01, 0x02, 0x03} // truncated, less than 80 or 120 bytes
++	sentinelSig := []byte("sentinel-sig")
++	sentinelAuxpow2 := []byte("sentinel-auxpow2")
++	sentinelBranch := [][]byte{[]byte("sentinel-branch")}
++	sentinelTx := []byte("sentinel-tx")
++
++	chains := []PowID{Kawpow, SHA_BTC, SHA_BCH, Scrypt}
++
++	for _, powID := range chains {
++		t.Run(fmt.Sprintf("ProtoDecode_Malformed_%v", powID), func(t *testing.T) {
++			chainID := uint32(powID)
++			protoData := &ProtoAuxPow{
++				ChainId:      &chainID,
++				Header:       malformedHeaderBytes,
++				Signature:    []byte("new-sig"),
++				Auxpow2:      []byte("new-auxpow2"),
++				MerkleBranch: [][]byte{[]byte("new-branch")},
++				Transaction:  []byte("new-tx"),
++			}
++
++			ap := &AuxPow{}
++			ap.SetSignature(sentinelSig)
++			ap.auxPow2 = sentinelAuxpow2
++			ap.merkleBranch = sentinelBranch
++			ap.transaction = sentinelTx
++
++			require.NotPanics(t, func() {
++				err := ap.ProtoDecode(protoData)
++				require.Error(t, err)
++			})
++
++			// Decode ordering verification (R14): PowID recorded before header decode
++			require.Equal(t, powID, ap.PowID())
++			// On error, remaining payload fields remain untouched
++			require.Equal(t, sentinelSig, ap.Signature())
++			require.Equal(t, sentinelAuxpow2, ap.AuxPow2())
++			require.Equal(t, sentinelBranch, ap.MerkleBranch())
++			require.Equal(t, sentinelTx, ap.Transaction())
++		})
++
++		t.Run(fmt.Sprintf("JSONUnmarshal_Malformed_%v", powID), func(t *testing.T) {
++			payload := map[string]interface{}{
++				"powId":        hexutil.Uint64(powID),
++				"header":       hexutil.Bytes(malformedHeaderBytes),
++				"auxpow2":      hexutil.Bytes([]byte("new-auxpow2")),
++				"signature":    hexutil.Bytes([]byte("new-sig")),
++				"merkleBranch": []hexutil.Bytes{hexutil.Bytes([]byte("new-branch"))},
++				"transaction":  hexutil.Bytes([]byte("new-tx")),
++			}
++			jsonBytes, err := json.Marshal(payload)
++			require.NoError(t, err)
++
++			ap := &AuxPow{}
++			ap.SetSignature(sentinelSig)
++			ap.auxPow2 = sentinelAuxpow2
++			ap.merkleBranch = sentinelBranch
++			ap.transaction = sentinelTx
++
++			require.NotPanics(t, func() {
++				err := json.Unmarshal(jsonBytes, ap)
++				require.Error(t, err)
++			})
++
++			// PowID was recorded, but following fields untouched on error
++			require.Equal(t, powID, ap.PowID())
++			require.Equal(t, sentinelSig, ap.Signature())
++			require.Equal(t, sentinelAuxpow2, ap.AuxPow2())
++			require.Equal(t, sentinelBranch, ap.MerkleBranch())
++			require.Equal(t, sentinelTx, ap.Transaction())
++		})
++	}
++}
++
++func TestAuxPowNilInnerHeaderZeroValues(t *testing.T) {
++	nilInnerHeader := &AuxPowHeader{}
++	require.NotPanics(t, func() {
++		require.Equal(t, common.Hash{}, nilInnerHeader.BlockHash())
++		require.Equal(t, common.Hash{}, nilInnerHeader.PowHash())
++		require.Equal(t, common.Hash{}, nilInnerHeader.SealHash())
++		require.Equal(t, int32(0), nilInnerHeader.Version())
++		require.Equal(t, [32]byte{}, nilInnerHeader.PrevBlock())
++		require.Equal(t, [32]byte{}, nilInnerHeader.MerkleRoot())
++		require.Equal(t, uint32(0), nilInnerHeader.Timestamp())
++		require.Equal(t, uint32(0), nilInnerHeader.Bits())
++		require.Equal(t, uint32(0), nilInnerHeader.Nonce())
++		require.Equal(t, uint32(0), nilInnerHeader.Height())
++		require.Equal(t, uint64(0), nilInnerHeader.Nonce64())
++		require.Equal(t, common.Hash{}, nilInnerHeader.MixHash())
++		require.Empty(t, nilInnerHeader.Bytes())
++	})
++}
++
++func TestAuxPowJSONValidationPrecedenceAndWorkObjectHeader(t *testing.T) {
++	// JSON missing fields order: powId -> header -> auxpow2 -> signature -> merkleBranch
++	testCases := []struct {
++		data        string
++		expectedErr string
++	}{
++		{
++			data:        `{}`,
++			expectedErr: "missing required fields 'powId' in AuxPow",
++		},
++		{
++			data:        `{"powId": "0x1"}`,
++			expectedErr: "missing required fields 'header' in AuxPow",
++		},
++		{
++			data:        `{"powId": "0x1", "header": "0x1234"}`,
++			expectedErr: "missing required fields 'auxpow2' in AuxPow",
++		},
++		{
++			data:        `{"powId": "0x1", "header": "0x1234", "auxpow2": "0x"}`,
++			expectedErr: "missing required fields 'signature' in AuxPow",
++		},
++		{
++			data:        `{"powId": "0x1", "header": "0x1234", "auxpow2": "0x", "signature": "0x"}`,
++			expectedErr: "missing required fields 'merkleBranch' in AuxPow",
++		},
++	}
++
++	for _, tc := range testCases {
++		var ap AuxPow
++		err := json.Unmarshal([]byte(tc.data), &ap)
++		require.EqualError(t, err, tc.expectedErr)
++	}
++
++	// WorkObjectHeader.ProtoDecode error propagation when AuxPow header is malformed
++	validWO := &WorkObjectHeader{
++		headerHash:          common.Hash{0x01},
++		parentHash:          common.Hash{0x02},
++		number:              big.NewInt(100),
++		difficulty:          big.NewInt(1000),
++		primeTerminusNumber: big.NewInt(2000000), // > KawPowForkBlock
++		txHash:              common.Hash{0x03},
++		primaryCoinbase:     common.BytesToAddress([]byte{0x04}, common.Location{0, 0}),
++		location:            common.Location{0, 0},
++		mixHash:             common.Hash{0x05},
++		time:                1600000000,
++		nonce:               BlockNonce{0x06},
++		data:                []byte{},
++		lock:                0,
++		auxPow:              auxPowTestData(Kawpow),
++		shaDiffAndCount:     &PowShareDiffAndCount{},
++		scryptDiffAndCount:  &PowShareDiffAndCount{},
++		shaShareTarget:      big.NewInt(100),
++		scryptShareTarget:   big.NewInt(200),
++		kawpowDifficulty:    big.NewInt(1000),
++	}
++	woProto, err := validWO.ProtoEncode()
++	require.NoError(t, err)
++
++	chainID := uint32(Kawpow)
++	woProto.AuxPow = &ProtoAuxPow{
++		ChainId:     &chainID,
++		Header:      []byte{0x01, 0x02, 0x03}, // malformed header
++		Transaction: []byte{0xaa, 0xbb},
++	}
++
++	woh := &WorkObjectHeader{}
++	require.NotPanics(t, func() {
++		err := woh.ProtoDecode(woProto, common.Location{0, 0})
++		require.Error(t, err)
++	})
++}
++
+diff --git a/core/types/bch.go b/core/types/bch.go
+--- a/core/types/bch.go
++++ b/core/types/bch.go
+@@ -150,3 +150,21 @@
+ 	// Append coinbaseOut which contains [output count] [outputs] [locktime]
+ 	return append(trimmed, coinbaseOut...)
+ }
++
++func init() {
++	registerAuxPow(SHA_BCH, auxPowDescriptor{
++		newHeader: func(version int32, prevBlockHash [32]byte, merkleRootHash [32]byte, time uint32, bits uint32, nonce uint32, height uint32) AuxHeaderData {
++			return NewBitcoinCashBlockHeader(version, prevBlockHash, merkleRootHash, time, bits, nonce)
++		},
++		decodeHeader: func(r io.Reader) (AuxHeaderData, error) {
++			h := &BitcoinCashHeaderWrapper{}
++			if err := h.Deserialize(r); err != nil {
++				return nil, err
++			}
++			return h, nil
++		},
++		txHash: func(tx []byte) common.Hash {
++			return common.Hash(bchhash.DoubleHashH(tx))
++		},
++	})
++}
+diff --git a/core/types/btc.go b/core/types/btc.go
+--- a/core/types/btc.go
++++ b/core/types/btc.go
+@@ -150,3 +150,21 @@
+ 	// Append coinbaseOut which contains [output count] [outputs] [locktime]
+ 	return append(trimmed, coinbaseOut...)
+ }
++
++func init() {
++	registerAuxPow(SHA_BTC, auxPowDescriptor{
++		newHeader: func(version int32, prevBlockHash [32]byte, merkleRootHash [32]byte, time uint32, bits uint32, nonce uint32, height uint32) AuxHeaderData {
++			return NewBitcoinBlockHeader(version, prevBlockHash, merkleRootHash, time, bits, nonce)
++		},
++		decodeHeader: func(r io.Reader) (AuxHeaderData, error) {
++			h := &BitcoinHeaderWrapper{}
++			if err := h.Deserialize(r); err != nil {
++				return nil, err
++			}
++			return h, nil
++		},
++		txHash: func(tx []byte) common.Hash {
++			return common.Hash(btchash.DoubleHashH(tx)).Reverse()
++		},
++	})
++}
+diff --git a/core/types/ltc.go b/core/types/ltc.go
+--- a/core/types/ltc.go
++++ b/core/types/ltc.go
+@@ -153,3 +153,21 @@
+ 	// Append coinbaseOut which contains [output count] [outputs] [locktime]
+ 	return append(trimmed, coinbaseOut...)
+ }
++
++func init() {
++	registerAuxPow(Scrypt, auxPowDescriptor{
++		newHeader: func(version int32, prevBlockHash [32]byte, merkleRootHash [32]byte, time uint32, bits uint32, nonce uint32, height uint32) AuxHeaderData {
++			return NewLitecoinBlockHeader(version, prevBlockHash, merkleRootHash, time, bits, nonce)
++		},
++		decodeHeader: func(r io.Reader) (AuxHeaderData, error) {
++			h := &LitecoinHeaderWrapper{}
++			if err := h.Deserialize(r); err != nil {
++				return nil, err
++			}
++			return h, nil
++		},
++		txHash: func(tx []byte) common.Hash {
++			return common.Hash(ltchash.DoubleHashH(tx))
++		},
++	})
++}
+diff --git a/core/types/ravencoin.go b/core/types/ravencoin.go
+--- a/core/types/ravencoin.go
++++ b/core/types/ravencoin.go
+@@ -362,3 +362,21 @@
+ 	// Append coinbaseOut which contains [output count] [outputs] [locktime]
+ 	return append(trimmed, coinbaseOut...)
+ }
++
++func init() {
++	registerAuxPow(Kawpow, auxPowDescriptor{
++		newHeader: func(version int32, prevBlockHash [32]byte, merkleRootHash [32]byte, time uint32, bits uint32, nonce uint32, height uint32) AuxHeaderData {
++			return NewRavencoinBlockHeader(version, prevBlockHash, merkleRootHash, time, bits, height)
++		},
++		decodeHeader: func(r io.Reader) (AuxHeaderData, error) {
++			h := &RavencoinBlockHeader{}
++			if err := h.Deserialize(r); err != nil {
++				return nil, err
++			}
++			return h, nil
++		},
++		txHash: func(tx []byte) common.Hash {
++			return common.Hash(btchash.DoubleHashH(tx))
++		},
++	})
++}

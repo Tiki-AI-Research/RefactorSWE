@@ -1,0 +1,96 @@
+--- a/dill/_dill.py
++++ b/dill/_dill.py
+@@ -343,11 +343,35 @@
+ class UnpicklingWarning(PickleWarning, UnpicklingError):
+     pass
+ 
++class _PicklerRegistry:
++    def __init__(self):
++        self._initial_stock_dispatch = StockPickler.dispatch.copy()
++        self.dispatch = MetaCatchingDict(StockPickler.dispatch.copy())
++
++    def register(self, t, func):
++        self.dispatch[t] = func
++
++    def extend(self):
++        for t, func in self.dispatch.items():
++            StockPickler.dispatch[t] = func
++
++    def revert(self):
++        self._reverts = getattr(self, "_reverts", 0) + 1
++        if self._reverts > 1:
++            return
++        for type, func in list(StockPickler.dispatch.items()):
++            if getattr(func, '__module__', None) == __name__:
++                del StockPickler.dispatch[type]
++                if type in self._initial_stock_dispatch:
++                    StockPickler.dispatch[type] = self._initial_stock_dispatch[type]
++
++_registry = _PicklerRegistry()
++
+ ### Extend the Picklers
+ class Pickler(StockPickler):
+     """python's Pickler extended to interpreter sessions"""
+     dispatch: typing.Dict[type, typing.Callable[[Pickler, typing.Any], None]] \
+-            = MetaCatchingDict(StockPickler.dispatch.copy())
++            = _registry.dispatch
+     """The dispatch table, a dictionary of serializing functions used
+     by Pickler to save objects of specific types.  Use :func:`pickle`
+     or :func:`register` to associate types to custom functions.
+@@ -467,27 +491,23 @@
+     return Pickler.dispatch
+ '''
+ 
+-pickle_dispatch_copy = StockPickler.dispatch.copy()
++pickle_dispatch_copy = _registry._initial_stock_dispatch
+ 
+ def pickle(t, func):
+     """expose :attr:`~Pickler.dispatch` table for user-created extensions"""
+-    Pickler.dispatch[t] = func
++    _registry.register(t, func)
+     return
+ 
+ def register(t):
+     """decorator to register types to Pickler's :attr:`~Pickler.dispatch` table"""
+     def proxy(func):
+-        Pickler.dispatch[t] = func
++        _registry.register(t, func)
+         return func
+     return proxy
+ 
+ def _revert_extension():
+     """drop dill-registered types from pickle's dispatch table"""
+-    for type, func in list(StockPickler.dispatch.items()):
+-        if func.__module__ == __name__:
+-            del StockPickler.dispatch[type]
+-            if type in pickle_dispatch_copy:
+-                StockPickler.dispatch[type] = pickle_dispatch_copy[type]
++    _registry.revert()
+ 
+ def use_diff(on=True):
+     """
+@@ -1318,8 +1338,8 @@
+     __obj = __dicttype()
+     for __funcname, __savefunc in save_dict_view(__dicttype):
+         __tview = type(getattr(__obj, __funcname)())
+-        if __tview not in Pickler.dispatch:
+-            Pickler.dispatch[__tview] = __savefunc
++        if __tview not in _registry.dispatch:
++            _registry.register(__tview, __savefunc)
+ del __dicttype, __obj, __funcname, __tview, __savefunc
+ 
+ 
+@@ -2252,12 +2272,7 @@
+ 
+ def _extend():
+     """extend pickle with all of dill's registered types"""
+-    # need to have pickle not choke on _main_module?  use is_dill(pickler)
+-    for t,func in Pickler.dispatch.items():
+-        try:
+-            StockPickler.dispatch[t] = func
+-        except Exception: #TypeError, PicklingError, UnpicklingError
+-            logger.trace(pickler, "skip: %s", t)
++    _registry.extend()
+     return
+ 
+ del diff, _use_diff, use_diff

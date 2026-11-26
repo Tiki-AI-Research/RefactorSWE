@@ -1,0 +1,61 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+[task]
+name = "tikiai/sveltejs-devalue-20260917060608-25e4d1"
+description = "Separate per-call hydration state from tag and container dispatch while preserving reference identity and validating malformed payloads."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "sveltejs-devalue-20260909064011-f54292"
+display_title = "Hydration state and deserialization dispatch"
+category = "state_data"
+language = "JavaScript"
+repository_url = "https://github.com/sveltejs/devalue"
+base_commit_hash = "a3d30d94c8fd9cfca4b774814ff9d5bfade5010c"
+
+[tests]
+fail_to_pass_count = 25
+pass_to_pass_count = 816
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+network_mode = "public"
+environment_mode = "separate"
+user = "root"
+timeout_sec = 3600.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:sveltejs-devalue-20260917060608-25e4d1-verifier-image-20261125"
+image_digest = "sha256:997c1e3c22b6516e6a7db9f70c6f715aaed1a5212952b24cd5ba935b8f18e507"
+network_mode = "public"
+build_timeout_sec = 1800.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "set -eu && cd /workspace/repo && mkdir -p /logs/artifacts && git add -N -- . && git diff --binary --full-index --no-ext-diff --no-textconv a3d30d94c8fd9cfca4b774814ff9d5bfade5010c -- > /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+network_mode = "public"
+timeout_sec = 5400.0
+user = "agent"
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:sveltejs-devalue-20260917060608-25e4d1-task-image-20261125"
+image_digest = "sha256:5f419e2591e6451e6ad169c5a2d237952861be0e240f44cbe855f8f794c0d9af"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 2
+memory_mb = 4096
+storage_mb = 20480
+
+[verifier.env]
+[solution.env]

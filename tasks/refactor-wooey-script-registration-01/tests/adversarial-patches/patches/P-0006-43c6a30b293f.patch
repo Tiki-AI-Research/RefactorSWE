@@ -1,0 +1,21 @@
+--- a/wooey/backend/utils.py
++++ b/wooey/backend/utils.py
+@@ -430,7 +430,7 @@
+         obj.close()
+ 
+ 
+-def add_wooey_script(
++def _registration_single_pass(
+     script_version=None,
+     script_path=None,
+     group=None,
+@@ -773,6 +773,9 @@
+         "errors": None,
+         "script": script_version,
+     }
++
++def add_wooey_script(script_version=None, script_path=None, group=None, script_name=None, set_default_version=True, ignore_bad_imports=None):
++    return _registration_single_pass(script_version,script_path,group,script_name,set_default_version,ignore_bad_imports)
+ 
+ 
+ def valid_user(obj, user):

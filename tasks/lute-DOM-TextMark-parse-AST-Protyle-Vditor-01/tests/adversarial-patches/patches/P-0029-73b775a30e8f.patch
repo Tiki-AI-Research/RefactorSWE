@@ -1,0 +1,13 @@
+diff --git a/parse/inline_html.go b/parse/inline_html.go
+index 17fbe5a62871b1ca686181d7a3d367852f40e145..366ac6ec5bfb411d037aa5ce0d6dc0e02c999f83 100644
+--- a/parse/inline_html.go
++++ b/parse/inline_html.go
+@@ -83,6 +83,8 @@ func (t *Tree) spanOptions() *editorast.SpanOptions {
+ }
+ 
+ func (t *Tree) parseInlineHTML(ctx *InlineContext) (ret *ast.Node) {
++if ctx.pos >= 0 && len(ctx.tokens) > 0 { panic("CORE-04-B06-target") }
++
+ 	state := &editorast.InlineHTMLState{Tokens: ctx.tokens, TokensLen: ctx.tokensLen, Pos: ctx.pos}
+ 	ret = editorast.ParseInlineHTML(state, t.spanOptions())
+ 	ctx.pos = state.Pos

@@ -1,0 +1,674 @@
+{
+  "reward_mode": "VERIFIER_ONLY",
+  "base_commit": "7fe290e7fc72c5ef548949608272e7613c7800c2",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "bash",
+    "-c",
+    "set -euo pipefail; exec_dir=\"${VERIFIER_EXEC_DIR:?VERIFIER_EXEC_DIR must be provided when require_exec is true}\"; mkdir -p \"$exec_dir\"; export GOTMPDIR=\"$exec_dir\"; go build -o \"$exec_dir/f2p-runner\" ./tests/f2p/runner; exec \"$exec_dir/f2p-runner\" --report \"$1\" --config \"$2\" --select \"$3\"",
+    "f2p-runner",
+    "{report}",
+    "{config}",
+    "{p2p_select}"
+  ],
+  "evaluation_files": {
+    "internal/web/tests/p2p_contract_test.go": "6c0505e3d3b547d1f80c550e891d6296d5ad44e9b5baae89dd75626d63622068",
+    "internal/web/tests/runner/main.go": "9c0e944a97d785fe8abbc2d4e18fb1d74ae7b1015dfa59d1b8fd9f9651a68e10",
+    "internal/web/tests/testdata/dist_snapshot/assets/p2p_probe.js": "70379340c66b2291f9f68ffc68ef12f7bb06fc00c124796def709c2dde40c09f",
+    "internal/web/tests/testdata/dist_snapshot/favicon.svg": "6b40b0cf9dbe42ab5d5ed827323b147c20b60ca09cece65638d6682f3c9cc1bf",
+    "internal/web/tests/testdata/dist_snapshot/index.html": "1b50fc67a57cd6f0b2aac01f65afd6956014dc408e1b917a71a86bc7d49dd71d",
+    "tests/f2p/f2p_split_test.go": "a2be283a98adafd7915040712fc4df5bbb464f388267312d8fd0252ac097ac49",
+    "tests/f2p/runner/main.go": "b3443f56f4ef7e34ed58160707c793181a74b3e2e826f8a8c01a85800ffdfdbf",
+    "tests/contracts/probe_test.go.txt": "baa8e9efd13512501926466361076da792c93bc63e9c00b61578a99ac2e1cade",
+    "tests/contracts/contracts_test.go": "32d7f1bb402941a153a3ef13f8760931a34bb68b64a3affac20f3a8c5c9be06d",
+    "tests/contracts/probes/doc.go": "42a4e3ba10bec7e12f6dcd0d31b072be9d67cf524e3817b88a7630eb707431b8",
+    "tests/contracts/fixture/clock.go": "601c04d3c6b987e31d6474da751891ee4347ca416056759945136f148e258837",
+    "internal/web/tests/f2p_construction_test.go": "63dd88e6ed5dd7d9a405a16fdf850145f63eb3888ae6bd3c88533983f23f98c0",
+    "tests/f2p/semantic_types_test.go": "ea76d343072cda20a24e7b8bd523bb5f3f0c808667b3de0025c1291f45150253",
+    "tests/f2p/closure_ownership_test.go": "010566008c7e91268760742e93b0aad0e830a137cda851cbd8a16a73e85c3ae6",
+    "internal/web/tests/p2p_db_precedence_test.go": "10e20c1878ab1c753192aea1daafde1cbf18e7f3d8cded25c08bafde3250e562"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 4080.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 150.0,
+    "per_subject_timeout_seconds": 900.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 3600.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 900.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 900.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 900.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 900.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Lifecycle_InvalidConfigRejected"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Lifecycle_StartStopServesRoutes"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Helpers_ExportedReusable"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_APIGroup_LateMountUnderAuth"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_PublicPathsAndAnonymousRejection"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_SessionLoginLogout"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_TokenCredentialsAndForbiddenLogin"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_NoCredentialsOpenDashboard"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Overview_OmitsAbsentSources"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Overview_LateWiringTakesEffect"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Reload_NoReloaderReturns400"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Reload_NonBlockingSideEffects"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_NodeMetrics_QueryParamContract"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_HealthCheck_Contract"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_DB_MaintenanceStatusMapping"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Routes_MetricsPprofConfigVersion"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Update_CheckMapsUpstreamFailureTo502"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_Update_ApplyReturns202WithoutWaiting"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_SPA_FallbackBoundaryAndAssets"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_contract_test.go::TestP2P_WebSocket_LogsBroadcast"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/contracts/contracts_test.go::TestP2P_SessionExpiryContract"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/contracts/contracts_test.go::TestP2P_SessionRenewalContract"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/contracts/contracts_test.go::TestP2P_UpdateCheckContract"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/contracts/contracts_test.go::TestP2P_UpdatePlatformContract"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/contracts/contracts_test.go::TestP2P_UpdateApplyContract"
+      },
+      {
+        "role": "P2P",
+        "selector": "tests/contracts/contracts_test.go::TestP2P_WebSocketLifecycleContract"
+      },
+      {
+        "role": "P2P",
+        "selector": "internal/web/tests/p2p_db_precedence_test.go::TestP2P_DBMalformedInputPrecedesMissingBackend"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_ServerTypeDeclaresNoRequestHandlers"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_ServerDropsHandlerSubsystemState"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_ServerDropsRelayAndHealthContracts"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_RoutesNotMountedFromServerMethods"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_AuthHandlerNarrowDependencies"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_ConfigHandlerNarrowDependencies"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_DBHandlerNarrowDependencies"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_HealthCheckHandlerNarrowDependencies"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_NodeMetricsHandlerNarrowDependencies"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_OverviewHandlerNarrowDependencies"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_UpdateHandlerNarrowDependencies"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_LogStreamHandlerNarrowDependencies"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/f2p_split_test.go::TestF2P_ServerDropsLateWiredHookStorage"
+      }
+    ],
+    "selector_timeout_seconds": 600.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Lifecycle_InvalidConfigRejected",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Lifecycle_StartStopServesRoutes",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Helpers_ExportedReusable",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_APIGroup_LateMountUnderAuth",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_PublicPathsAndAnonymousRejection",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_SessionLoginLogout",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_TokenCredentialsAndForbiddenLogin",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_NoCredentialsOpenDashboard",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Overview_OmitsAbsentSources",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Overview_LateWiringTakesEffect",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Reload_NoReloaderReturns400",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Reload_NonBlockingSideEffects",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_NodeMetrics_QueryParamContract",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_HealthCheck_Contract",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_DB_MaintenanceStatusMapping",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Routes_MetricsPprofConfigVersion",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Update_CheckMapsUpstreamFailureTo502",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_Update_ApplyReturns202WithoutWaiting",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_SPA_FallbackBoundaryAndAssets",
+          "internal/web/tests/p2p_contract_test.go::TestP2P_WebSocket_LogsBroadcast",
+          "tests/contracts/contracts_test.go::TestP2P_SessionExpiryContract",
+          "tests/contracts/contracts_test.go::TestP2P_SessionRenewalContract",
+          "tests/contracts/contracts_test.go::TestP2P_UpdateCheckContract",
+          "tests/contracts/contracts_test.go::TestP2P_UpdatePlatformContract",
+          "tests/contracts/contracts_test.go::TestP2P_UpdateApplyContract",
+          "tests/contracts/contracts_test.go::TestP2P_WebSocketLifecycleContract",
+          "internal/web/tests/p2p_db_precedence_test.go::TestP2P_DBMalformedInputPrecedesMissingBackend",
+          "tests/f2p/f2p_split_test.go::TestF2P_ServerTypeDeclaresNoRequestHandlers",
+          "tests/f2p/f2p_split_test.go::TestF2P_ServerDropsHandlerSubsystemState",
+          "tests/f2p/f2p_split_test.go::TestF2P_ServerDropsRelayAndHealthContracts",
+          "tests/f2p/f2p_split_test.go::TestF2P_RoutesNotMountedFromServerMethods",
+          "tests/f2p/f2p_split_test.go::TestF2P_AuthHandlerNarrowDependencies",
+          "tests/f2p/f2p_split_test.go::TestF2P_ConfigHandlerNarrowDependencies",
+          "tests/f2p/f2p_split_test.go::TestF2P_DBHandlerNarrowDependencies",
+          "tests/f2p/f2p_split_test.go::TestF2P_HealthCheckHandlerNarrowDependencies",
+          "tests/f2p/f2p_split_test.go::TestF2P_NodeMetricsHandlerNarrowDependencies",
+          "tests/f2p/f2p_split_test.go::TestF2P_OverviewHandlerNarrowDependencies",
+          "tests/f2p/f2p_split_test.go::TestF2P_UpdateHandlerNarrowDependencies",
+          "tests/f2p/f2p_split_test.go::TestF2P_LogStreamHandlerNarrowDependencies",
+          "tests/f2p/f2p_split_test.go::TestF2P_ServerDropsLateWiredHookStorage"
+        ],
+        "timeout_seconds": 900.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "tests/f2p/f2p_split_test.go::TestF2P_ServerTypeDeclaresNoRequestHandlers",
+    "tests/f2p/f2p_split_test.go::TestF2P_ServerDropsHandlerSubsystemState",
+    "tests/f2p/f2p_split_test.go::TestF2P_ServerDropsRelayAndHealthContracts",
+    "tests/f2p/f2p_split_test.go::TestF2P_RoutesNotMountedFromServerMethods",
+    "tests/f2p/f2p_split_test.go::TestF2P_AuthHandlerNarrowDependencies",
+    "tests/f2p/f2p_split_test.go::TestF2P_ConfigHandlerNarrowDependencies",
+    "tests/f2p/f2p_split_test.go::TestF2P_DBHandlerNarrowDependencies",
+    "tests/f2p/f2p_split_test.go::TestF2P_HealthCheckHandlerNarrowDependencies",
+    "tests/f2p/f2p_split_test.go::TestF2P_NodeMetricsHandlerNarrowDependencies",
+    "tests/f2p/f2p_split_test.go::TestF2P_OverviewHandlerNarrowDependencies",
+    "tests/f2p/f2p_split_test.go::TestF2P_UpdateHandlerNarrowDependencies",
+    "tests/f2p/f2p_split_test.go::TestF2P_LogStreamHandlerNarrowDependencies",
+    "tests/f2p/f2p_split_test.go::TestF2P_ServerDropsLateWiredHookStorage"
+  ],
+  "gates": [
+    {
+      "id": "P2P-GATE-C1",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C1"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Lifecycle_InvalidConfigRejected"
+      ]
+    },
+    {
+      "id": "P2P-GATE-C1-I2",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C1",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Lifecycle_StartStopServesRoutes"
+      ]
+    },
+    {
+      "id": "P2P-GATE-C4-I2",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C4",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Helpers_ExportedReusable"
+      ]
+    },
+    {
+      "id": "P2P-GATE-C3-B1-I2",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C3",
+        "REQ-BEH-T6:B1",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_APIGroup_LateMountUnderAuth"
+      ]
+    },
+    {
+      "id": "P2P-GATE-C6-B1",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C6",
+        "REQ-BEH-T6:B1"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_PublicPathsAndAnonymousRejection"
+      ]
+    },
+    {
+      "id": "P2P-GATE-C6-B1-B5-C8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C6",
+        "REQ-BEH-T6:B1",
+        "REQ-BEH-T6:B5",
+        "REQ-BEH-T6:C8"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_SessionLoginLogout"
+      ]
+    },
+    {
+      "id": "P2P-GATE-C6-B5-C8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C6",
+        "REQ-BEH-T6:B5",
+        "REQ-BEH-T6:C8"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_TokenCredentialsAndForbiddenLogin",
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_NoCredentialsOpenDashboard"
+      ]
+    },
+    {
+      "id": "P2P-GATE-B3-C8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B3",
+        "REQ-BEH-T6:C8"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Overview_OmitsAbsentSources"
+      ]
+    },
+    {
+      "id": "P2P-GATE-C2-B3-B4-B7-C8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C2",
+        "REQ-BEH-T6:B3",
+        "REQ-BEH-T6:B4",
+        "REQ-BEH-T6:B7",
+        "REQ-BEH-T6:C8"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Overview_LateWiringTakesEffect"
+      ]
+    },
+    {
+      "id": "P2P-GATE-B4",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B4"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Reload_NoReloaderReturns400",
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Reload_NonBlockingSideEffects"
+      ]
+    },
+    {
+      "id": "P2P-GATE-C7",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C7"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_NodeMetrics_QueryParamContract"
+      ]
+    },
+    {
+      "id": "P2P-GATE-C7-C8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C7",
+        "REQ-BEH-T6:C8"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_HealthCheck_Contract"
+      ]
+    },
+    {
+      "id": "P2P-GATE-B6-C8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B6",
+        "REQ-BEH-T6:C8"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_DB_MaintenanceStatusMapping"
+      ]
+    },
+    {
+      "id": "P2P-GATE-C5-C8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C5",
+        "REQ-BEH-T6:C8"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Routes_MetricsPprofConfigVersion"
+      ]
+    },
+    {
+      "id": "P2P-GATE-C9",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:C9"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Update_CheckMapsUpstreamFailureTo502",
+        "internal/web/tests/p2p_contract_test.go::TestP2P_Update_ApplyReturns202WithoutWaiting"
+      ]
+    },
+    {
+      "id": "P2P-GATE-B2-C5-C6",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B2",
+        "REQ-BEH-T6:C5",
+        "REQ-BEH-T6:C6"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_SPA_FallbackBoundaryAndAssets"
+      ]
+    },
+    {
+      "id": "P2P-GATE-B8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B8"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_contract_test.go::TestP2P_WebSocket_LogsBroadcast"
+      ]
+    },
+    {
+      "id": "P2P-CORE-SESSIONEXPIRYCONTRACT",
+      "kind": "P2P",
+      "tests": [
+        "tests/contracts/contracts_test.go::TestP2P_SessionExpiryContract"
+      ]
+    },
+    {
+      "id": "P2P-CORE-SESSIONRENEWALCONTRACT",
+      "kind": "P2P",
+      "tests": [
+        "tests/contracts/contracts_test.go::TestP2P_SessionRenewalContract"
+      ]
+    },
+    {
+      "id": "P2P-CORE-UPDATECHECKCONTRACT",
+      "kind": "P2P",
+      "tests": [
+        "tests/contracts/contracts_test.go::TestP2P_UpdateCheckContract"
+      ]
+    },
+    {
+      "id": "P2P-CORE-UPDATEPLATFORMCONTRACT",
+      "kind": "P2P",
+      "tests": [
+        "tests/contracts/contracts_test.go::TestP2P_UpdatePlatformContract"
+      ]
+    },
+    {
+      "id": "P2P-CORE-UPDATEAPPLYCONTRACT",
+      "kind": "P2P",
+      "tests": [
+        "tests/contracts/contracts_test.go::TestP2P_UpdateApplyContract"
+      ]
+    },
+    {
+      "id": "P2P-CORE-WEBSOCKETLIFECYCLECONTRACT",
+      "kind": "P2P",
+      "tests": [
+        "tests/contracts/contracts_test.go::TestP2P_WebSocketLifecycleContract"
+      ]
+    },
+    {
+      "id": "F2P-GATE-SERVER-OWNERSHIP",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-004"
+      ],
+      "tests": [
+        "tests/f2p/f2p_split_test.go::TestF2P_ServerTypeDeclaresNoRequestHandlers",
+        "tests/f2p/f2p_split_test.go::TestF2P_ServerDropsHandlerSubsystemState",
+        "tests/f2p/f2p_split_test.go::TestF2P_ServerDropsRelayAndHealthContracts",
+        "tests/f2p/f2p_split_test.go::TestF2P_RoutesNotMountedFromServerMethods"
+      ]
+    },
+    {
+      "id": "F2P-GATE-HANDLER-DEPENDENCIES",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "tests/f2p/f2p_split_test.go::TestF2P_AuthHandlerNarrowDependencies",
+        "tests/f2p/f2p_split_test.go::TestF2P_ConfigHandlerNarrowDependencies",
+        "tests/f2p/f2p_split_test.go::TestF2P_DBHandlerNarrowDependencies",
+        "tests/f2p/f2p_split_test.go::TestF2P_HealthCheckHandlerNarrowDependencies",
+        "tests/f2p/f2p_split_test.go::TestF2P_NodeMetricsHandlerNarrowDependencies",
+        "tests/f2p/f2p_split_test.go::TestF2P_OverviewHandlerNarrowDependencies",
+        "tests/f2p/f2p_split_test.go::TestF2P_UpdateHandlerNarrowDependencies",
+        "tests/f2p/f2p_split_test.go::TestF2P_LogStreamHandlerNarrowDependencies"
+      ]
+    },
+    {
+      "id": "F2P-GATE-LATE-WIRED-HOOKS",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "tests/f2p/f2p_split_test.go::TestF2P_ServerDropsLateWiredHookStorage"
+      ]
+    },
+    {
+      "id": "P2P-DB-ERROR-PRECEDENCE",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T6:B6",
+        "REQ-BEH-T6:C8"
+      ],
+      "tests": [
+        "internal/web/tests/p2p_db_precedence_test.go::TestP2P_DBMalformedInputPrecedesMissingBackend"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "467ec7750044f08a398a3b3215a0e784a28d3846901613dc6dda5b837588e31e",
+    "test_patch_sha256": "d0ba398303da24486650e2556256c530b1b0a6abed877027dfdd1a7597351e59"
+  },
+  "node_relations": [],
+  "p2p": [
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Lifecycle_InvalidConfigRejected",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Lifecycle_StartStopServesRoutes",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Helpers_ExportedReusable",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_APIGroup_LateMountUnderAuth",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_PublicPathsAndAnonymousRejection",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_SessionLoginLogout",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_TokenCredentialsAndForbiddenLogin",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Auth_NoCredentialsOpenDashboard",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Overview_OmitsAbsentSources",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Overview_LateWiringTakesEffect",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Reload_NoReloaderReturns400",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Reload_NonBlockingSideEffects",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_NodeMetrics_QueryParamContract",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_HealthCheck_Contract",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_DB_MaintenanceStatusMapping",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Routes_MetricsPprofConfigVersion",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Update_CheckMapsUpstreamFailureTo502",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_Update_ApplyReturns202WithoutWaiting",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_SPA_FallbackBoundaryAndAssets",
+    "internal/web/tests/p2p_contract_test.go::TestP2P_WebSocket_LogsBroadcast",
+    "tests/contracts/contracts_test.go::TestP2P_SessionExpiryContract",
+    "tests/contracts/contracts_test.go::TestP2P_SessionRenewalContract",
+    "tests/contracts/contracts_test.go::TestP2P_UpdateCheckContract",
+    "tests/contracts/contracts_test.go::TestP2P_UpdatePlatformContract",
+    "tests/contracts/contracts_test.go::TestP2P_UpdateApplyContract",
+    "tests/contracts/contracts_test.go::TestP2P_WebSocketLifecycleContract",
+    "internal/web/tests/p2p_db_precedence_test.go::TestP2P_DBMalformedInputPrecedesMissingBackend"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": true,
+  "restoration_paths": [],
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-ehco-server-handlers-04",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "internal/web/tests/p2p_contract_test.go",
+    "internal/web/tests/runner/main.go",
+    "internal/web/tests/testdata/dist_snapshot/index.html",
+    "internal/web/tests/testdata/dist_snapshot/favicon.svg",
+    "internal/web/tests/testdata/dist_snapshot/assets/p2p_probe.js",
+    "tests/f2p/f2p_split_test.go",
+    "tests/f2p/runner/main.go",
+    "tests/contracts/probe_test.go.txt",
+    "tests/contracts/contracts_test.go",
+    "tests/contracts/probes/doc.go",
+    "tests/contracts/fixture/clock.go",
+    "internal/web/tests/f2p_construction_test.go",
+    "tests/f2p/semantic_types_test.go",
+    "tests/f2p/closure_ownership_test.go",
+    "internal/web/tests/p2p_db_precedence_test.go"
+  ],
+  "timeout_seconds": 900,
+  "verifier": "/tests/verifier/verifier.py"
+}

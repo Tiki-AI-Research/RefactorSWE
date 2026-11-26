@@ -1,0 +1,834 @@
+{
+  "base_commit": "8edad8d350b99dc08063981663f4b4a159a6b7ec",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "sh",
+    "-c",
+    "set -e\nrep=\"$1\"; shift\npick() {\n  d=\"$1\"; [ -n \"$d\" ] || return 1\n  mkdir -p \"$d\" 2>/dev/null || return 1\n  p=\"$d/.f2p-exec-probe.$$\"; \n  printf '#!/bin/sh\\nexit 0\\n' > \"$p\" 2>/dev/null || return 1\n  chmod 755 \"$p\" 2>/dev/null || true\n  if \"$p\" 2>/dev/null; then rm -f \"$p\"; return 0; fi\n  rm -f \"$p\"; return 1\n}\nr=''\nfor c in \"$VERIFIER_EXEC_DIR\" /var/tmp /tmp \"$HOME/.f2p-exec\" \"$PWD/.f2p-exec\"; do\n  if pick \"$c\"; then r=\"$c\"; break; fi\ndone\n[ -n \"$r\" ] || { echo \"f2p: no exec-capable build directory (VERIFIER_EXEC_DIR unusable)\" >&2; exit 3; }\ng=\"$r/f2p-gotmp-$$\"; mkdir -p \"$g\"\nexport GOTMPDIR=\"$g\" GOFLAGS=-mod=readonly GOPROXY=off GOTOOLCHAIN=local\nexec go run ./tests/f2p/runner --report \"$rep\" \"$@\"\n",
+    "f2p",
+    "{report}",
+    "--config",
+    "{config}"
+  ],
+  "evaluation_files": {
+    "cmd/mgwhy/mgwhy_p2p_test.go": "9bf3ac0cbea5c1c9caa0f789f461f9acd3f5fbee7ea4baae8997838f84a92f13",
+    "provenance/p2p_regression_test.go": "bdf01a8a4d013e72ca13c6e9b8fc19b1f5bd2c02f6be284df558a7e148527c85",
+    "provenance/test/p2p_runner.go": "b7d3cc52b2b195b25e0ab29e11622e5991706ceb7d548d4377e53db7a9db5001",
+    "tests/f2p/analysis_test.go": "9198c7c45e510cf76fb946654e92281659d8da06903c8e49c6a84f7462473e18",
+    "tests/f2p/convergence_test.go": "4650d1ddf809477c0e9b0ae5f667eaee7badc9511945d26eb162fb89450d44d0",
+    "tests/f2p/model_test.go": "f96635d56d2bdd9f53568f07ab66b05b351211492d80bde88e7715c7c30fbe1c",
+    "tests/f2p/runner/main.go": "90128636a724eebef10d7f883fcce97f32d22cb7e316f5c47cc58af9bcd5eac2"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 6920.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 1610.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 6440.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 1610.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 1610.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 1610.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 1610.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestExplainSimpleDerivation"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestExplainNoProof"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestExplainNonGroundGoal"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestExplainMultipleDerivations"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestExplainRecursiveClosure"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestExplainCycleDetection"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestContentHashDeterminism"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestSharedSubProofID"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestEmitFactsSchema"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestEmitFactsAtomEncoding"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestPrintOutput"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestMaxProofs"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestExplainStratifiedNegation"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestEmitFactsAbsenceLeaf"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/provenance_test.go::TestExplainShowcase"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/recorder_test.go::TestFullModeMatchesSimpleOnDatalog"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/recorder_test.go::TestFullExplainLetTransform"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/recorder_test.go::TestFullExplainAggregation"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/recorder_test.go::TestFullEmitFactsSchema"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/recorder_test.go::TestFullPrintAggregation"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PExplainEDBLeafShape"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PExplainDefaultsAndCaps"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PExplainDepthPartial"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PRecordingDepthPartial"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PRecordingErrorsAndDefaults"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PRecordingAlternativesAndCaps"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PRecordingAbsenceLeaf"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PExplainSkipsTransforms"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PCrossModeIdenticalIDs"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PSharedSubProofCollapse"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PMemoizationIsolationAcrossCalls"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PCycleTerminationBothModes"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PModeOutputsMatchForDeterministicProgram"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PEmitFactsSharedSubProofReference"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PPinnedContentAddressedIdentifiers"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PExportedContractPins"
+      },
+      {
+        "role": "P2P",
+        "selector": "provenance/p2p_regression_test.go::TestP2PRecorderEngineIntegration"
+      },
+      {
+        "role": "P2P",
+        "selector": "cmd/mgwhy/mgwhy_p2p_test.go::TestP2PCLIModeFlagSelectsBuilderAndFormats"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PBothEntryPointsUseSameConstructionProducer"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PExplainReturnValueProducedBySharedCode"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PRecordingReturnValueProducedBySharedCode"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PContentAddressedIDStampingOwnedBySharedConstructionCode"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PDepthLimitOwnedBySharedConstructionCode"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PGroundGoalRejectionOwnedBySharedConstructionCode"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2POptionDefaultsOwnedBySharedConstructionCode"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PProofNodeAssemblyOwnedBySharedConstructionCode"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PConstructionStateDeclaredBySingleComponentType"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PConstructionStateOwnedByProofProducingComponent"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PCycleTrackingStateOwnedBySharedConstructionCode"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PProofMemoStateOwnedBySharedConstructionCode"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PRuleIDMemoStateOwnedBySharedConstructionCode"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PPostHocPremiseResolutionDoesNotOwnConstruction"
+      },
+      {
+        "role": "F2P",
+        "selector": "tests/f2p/convergence_test.go::TestF2PRecordingPremiseResolutionDoesNotOwnConstruction"
+      }
+    ],
+    "selector_timeout_seconds": 1610.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "provenance/provenance_test.go::TestExplainSimpleDerivation",
+          "provenance/provenance_test.go::TestExplainNoProof",
+          "provenance/provenance_test.go::TestExplainNonGroundGoal",
+          "provenance/provenance_test.go::TestExplainMultipleDerivations",
+          "provenance/provenance_test.go::TestExplainRecursiveClosure",
+          "provenance/provenance_test.go::TestExplainCycleDetection",
+          "provenance/provenance_test.go::TestContentHashDeterminism",
+          "provenance/provenance_test.go::TestSharedSubProofID",
+          "provenance/provenance_test.go::TestEmitFactsSchema",
+          "provenance/provenance_test.go::TestEmitFactsAtomEncoding",
+          "provenance/provenance_test.go::TestPrintOutput",
+          "provenance/provenance_test.go::TestMaxProofs",
+          "provenance/provenance_test.go::TestExplainStratifiedNegation",
+          "provenance/provenance_test.go::TestEmitFactsAbsenceLeaf",
+          "provenance/provenance_test.go::TestExplainShowcase",
+          "provenance/recorder_test.go::TestFullModeMatchesSimpleOnDatalog",
+          "provenance/recorder_test.go::TestFullExplainLetTransform",
+          "provenance/recorder_test.go::TestFullExplainAggregation",
+          "provenance/recorder_test.go::TestFullEmitFactsSchema",
+          "provenance/recorder_test.go::TestFullPrintAggregation",
+          "provenance/p2p_regression_test.go::TestP2PExplainEDBLeafShape",
+          "provenance/p2p_regression_test.go::TestP2PExplainDefaultsAndCaps",
+          "provenance/p2p_regression_test.go::TestP2PExplainDepthPartial",
+          "provenance/p2p_regression_test.go::TestP2PRecordingDepthPartial",
+          "provenance/p2p_regression_test.go::TestP2PRecordingErrorsAndDefaults",
+          "provenance/p2p_regression_test.go::TestP2PRecordingAlternativesAndCaps",
+          "provenance/p2p_regression_test.go::TestP2PRecordingAbsenceLeaf",
+          "provenance/p2p_regression_test.go::TestP2PExplainSkipsTransforms",
+          "provenance/p2p_regression_test.go::TestP2PCrossModeIdenticalIDs"
+        ],
+        "timeout_seconds": 880.0
+      },
+      {
+        "id": "shard-002",
+        "selectors": [
+          "provenance/p2p_regression_test.go::TestP2PSharedSubProofCollapse",
+          "provenance/p2p_regression_test.go::TestP2PMemoizationIsolationAcrossCalls",
+          "provenance/p2p_regression_test.go::TestP2PCycleTerminationBothModes",
+          "provenance/p2p_regression_test.go::TestP2PModeOutputsMatchForDeterministicProgram",
+          "provenance/p2p_regression_test.go::TestP2PEmitFactsSharedSubProofReference",
+          "provenance/p2p_regression_test.go::TestP2PPinnedContentAddressedIdentifiers",
+          "provenance/p2p_regression_test.go::TestP2PExportedContractPins",
+          "provenance/p2p_regression_test.go::TestP2PRecorderEngineIntegration",
+          "cmd/mgwhy/mgwhy_p2p_test.go::TestP2PCLIModeFlagSelectsBuilderAndFormats",
+          "tests/f2p/convergence_test.go::TestF2PBothEntryPointsUseSameConstructionProducer",
+          "tests/f2p/convergence_test.go::TestF2PExplainReturnValueProducedBySharedCode",
+          "tests/f2p/convergence_test.go::TestF2PRecordingReturnValueProducedBySharedCode",
+          "tests/f2p/convergence_test.go::TestF2PContentAddressedIDStampingOwnedBySharedConstructionCode",
+          "tests/f2p/convergence_test.go::TestF2PDepthLimitOwnedBySharedConstructionCode",
+          "tests/f2p/convergence_test.go::TestF2PGroundGoalRejectionOwnedBySharedConstructionCode",
+          "tests/f2p/convergence_test.go::TestF2POptionDefaultsOwnedBySharedConstructionCode",
+          "tests/f2p/convergence_test.go::TestF2PProofNodeAssemblyOwnedBySharedConstructionCode",
+          "tests/f2p/convergence_test.go::TestF2PConstructionStateDeclaredBySingleComponentType",
+          "tests/f2p/convergence_test.go::TestF2PConstructionStateOwnedByProofProducingComponent",
+          "tests/f2p/convergence_test.go::TestF2PCycleTrackingStateOwnedBySharedConstructionCode",
+          "tests/f2p/convergence_test.go::TestF2PProofMemoStateOwnedBySharedConstructionCode",
+          "tests/f2p/convergence_test.go::TestF2PRuleIDMemoStateOwnedBySharedConstructionCode",
+          "tests/f2p/convergence_test.go::TestF2PPostHocPremiseResolutionDoesNotOwnConstruction",
+          "tests/f2p/convergence_test.go::TestF2PRecordingPremiseResolutionDoesNotOwnConstruction"
+        ],
+        "timeout_seconds": 730.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "tests/f2p/convergence_test.go::TestF2PBothEntryPointsUseSameConstructionProducer",
+    "tests/f2p/convergence_test.go::TestF2PExplainReturnValueProducedBySharedCode",
+    "tests/f2p/convergence_test.go::TestF2PRecordingReturnValueProducedBySharedCode",
+    "tests/f2p/convergence_test.go::TestF2PContentAddressedIDStampingOwnedBySharedConstructionCode",
+    "tests/f2p/convergence_test.go::TestF2PDepthLimitOwnedBySharedConstructionCode",
+    "tests/f2p/convergence_test.go::TestF2PGroundGoalRejectionOwnedBySharedConstructionCode",
+    "tests/f2p/convergence_test.go::TestF2POptionDefaultsOwnedBySharedConstructionCode",
+    "tests/f2p/convergence_test.go::TestF2PProofNodeAssemblyOwnedBySharedConstructionCode",
+    "tests/f2p/convergence_test.go::TestF2PConstructionStateDeclaredBySingleComponentType",
+    "tests/f2p/convergence_test.go::TestF2PConstructionStateOwnedByProofProducingComponent",
+    "tests/f2p/convergence_test.go::TestF2PCycleTrackingStateOwnedBySharedConstructionCode",
+    "tests/f2p/convergence_test.go::TestF2PProofMemoStateOwnedBySharedConstructionCode",
+    "tests/f2p/convergence_test.go::TestF2PRuleIDMemoStateOwnedBySharedConstructionCode",
+    "tests/f2p/convergence_test.go::TestF2PPostHocPremiseResolutionDoesNotOwnConstruction",
+    "tests/f2p/convergence_test.go::TestF2PRecordingPremiseResolutionDoesNotOwnConstruction"
+  ],
+  "gates": [
+    {
+      "id": "P2P-1",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:C1",
+        "REQ-BEH-T5:C5"
+      ],
+      "tests": [
+        "provenance/provenance_test.go::TestExplainSimpleDerivation",
+        "provenance/p2p_regression_test.go::TestP2PExplainEDBLeafShape"
+      ]
+    },
+    {
+      "id": "P2P-2",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:C4"
+      ],
+      "tests": [
+        "provenance/provenance_test.go::TestExplainNoProof"
+      ]
+    },
+    {
+      "id": "P2P-3",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B1",
+        "REQ-BEH-T5:C4"
+      ],
+      "tests": [
+        "provenance/provenance_test.go::TestExplainNonGroundGoal"
+      ]
+    },
+    {
+      "id": "P2P-4",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B2",
+        "REQ-BEH-T5:B4"
+      ],
+      "tests": [
+        "provenance/provenance_test.go::TestExplainMultipleDerivations",
+        "provenance/p2p_regression_test.go::TestP2PRecordingAlternativesAndCaps"
+      ]
+    },
+    {
+      "id": "P2P-5",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B5"
+      ],
+      "tests": [
+        "provenance/provenance_test.go::TestExplainRecursiveClosure",
+        "provenance/provenance_test.go::TestExplainCycleDetection"
+      ]
+    },
+    {
+      "id": "P2P-6",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B4"
+      ],
+      "tests": [
+        "provenance/provenance_test.go::TestContentHashDeterminism",
+        "provenance/provenance_test.go::TestSharedSubProofID"
+      ]
+    },
+    {
+      "id": "P2P-7",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:C6"
+      ],
+      "tests": [
+        "provenance/provenance_test.go::TestEmitFactsSchema",
+        "provenance/provenance_test.go::TestEmitFactsAtomEncoding",
+        "provenance/provenance_test.go::TestPrintOutput"
+      ]
+    },
+    {
+      "id": "P2P-8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B2"
+      ],
+      "tests": [
+        "provenance/provenance_test.go::TestMaxProofs"
+      ]
+    },
+    {
+      "id": "P2P-9",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B3",
+        "REQ-BEH-T5:C1"
+      ],
+      "tests": [
+        "provenance/provenance_test.go::TestExplainStratifiedNegation"
+      ]
+    },
+    {
+      "id": "P2P-10",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B7"
+      ],
+      "tests": [
+        "provenance/provenance_test.go::TestEmitFactsAbsenceLeaf"
+      ]
+    },
+    {
+      "id": "P2P-11",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:C1",
+        "REQ-BEH-T5:C6"
+      ],
+      "tests": [
+        "provenance/provenance_test.go::TestExplainShowcase"
+      ]
+    },
+    {
+      "id": "P2P-12",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B4",
+        "REQ-BEH-T5:C2"
+      ],
+      "tests": [
+        "provenance/recorder_test.go::TestFullModeMatchesSimpleOnDatalog"
+      ]
+    },
+    {
+      "id": "P2P-13",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:C2",
+        "REQ-BEH-T5:C5",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "provenance/recorder_test.go::TestFullExplainLetTransform",
+        "provenance/recorder_test.go::TestFullExplainAggregation"
+      ]
+    },
+    {
+      "id": "P2P-14",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:C2",
+        "REQ-BEH-T5:C6"
+      ],
+      "tests": [
+        "provenance/recorder_test.go::TestFullEmitFactsSchema",
+        "provenance/recorder_test.go::TestFullPrintAggregation"
+      ]
+    },
+    {
+      "id": "P2P-15",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B2",
+        "REQ-BEH-T5:C3",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "provenance/p2p_regression_test.go::TestP2PExplainDefaultsAndCaps",
+        "provenance/p2p_regression_test.go::TestP2PExplainDepthPartial",
+        "provenance/p2p_regression_test.go::TestP2PRecordingDepthPartial"
+      ]
+    },
+    {
+      "id": "P2P-16",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B1",
+        "REQ-BEH-T5:B2",
+        "REQ-BEH-T5:C4"
+      ],
+      "tests": [
+        "provenance/p2p_regression_test.go::TestP2PRecordingErrorsAndDefaults"
+      ]
+    },
+    {
+      "id": "P2P-17",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B3",
+        "REQ-BEH-T5:C1",
+        "REQ-BEH-T5:C2"
+      ],
+      "tests": [
+        "provenance/p2p_regression_test.go::TestP2PRecordingAbsenceLeaf"
+      ]
+    },
+    {
+      "id": "P2P-18",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B3"
+      ],
+      "tests": [
+        "provenance/p2p_regression_test.go::TestP2PExplainSkipsTransforms"
+      ]
+    },
+    {
+      "id": "P2P-19",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B4",
+        "REQ-BEH-T5:B8",
+        "REQ-BEH-T5:C2",
+        "REQ-INTEGRITY-005",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "provenance/p2p_regression_test.go::TestP2PCrossModeIdenticalIDs"
+      ]
+    },
+    {
+      "id": "P2P-20",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B4",
+        "REQ-BEH-T5:B6"
+      ],
+      "tests": [
+        "provenance/p2p_regression_test.go::TestP2PSharedSubProofCollapse",
+        "provenance/p2p_regression_test.go::TestP2PMemoizationIsolationAcrossCalls"
+      ]
+    },
+    {
+      "id": "P2P-21",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B5",
+        "REQ-BEH-T5:C2"
+      ],
+      "tests": [
+        "provenance/p2p_regression_test.go::TestP2PCycleTerminationBothModes"
+      ]
+    },
+    {
+      "id": "P2P-22",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B7",
+        "REQ-BEH-T5:C6",
+        "REQ-BEH-T5:C7",
+        "REQ-INTEGRITY-005",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "provenance/p2p_regression_test.go::TestP2PModeOutputsMatchForDeterministicProgram"
+      ]
+    },
+    {
+      "id": "P2P-23",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B7",
+        "REQ-BEH-T5:C6"
+      ],
+      "tests": [
+        "provenance/p2p_regression_test.go::TestP2PEmitFactsSharedSubProofReference"
+      ]
+    },
+    {
+      "id": "P2P-24",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:B4",
+        "REQ-BEH-T5:B8",
+        "REQ-INTEGRITY-005"
+      ],
+      "tests": [
+        "provenance/p2p_regression_test.go::TestP2PPinnedContentAddressedIdentifiers"
+      ]
+    },
+    {
+      "id": "P2P-25",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:C5",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "provenance/p2p_regression_test.go::TestP2PExportedContractPins"
+      ]
+    },
+    {
+      "id": "P2P-26",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:C2",
+        "REQ-BEH-T5:C7"
+      ],
+      "tests": [
+        "provenance/p2p_regression_test.go::TestP2PRecorderEngineIntegration"
+      ]
+    },
+    {
+      "id": "P2P-27",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T5:C2",
+        "REQ-BEH-T5:C7",
+        "REQ-INTEGRITY-005",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "cmd/mgwhy/mgwhy_p2p_test.go::TestP2PCLIModeFlagSelectsBuilderAndFormats"
+      ]
+    },
+    {
+      "id": "F2P-RETURN-FLOW",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "tests/f2p/convergence_test.go::TestF2PBothEntryPointsUseSameConstructionProducer",
+        "tests/f2p/convergence_test.go::TestF2PExplainReturnValueProducedBySharedCode",
+        "tests/f2p/convergence_test.go::TestF2PRecordingReturnValueProducedBySharedCode"
+      ]
+    },
+    {
+      "id": "F2P-OWNERSHIP",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T5:B1"
+      ],
+      "tests": [
+        "tests/f2p/convergence_test.go::TestF2PContentAddressedIDStampingOwnedBySharedConstructionCode",
+        "tests/f2p/convergence_test.go::TestF2PDepthLimitOwnedBySharedConstructionCode",
+        "tests/f2p/convergence_test.go::TestF2PGroundGoalRejectionOwnedBySharedConstructionCode",
+        "tests/f2p/convergence_test.go::TestF2POptionDefaultsOwnedBySharedConstructionCode",
+        "tests/f2p/convergence_test.go::TestF2PProofNodeAssemblyOwnedBySharedConstructionCode"
+      ]
+    },
+    {
+      "id": "F2P-STATE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "tests/f2p/convergence_test.go::TestF2PConstructionStateDeclaredBySingleComponentType",
+        "tests/f2p/convergence_test.go::TestF2PConstructionStateOwnedByProofProducingComponent",
+        "tests/f2p/convergence_test.go::TestF2PCycleTrackingStateOwnedBySharedConstructionCode",
+        "tests/f2p/convergence_test.go::TestF2PProofMemoStateOwnedBySharedConstructionCode",
+        "tests/f2p/convergence_test.go::TestF2PRuleIDMemoStateOwnedBySharedConstructionCode"
+      ]
+    },
+    {
+      "id": "F2P-DIVERGENCE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "tests/f2p/convergence_test.go::TestF2PPostHocPremiseResolutionDoesNotOwnConstruction",
+        "tests/f2p/convergence_test.go::TestF2PRecordingPremiseResolutionDoesNotOwnConstruction"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "bf24023b9e04262cf5abab7d1d7898ffc5840683114e5bfb7ddb60597e8844bc",
+    "test_patch_sha256": "e1ad38378b9edc6da3ef3f4e1c1e35b7b5fc7cd053e1843cc8eb3fdab03d8ca6"
+  },
+  "node_command": [
+    "sh",
+    "-c",
+    "set -e\nrep=\"$1\"; shift\npick() {\n  d=\"$1\"; [ -n \"$d\" ] || return 1\n  mkdir -p \"$d\" 2>/dev/null || return 1\n  p=\"$d/.f2p-exec-probe.$$\"; \n  printf '#!/bin/sh\\nexit 0\\n' > \"$p\" 2>/dev/null || return 1\n  chmod 755 \"$p\" 2>/dev/null || true\n  if \"$p\" 2>/dev/null; then rm -f \"$p\"; return 0; fi\n  rm -f \"$p\"; return 1\n}\nr=''\nfor c in \"$VERIFIER_EXEC_DIR\" /var/tmp /tmp \"$HOME/.f2p-exec\" \"$PWD/.f2p-exec\"; do\n  if pick \"$c\"; then r=\"$c\"; break; fi\ndone\n[ -n \"$r\" ] || { echo \"f2p: no exec-capable build directory (VERIFIER_EXEC_DIR unusable)\" >&2; exit 3; }\ng=\"$r/f2p-gotmp-$$\"; mkdir -p \"$g\"\nexport GOTMPDIR=\"$g\" GOFLAGS=-mod=readonly GOPROXY=off GOTOOLCHAIN=local\nexec go run ./tests/f2p/runner --report \"$rep\" \"$@\"\n",
+    "f2p",
+    "{report}",
+    "--selector",
+    "{selector}"
+  ],
+  "node_relations": [],
+  "node_timeout_seconds": 30,
+  "p2p": [
+    "provenance/provenance_test.go::TestExplainSimpleDerivation",
+    "provenance/provenance_test.go::TestExplainNoProof",
+    "provenance/provenance_test.go::TestExplainNonGroundGoal",
+    "provenance/provenance_test.go::TestExplainMultipleDerivations",
+    "provenance/provenance_test.go::TestExplainRecursiveClosure",
+    "provenance/provenance_test.go::TestExplainCycleDetection",
+    "provenance/provenance_test.go::TestContentHashDeterminism",
+    "provenance/provenance_test.go::TestSharedSubProofID",
+    "provenance/provenance_test.go::TestEmitFactsSchema",
+    "provenance/provenance_test.go::TestEmitFactsAtomEncoding",
+    "provenance/provenance_test.go::TestPrintOutput",
+    "provenance/provenance_test.go::TestMaxProofs",
+    "provenance/provenance_test.go::TestExplainStratifiedNegation",
+    "provenance/provenance_test.go::TestEmitFactsAbsenceLeaf",
+    "provenance/provenance_test.go::TestExplainShowcase",
+    "provenance/recorder_test.go::TestFullModeMatchesSimpleOnDatalog",
+    "provenance/recorder_test.go::TestFullExplainLetTransform",
+    "provenance/recorder_test.go::TestFullExplainAggregation",
+    "provenance/recorder_test.go::TestFullEmitFactsSchema",
+    "provenance/recorder_test.go::TestFullPrintAggregation",
+    "provenance/p2p_regression_test.go::TestP2PExplainEDBLeafShape",
+    "provenance/p2p_regression_test.go::TestP2PExplainDefaultsAndCaps",
+    "provenance/p2p_regression_test.go::TestP2PExplainDepthPartial",
+    "provenance/p2p_regression_test.go::TestP2PRecordingDepthPartial",
+    "provenance/p2p_regression_test.go::TestP2PRecordingErrorsAndDefaults",
+    "provenance/p2p_regression_test.go::TestP2PRecordingAlternativesAndCaps",
+    "provenance/p2p_regression_test.go::TestP2PRecordingAbsenceLeaf",
+    "provenance/p2p_regression_test.go::TestP2PExplainSkipsTransforms",
+    "provenance/p2p_regression_test.go::TestP2PCrossModeIdenticalIDs",
+    "provenance/p2p_regression_test.go::TestP2PSharedSubProofCollapse",
+    "provenance/p2p_regression_test.go::TestP2PMemoizationIsolationAcrossCalls",
+    "provenance/p2p_regression_test.go::TestP2PCycleTerminationBothModes",
+    "provenance/p2p_regression_test.go::TestP2PModeOutputsMatchForDeterministicProgram",
+    "provenance/p2p_regression_test.go::TestP2PEmitFactsSharedSubProofReference",
+    "provenance/p2p_regression_test.go::TestP2PPinnedContentAddressedIdentifiers",
+    "provenance/p2p_regression_test.go::TestP2PExportedContractPins",
+    "provenance/p2p_regression_test.go::TestP2PRecorderEngineIntegration",
+    "cmd/mgwhy/mgwhy_p2p_test.go::TestP2PCLIModeFlagSelectsBuilderAndFormats"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": true,
+  "restoration_paths": [
+    "provenance/provenance_test.go",
+    "provenance/recorder_test.go"
+  ],
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-mangle-provenance-02",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "cmd/mgwhy/mgwhy_p2p_test.go",
+    "provenance/p2p_regression_test.go",
+    "provenance/test/p2p_runner.go",
+    "tests/f2p/model_test.go",
+    "tests/f2p/analysis_test.go",
+    "tests/f2p/convergence_test.go",
+    "tests/f2p/runner/main.go"
+  ],
+  "timeout_seconds": 300,
+  "verifier": "/tests/verifier/verifier.py",
+  "reward_mode": "VERIFIER_ONLY"
+}

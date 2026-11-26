@@ -1,0 +1,3950 @@
+{
+  "base_commit": "00e18eb12ae2f06f3c245f796bfe7f6224db033a",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "uv",
+    "run",
+    "--offline",
+    "--frozen",
+    "python",
+    "-m",
+    "pytest",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml",
+    "{report}",
+    "-q",
+    "test/test__pydantic.py::test_no_pydantic",
+    "test/test__pydantic.py::test_with_pydantic",
+    "test/test_doc.py::test_repr_tb",
+    "test/test_doc.py::test_order",
+    "test/test_doc.py::test_attrs",
+    "test/test_doc.py::test_all_with_import_err",
+    "test/test_doc.py::test_all_with_objects_instead_of_strings",
+    "test/test_doc.py::test_var_with_raising_repr",
+    "test/test_doc.py::test_class_with_raising_getattr",
+    "test/test_doc.py::test_builtin_source",
+    "test/test_doc.py::test_raising_getdoc",
+    "test/test_doc.py::test_raising_submodules",
+    "test/test_doc.py::test_default_value_masks_env_vars",
+    "test/test_doc.py::test_source_file_method",
+    "test/test_doc_ast.py::test_dedent",
+    "test/test_doc_ast.py::test_parse_error",
+    "test/test_doc_ast.py::test_type_checking_sections[import typing\\nif typing.TYPE_CHECKING:\\n\\tprint(42)-1]",
+    "test/test_doc_ast.py::test_type_checking_sections[from typing import TYPE_CHECKING\\nif TYPE_CHECKING:\\n\\tprint(42)\\n\\tprint(43)-2]",
+    "test/test_doc_ast.py::test_type_checking_sections[print(1234)-0]",
+    "test/test_doc_pyi.py::test_type_stub_mismatch",
+    "test/test_doc_pyi.py::test_invalid_stub_file",
+    "test/test_doc_types.py::test_eval_fail[totally_unknown_module]",
+    "test/test_doc_types.py::test_eval_fail[!!!!]",
+    "test/test_doc_types.py::test_eval_fail[html.unknown_attr]",
+    "test/test_doc_types.py::test_eval_fail2",
+    "test/test_doc_types.py::test_eval_fail3",
+    "test/test_doc_types.py::test_eval_fail_import_nonexistent",
+    "test/test_doc_types.py::test_recurse",
+    "test/test_docstrings.py::test_google",
+    "test/test_docstrings.py::test_numpy",
+    "test/test_docstrings.py::test_rst",
+    "test/test_docstrings.py::test_rst_extract_options_fuzz",
+    "test/test_docstrings.py::test_convert_exception",
+    "test/test_docstrings.py::test_rst_extract_options",
+    "test/test_docstrings.py::test_rst_include_trim_lines",
+    "test/test_docstrings.py::test_rst_include_trim_pattern",
+    "test/test_docstrings.py::test_rst_include_trim_start_after_applied_first",
+    "test/test_docstrings.py::test_rst_include_trim_mixture",
+    "test/test_docstrings.py::test_rst_include_nonexistent",
+    "test/test_docstrings.py::test_rst_include_invalid_options",
+    "test/test_extract.py::test_walk_specs",
+    "test/test_extract.py::test_parse_spec",
+    "test/test_extract.py::test_parse_spec_mod_and_dir",
+    "test/test_extract.py::test_module_mtime",
+    "test/test_extract.py::test_invalidate_caches",
+    "test/test_extract.py::test_mock_sideeffects",
+    "test/test_main.py::test_cli",
+    "test/test_main.py::test_cli_version",
+    "test/test_main.py::test_cli_web",
+    "test/test_main.py::test_cli_web_port_used",
+    "test/test_main.py::test_api",
+    "test/test_main.py::test_patch_showwarnings",
+    "test/test_render_helpers.py::test_relative_link[foo-foo-]",
+    "test/test_render_helpers.py::test_relative_link[foo-bar-bar.html]",
+    "test/test_render_helpers.py::test_relative_link[foo.foo-foo-../foo.html]",
+    "test/test_render_helpers.py::test_relative_link[foo.foo-bar-../bar.html]",
+    "test/test_render_helpers.py::test_relative_link[foo.bar-foo.bar.baz-bar/baz.html]",
+    "test/test_render_helpers.py::test_relative_link[foo.bar.baz-foo.qux.quux-../qux/quux.html]",
+    "test/test_render_helpers.py::test_qualname_candidates[-candidates0]",
+    "test/test_render_helpers.py::test_qualname_candidates[foo-candidates1]",
+    "test/test_render_helpers.py::test_qualname_candidates[foo.bar-candidates2]",
+    "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-qux-candidates0]",
+    "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-foo.bar-candidates1]",
+    "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-foo-candidates2]",
+    "test/test_render_helpers.py::test_edit_url[demo-False-mapping0-None]",
+    "test/test_render_helpers.py::test_edit_url[demo-False-mapping1-https://github.com/mhils/pdoc/blob/master/test/testdata/demo.py]",
+    "test/test_render_helpers.py::test_edit_url[demo-True-mapping2-https://github.com/mhils/pdoc/blob/master/test/testdata/demo/__init__.py]",
+    "test/test_render_helpers.py::test_split_identifier[all_modules0-a.b.c.d-result0]",
+    "test/test_render_helpers.py::test_split_identifier[all_modules1-a.c.b.d-result1]",
+    "test/test_render_helpers.py::test_possible_sources[all_modules0-a.B-result0]",
+    "test/test_render_helpers.py::test_possible_sources[all_modules1-a.b-result1]",
+    "test/test_render_helpers.py::test_possible_sources[all_modules2-a-result2]",
+    "test/test_render_helpers.py::test_possible_sources[all_modules3-a.b.c.d-result3]",
+    "test/test_render_helpers.py::test_markdown_toc",
+    "test/test_render_helpers.py::test_mixed_toc",
+    "test/test_render_helpers.py::test_markdown_autolink[https://example.com/-<p><a href=\"https://example.com/\">https://example.com/</a></p>\\n]",
+    "test/test_render_helpers.py::test_markdown_autolink[<https://example.com>-<p><a href=\"https://example.com\">https://example.com</a></p>\\n]",
+    "test/test_render_helpers.py::test_markdown_autolink[<a href=\"https://example.com\">link</a>-<p><a href=\"https://example.com\">link</a></p>\\n]",
+    "test/test_render_helpers.py::test_markdown_autolink[[link](https://example.com)-<p><a href=\"https://example.com\">link</a></p>\\n]",
+    "test/test_render_helpers.py::test_markdown_autolink[See the [Python home page ](https://www.python.org) for info.-<p>See the <a href=\"https://www.python.org\">Python home page </a> for info.</p>\\n]",
+    "test/test_render_helpers.py::test_markdown_autolink[See https://www.python.org.-<p>See <a href=\"https://www.python.org\">https://www.python.org</a>.</p>\\n]",
+    "test/test_render_helpers.py::test_markdown_autolink[See **https://www.python.org**.-<p>See <strong>https://www.python.org</strong>.</p>\\n]",
+    "test/test_search.py::test_node_executable",
+    "test/test_search.py::test_precompile_index",
+    "test/test_smoke.py::test_smoke[pdoc]",
+    "test/test_smoke.py::test_smoke[abc]",
+    "test/test_smoke.py::test_smoke[annotationlib]",
+    "test/test_smoke.py::test_smoke[antigravity]",
+    "test/test_smoke.py::test_smoke[argparse]",
+    "test/test_smoke.py::test_smoke[ast]",
+    "test/test_smoke.py::test_smoke[asyncio]",
+    "test/test_smoke.py::test_smoke[base64]",
+    "test/test_smoke.py::test_smoke[bdb]",
+    "test/test_smoke.py::test_smoke[bisect]",
+    "test/test_smoke.py::test_smoke[bz2]",
+    "test/test_smoke.py::test_smoke[cProfile]",
+    "test/test_smoke.py::test_smoke[calendar]",
+    "test/test_smoke.py::test_smoke[cmd]",
+    "test/test_smoke.py::test_smoke[code]",
+    "test/test_smoke.py::test_smoke[codecs]",
+    "test/test_smoke.py::test_smoke[codeop]",
+    "test/test_smoke.py::test_smoke[collections]",
+    "test/test_smoke.py::test_smoke[colorsys]",
+    "test/test_smoke.py::test_smoke[compileall]",
+    "test/test_smoke.py::test_smoke[compression]",
+    "test/test_smoke.py::test_smoke[concurrent]",
+    "test/test_smoke.py::test_smoke[configparser]",
+    "test/test_smoke.py::test_smoke[contextlib]",
+    "test/test_smoke.py::test_smoke[contextvars]",
+    "test/test_smoke.py::test_smoke[copy]",
+    "test/test_smoke.py::test_smoke[copyreg]",
+    "test/test_smoke.py::test_smoke[csv]",
+    "test/test_smoke.py::test_smoke[ctypes]",
+    "test/test_smoke.py::test_smoke[curses]",
+    "test/test_smoke.py::test_smoke[dataclasses]",
+    "test/test_smoke.py::test_smoke[datetime]",
+    "test/test_smoke.py::test_smoke[dbm]",
+    "test/test_smoke.py::test_smoke[decimal]",
+    "test/test_smoke.py::test_smoke[difflib]",
+    "test/test_smoke.py::test_smoke[dis]",
+    "test/test_smoke.py::test_smoke[doctest]",
+    "test/test_smoke.py::test_smoke[email]",
+    "test/test_smoke.py::test_smoke[encodings]",
+    "test/test_smoke.py::test_smoke[ensurepip]",
+    "test/test_smoke.py::test_smoke[enum]",
+    "test/test_smoke.py::test_smoke[filecmp]",
+    "test/test_smoke.py::test_smoke[fileinput]",
+    "test/test_smoke.py::test_smoke[fnmatch]",
+    "test/test_smoke.py::test_smoke[fractions]",
+    "test/test_smoke.py::test_smoke[ftplib]",
+    "test/test_smoke.py::test_smoke[functools]",
+    "test/test_smoke.py::test_smoke[genericpath]",
+    "test/test_smoke.py::test_smoke[getopt]",
+    "test/test_smoke.py::test_smoke[getpass]",
+    "test/test_smoke.py::test_smoke[gettext]",
+    "test/test_smoke.py::test_smoke[glob]",
+    "test/test_smoke.py::test_smoke[graphlib]",
+    "test/test_smoke.py::test_smoke[gzip]",
+    "test/test_smoke.py::test_smoke[hashlib]",
+    "test/test_smoke.py::test_smoke[heapq]",
+    "test/test_smoke.py::test_smoke[hmac]",
+    "test/test_smoke.py::test_smoke[html]",
+    "test/test_smoke.py::test_smoke[http]",
+    "test/test_smoke.py::test_smoke[imaplib]",
+    "test/test_smoke.py::test_smoke[importlib]",
+    "test/test_smoke.py::test_smoke[inspect]",
+    "test/test_smoke.py::test_smoke[io]",
+    "test/test_smoke.py::test_smoke[ipaddress]",
+    "test/test_smoke.py::test_smoke[json]",
+    "test/test_smoke.py::test_smoke[keyword]",
+    "test/test_smoke.py::test_smoke[linecache]",
+    "test/test_smoke.py::test_smoke[locale]",
+    "test/test_smoke.py::test_smoke[logging]",
+    "test/test_smoke.py::test_smoke[lzma]",
+    "test/test_smoke.py::test_smoke[mailbox]",
+    "test/test_smoke.py::test_smoke[mimetypes]",
+    "test/test_smoke.py::test_smoke[modulefinder]",
+    "test/test_smoke.py::test_smoke[multiprocessing]",
+    "test/test_smoke.py::test_smoke[netrc]",
+    "test/test_smoke.py::test_smoke[ntpath]",
+    "test/test_smoke.py::test_smoke[nturl2path]",
+    "test/test_smoke.py::test_smoke[numbers]",
+    "test/test_smoke.py::test_smoke[opcode]",
+    "test/test_smoke.py::test_smoke[operator]",
+    "test/test_smoke.py::test_smoke[optparse]",
+    "test/test_smoke.py::test_smoke[os]",
+    "test/test_smoke.py::test_smoke[pathlib]",
+    "test/test_smoke.py::test_smoke[pdb]",
+    "test/test_smoke.py::test_smoke[pickle]",
+    "test/test_smoke.py::test_smoke[pickletools]",
+    "test/test_smoke.py::test_smoke[pkgutil]",
+    "test/test_smoke.py::test_smoke[platform]",
+    "test/test_smoke.py::test_smoke[plistlib]",
+    "test/test_smoke.py::test_smoke[poplib]",
+    "test/test_smoke.py::test_smoke[posixpath]",
+    "test/test_smoke.py::test_smoke[pprint]",
+    "test/test_smoke.py::test_smoke[profile]",
+    "test/test_smoke.py::test_smoke[pstats]",
+    "test/test_smoke.py::test_smoke[pty]",
+    "test/test_smoke.py::test_smoke[py_compile]",
+    "test/test_smoke.py::test_smoke[pyclbr]",
+    "test/test_smoke.py::test_smoke[pydoc]",
+    "test/test_smoke.py::test_smoke[pydoc_data]",
+    "test/test_smoke.py::test_smoke[queue]",
+    "test/test_smoke.py::test_smoke[quopri]",
+    "test/test_smoke.py::test_smoke[random]",
+    "test/test_smoke.py::test_smoke[re]",
+    "test/test_smoke.py::test_smoke[reprlib]",
+    "test/test_smoke.py::test_smoke[rlcompleter]",
+    "test/test_smoke.py::test_smoke[runpy]",
+    "test/test_smoke.py::test_smoke[sched]",
+    "test/test_smoke.py::test_smoke[secrets]",
+    "test/test_smoke.py::test_smoke[selectors]",
+    "test/test_smoke.py::test_smoke[shelve]",
+    "test/test_smoke.py::test_smoke[shlex]",
+    "test/test_smoke.py::test_smoke[shutil]",
+    "test/test_smoke.py::test_smoke[signal]",
+    "test/test_smoke.py::test_smoke[site]",
+    "test/test_smoke.py::test_smoke[smtplib]",
+    "test/test_smoke.py::test_smoke[socket]",
+    "test/test_smoke.py::test_smoke[socketserver]",
+    "test/test_smoke.py::test_smoke[sqlite3]",
+    "test/test_smoke.py::test_smoke[sre_compile]",
+    "test/test_smoke.py::test_smoke[sre_constants]",
+    "test/test_smoke.py::test_smoke[sre_parse]",
+    "test/test_smoke.py::test_smoke[ssl]",
+    "test/test_smoke.py::test_smoke[stat]",
+    "test/test_smoke.py::test_smoke[statistics]",
+    "test/test_smoke.py::test_smoke[string]",
+    "test/test_smoke.py::test_smoke[stringprep]",
+    "test/test_smoke.py::test_smoke[struct]",
+    "test/test_smoke.py::test_smoke[subprocess]",
+    "test/test_smoke.py::test_smoke[symtable]",
+    "test/test_smoke.py::test_smoke[sysconfig]",
+    "test/test_smoke.py::test_smoke[tabnanny]",
+    "test/test_smoke.py::test_smoke[tarfile]",
+    "test/test_smoke.py::test_smoke[tempfile]",
+    "test/test_smoke.py::test_smoke[textwrap]",
+    "test/test_smoke.py::test_smoke[this]",
+    "test/test_smoke.py::test_smoke[threading]",
+    "test/test_smoke.py::test_smoke[timeit]",
+    "test/test_smoke.py::test_smoke[tkinter]",
+    "test/test_smoke.py::test_smoke[token]",
+    "test/test_smoke.py::test_smoke[tokenize]",
+    "test/test_smoke.py::test_smoke[tomllib]",
+    "test/test_smoke.py::test_smoke[trace]",
+    "test/test_smoke.py::test_smoke[traceback]",
+    "test/test_smoke.py::test_smoke[tracemalloc]",
+    "test/test_smoke.py::test_smoke[tty]",
+    "test/test_smoke.py::test_smoke[turtle]",
+    "test/test_smoke.py::test_smoke[turtledemo]",
+    "test/test_smoke.py::test_smoke[types]",
+    "test/test_smoke.py::test_smoke[typing]",
+    "test/test_smoke.py::test_smoke[unittest]",
+    "test/test_smoke.py::test_smoke[urllib]",
+    "test/test_smoke.py::test_smoke[uuid]",
+    "test/test_smoke.py::test_smoke[venv]",
+    "test/test_smoke.py::test_smoke[warnings]",
+    "test/test_smoke.py::test_smoke[wave]",
+    "test/test_smoke.py::test_smoke[weakref]",
+    "test/test_smoke.py::test_smoke[webbrowser]",
+    "test/test_smoke.py::test_smoke[wsgiref]",
+    "test/test_smoke.py::test_smoke[xml]",
+    "test/test_smoke.py::test_smoke[xmlrpc]",
+    "test/test_smoke.py::test_smoke[zipapp]",
+    "test/test_smoke.py::test_smoke[zipfile]",
+    "test/test_smoke.py::test_smoke[zipimport]",
+    "test/test_smoke.py::test_smoke[zoneinfo]",
+    "test/test_smoke.py::test_smoke[7ae574991b77ef47acad__mypyc]",
+    "test/test_smoke.py::test_smoke[annotated_types]",
+    "test/test_smoke.py::test_smoke[attr]",
+    "test/test_smoke.py::test_smoke[attrs]",
+    "test/test_smoke.py::test_smoke[cachetools]",
+    "test/test_smoke.py::test_smoke[chardet]",
+    "test/test_smoke.py::test_smoke[colorama]",
+    "test/test_smoke.py::test_smoke[coverage]",
+    "test/test_smoke.py::test_smoke[distlib]",
+    "test/test_smoke.py::test_smoke[filelock]",
+    "test/test_smoke.py::test_smoke[hypothesis]",
+    "test/test_smoke.py::test_smoke[iniconfig]",
+    "test/test_smoke.py::test_smoke[jinja2]",
+    "test/test_smoke.py::test_smoke[markdown2]",
+    "test/test_smoke.py::test_smoke[markupsafe]",
+    "test/test_smoke.py::test_smoke[mypy]",
+    "test/test_smoke.py::test_smoke[mypy_extensions]",
+    "test/test_smoke.py::test_smoke[mypyc]",
+    "test/test_smoke.py::test_smoke[native_internal]",
+    "test/test_smoke.py::test_smoke[packaging]",
+    "test/test_smoke.py::test_smoke[pathspec]",
+    "test/test_smoke.py::test_smoke[pdoc_pyo3_sample_library]",
+    "test/test_smoke.py::test_smoke[platformdirs]",
+    "test/test_smoke.py::test_smoke[pluggy]",
+    "test/test_smoke.py::test_smoke[pydantic]",
+    "test/test_smoke.py::test_smoke[pydantic_core]",
+    "test/test_smoke.py::test_smoke[pygments]",
+    "test/test_smoke.py::test_smoke[pyproject_api]",
+    "test/test_smoke.py::test_smoke[pytest]",
+    "test/test_smoke.py::test_smoke[pytest_cov]",
+    "test/test_smoke.py::test_smoke[pytest_timeout]",
+    "test/test_smoke.py::test_smoke[ruff]",
+    "test/test_smoke.py::test_smoke[sortedcontainers]",
+    "test/test_smoke.py::test_smoke[tox]",
+    "test/test_smoke.py::test_smoke[tox_uv]",
+    "test/test_smoke.py::test_smoke[typing_extensions]",
+    "test/test_smoke.py::test_smoke[typing_inspection]",
+    "test/test_smoke.py::test_smoke[uv]",
+    "test/test_smoke.py::test_smoke[virtualenv]",
+    "test/test_smoke.py::test_smoke[unittest.mock]",
+    "test/test_snapshot.py::test_snapshots[html-ast_parsing]",
+    "test/test_snapshot.py::test_snapshots[html-collections_abc]",
+    "test/test_snapshot.py::test_snapshots[html-demo]",
+    "test/test_snapshot.py::test_snapshots[html-enums]",
+    "test/test_snapshot.py::test_snapshots[html-flavors_google]",
+    "test/test_snapshot.py::test_snapshots[html-flavors_numpy]",
+    "test/test_snapshot.py::test_snapshots[html-flavors_rst]",
+    "test/test_snapshot.py::test_snapshots[html-example_customtemplate]",
+    "test/test_snapshot.py::test_snapshots[html-example_darkmode]",
+    "test/test_snapshot.py::test_snapshots[html-example_mkdocs]",
+    "test/test_snapshot.py::test_snapshots[html-demo_long]",
+    "test/test_snapshot.py::test_snapshots[html-demo_eager]",
+    "test/test_snapshot.py::test_snapshots[html-demopackage]",
+    "test/test_snapshot.py::test_snapshots[html-demopackage_dir]",
+    "test/test_snapshot.py::test_snapshots[html-misc]",
+    "test/test_snapshot.py::test_snapshots[html-misc_py310]",
+    "test/test_snapshot.py::test_snapshots[html-misc_py312]",
+    "test/test_snapshot.py::test_snapshots[html-misc_py313_0]",
+    "test/test_snapshot.py::test_snapshots[html-misc_py313_1]",
+    "test/test_snapshot.py::test_snapshots[html-math_demo]",
+    "test/test_snapshot.py::test_snapshots[html-math_misc]",
+    "test/test_snapshot.py::test_snapshots[html-mermaid_demo]",
+    "test/test_snapshot.py::test_snapshots[html-render_options]",
+    "test/test_snapshot.py::test_snapshots[html-pyo3_sample_library]",
+    "test/test_snapshot.py::test_snapshots[html-top_level_reimports]",
+    "test/test_snapshot.py::test_snapshots[html-type_checking_imports]",
+    "test/test_snapshot.py::test_snapshots[html-typed_dict]",
+    "test/test_snapshot.py::test_snapshots[html-type_stubs]",
+    "test/test_snapshot.py::test_snapshots[html-visibility]",
+    "test/test_snapshot.py::test_snapshots[html-with_pydantic]",
+    "test/test_snapshot.py::test_snapshots[repr-ast_parsing]",
+    "test/test_snapshot.py::test_snapshots[repr-collections_abc]",
+    "test/test_snapshot.py::test_snapshots[repr-demo]",
+    "test/test_snapshot.py::test_snapshots[repr-enums]",
+    "test/test_snapshot.py::test_snapshots[repr-flavors_google]",
+    "test/test_snapshot.py::test_snapshots[repr-flavors_numpy]",
+    "test/test_snapshot.py::test_snapshots[repr-flavors_rst]",
+    "test/test_snapshot.py::test_snapshots[repr-example_customtemplate]",
+    "test/test_snapshot.py::test_snapshots[repr-example_darkmode]",
+    "test/test_snapshot.py::test_snapshots[repr-example_mkdocs]",
+    "test/test_snapshot.py::test_snapshots[repr-demo_long]",
+    "test/test_snapshot.py::test_snapshots[repr-demo_eager]",
+    "test/test_snapshot.py::test_snapshots[repr-demopackage]",
+    "test/test_snapshot.py::test_snapshots[repr-demopackage_dir]",
+    "test/test_snapshot.py::test_snapshots[repr-misc]",
+    "test/test_snapshot.py::test_snapshots[repr-misc_py310]",
+    "test/test_snapshot.py::test_snapshots[repr-misc_py312]",
+    "test/test_snapshot.py::test_snapshots[repr-misc_py313_0]",
+    "test/test_snapshot.py::test_snapshots[repr-misc_py313_1]",
+    "test/test_snapshot.py::test_snapshots[repr-math_demo]",
+    "test/test_snapshot.py::test_snapshots[repr-math_misc]",
+    "test/test_snapshot.py::test_snapshots[repr-mermaid_demo]",
+    "test/test_snapshot.py::test_snapshots[repr-render_options]",
+    "test/test_snapshot.py::test_snapshots[repr-pyo3_sample_library]",
+    "test/test_snapshot.py::test_snapshots[repr-top_level_reimports]",
+    "test/test_snapshot.py::test_snapshots[repr-type_checking_imports]",
+    "test/test_snapshot.py::test_snapshots[repr-typed_dict]",
+    "test/test_snapshot.py::test_snapshots[repr-type_stubs]",
+    "test/test_snapshot.py::test_snapshots[repr-visibility]",
+    "test/test_snapshot.py::test_snapshots[repr-with_pydantic]",
+    "test/test_web.py::test_head_index",
+    "test/test_web.py::test_get_index",
+    "test/test_web.py::test_get_search_json",
+    "test/test_web.py::test_get_module",
+    "test/test_web.py::test_get_module_url_escape_sequences",
+    "test/test_web.py::test_get_dependency",
+    "test/test_web.py::test_get_module_err",
+    "test/test_web.py::test_get_module_mtime",
+    "test/test_web.py::test_get_unknown",
+    "test/test_web.py::test_get_not_normalized",
+    "test/test_p2p_render_contract.py::test_configure_signature_defaults",
+    "test/test_p2p_render_contract.py::test_configure_is_keyword_only",
+    "test/test_p2p_render_contract.py::test_configure_returns_none",
+    "test/test_p2p_render_contract.py::test_configure_affects_later_module_rendering",
+    "test/test_p2p_render_contract.py::test_configure_affects_later_search_rendering",
+    "test/test_p2p_render_contract.py::test_html_module_entry_point_keeps_arguments_and_str_result",
+    "test/test_p2p_render_contract.py::test_html_index_entry_point_keeps_str_result",
+    "test/test_p2p_render_contract.py::test_html_error_entry_point_keeps_arguments_and_str_result",
+    "test/test_p2p_render_contract.py::test_search_index_entry_point_keeps_str_result",
+    "test/test_p2p_render_contract.py::test_repr_module_entry_point_keeps_str_result",
+    "test/test_p2p_render_contract.py::test_pdoc_returns_first_module",
+    "test/test_p2p_render_contract.py::test_pdoc_writes_static_artifacts",
+    "test/test_p2p_render_contract.py::test_search_disabled_empties_index",
+    "test/test_p2p_render_contract.py::test_search_disabled_skips_static_artifact",
+    "test/test_p2p_render_contract.py::test_custom_env_globals_affect_later_rendering",
+    "test/test_p2p_render_contract.py::test_custom_env_filters_affect_later_rendering",
+    "test/test_p2p_render_contract.py::test_env_identity_survives_render_module_cache_invalidation",
+    "test/test_p2p_render_contract.py::test_env_custom_state_survives_render_module_cache_invalidation",
+    "test/test_p2p_render_contract.py::test_render_config_survives_render_module_cache_invalidation",
+    "test/test_p2p_render_contract.py::test_html_error_escapes_template_values",
+    "test/test_p2p_render_contract.py::test_project_python_requirement_unchanged",
+    "test/test_p2p_render_contract.py::test_project_runtime_dependencies_unchanged",
+    "test/test_p2p_web_cli_contract.py::test_web_index_route_aliases_keep_html_response",
+    "test/test_p2p_web_cli_contract.py::test_web_module_route_keeps_html_response",
+    "test/test_p2p_web_cli_contract.py::test_web_module_mtime_route_keeps_plain_text_response",
+    "test/test_p2p_web_cli_contract.py::test_web_search_route_keeps_javascript_response",
+    "test/test_p2p_web_cli_contract.py::test_web_missing_module_route_keeps_404_page",
+    "test/test_p2p_web_cli_contract.py::test_web_import_error_route_keeps_500_page",
+    "test/test_p2p_web_cli_contract.py::test_web_dotted_path_keeps_404_response",
+    "test/test_p2p_web_cli_contract.py::test_web_error_page_keeps_autoescaping",
+    "test/test_p2p_web_cli_contract.py::test_web_renders_with_config_in_effect_before_start",
+    "test/test_p2p_web_cli_contract.py::test_web_search_index_is_computed_once_per_server",
+    "test/test_p2p_web_cli_contract.py::test_web_index_response_matches_static_export",
+    "test/test_p2p_web_cli_contract.py::test_web_module_response_matches_static_export",
+    "test/test_p2p_web_cli_contract.py::test_cli_export_writes_static_index",
+    "test/test_p2p_web_cli_contract.py::test_cli_no_search_flag_disables_search_output",
+    "test/test_p2p_web_cli_contract.py::test_cli_no_show_source_flag_hides_source_link",
+    "test/test_p2p_web_cli_contract.py::test_cli_math_flag_enables_math_output",
+    "test/test_p2p_web_cli_contract.py::test_cli_mermaid_flag_enables_mermaid_output",
+    "test/test_p2p_web_cli_contract.py::test_cli_footer_text_flag_sets_footer",
+    "test/test_p2p_web_cli_contract.py::test_cli_logo_flag_sets_logo",
+    "test/test_p2p_web_cli_contract.py::test_cli_logo_link_flag_sets_logo_target",
+    "test/test_p2p_web_cli_contract.py::test_cli_favicon_flag_sets_favicon",
+    "test/test_p2p_web_cli_contract.py::test_cli_edit_url_flag_sets_edit_link",
+    "test/test_p2p_web_cli_contract.py::test_cli_search_is_enabled_by_default",
+    "test/test_p2p_web_cli_contract.py::test_cli_source_links_are_enabled_by_default",
+    "test/test_p2p_web_cli_contract.py::test_cli_math_is_disabled_by_default",
+    "test/test_p2p_web_cli_contract.py::test_cli_mermaid_is_disabled_by_default",
+    "test/test_p2p_web_cli_contract.py::test_cli_docformat_flag_selects_docstring_flavor",
+    "test/test_p2p_web_cli_contract.py::test_cli_web_uses_requested_host_and_port",
+    "test/test_p2p_web_cli_contract.py::test_cli_web_no_browser_flag_suppresses_opening",
+    "test/test_p2p_web_cli_contract.py::test_cli_web_opens_browser_by_default",
+    "test/test_p2p_web_cli_contract.py::test_web_index_render_errors_remain_outside_500_boundary",
+    "test/test_p2p_web_cli_contract.py::test_web_search_render_errors_preserve_header_order_and_propagate",
+    "test/test_p2p_web_cli_contract.py::test_web_module_mtime_errors_remain_outside_500_boundary",
+    "test/test_p2p_web_cli_contract.py::test_web_search_index_excludes_failed_import_records",
+    "test/test_p2p_render_contract.py::test_late_extensions_preserve_original_public_mappings",
+    "test/test_p2p_render_contract.py::test_imported_macro_preserves_direct_render_bytes",
+    "test/test_p2p_render_contract.py::test_import_and_error_render_on_supported_python311",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_logo",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_logo_link",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_footer_text",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_math_toggle",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_math_disabled",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_mermaid_toggle",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_mermaid_disabled",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_show_source_toggle",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_show_source_enabled",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_docformat",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_template_directory",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_include_undocumented",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_edit_url_map",
+    "test/test_f2p_render_config_isolation.py::test_server_index_page_keeps_creation_logo",
+    "test/test_f2p_render_config_isolation.py::test_server_index_page_keeps_creation_search_toggle",
+    "test/test_f2p_render_config_isolation.py::test_server_search_index_keeps_creation_search_enabled",
+    "test/test_f2p_render_config_isolation.py::test_server_search_index_keeps_creation_search_disabled",
+    "test/test_f2p_render_config_isolation.py::test_server_404_page_keeps_creation_favicon",
+    "test/test_f2p_render_config_isolation.py::test_server_404_page_keeps_creation_math_toggle",
+    "test/test_f2p_render_config_isolation.py::test_server_500_page_keeps_creation_mermaid_toggle",
+    "test/test_f2p_render_config_isolation.py::test_two_servers_keep_independent_configurations",
+    "test/test_f2p_render_config_isolation.py::test_server_index_matches_static_export_after_config_change",
+    "test/test_f2p_render_config_isolation.py::test_server_module_matches_static_export_after_config_change",
+    "test/test_f2p_render_config_isolation.py::test_cli_web_server_keeps_configuration_from_cli_invocation",
+    "test/test_f2p_render_config_isolation.py::test_rendering_does_not_read_or_mutate_shared_configuration",
+    "test/test_f2p_render_config_isolation.py::test_imported_macro_keeps_server_creation_configuration[cold]",
+    "test/test_f2p_render_config_isolation.py::test_imported_macro_keeps_server_creation_configuration[warm]"
+  ],
+  "evaluation_files": {
+    "test/test_f2p_render_config_isolation.py": "64a56277cdc1da944b78f9ffacccb557a5ce75708fe2666165e8c98875091478",
+    "test/test_p2p_render_contract.py": "c7b0ae0272e3b9f56d4aa38c3666be1035ec9cb2d8f7f6056eced47169d92e43",
+    "test/test_p2p_web_cli_contract.py": "eb05f610b2b942b0e746882943dcdb6159e9cf5160aaaabcff4e2eb794cac0cc"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 2880.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 600.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 2400.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 600.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "selector": "test/test__pydantic.py::test_no_pydantic",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test__pydantic.py::test_with_pydantic",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc.py::test_repr_tb",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc.py::test_order",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc.py::test_attrs",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc.py::test_all_with_import_err",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc.py::test_all_with_objects_instead_of_strings",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc.py::test_var_with_raising_repr",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc.py::test_class_with_raising_getattr",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc.py::test_builtin_source",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc.py::test_raising_getdoc",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc.py::test_raising_submodules",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc.py::test_default_value_masks_env_vars",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc.py::test_source_file_method",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_ast.py::test_dedent",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_ast.py::test_parse_error",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_ast.py::test_type_checking_sections[import typing\\nif typing.TYPE_CHECKING:\\n\\tprint(42)-1]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_ast.py::test_type_checking_sections[from typing import TYPE_CHECKING\\nif TYPE_CHECKING:\\n\\tprint(42)\\n\\tprint(43)-2]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_ast.py::test_type_checking_sections[print(1234)-0]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_pyi.py::test_type_stub_mismatch",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_pyi.py::test_invalid_stub_file",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_types.py::test_eval_fail[totally_unknown_module]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_types.py::test_eval_fail[!!!!]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_types.py::test_eval_fail[html.unknown_attr]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_types.py::test_eval_fail2",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_types.py::test_eval_fail3",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_types.py::test_eval_fail_import_nonexistent",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_doc_types.py::test_recurse",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_docstrings.py::test_google",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_docstrings.py::test_numpy",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_docstrings.py::test_rst",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_docstrings.py::test_rst_extract_options_fuzz",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_docstrings.py::test_convert_exception",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_docstrings.py::test_rst_extract_options",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_docstrings.py::test_rst_include_trim_lines",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_docstrings.py::test_rst_include_trim_pattern",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_docstrings.py::test_rst_include_trim_start_after_applied_first",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_docstrings.py::test_rst_include_trim_mixture",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_docstrings.py::test_rst_include_nonexistent",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_docstrings.py::test_rst_include_invalid_options",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_extract.py::test_walk_specs",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_extract.py::test_parse_spec",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_extract.py::test_parse_spec_mod_and_dir",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_extract.py::test_module_mtime",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_extract.py::test_invalidate_caches",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_extract.py::test_mock_sideeffects",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_main.py::test_cli",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_main.py::test_cli_version",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_main.py::test_cli_web",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_main.py::test_cli_web_port_used",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_main.py::test_api",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_main.py::test_patch_showwarnings",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_relative_link[foo-foo-]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_relative_link[foo-bar-bar.html]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_relative_link[foo.foo-foo-../foo.html]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_relative_link[foo.foo-bar-../bar.html]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_relative_link[foo.bar-foo.bar.baz-bar/baz.html]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_relative_link[foo.bar.baz-foo.qux.quux-../qux/quux.html]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_qualname_candidates[-candidates0]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_qualname_candidates[foo-candidates1]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_qualname_candidates[foo.bar-candidates2]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-qux-candidates0]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-foo.bar-candidates1]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-foo-candidates2]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_edit_url[demo-False-mapping0-None]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_edit_url[demo-False-mapping1-https://github.com/mhils/pdoc/blob/master/test/testdata/demo.py]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_edit_url[demo-True-mapping2-https://github.com/mhils/pdoc/blob/master/test/testdata/demo/__init__.py]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_split_identifier[all_modules0-a.b.c.d-result0]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_split_identifier[all_modules1-a.c.b.d-result1]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_possible_sources[all_modules0-a.B-result0]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_possible_sources[all_modules1-a.b-result1]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_possible_sources[all_modules2-a-result2]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_possible_sources[all_modules3-a.b.c.d-result3]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_markdown_toc",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_mixed_toc",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_markdown_autolink[https://example.com/-<p><a href=\"https://example.com/\">https://example.com/</a></p>\\n]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_markdown_autolink[<https://example.com>-<p><a href=\"https://example.com\">https://example.com</a></p>\\n]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_markdown_autolink[<a href=\"https://example.com\">link</a>-<p><a href=\"https://example.com\">link</a></p>\\n]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_markdown_autolink[[link](https://example.com)-<p><a href=\"https://example.com\">link</a></p>\\n]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_markdown_autolink[See the [Python home page ](https://www.python.org) for info.-<p>See the <a href=\"https://www.python.org\">Python home page </a> for info.</p>\\n]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_markdown_autolink[See https://www.python.org.-<p>See <a href=\"https://www.python.org\">https://www.python.org</a>.</p>\\n]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_render_helpers.py::test_markdown_autolink[See **https://www.python.org**.-<p>See <strong>https://www.python.org</strong>.</p>\\n]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_search.py::test_node_executable",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_search.py::test_precompile_index",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pdoc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[abc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[annotationlib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[antigravity]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[argparse]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[ast]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[asyncio]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[base64]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[bdb]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[bisect]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[bz2]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[cProfile]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[calendar]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[cmd]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[code]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[codecs]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[codeop]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[collections]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[colorsys]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[compileall]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[compression]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[concurrent]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[configparser]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[contextlib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[contextvars]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[copy]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[copyreg]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[csv]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[ctypes]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[curses]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[dataclasses]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[datetime]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[dbm]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[decimal]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[difflib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[dis]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[doctest]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[email]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[encodings]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[ensurepip]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[enum]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[filecmp]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[fileinput]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[fnmatch]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[fractions]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[ftplib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[functools]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[genericpath]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[getopt]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[getpass]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[gettext]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[glob]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[graphlib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[gzip]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[hashlib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[heapq]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[hmac]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[html]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[http]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[imaplib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[importlib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[inspect]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[io]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[ipaddress]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[json]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[keyword]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[linecache]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[locale]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[logging]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[lzma]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[mailbox]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[mimetypes]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[modulefinder]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[multiprocessing]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[netrc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[ntpath]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[nturl2path]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[numbers]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[opcode]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[operator]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[optparse]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[os]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pathlib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pdb]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pickle]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pickletools]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pkgutil]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[platform]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[plistlib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[poplib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[posixpath]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pprint]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[profile]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pstats]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pty]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[py_compile]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pyclbr]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pydoc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pydoc_data]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[queue]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[quopri]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[random]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[re]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[reprlib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[rlcompleter]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[runpy]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[sched]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[secrets]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[selectors]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[shelve]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[shlex]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[shutil]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[signal]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[site]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[smtplib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[socket]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[socketserver]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[sqlite3]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[sre_compile]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[sre_constants]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[sre_parse]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[ssl]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[stat]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[statistics]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[string]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[stringprep]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[struct]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[subprocess]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[symtable]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[sysconfig]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[tabnanny]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[tarfile]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[tempfile]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[textwrap]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[this]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[threading]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[timeit]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[tkinter]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[token]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[tokenize]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[tomllib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[trace]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[traceback]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[tracemalloc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[tty]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[turtle]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[turtledemo]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[types]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[typing]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[unittest]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[urllib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[uuid]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[venv]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[warnings]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[wave]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[weakref]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[webbrowser]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[wsgiref]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[xml]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[xmlrpc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[zipapp]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[zipfile]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[zipimport]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[zoneinfo]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[7ae574991b77ef47acad__mypyc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[annotated_types]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[attr]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[attrs]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[cachetools]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[chardet]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[colorama]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[coverage]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[distlib]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[filelock]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[hypothesis]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[iniconfig]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[jinja2]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[markdown2]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[markupsafe]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[mypy]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[mypy_extensions]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[mypyc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[native_internal]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[packaging]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pathspec]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pdoc_pyo3_sample_library]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[platformdirs]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pluggy]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pydantic]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pydantic_core]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pygments]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pyproject_api]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pytest]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pytest_cov]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[pytest_timeout]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[ruff]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[sortedcontainers]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[tox]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[tox_uv]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[typing_extensions]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[typing_inspection]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[uv]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[virtualenv]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_smoke.py::test_smoke[unittest.mock]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-ast_parsing]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-collections_abc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-demo]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-enums]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-flavors_google]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-flavors_numpy]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-flavors_rst]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-example_customtemplate]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-example_darkmode]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-example_mkdocs]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-demo_long]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-demo_eager]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-demopackage]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-demopackage_dir]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-misc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-misc_py310]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-misc_py312]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-misc_py313_0]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-misc_py313_1]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-math_demo]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-math_misc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-mermaid_demo]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-render_options]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-pyo3_sample_library]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-top_level_reimports]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-type_checking_imports]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-typed_dict]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-type_stubs]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-visibility]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[html-with_pydantic]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-ast_parsing]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-collections_abc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-demo]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-enums]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-flavors_google]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-flavors_numpy]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-flavors_rst]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-example_customtemplate]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-example_darkmode]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-example_mkdocs]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-demo_long]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-demo_eager]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-demopackage]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-demopackage_dir]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-misc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-misc_py310]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-misc_py312]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-misc_py313_0]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-misc_py313_1]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-math_demo]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-math_misc]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-mermaid_demo]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-render_options]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-pyo3_sample_library]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-top_level_reimports]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-type_checking_imports]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-typed_dict]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-type_stubs]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-visibility]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_snapshot.py::test_snapshots[repr-with_pydantic]",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_web.py::test_head_index",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_web.py::test_get_index",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_web.py::test_get_search_json",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_web.py::test_get_module",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_web.py::test_get_module_url_escape_sequences",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_web.py::test_get_dependency",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_web.py::test_get_module_err",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_web.py::test_get_module_mtime",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_web.py::test_get_unknown",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_web.py::test_get_not_normalized",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_configure_signature_defaults",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_configure_is_keyword_only",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_configure_returns_none",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_configure_affects_later_module_rendering",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_configure_affects_later_search_rendering",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_html_module_entry_point_keeps_arguments_and_str_result",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_html_index_entry_point_keeps_str_result",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_html_error_entry_point_keeps_arguments_and_str_result",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_search_index_entry_point_keeps_str_result",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_repr_module_entry_point_keeps_str_result",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_pdoc_returns_first_module",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_pdoc_writes_static_artifacts",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_search_disabled_empties_index",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_search_disabled_skips_static_artifact",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_custom_env_globals_affect_later_rendering",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_custom_env_filters_affect_later_rendering",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_env_identity_survives_render_module_cache_invalidation",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_env_custom_state_survives_render_module_cache_invalidation",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_render_config_survives_render_module_cache_invalidation",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_html_error_escapes_template_values",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_project_python_requirement_unchanged",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_project_runtime_dependencies_unchanged",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_index_route_aliases_keep_html_response",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_module_route_keeps_html_response",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_module_mtime_route_keeps_plain_text_response",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_search_route_keeps_javascript_response",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_missing_module_route_keeps_404_page",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_import_error_route_keeps_500_page",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_dotted_path_keeps_404_response",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_error_page_keeps_autoescaping",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_renders_with_config_in_effect_before_start",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_search_index_is_computed_once_per_server",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_index_response_matches_static_export",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_module_response_matches_static_export",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_export_writes_static_index",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_no_search_flag_disables_search_output",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_no_show_source_flag_hides_source_link",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_math_flag_enables_math_output",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_mermaid_flag_enables_mermaid_output",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_footer_text_flag_sets_footer",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_logo_flag_sets_logo",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_logo_link_flag_sets_logo_target",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_favicon_flag_sets_favicon",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_edit_url_flag_sets_edit_link",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_search_is_enabled_by_default",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_source_links_are_enabled_by_default",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_math_is_disabled_by_default",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_mermaid_is_disabled_by_default",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_docformat_flag_selects_docstring_flavor",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_web_uses_requested_host_and_port",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_web_no_browser_flag_suppresses_opening",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_cli_web_opens_browser_by_default",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_index_render_errors_remain_outside_500_boundary",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_search_render_errors_preserve_header_order_and_propagate",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_module_mtime_errors_remain_outside_500_boundary",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_web_cli_contract.py::test_web_search_index_excludes_failed_import_records",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_late_extensions_preserve_original_public_mappings",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_imported_macro_preserves_direct_render_bytes",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_p2p_render_contract.py::test_import_and_error_render_on_supported_python311",
+        "role": "P2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_logo",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_logo_link",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_footer_text",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_math_toggle",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_math_disabled",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_mermaid_toggle",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_mermaid_disabled",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_show_source_toggle",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_show_source_enabled",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_docformat",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_template_directory",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_include_undocumented",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_edit_url_map",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_index_page_keeps_creation_logo",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_index_page_keeps_creation_search_toggle",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_search_index_keeps_creation_search_enabled",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_search_index_keeps_creation_search_disabled",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_404_page_keeps_creation_favicon",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_404_page_keeps_creation_math_toggle",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_500_page_keeps_creation_mermaid_toggle",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_two_servers_keep_independent_configurations",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_index_matches_static_export_after_config_change",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_server_module_matches_static_export_after_config_change",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_cli_web_server_keeps_configuration_from_cli_invocation",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_rendering_does_not_read_or_mutate_shared_configuration",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_imported_macro_keeps_server_creation_configuration[cold]",
+        "role": "F2P"
+      },
+      {
+        "selector": "test/test_f2p_render_config_isolation.py::test_imported_macro_keeps_server_creation_configuration[warm]",
+        "role": "F2P"
+      }
+    ],
+    "selector_timeout_seconds": 600.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "test/test__pydantic.py::test_no_pydantic",
+          "test/test__pydantic.py::test_with_pydantic",
+          "test/test_doc.py::test_repr_tb",
+          "test/test_doc.py::test_order",
+          "test/test_doc.py::test_attrs",
+          "test/test_doc.py::test_all_with_import_err",
+          "test/test_doc.py::test_all_with_objects_instead_of_strings",
+          "test/test_doc.py::test_var_with_raising_repr",
+          "test/test_doc.py::test_class_with_raising_getattr",
+          "test/test_doc.py::test_builtin_source",
+          "test/test_doc.py::test_raising_getdoc",
+          "test/test_doc.py::test_raising_submodules",
+          "test/test_doc.py::test_default_value_masks_env_vars",
+          "test/test_doc.py::test_source_file_method",
+          "test/test_doc_ast.py::test_dedent",
+          "test/test_doc_ast.py::test_parse_error",
+          "test/test_doc_ast.py::test_type_checking_sections[import typing\\nif typing.TYPE_CHECKING:\\n\\tprint(42)-1]",
+          "test/test_doc_ast.py::test_type_checking_sections[from typing import TYPE_CHECKING\\nif TYPE_CHECKING:\\n\\tprint(42)\\n\\tprint(43)-2]",
+          "test/test_doc_ast.py::test_type_checking_sections[print(1234)-0]",
+          "test/test_doc_pyi.py::test_type_stub_mismatch",
+          "test/test_doc_pyi.py::test_invalid_stub_file",
+          "test/test_doc_types.py::test_eval_fail[totally_unknown_module]",
+          "test/test_doc_types.py::test_eval_fail[!!!!]",
+          "test/test_doc_types.py::test_eval_fail[html.unknown_attr]",
+          "test/test_doc_types.py::test_eval_fail2",
+          "test/test_doc_types.py::test_eval_fail3",
+          "test/test_doc_types.py::test_eval_fail_import_nonexistent",
+          "test/test_doc_types.py::test_recurse",
+          "test/test_docstrings.py::test_google",
+          "test/test_docstrings.py::test_numpy",
+          "test/test_docstrings.py::test_rst",
+          "test/test_docstrings.py::test_rst_extract_options_fuzz",
+          "test/test_docstrings.py::test_convert_exception",
+          "test/test_docstrings.py::test_rst_extract_options",
+          "test/test_docstrings.py::test_rst_include_trim_lines",
+          "test/test_docstrings.py::test_rst_include_trim_pattern",
+          "test/test_docstrings.py::test_rst_include_trim_start_after_applied_first",
+          "test/test_docstrings.py::test_rst_include_trim_mixture",
+          "test/test_docstrings.py::test_rst_include_nonexistent",
+          "test/test_docstrings.py::test_rst_include_invalid_options",
+          "test/test_extract.py::test_walk_specs",
+          "test/test_extract.py::test_parse_spec",
+          "test/test_extract.py::test_parse_spec_mod_and_dir",
+          "test/test_extract.py::test_module_mtime",
+          "test/test_extract.py::test_invalidate_caches",
+          "test/test_extract.py::test_mock_sideeffects",
+          "test/test_main.py::test_cli",
+          "test/test_main.py::test_cli_version",
+          "test/test_main.py::test_cli_web",
+          "test/test_main.py::test_cli_web_port_used",
+          "test/test_main.py::test_api",
+          "test/test_main.py::test_patch_showwarnings",
+          "test/test_render_helpers.py::test_relative_link[foo-foo-]",
+          "test/test_render_helpers.py::test_relative_link[foo-bar-bar.html]",
+          "test/test_render_helpers.py::test_relative_link[foo.foo-foo-../foo.html]",
+          "test/test_render_helpers.py::test_relative_link[foo.foo-bar-../bar.html]",
+          "test/test_render_helpers.py::test_relative_link[foo.bar-foo.bar.baz-bar/baz.html]",
+          "test/test_render_helpers.py::test_relative_link[foo.bar.baz-foo.qux.quux-../qux/quux.html]",
+          "test/test_render_helpers.py::test_qualname_candidates[-candidates0]",
+          "test/test_render_helpers.py::test_qualname_candidates[foo-candidates1]",
+          "test/test_render_helpers.py::test_qualname_candidates[foo.bar-candidates2]",
+          "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-qux-candidates0]",
+          "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-foo.bar-candidates1]",
+          "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-foo-candidates2]",
+          "test/test_render_helpers.py::test_edit_url[demo-False-mapping0-None]",
+          "test/test_render_helpers.py::test_edit_url[demo-False-mapping1-https://github.com/mhils/pdoc/blob/master/test/testdata/demo.py]",
+          "test/test_render_helpers.py::test_edit_url[demo-True-mapping2-https://github.com/mhils/pdoc/blob/master/test/testdata/demo/__init__.py]",
+          "test/test_render_helpers.py::test_split_identifier[all_modules0-a.b.c.d-result0]",
+          "test/test_render_helpers.py::test_split_identifier[all_modules1-a.c.b.d-result1]",
+          "test/test_render_helpers.py::test_possible_sources[all_modules0-a.B-result0]",
+          "test/test_render_helpers.py::test_possible_sources[all_modules1-a.b-result1]",
+          "test/test_render_helpers.py::test_possible_sources[all_modules2-a-result2]",
+          "test/test_render_helpers.py::test_possible_sources[all_modules3-a.b.c.d-result3]",
+          "test/test_render_helpers.py::test_markdown_toc",
+          "test/test_render_helpers.py::test_mixed_toc",
+          "test/test_render_helpers.py::test_markdown_autolink[https://example.com/-<p><a href=\"https://example.com/\">https://example.com/</a></p>\\n]",
+          "test/test_render_helpers.py::test_markdown_autolink[<https://example.com>-<p><a href=\"https://example.com\">https://example.com</a></p>\\n]",
+          "test/test_render_helpers.py::test_markdown_autolink[<a href=\"https://example.com\">link</a>-<p><a href=\"https://example.com\">link</a></p>\\n]",
+          "test/test_render_helpers.py::test_markdown_autolink[[link](https://example.com)-<p><a href=\"https://example.com\">link</a></p>\\n]",
+          "test/test_render_helpers.py::test_markdown_autolink[See the [Python home page ](https://www.python.org) for info.-<p>See the <a href=\"https://www.python.org\">Python home page </a> for info.</p>\\n]",
+          "test/test_render_helpers.py::test_markdown_autolink[See https://www.python.org.-<p>See <a href=\"https://www.python.org\">https://www.python.org</a>.</p>\\n]",
+          "test/test_render_helpers.py::test_markdown_autolink[See **https://www.python.org**.-<p>See <strong>https://www.python.org</strong>.</p>\\n]",
+          "test/test_search.py::test_node_executable",
+          "test/test_search.py::test_precompile_index",
+          "test/test_smoke.py::test_smoke[pdoc]",
+          "test/test_smoke.py::test_smoke[abc]",
+          "test/test_smoke.py::test_smoke[annotationlib]",
+          "test/test_smoke.py::test_smoke[antigravity]",
+          "test/test_smoke.py::test_smoke[argparse]",
+          "test/test_smoke.py::test_smoke[ast]",
+          "test/test_smoke.py::test_smoke[asyncio]",
+          "test/test_smoke.py::test_smoke[base64]",
+          "test/test_smoke.py::test_smoke[bdb]",
+          "test/test_smoke.py::test_smoke[bisect]",
+          "test/test_smoke.py::test_smoke[bz2]",
+          "test/test_smoke.py::test_smoke[cProfile]",
+          "test/test_smoke.py::test_smoke[calendar]",
+          "test/test_smoke.py::test_smoke[cmd]",
+          "test/test_smoke.py::test_smoke[code]",
+          "test/test_smoke.py::test_smoke[codecs]",
+          "test/test_smoke.py::test_smoke[codeop]",
+          "test/test_smoke.py::test_smoke[collections]",
+          "test/test_smoke.py::test_smoke[colorsys]",
+          "test/test_smoke.py::test_smoke[compileall]",
+          "test/test_smoke.py::test_smoke[compression]",
+          "test/test_smoke.py::test_smoke[concurrent]",
+          "test/test_smoke.py::test_smoke[configparser]",
+          "test/test_smoke.py::test_smoke[contextlib]",
+          "test/test_smoke.py::test_smoke[contextvars]",
+          "test/test_smoke.py::test_smoke[copy]",
+          "test/test_smoke.py::test_smoke[copyreg]",
+          "test/test_smoke.py::test_smoke[csv]",
+          "test/test_smoke.py::test_smoke[ctypes]",
+          "test/test_smoke.py::test_smoke[curses]",
+          "test/test_smoke.py::test_smoke[dataclasses]",
+          "test/test_smoke.py::test_smoke[datetime]",
+          "test/test_smoke.py::test_smoke[dbm]",
+          "test/test_smoke.py::test_smoke[decimal]",
+          "test/test_smoke.py::test_smoke[difflib]",
+          "test/test_smoke.py::test_smoke[dis]",
+          "test/test_smoke.py::test_smoke[doctest]",
+          "test/test_smoke.py::test_smoke[email]",
+          "test/test_smoke.py::test_smoke[encodings]",
+          "test/test_smoke.py::test_smoke[ensurepip]",
+          "test/test_smoke.py::test_smoke[enum]",
+          "test/test_smoke.py::test_smoke[filecmp]",
+          "test/test_smoke.py::test_smoke[fileinput]",
+          "test/test_smoke.py::test_smoke[fnmatch]",
+          "test/test_smoke.py::test_smoke[fractions]",
+          "test/test_smoke.py::test_smoke[ftplib]",
+          "test/test_smoke.py::test_smoke[functools]",
+          "test/test_smoke.py::test_smoke[genericpath]",
+          "test/test_smoke.py::test_smoke[getopt]",
+          "test/test_smoke.py::test_smoke[getpass]",
+          "test/test_smoke.py::test_smoke[gettext]",
+          "test/test_smoke.py::test_smoke[glob]",
+          "test/test_smoke.py::test_smoke[graphlib]",
+          "test/test_smoke.py::test_smoke[gzip]",
+          "test/test_smoke.py::test_smoke[hashlib]",
+          "test/test_smoke.py::test_smoke[heapq]",
+          "test/test_smoke.py::test_smoke[hmac]",
+          "test/test_smoke.py::test_smoke[html]",
+          "test/test_smoke.py::test_smoke[http]",
+          "test/test_smoke.py::test_smoke[imaplib]",
+          "test/test_smoke.py::test_smoke[importlib]",
+          "test/test_smoke.py::test_smoke[inspect]",
+          "test/test_smoke.py::test_smoke[io]",
+          "test/test_smoke.py::test_smoke[ipaddress]",
+          "test/test_smoke.py::test_smoke[json]",
+          "test/test_smoke.py::test_smoke[keyword]",
+          "test/test_smoke.py::test_smoke[linecache]",
+          "test/test_smoke.py::test_smoke[locale]",
+          "test/test_smoke.py::test_smoke[logging]",
+          "test/test_smoke.py::test_smoke[lzma]",
+          "test/test_smoke.py::test_smoke[mailbox]",
+          "test/test_smoke.py::test_smoke[mimetypes]",
+          "test/test_smoke.py::test_smoke[modulefinder]",
+          "test/test_smoke.py::test_smoke[multiprocessing]",
+          "test/test_smoke.py::test_smoke[netrc]",
+          "test/test_smoke.py::test_smoke[ntpath]",
+          "test/test_smoke.py::test_smoke[nturl2path]",
+          "test/test_smoke.py::test_smoke[numbers]",
+          "test/test_smoke.py::test_smoke[opcode]",
+          "test/test_smoke.py::test_smoke[operator]",
+          "test/test_smoke.py::test_smoke[optparse]",
+          "test/test_smoke.py::test_smoke[os]",
+          "test/test_smoke.py::test_smoke[pathlib]",
+          "test/test_smoke.py::test_smoke[pdb]",
+          "test/test_smoke.py::test_smoke[pickle]",
+          "test/test_smoke.py::test_smoke[pickletools]",
+          "test/test_smoke.py::test_smoke[pkgutil]",
+          "test/test_smoke.py::test_smoke[platform]",
+          "test/test_smoke.py::test_smoke[plistlib]",
+          "test/test_smoke.py::test_smoke[poplib]",
+          "test/test_smoke.py::test_smoke[posixpath]",
+          "test/test_smoke.py::test_smoke[pprint]",
+          "test/test_smoke.py::test_smoke[profile]",
+          "test/test_smoke.py::test_smoke[pstats]",
+          "test/test_smoke.py::test_smoke[pty]",
+          "test/test_smoke.py::test_smoke[py_compile]",
+          "test/test_smoke.py::test_smoke[pyclbr]",
+          "test/test_smoke.py::test_smoke[pydoc]",
+          "test/test_smoke.py::test_smoke[pydoc_data]",
+          "test/test_smoke.py::test_smoke[queue]",
+          "test/test_smoke.py::test_smoke[quopri]",
+          "test/test_smoke.py::test_smoke[random]",
+          "test/test_smoke.py::test_smoke[re]",
+          "test/test_smoke.py::test_smoke[reprlib]",
+          "test/test_smoke.py::test_smoke[rlcompleter]",
+          "test/test_smoke.py::test_smoke[runpy]",
+          "test/test_smoke.py::test_smoke[sched]",
+          "test/test_smoke.py::test_smoke[secrets]",
+          "test/test_smoke.py::test_smoke[selectors]",
+          "test/test_smoke.py::test_smoke[shelve]",
+          "test/test_smoke.py::test_smoke[shlex]",
+          "test/test_smoke.py::test_smoke[shutil]",
+          "test/test_smoke.py::test_smoke[signal]",
+          "test/test_smoke.py::test_smoke[site]",
+          "test/test_smoke.py::test_smoke[smtplib]",
+          "test/test_smoke.py::test_smoke[socket]",
+          "test/test_smoke.py::test_smoke[socketserver]",
+          "test/test_smoke.py::test_smoke[sqlite3]",
+          "test/test_smoke.py::test_smoke[sre_compile]",
+          "test/test_smoke.py::test_smoke[sre_constants]",
+          "test/test_smoke.py::test_smoke[sre_parse]",
+          "test/test_smoke.py::test_smoke[ssl]",
+          "test/test_smoke.py::test_smoke[stat]",
+          "test/test_smoke.py::test_smoke[statistics]",
+          "test/test_smoke.py::test_smoke[string]",
+          "test/test_smoke.py::test_smoke[stringprep]",
+          "test/test_smoke.py::test_smoke[struct]",
+          "test/test_smoke.py::test_smoke[subprocess]",
+          "test/test_smoke.py::test_smoke[symtable]",
+          "test/test_smoke.py::test_smoke[sysconfig]",
+          "test/test_smoke.py::test_smoke[tabnanny]",
+          "test/test_smoke.py::test_smoke[tarfile]",
+          "test/test_smoke.py::test_smoke[tempfile]",
+          "test/test_smoke.py::test_smoke[textwrap]",
+          "test/test_smoke.py::test_smoke[this]",
+          "test/test_smoke.py::test_smoke[threading]",
+          "test/test_smoke.py::test_smoke[timeit]",
+          "test/test_smoke.py::test_smoke[tkinter]",
+          "test/test_smoke.py::test_smoke[token]",
+          "test/test_smoke.py::test_smoke[tokenize]",
+          "test/test_smoke.py::test_smoke[tomllib]",
+          "test/test_smoke.py::test_smoke[trace]",
+          "test/test_smoke.py::test_smoke[traceback]",
+          "test/test_smoke.py::test_smoke[tracemalloc]",
+          "test/test_smoke.py::test_smoke[tty]",
+          "test/test_smoke.py::test_smoke[turtle]",
+          "test/test_smoke.py::test_smoke[turtledemo]",
+          "test/test_smoke.py::test_smoke[types]",
+          "test/test_smoke.py::test_smoke[typing]",
+          "test/test_smoke.py::test_smoke[unittest]",
+          "test/test_smoke.py::test_smoke[urllib]",
+          "test/test_smoke.py::test_smoke[uuid]",
+          "test/test_smoke.py::test_smoke[venv]",
+          "test/test_smoke.py::test_smoke[warnings]",
+          "test/test_smoke.py::test_smoke[wave]",
+          "test/test_smoke.py::test_smoke[weakref]",
+          "test/test_smoke.py::test_smoke[webbrowser]",
+          "test/test_smoke.py::test_smoke[wsgiref]",
+          "test/test_smoke.py::test_smoke[xml]",
+          "test/test_smoke.py::test_smoke[xmlrpc]",
+          "test/test_smoke.py::test_smoke[zipapp]",
+          "test/test_smoke.py::test_smoke[zipfile]",
+          "test/test_smoke.py::test_smoke[zipimport]",
+          "test/test_smoke.py::test_smoke[zoneinfo]",
+          "test/test_smoke.py::test_smoke[7ae574991b77ef47acad__mypyc]",
+          "test/test_smoke.py::test_smoke[annotated_types]",
+          "test/test_smoke.py::test_smoke[attr]",
+          "test/test_smoke.py::test_smoke[attrs]",
+          "test/test_smoke.py::test_smoke[cachetools]",
+          "test/test_smoke.py::test_smoke[chardet]",
+          "test/test_smoke.py::test_smoke[colorama]",
+          "test/test_smoke.py::test_smoke[coverage]",
+          "test/test_smoke.py::test_smoke[distlib]",
+          "test/test_smoke.py::test_smoke[filelock]",
+          "test/test_smoke.py::test_smoke[hypothesis]",
+          "test/test_smoke.py::test_smoke[iniconfig]",
+          "test/test_smoke.py::test_smoke[jinja2]",
+          "test/test_smoke.py::test_smoke[markdown2]",
+          "test/test_smoke.py::test_smoke[markupsafe]",
+          "test/test_smoke.py::test_smoke[mypy]",
+          "test/test_smoke.py::test_smoke[mypy_extensions]",
+          "test/test_smoke.py::test_smoke[mypyc]",
+          "test/test_smoke.py::test_smoke[native_internal]",
+          "test/test_smoke.py::test_smoke[packaging]",
+          "test/test_smoke.py::test_smoke[pathspec]",
+          "test/test_smoke.py::test_smoke[pdoc_pyo3_sample_library]",
+          "test/test_smoke.py::test_smoke[platformdirs]",
+          "test/test_smoke.py::test_smoke[pluggy]",
+          "test/test_smoke.py::test_smoke[pydantic]",
+          "test/test_smoke.py::test_smoke[pydantic_core]",
+          "test/test_smoke.py::test_smoke[pygments]",
+          "test/test_smoke.py::test_smoke[pyproject_api]",
+          "test/test_smoke.py::test_smoke[pytest]",
+          "test/test_smoke.py::test_smoke[pytest_cov]",
+          "test/test_smoke.py::test_smoke[pytest_timeout]",
+          "test/test_smoke.py::test_smoke[ruff]",
+          "test/test_smoke.py::test_smoke[sortedcontainers]",
+          "test/test_smoke.py::test_smoke[tox]",
+          "test/test_smoke.py::test_smoke[tox_uv]",
+          "test/test_smoke.py::test_smoke[typing_extensions]",
+          "test/test_smoke.py::test_smoke[typing_inspection]",
+          "test/test_smoke.py::test_smoke[uv]",
+          "test/test_smoke.py::test_smoke[virtualenv]",
+          "test/test_smoke.py::test_smoke[unittest.mock]",
+          "test/test_snapshot.py::test_snapshots[html-ast_parsing]",
+          "test/test_snapshot.py::test_snapshots[html-collections_abc]",
+          "test/test_snapshot.py::test_snapshots[html-demo]",
+          "test/test_snapshot.py::test_snapshots[html-enums]",
+          "test/test_snapshot.py::test_snapshots[html-flavors_google]",
+          "test/test_snapshot.py::test_snapshots[html-flavors_numpy]",
+          "test/test_snapshot.py::test_snapshots[html-flavors_rst]",
+          "test/test_snapshot.py::test_snapshots[html-example_customtemplate]",
+          "test/test_snapshot.py::test_snapshots[html-example_darkmode]",
+          "test/test_snapshot.py::test_snapshots[html-example_mkdocs]",
+          "test/test_snapshot.py::test_snapshots[html-demo_long]",
+          "test/test_snapshot.py::test_snapshots[html-demo_eager]",
+          "test/test_snapshot.py::test_snapshots[html-demopackage]",
+          "test/test_snapshot.py::test_snapshots[html-demopackage_dir]",
+          "test/test_snapshot.py::test_snapshots[html-misc]",
+          "test/test_snapshot.py::test_snapshots[html-misc_py310]",
+          "test/test_snapshot.py::test_snapshots[html-misc_py312]",
+          "test/test_snapshot.py::test_snapshots[html-misc_py313_0]",
+          "test/test_snapshot.py::test_snapshots[html-misc_py313_1]",
+          "test/test_snapshot.py::test_snapshots[html-math_demo]",
+          "test/test_snapshot.py::test_snapshots[html-math_misc]",
+          "test/test_snapshot.py::test_snapshots[html-mermaid_demo]",
+          "test/test_snapshot.py::test_snapshots[html-render_options]",
+          "test/test_snapshot.py::test_snapshots[html-pyo3_sample_library]",
+          "test/test_snapshot.py::test_snapshots[html-top_level_reimports]",
+          "test/test_snapshot.py::test_snapshots[html-type_checking_imports]",
+          "test/test_snapshot.py::test_snapshots[html-typed_dict]",
+          "test/test_snapshot.py::test_snapshots[html-type_stubs]",
+          "test/test_snapshot.py::test_snapshots[html-visibility]",
+          "test/test_snapshot.py::test_snapshots[html-with_pydantic]",
+          "test/test_snapshot.py::test_snapshots[repr-ast_parsing]",
+          "test/test_snapshot.py::test_snapshots[repr-collections_abc]",
+          "test/test_snapshot.py::test_snapshots[repr-demo]",
+          "test/test_snapshot.py::test_snapshots[repr-enums]",
+          "test/test_snapshot.py::test_snapshots[repr-flavors_google]",
+          "test/test_snapshot.py::test_snapshots[repr-flavors_numpy]",
+          "test/test_snapshot.py::test_snapshots[repr-flavors_rst]",
+          "test/test_snapshot.py::test_snapshots[repr-example_customtemplate]",
+          "test/test_snapshot.py::test_snapshots[repr-example_darkmode]",
+          "test/test_snapshot.py::test_snapshots[repr-example_mkdocs]",
+          "test/test_snapshot.py::test_snapshots[repr-demo_long]",
+          "test/test_snapshot.py::test_snapshots[repr-demo_eager]",
+          "test/test_snapshot.py::test_snapshots[repr-demopackage]",
+          "test/test_snapshot.py::test_snapshots[repr-demopackage_dir]",
+          "test/test_snapshot.py::test_snapshots[repr-misc]",
+          "test/test_snapshot.py::test_snapshots[repr-misc_py310]",
+          "test/test_snapshot.py::test_snapshots[repr-misc_py312]",
+          "test/test_snapshot.py::test_snapshots[repr-misc_py313_0]",
+          "test/test_snapshot.py::test_snapshots[repr-misc_py313_1]",
+          "test/test_snapshot.py::test_snapshots[repr-math_demo]",
+          "test/test_snapshot.py::test_snapshots[repr-math_misc]",
+          "test/test_snapshot.py::test_snapshots[repr-mermaid_demo]",
+          "test/test_snapshot.py::test_snapshots[repr-render_options]",
+          "test/test_snapshot.py::test_snapshots[repr-pyo3_sample_library]",
+          "test/test_snapshot.py::test_snapshots[repr-top_level_reimports]",
+          "test/test_snapshot.py::test_snapshots[repr-type_checking_imports]",
+          "test/test_snapshot.py::test_snapshots[repr-typed_dict]",
+          "test/test_snapshot.py::test_snapshots[repr-type_stubs]",
+          "test/test_snapshot.py::test_snapshots[repr-visibility]",
+          "test/test_snapshot.py::test_snapshots[repr-with_pydantic]",
+          "test/test_web.py::test_head_index",
+          "test/test_web.py::test_get_index",
+          "test/test_web.py::test_get_search_json",
+          "test/test_web.py::test_get_module",
+          "test/test_web.py::test_get_module_url_escape_sequences",
+          "test/test_web.py::test_get_dependency",
+          "test/test_web.py::test_get_module_err",
+          "test/test_web.py::test_get_module_mtime",
+          "test/test_web.py::test_get_unknown",
+          "test/test_web.py::test_get_not_normalized",
+          "test/test_p2p_render_contract.py::test_configure_signature_defaults",
+          "test/test_p2p_render_contract.py::test_configure_is_keyword_only",
+          "test/test_p2p_render_contract.py::test_configure_returns_none",
+          "test/test_p2p_render_contract.py::test_configure_affects_later_module_rendering",
+          "test/test_p2p_render_contract.py::test_configure_affects_later_search_rendering",
+          "test/test_p2p_render_contract.py::test_html_module_entry_point_keeps_arguments_and_str_result",
+          "test/test_p2p_render_contract.py::test_html_index_entry_point_keeps_str_result",
+          "test/test_p2p_render_contract.py::test_html_error_entry_point_keeps_arguments_and_str_result",
+          "test/test_p2p_render_contract.py::test_search_index_entry_point_keeps_str_result",
+          "test/test_p2p_render_contract.py::test_repr_module_entry_point_keeps_str_result",
+          "test/test_p2p_render_contract.py::test_pdoc_returns_first_module",
+          "test/test_p2p_render_contract.py::test_pdoc_writes_static_artifacts",
+          "test/test_p2p_render_contract.py::test_search_disabled_empties_index",
+          "test/test_p2p_render_contract.py::test_search_disabled_skips_static_artifact",
+          "test/test_p2p_render_contract.py::test_custom_env_globals_affect_later_rendering",
+          "test/test_p2p_render_contract.py::test_custom_env_filters_affect_later_rendering",
+          "test/test_p2p_render_contract.py::test_env_identity_survives_render_module_cache_invalidation",
+          "test/test_p2p_render_contract.py::test_env_custom_state_survives_render_module_cache_invalidation",
+          "test/test_p2p_render_contract.py::test_render_config_survives_render_module_cache_invalidation",
+          "test/test_p2p_render_contract.py::test_html_error_escapes_template_values",
+          "test/test_p2p_render_contract.py::test_project_python_requirement_unchanged",
+          "test/test_p2p_render_contract.py::test_project_runtime_dependencies_unchanged",
+          "test/test_p2p_web_cli_contract.py::test_web_index_route_aliases_keep_html_response",
+          "test/test_p2p_web_cli_contract.py::test_web_module_route_keeps_html_response",
+          "test/test_p2p_web_cli_contract.py::test_web_module_mtime_route_keeps_plain_text_response",
+          "test/test_p2p_web_cli_contract.py::test_web_search_route_keeps_javascript_response",
+          "test/test_p2p_web_cli_contract.py::test_web_missing_module_route_keeps_404_page",
+          "test/test_p2p_web_cli_contract.py::test_web_import_error_route_keeps_500_page",
+          "test/test_p2p_web_cli_contract.py::test_web_dotted_path_keeps_404_response",
+          "test/test_p2p_web_cli_contract.py::test_web_error_page_keeps_autoescaping",
+          "test/test_p2p_web_cli_contract.py::test_web_renders_with_config_in_effect_before_start",
+          "test/test_p2p_web_cli_contract.py::test_web_search_index_is_computed_once_per_server",
+          "test/test_p2p_web_cli_contract.py::test_web_index_response_matches_static_export",
+          "test/test_p2p_web_cli_contract.py::test_web_module_response_matches_static_export",
+          "test/test_p2p_web_cli_contract.py::test_cli_export_writes_static_index",
+          "test/test_p2p_web_cli_contract.py::test_cli_no_search_flag_disables_search_output",
+          "test/test_p2p_web_cli_contract.py::test_cli_no_show_source_flag_hides_source_link",
+          "test/test_p2p_web_cli_contract.py::test_cli_math_flag_enables_math_output",
+          "test/test_p2p_web_cli_contract.py::test_cli_mermaid_flag_enables_mermaid_output",
+          "test/test_p2p_web_cli_contract.py::test_cli_footer_text_flag_sets_footer",
+          "test/test_p2p_web_cli_contract.py::test_cli_logo_flag_sets_logo",
+          "test/test_p2p_web_cli_contract.py::test_cli_logo_link_flag_sets_logo_target",
+          "test/test_p2p_web_cli_contract.py::test_cli_favicon_flag_sets_favicon",
+          "test/test_p2p_web_cli_contract.py::test_cli_edit_url_flag_sets_edit_link",
+          "test/test_p2p_web_cli_contract.py::test_cli_search_is_enabled_by_default",
+          "test/test_p2p_web_cli_contract.py::test_cli_source_links_are_enabled_by_default",
+          "test/test_p2p_web_cli_contract.py::test_cli_math_is_disabled_by_default",
+          "test/test_p2p_web_cli_contract.py::test_cli_mermaid_is_disabled_by_default",
+          "test/test_p2p_web_cli_contract.py::test_cli_docformat_flag_selects_docstring_flavor",
+          "test/test_p2p_web_cli_contract.py::test_cli_web_uses_requested_host_and_port",
+          "test/test_p2p_web_cli_contract.py::test_cli_web_no_browser_flag_suppresses_opening",
+          "test/test_p2p_web_cli_contract.py::test_cli_web_opens_browser_by_default",
+          "test/test_p2p_web_cli_contract.py::test_web_index_render_errors_remain_outside_500_boundary",
+          "test/test_p2p_web_cli_contract.py::test_web_search_render_errors_preserve_header_order_and_propagate",
+          "test/test_p2p_web_cli_contract.py::test_web_module_mtime_errors_remain_outside_500_boundary",
+          "test/test_p2p_web_cli_contract.py::test_web_search_index_excludes_failed_import_records",
+          "test/test_p2p_render_contract.py::test_late_extensions_preserve_original_public_mappings",
+          "test/test_p2p_render_contract.py::test_imported_macro_preserves_direct_render_bytes",
+          "test/test_p2p_render_contract.py::test_import_and_error_render_on_supported_python311",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_logo",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_logo_link",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_footer_text",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_math_toggle",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_math_disabled",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_mermaid_toggle",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_mermaid_disabled",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_show_source_toggle",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_show_source_enabled",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_docformat",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_template_directory",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_include_undocumented",
+          "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_edit_url_map",
+          "test/test_f2p_render_config_isolation.py::test_server_index_page_keeps_creation_logo",
+          "test/test_f2p_render_config_isolation.py::test_server_index_page_keeps_creation_search_toggle",
+          "test/test_f2p_render_config_isolation.py::test_server_search_index_keeps_creation_search_enabled",
+          "test/test_f2p_render_config_isolation.py::test_server_search_index_keeps_creation_search_disabled",
+          "test/test_f2p_render_config_isolation.py::test_server_404_page_keeps_creation_favicon",
+          "test/test_f2p_render_config_isolation.py::test_server_404_page_keeps_creation_math_toggle",
+          "test/test_f2p_render_config_isolation.py::test_server_500_page_keeps_creation_mermaid_toggle",
+          "test/test_f2p_render_config_isolation.py::test_two_servers_keep_independent_configurations",
+          "test/test_f2p_render_config_isolation.py::test_server_index_matches_static_export_after_config_change",
+          "test/test_f2p_render_config_isolation.py::test_server_module_matches_static_export_after_config_change",
+          "test/test_f2p_render_config_isolation.py::test_cli_web_server_keeps_configuration_from_cli_invocation",
+          "test/test_f2p_render_config_isolation.py::test_rendering_does_not_read_or_mutate_shared_configuration",
+          "test/test_f2p_render_config_isolation.py::test_imported_macro_keeps_server_creation_configuration[cold]",
+          "test/test_f2p_render_config_isolation.py::test_imported_macro_keeps_server_creation_configuration[warm]"
+        ],
+        "timeout_seconds": 600.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_logo",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_logo_link",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_footer_text",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_math_toggle",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_math_disabled",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_mermaid_toggle",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_mermaid_disabled",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_show_source_toggle",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_show_source_enabled",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_docformat",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_template_directory",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_include_undocumented",
+    "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_edit_url_map",
+    "test/test_f2p_render_config_isolation.py::test_server_index_page_keeps_creation_logo",
+    "test/test_f2p_render_config_isolation.py::test_server_index_page_keeps_creation_search_toggle",
+    "test/test_f2p_render_config_isolation.py::test_server_search_index_keeps_creation_search_enabled",
+    "test/test_f2p_render_config_isolation.py::test_server_search_index_keeps_creation_search_disabled",
+    "test/test_f2p_render_config_isolation.py::test_server_404_page_keeps_creation_favicon",
+    "test/test_f2p_render_config_isolation.py::test_server_404_page_keeps_creation_math_toggle",
+    "test/test_f2p_render_config_isolation.py::test_server_500_page_keeps_creation_mermaid_toggle",
+    "test/test_f2p_render_config_isolation.py::test_two_servers_keep_independent_configurations",
+    "test/test_f2p_render_config_isolation.py::test_server_index_matches_static_export_after_config_change",
+    "test/test_f2p_render_config_isolation.py::test_server_module_matches_static_export_after_config_change",
+    "test/test_f2p_render_config_isolation.py::test_cli_web_server_keeps_configuration_from_cli_invocation",
+    "test/test_f2p_render_config_isolation.py::test_rendering_does_not_read_or_mutate_shared_configuration",
+    "test/test_f2p_render_config_isolation.py::test_imported_macro_keeps_server_creation_configuration[cold]",
+    "test/test_f2p_render_config_isolation.py::test_imported_macro_keeps_server_creation_configuration[warm]"
+  ],
+  "gates": [
+    {
+      "id": "P2P-1",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C1",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "test/test_p2p_render_contract.py::test_configure_signature_defaults",
+        "test/test_p2p_render_contract.py::test_configure_is_keyword_only",
+        "test/test_p2p_render_contract.py::test_configure_returns_none",
+        "test/test_p2p_render_contract.py::test_configure_affects_later_module_rendering",
+        "test/test_p2p_render_contract.py::test_configure_affects_later_search_rendering"
+      ]
+    },
+    {
+      "id": "P2P-2",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C2",
+        "REQ-BEH-T1:B2",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "test/test_p2p_render_contract.py::test_custom_env_globals_affect_later_rendering",
+        "test/test_p2p_render_contract.py::test_custom_env_filters_affect_later_rendering",
+        "test/test_p2p_render_contract.py::test_env_identity_survives_render_module_cache_invalidation",
+        "test/test_p2p_render_contract.py::test_env_custom_state_survives_render_module_cache_invalidation",
+        "test/test_p2p_render_contract.py::test_render_config_survives_render_module_cache_invalidation"
+      ]
+    },
+    {
+      "id": "P2P-3",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C3",
+        "REQ-BEH-T1:C6"
+      ],
+      "tests": [
+        "test/test_web.py::test_get_index",
+        "test/test_web.py::test_get_module"
+      ]
+    },
+    {
+      "id": "P2P-4",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C3",
+        "REQ-STRUCT-002"
+      ],
+      "tests": [
+        "test/test_p2p_render_contract.py::test_html_module_entry_point_keeps_arguments_and_str_result",
+        "test/test_p2p_render_contract.py::test_html_index_entry_point_keeps_str_result",
+        "test/test_p2p_render_contract.py::test_html_error_entry_point_keeps_arguments_and_str_result",
+        "test/test_p2p_render_contract.py::test_search_index_entry_point_keeps_str_result",
+        "test/test_p2p_render_contract.py::test_repr_module_entry_point_keeps_str_result"
+      ]
+    },
+    {
+      "id": "P2P-5",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C4"
+      ],
+      "tests": [
+        "test/test_main.py::test_api",
+        "test/test_p2p_render_contract.py::test_pdoc_returns_first_module",
+        "test/test_p2p_render_contract.py::test_pdoc_writes_static_artifacts"
+      ]
+    },
+    {
+      "id": "P2P-6",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C4",
+        "REQ-BEH-T1:C5"
+      ],
+      "tests": [
+        "test/test_main.py::test_cli"
+      ]
+    },
+    {
+      "id": "P2P-7",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C5"
+      ],
+      "tests": [
+        "test/test_main.py::test_cli_version",
+        "test/test_main.py::test_cli_web",
+        "test/test_main.py::test_cli_web_port_used",
+        "test/test_p2p_web_cli_contract.py::test_cli_search_is_enabled_by_default",
+        "test/test_p2p_web_cli_contract.py::test_cli_source_links_are_enabled_by_default",
+        "test/test_p2p_web_cli_contract.py::test_cli_math_is_disabled_by_default",
+        "test/test_p2p_web_cli_contract.py::test_cli_mermaid_is_disabled_by_default",
+        "test/test_p2p_web_cli_contract.py::test_cli_docformat_flag_selects_docstring_flavor",
+        "test/test_p2p_web_cli_contract.py::test_cli_web_uses_requested_host_and_port",
+        "test/test_p2p_web_cli_contract.py::test_cli_web_no_browser_flag_suppresses_opening",
+        "test/test_p2p_web_cli_contract.py::test_cli_web_opens_browser_by_default"
+      ]
+    },
+    {
+      "id": "P2P-8",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C5",
+        "REQ-BEH-T1:B5"
+      ],
+      "tests": [
+        "test/test_p2p_web_cli_contract.py::test_cli_export_writes_static_index",
+        "test/test_p2p_web_cli_contract.py::test_cli_no_search_flag_disables_search_output",
+        "test/test_p2p_web_cli_contract.py::test_cli_no_show_source_flag_hides_source_link",
+        "test/test_p2p_web_cli_contract.py::test_cli_math_flag_enables_math_output",
+        "test/test_p2p_web_cli_contract.py::test_cli_mermaid_flag_enables_mermaid_output",
+        "test/test_p2p_web_cli_contract.py::test_cli_footer_text_flag_sets_footer",
+        "test/test_p2p_web_cli_contract.py::test_cli_logo_flag_sets_logo",
+        "test/test_p2p_web_cli_contract.py::test_cli_logo_link_flag_sets_logo_target",
+        "test/test_p2p_web_cli_contract.py::test_cli_favicon_flag_sets_favicon",
+        "test/test_p2p_web_cli_contract.py::test_cli_edit_url_flag_sets_edit_link"
+      ]
+    },
+    {
+      "id": "P2P-9",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C6"
+      ],
+      "tests": [
+        "test/test_web.py::test_head_index",
+        "test/test_web.py::test_get_module_url_escape_sequences",
+        "test/test_web.py::test_get_dependency",
+        "test/test_web.py::test_get_module_mtime",
+        "test/test_web.py::test_get_not_normalized",
+        "test/test_p2p_web_cli_contract.py::test_web_index_route_aliases_keep_html_response",
+        "test/test_p2p_web_cli_contract.py::test_web_module_route_keeps_html_response",
+        "test/test_p2p_web_cli_contract.py::test_web_module_mtime_route_keeps_plain_text_response",
+        "test/test_p2p_web_cli_contract.py::test_web_search_route_keeps_javascript_response",
+        "test/test_p2p_web_cli_contract.py::test_web_dotted_path_keeps_404_response",
+        "test/test_p2p_web_cli_contract.py::test_web_index_render_errors_remain_outside_500_boundary",
+        "test/test_p2p_web_cli_contract.py::test_web_search_render_errors_preserve_header_order_and_propagate",
+        "test/test_p2p_web_cli_contract.py::test_web_module_mtime_errors_remain_outside_500_boundary"
+      ]
+    },
+    {
+      "id": "P2P-10",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:C6",
+        "REQ-BEH-T1:B6"
+      ],
+      "tests": [
+        "test/test_p2p_web_cli_contract.py::test_web_missing_module_route_keeps_404_page",
+        "test/test_p2p_web_cli_contract.py::test_web_import_error_route_keeps_500_page",
+        "test/test_p2p_web_cli_contract.py::test_web_error_page_keeps_autoescaping"
+      ]
+    },
+    {
+      "id": "P2P-11",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B1",
+        "REQ-STRUCT-003"
+      ],
+      "tests": [
+        "test/test_snapshot.py::test_snapshots[html-ast_parsing]",
+        "test/test_snapshot.py::test_snapshots[html-collections_abc]",
+        "test/test_snapshot.py::test_snapshots[html-demo]",
+        "test/test_snapshot.py::test_snapshots[html-enums]",
+        "test/test_snapshot.py::test_snapshots[html-flavors_google]",
+        "test/test_snapshot.py::test_snapshots[html-flavors_numpy]",
+        "test/test_snapshot.py::test_snapshots[html-flavors_rst]",
+        "test/test_snapshot.py::test_snapshots[html-example_customtemplate]",
+        "test/test_snapshot.py::test_snapshots[html-example_darkmode]",
+        "test/test_snapshot.py::test_snapshots[html-example_mkdocs]",
+        "test/test_snapshot.py::test_snapshots[html-demo_long]",
+        "test/test_snapshot.py::test_snapshots[html-demo_eager]",
+        "test/test_snapshot.py::test_snapshots[html-demopackage]",
+        "test/test_snapshot.py::test_snapshots[html-demopackage_dir]",
+        "test/test_snapshot.py::test_snapshots[html-misc]",
+        "test/test_snapshot.py::test_snapshots[html-misc_py310]",
+        "test/test_snapshot.py::test_snapshots[html-misc_py312]",
+        "test/test_snapshot.py::test_snapshots[html-misc_py313_0]",
+        "test/test_snapshot.py::test_snapshots[html-misc_py313_1]",
+        "test/test_snapshot.py::test_snapshots[html-math_demo]",
+        "test/test_snapshot.py::test_snapshots[html-math_misc]",
+        "test/test_snapshot.py::test_snapshots[html-mermaid_demo]",
+        "test/test_snapshot.py::test_snapshots[html-render_options]",
+        "test/test_snapshot.py::test_snapshots[html-pyo3_sample_library]",
+        "test/test_snapshot.py::test_snapshots[html-top_level_reimports]",
+        "test/test_snapshot.py::test_snapshots[html-type_checking_imports]",
+        "test/test_snapshot.py::test_snapshots[html-typed_dict]",
+        "test/test_snapshot.py::test_snapshots[html-type_stubs]",
+        "test/test_snapshot.py::test_snapshots[html-visibility]",
+        "test/test_snapshot.py::test_snapshots[html-with_pydantic]",
+        "test/test_snapshot.py::test_snapshots[repr-ast_parsing]",
+        "test/test_snapshot.py::test_snapshots[repr-collections_abc]",
+        "test/test_snapshot.py::test_snapshots[repr-demo]",
+        "test/test_snapshot.py::test_snapshots[repr-enums]",
+        "test/test_snapshot.py::test_snapshots[repr-flavors_google]",
+        "test/test_snapshot.py::test_snapshots[repr-flavors_numpy]",
+        "test/test_snapshot.py::test_snapshots[repr-flavors_rst]",
+        "test/test_snapshot.py::test_snapshots[repr-example_customtemplate]",
+        "test/test_snapshot.py::test_snapshots[repr-example_darkmode]",
+        "test/test_snapshot.py::test_snapshots[repr-example_mkdocs]",
+        "test/test_snapshot.py::test_snapshots[repr-demo_long]",
+        "test/test_snapshot.py::test_snapshots[repr-demo_eager]",
+        "test/test_snapshot.py::test_snapshots[repr-demopackage]",
+        "test/test_snapshot.py::test_snapshots[repr-demopackage_dir]",
+        "test/test_snapshot.py::test_snapshots[repr-misc]",
+        "test/test_snapshot.py::test_snapshots[repr-misc_py310]",
+        "test/test_snapshot.py::test_snapshots[repr-misc_py312]",
+        "test/test_snapshot.py::test_snapshots[repr-misc_py313_0]",
+        "test/test_snapshot.py::test_snapshots[repr-misc_py313_1]",
+        "test/test_snapshot.py::test_snapshots[repr-math_demo]",
+        "test/test_snapshot.py::test_snapshots[repr-math_misc]",
+        "test/test_snapshot.py::test_snapshots[repr-mermaid_demo]",
+        "test/test_snapshot.py::test_snapshots[repr-render_options]",
+        "test/test_snapshot.py::test_snapshots[repr-pyo3_sample_library]",
+        "test/test_snapshot.py::test_snapshots[repr-top_level_reimports]",
+        "test/test_snapshot.py::test_snapshots[repr-type_checking_imports]",
+        "test/test_snapshot.py::test_snapshots[repr-typed_dict]",
+        "test/test_snapshot.py::test_snapshots[repr-type_stubs]",
+        "test/test_snapshot.py::test_snapshots[repr-visibility]",
+        "test/test_snapshot.py::test_snapshots[repr-with_pydantic]",
+        "test/test_p2p_web_cli_contract.py::test_web_index_response_matches_static_export",
+        "test/test_p2p_web_cli_contract.py::test_web_module_response_matches_static_export"
+      ]
+    },
+    {
+      "id": "P2P-12",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B3"
+      ],
+      "tests": [
+        "test/test_p2p_web_cli_contract.py::test_web_renders_with_config_in_effect_before_start"
+      ]
+    },
+    {
+      "id": "P2P-13",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B4"
+      ],
+      "tests": [
+        "test/test_p2p_web_cli_contract.py::test_web_search_index_is_computed_once_per_server",
+        "test/test_p2p_web_cli_contract.py::test_web_search_index_excludes_failed_import_records"
+      ]
+    },
+    {
+      "id": "P2P-14",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B4",
+        "REQ-BEH-T1:C6"
+      ],
+      "tests": [
+        "test/test_web.py::test_get_search_json"
+      ]
+    },
+    {
+      "id": "P2P-15",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B5"
+      ],
+      "tests": [
+        "test/test_p2p_render_contract.py::test_search_disabled_empties_index",
+        "test/test_p2p_render_contract.py::test_search_disabled_skips_static_artifact"
+      ]
+    },
+    {
+      "id": "P2P-16",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B6"
+      ],
+      "tests": [
+        "test/test_p2p_render_contract.py::test_html_error_escapes_template_values"
+      ]
+    },
+    {
+      "id": "P2P-17",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T1:B6",
+        "REQ-BEH-T1:C6"
+      ],
+      "tests": [
+        "test/test_web.py::test_get_module_err",
+        "test/test_web.py::test_get_unknown"
+      ]
+    },
+    {
+      "id": "P2P-18",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "test/test_p2p_render_contract.py::test_project_python_requirement_unchanged",
+        "test/test_p2p_render_contract.py::test_project_runtime_dependencies_unchanged"
+      ]
+    },
+    {
+      "id": "P2P-ORIGINAL-CENSUS-COMPLETION",
+      "kind": "P2P",
+      "requirements": [
+        "ORIGINAL-REPOSITORY-REGRESSION"
+      ],
+      "tests": [
+        "test/test__pydantic.py::test_no_pydantic",
+        "test/test__pydantic.py::test_with_pydantic",
+        "test/test_doc.py::test_repr_tb",
+        "test/test_doc.py::test_order",
+        "test/test_doc.py::test_attrs",
+        "test/test_doc.py::test_all_with_import_err",
+        "test/test_doc.py::test_all_with_objects_instead_of_strings",
+        "test/test_doc.py::test_var_with_raising_repr",
+        "test/test_doc.py::test_class_with_raising_getattr",
+        "test/test_doc.py::test_builtin_source",
+        "test/test_doc.py::test_raising_getdoc",
+        "test/test_doc.py::test_raising_submodules",
+        "test/test_doc.py::test_default_value_masks_env_vars",
+        "test/test_doc.py::test_source_file_method",
+        "test/test_doc_ast.py::test_dedent",
+        "test/test_doc_ast.py::test_parse_error",
+        "test/test_doc_ast.py::test_type_checking_sections[import typing\\nif typing.TYPE_CHECKING:\\n\\tprint(42)-1]",
+        "test/test_doc_ast.py::test_type_checking_sections[from typing import TYPE_CHECKING\\nif TYPE_CHECKING:\\n\\tprint(42)\\n\\tprint(43)-2]",
+        "test/test_doc_ast.py::test_type_checking_sections[print(1234)-0]",
+        "test/test_doc_pyi.py::test_type_stub_mismatch",
+        "test/test_doc_pyi.py::test_invalid_stub_file",
+        "test/test_doc_types.py::test_eval_fail[totally_unknown_module]",
+        "test/test_doc_types.py::test_eval_fail[!!!!]",
+        "test/test_doc_types.py::test_eval_fail[html.unknown_attr]",
+        "test/test_doc_types.py::test_eval_fail2",
+        "test/test_doc_types.py::test_eval_fail3",
+        "test/test_doc_types.py::test_eval_fail_import_nonexistent",
+        "test/test_doc_types.py::test_recurse",
+        "test/test_docstrings.py::test_google",
+        "test/test_docstrings.py::test_numpy",
+        "test/test_docstrings.py::test_rst",
+        "test/test_docstrings.py::test_rst_extract_options_fuzz",
+        "test/test_docstrings.py::test_convert_exception",
+        "test/test_docstrings.py::test_rst_extract_options",
+        "test/test_docstrings.py::test_rst_include_trim_lines",
+        "test/test_docstrings.py::test_rst_include_trim_pattern",
+        "test/test_docstrings.py::test_rst_include_trim_start_after_applied_first",
+        "test/test_docstrings.py::test_rst_include_trim_mixture",
+        "test/test_docstrings.py::test_rst_include_nonexistent",
+        "test/test_docstrings.py::test_rst_include_invalid_options",
+        "test/test_extract.py::test_walk_specs",
+        "test/test_extract.py::test_parse_spec",
+        "test/test_extract.py::test_parse_spec_mod_and_dir",
+        "test/test_extract.py::test_module_mtime",
+        "test/test_extract.py::test_invalidate_caches",
+        "test/test_extract.py::test_mock_sideeffects",
+        "test/test_main.py::test_patch_showwarnings",
+        "test/test_render_helpers.py::test_relative_link[foo-foo-]",
+        "test/test_render_helpers.py::test_relative_link[foo-bar-bar.html]",
+        "test/test_render_helpers.py::test_relative_link[foo.foo-foo-../foo.html]",
+        "test/test_render_helpers.py::test_relative_link[foo.foo-bar-../bar.html]",
+        "test/test_render_helpers.py::test_relative_link[foo.bar-foo.bar.baz-bar/baz.html]",
+        "test/test_render_helpers.py::test_relative_link[foo.bar.baz-foo.qux.quux-../qux/quux.html]",
+        "test/test_render_helpers.py::test_qualname_candidates[-candidates0]",
+        "test/test_render_helpers.py::test_qualname_candidates[foo-candidates1]",
+        "test/test_render_helpers.py::test_qualname_candidates[foo.bar-candidates2]",
+        "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-qux-candidates0]",
+        "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-foo.bar-candidates1]",
+        "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-foo-candidates2]",
+        "test/test_render_helpers.py::test_edit_url[demo-False-mapping0-None]",
+        "test/test_render_helpers.py::test_edit_url[demo-False-mapping1-https://github.com/mhils/pdoc/blob/master/test/testdata/demo.py]",
+        "test/test_render_helpers.py::test_edit_url[demo-True-mapping2-https://github.com/mhils/pdoc/blob/master/test/testdata/demo/__init__.py]",
+        "test/test_render_helpers.py::test_split_identifier[all_modules0-a.b.c.d-result0]",
+        "test/test_render_helpers.py::test_split_identifier[all_modules1-a.c.b.d-result1]",
+        "test/test_render_helpers.py::test_possible_sources[all_modules0-a.B-result0]",
+        "test/test_render_helpers.py::test_possible_sources[all_modules1-a.b-result1]",
+        "test/test_render_helpers.py::test_possible_sources[all_modules2-a-result2]",
+        "test/test_render_helpers.py::test_possible_sources[all_modules3-a.b.c.d-result3]",
+        "test/test_render_helpers.py::test_markdown_toc",
+        "test/test_render_helpers.py::test_mixed_toc",
+        "test/test_render_helpers.py::test_markdown_autolink[https://example.com/-<p><a href=\"https://example.com/\">https://example.com/</a></p>\\n]",
+        "test/test_render_helpers.py::test_markdown_autolink[<https://example.com>-<p><a href=\"https://example.com\">https://example.com</a></p>\\n]",
+        "test/test_render_helpers.py::test_markdown_autolink[<a href=\"https://example.com\">link</a>-<p><a href=\"https://example.com\">link</a></p>\\n]",
+        "test/test_render_helpers.py::test_markdown_autolink[[link](https://example.com)-<p><a href=\"https://example.com\">link</a></p>\\n]",
+        "test/test_render_helpers.py::test_markdown_autolink[See the [Python home page ](https://www.python.org) for info.-<p>See the <a href=\"https://www.python.org\">Python home page </a> for info.</p>\\n]",
+        "test/test_render_helpers.py::test_markdown_autolink[See https://www.python.org.-<p>See <a href=\"https://www.python.org\">https://www.python.org</a>.</p>\\n]",
+        "test/test_render_helpers.py::test_markdown_autolink[See **https://www.python.org**.-<p>See <strong>https://www.python.org</strong>.</p>\\n]",
+        "test/test_search.py::test_node_executable",
+        "test/test_search.py::test_precompile_index",
+        "test/test_smoke.py::test_smoke[pdoc]",
+        "test/test_smoke.py::test_smoke[abc]",
+        "test/test_smoke.py::test_smoke[annotationlib]",
+        "test/test_smoke.py::test_smoke[antigravity]",
+        "test/test_smoke.py::test_smoke[argparse]",
+        "test/test_smoke.py::test_smoke[ast]",
+        "test/test_smoke.py::test_smoke[asyncio]",
+        "test/test_smoke.py::test_smoke[base64]",
+        "test/test_smoke.py::test_smoke[bdb]",
+        "test/test_smoke.py::test_smoke[bisect]",
+        "test/test_smoke.py::test_smoke[bz2]",
+        "test/test_smoke.py::test_smoke[cProfile]",
+        "test/test_smoke.py::test_smoke[calendar]",
+        "test/test_smoke.py::test_smoke[cmd]",
+        "test/test_smoke.py::test_smoke[code]",
+        "test/test_smoke.py::test_smoke[codecs]",
+        "test/test_smoke.py::test_smoke[codeop]",
+        "test/test_smoke.py::test_smoke[collections]",
+        "test/test_smoke.py::test_smoke[colorsys]",
+        "test/test_smoke.py::test_smoke[compileall]",
+        "test/test_smoke.py::test_smoke[compression]",
+        "test/test_smoke.py::test_smoke[concurrent]",
+        "test/test_smoke.py::test_smoke[configparser]",
+        "test/test_smoke.py::test_smoke[contextlib]",
+        "test/test_smoke.py::test_smoke[contextvars]",
+        "test/test_smoke.py::test_smoke[copy]",
+        "test/test_smoke.py::test_smoke[copyreg]",
+        "test/test_smoke.py::test_smoke[csv]",
+        "test/test_smoke.py::test_smoke[ctypes]",
+        "test/test_smoke.py::test_smoke[curses]",
+        "test/test_smoke.py::test_smoke[dataclasses]",
+        "test/test_smoke.py::test_smoke[datetime]",
+        "test/test_smoke.py::test_smoke[dbm]",
+        "test/test_smoke.py::test_smoke[decimal]",
+        "test/test_smoke.py::test_smoke[difflib]",
+        "test/test_smoke.py::test_smoke[dis]",
+        "test/test_smoke.py::test_smoke[doctest]",
+        "test/test_smoke.py::test_smoke[email]",
+        "test/test_smoke.py::test_smoke[encodings]",
+        "test/test_smoke.py::test_smoke[ensurepip]",
+        "test/test_smoke.py::test_smoke[enum]",
+        "test/test_smoke.py::test_smoke[filecmp]",
+        "test/test_smoke.py::test_smoke[fileinput]",
+        "test/test_smoke.py::test_smoke[fnmatch]",
+        "test/test_smoke.py::test_smoke[fractions]",
+        "test/test_smoke.py::test_smoke[ftplib]",
+        "test/test_smoke.py::test_smoke[functools]",
+        "test/test_smoke.py::test_smoke[genericpath]",
+        "test/test_smoke.py::test_smoke[getopt]",
+        "test/test_smoke.py::test_smoke[getpass]",
+        "test/test_smoke.py::test_smoke[gettext]",
+        "test/test_smoke.py::test_smoke[glob]",
+        "test/test_smoke.py::test_smoke[graphlib]",
+        "test/test_smoke.py::test_smoke[gzip]",
+        "test/test_smoke.py::test_smoke[hashlib]",
+        "test/test_smoke.py::test_smoke[heapq]",
+        "test/test_smoke.py::test_smoke[hmac]",
+        "test/test_smoke.py::test_smoke[html]",
+        "test/test_smoke.py::test_smoke[http]",
+        "test/test_smoke.py::test_smoke[imaplib]",
+        "test/test_smoke.py::test_smoke[importlib]",
+        "test/test_smoke.py::test_smoke[inspect]",
+        "test/test_smoke.py::test_smoke[io]",
+        "test/test_smoke.py::test_smoke[ipaddress]",
+        "test/test_smoke.py::test_smoke[json]",
+        "test/test_smoke.py::test_smoke[keyword]",
+        "test/test_smoke.py::test_smoke[linecache]",
+        "test/test_smoke.py::test_smoke[locale]",
+        "test/test_smoke.py::test_smoke[logging]",
+        "test/test_smoke.py::test_smoke[lzma]",
+        "test/test_smoke.py::test_smoke[mailbox]",
+        "test/test_smoke.py::test_smoke[mimetypes]",
+        "test/test_smoke.py::test_smoke[modulefinder]",
+        "test/test_smoke.py::test_smoke[multiprocessing]",
+        "test/test_smoke.py::test_smoke[netrc]",
+        "test/test_smoke.py::test_smoke[ntpath]",
+        "test/test_smoke.py::test_smoke[nturl2path]",
+        "test/test_smoke.py::test_smoke[numbers]",
+        "test/test_smoke.py::test_smoke[opcode]",
+        "test/test_smoke.py::test_smoke[operator]",
+        "test/test_smoke.py::test_smoke[optparse]",
+        "test/test_smoke.py::test_smoke[os]",
+        "test/test_smoke.py::test_smoke[pathlib]",
+        "test/test_smoke.py::test_smoke[pdb]",
+        "test/test_smoke.py::test_smoke[pickle]",
+        "test/test_smoke.py::test_smoke[pickletools]",
+        "test/test_smoke.py::test_smoke[pkgutil]",
+        "test/test_smoke.py::test_smoke[platform]",
+        "test/test_smoke.py::test_smoke[plistlib]",
+        "test/test_smoke.py::test_smoke[poplib]",
+        "test/test_smoke.py::test_smoke[posixpath]",
+        "test/test_smoke.py::test_smoke[pprint]",
+        "test/test_smoke.py::test_smoke[profile]",
+        "test/test_smoke.py::test_smoke[pstats]",
+        "test/test_smoke.py::test_smoke[pty]",
+        "test/test_smoke.py::test_smoke[py_compile]",
+        "test/test_smoke.py::test_smoke[pyclbr]",
+        "test/test_smoke.py::test_smoke[pydoc]",
+        "test/test_smoke.py::test_smoke[pydoc_data]",
+        "test/test_smoke.py::test_smoke[queue]",
+        "test/test_smoke.py::test_smoke[quopri]",
+        "test/test_smoke.py::test_smoke[random]",
+        "test/test_smoke.py::test_smoke[re]",
+        "test/test_smoke.py::test_smoke[reprlib]",
+        "test/test_smoke.py::test_smoke[rlcompleter]",
+        "test/test_smoke.py::test_smoke[runpy]",
+        "test/test_smoke.py::test_smoke[sched]",
+        "test/test_smoke.py::test_smoke[secrets]",
+        "test/test_smoke.py::test_smoke[selectors]",
+        "test/test_smoke.py::test_smoke[shelve]",
+        "test/test_smoke.py::test_smoke[shlex]",
+        "test/test_smoke.py::test_smoke[shutil]",
+        "test/test_smoke.py::test_smoke[signal]",
+        "test/test_smoke.py::test_smoke[site]",
+        "test/test_smoke.py::test_smoke[smtplib]",
+        "test/test_smoke.py::test_smoke[socket]",
+        "test/test_smoke.py::test_smoke[socketserver]",
+        "test/test_smoke.py::test_smoke[sqlite3]",
+        "test/test_smoke.py::test_smoke[sre_compile]",
+        "test/test_smoke.py::test_smoke[sre_constants]",
+        "test/test_smoke.py::test_smoke[sre_parse]",
+        "test/test_smoke.py::test_smoke[ssl]",
+        "test/test_smoke.py::test_smoke[stat]",
+        "test/test_smoke.py::test_smoke[statistics]",
+        "test/test_smoke.py::test_smoke[string]",
+        "test/test_smoke.py::test_smoke[stringprep]",
+        "test/test_smoke.py::test_smoke[struct]",
+        "test/test_smoke.py::test_smoke[subprocess]",
+        "test/test_smoke.py::test_smoke[symtable]",
+        "test/test_smoke.py::test_smoke[sysconfig]",
+        "test/test_smoke.py::test_smoke[tabnanny]",
+        "test/test_smoke.py::test_smoke[tarfile]",
+        "test/test_smoke.py::test_smoke[tempfile]",
+        "test/test_smoke.py::test_smoke[textwrap]",
+        "test/test_smoke.py::test_smoke[this]",
+        "test/test_smoke.py::test_smoke[threading]",
+        "test/test_smoke.py::test_smoke[timeit]",
+        "test/test_smoke.py::test_smoke[tkinter]",
+        "test/test_smoke.py::test_smoke[token]",
+        "test/test_smoke.py::test_smoke[tokenize]",
+        "test/test_smoke.py::test_smoke[tomllib]",
+        "test/test_smoke.py::test_smoke[trace]",
+        "test/test_smoke.py::test_smoke[traceback]",
+        "test/test_smoke.py::test_smoke[tracemalloc]",
+        "test/test_smoke.py::test_smoke[tty]",
+        "test/test_smoke.py::test_smoke[turtle]",
+        "test/test_smoke.py::test_smoke[turtledemo]",
+        "test/test_smoke.py::test_smoke[types]",
+        "test/test_smoke.py::test_smoke[typing]",
+        "test/test_smoke.py::test_smoke[unittest]",
+        "test/test_smoke.py::test_smoke[urllib]",
+        "test/test_smoke.py::test_smoke[uuid]",
+        "test/test_smoke.py::test_smoke[venv]",
+        "test/test_smoke.py::test_smoke[warnings]",
+        "test/test_smoke.py::test_smoke[wave]",
+        "test/test_smoke.py::test_smoke[weakref]",
+        "test/test_smoke.py::test_smoke[webbrowser]",
+        "test/test_smoke.py::test_smoke[wsgiref]",
+        "test/test_smoke.py::test_smoke[xml]",
+        "test/test_smoke.py::test_smoke[xmlrpc]",
+        "test/test_smoke.py::test_smoke[zipapp]",
+        "test/test_smoke.py::test_smoke[zipfile]",
+        "test/test_smoke.py::test_smoke[zipimport]",
+        "test/test_smoke.py::test_smoke[zoneinfo]",
+        "test/test_smoke.py::test_smoke[7ae574991b77ef47acad__mypyc]",
+        "test/test_smoke.py::test_smoke[annotated_types]",
+        "test/test_smoke.py::test_smoke[attr]",
+        "test/test_smoke.py::test_smoke[attrs]",
+        "test/test_smoke.py::test_smoke[cachetools]",
+        "test/test_smoke.py::test_smoke[chardet]",
+        "test/test_smoke.py::test_smoke[colorama]",
+        "test/test_smoke.py::test_smoke[coverage]",
+        "test/test_smoke.py::test_smoke[distlib]",
+        "test/test_smoke.py::test_smoke[filelock]",
+        "test/test_smoke.py::test_smoke[hypothesis]",
+        "test/test_smoke.py::test_smoke[iniconfig]",
+        "test/test_smoke.py::test_smoke[jinja2]",
+        "test/test_smoke.py::test_smoke[markdown2]",
+        "test/test_smoke.py::test_smoke[markupsafe]",
+        "test/test_smoke.py::test_smoke[mypy]",
+        "test/test_smoke.py::test_smoke[mypy_extensions]",
+        "test/test_smoke.py::test_smoke[mypyc]",
+        "test/test_smoke.py::test_smoke[native_internal]",
+        "test/test_smoke.py::test_smoke[packaging]",
+        "test/test_smoke.py::test_smoke[pathspec]",
+        "test/test_smoke.py::test_smoke[pdoc_pyo3_sample_library]",
+        "test/test_smoke.py::test_smoke[platformdirs]",
+        "test/test_smoke.py::test_smoke[pluggy]",
+        "test/test_smoke.py::test_smoke[pydantic]",
+        "test/test_smoke.py::test_smoke[pydantic_core]",
+        "test/test_smoke.py::test_smoke[pygments]",
+        "test/test_smoke.py::test_smoke[pyproject_api]",
+        "test/test_smoke.py::test_smoke[pytest]",
+        "test/test_smoke.py::test_smoke[pytest_cov]",
+        "test/test_smoke.py::test_smoke[pytest_timeout]",
+        "test/test_smoke.py::test_smoke[ruff]",
+        "test/test_smoke.py::test_smoke[sortedcontainers]",
+        "test/test_smoke.py::test_smoke[tox]",
+        "test/test_smoke.py::test_smoke[tox_uv]",
+        "test/test_smoke.py::test_smoke[typing_extensions]",
+        "test/test_smoke.py::test_smoke[typing_inspection]",
+        "test/test_smoke.py::test_smoke[uv]",
+        "test/test_smoke.py::test_smoke[virtualenv]",
+        "test/test_smoke.py::test_smoke[unittest.mock]"
+      ]
+    },
+    {
+      "id": "F2P-MODULE-PAGE-SNAPSHOT",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T1:B3",
+        "REQ-BEH-T1:C6"
+      ],
+      "tests": [
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_logo",
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_logo_link",
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_footer_text",
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_math_toggle",
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_math_disabled",
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_mermaid_toggle",
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_mermaid_disabled",
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_show_source_toggle",
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_show_source_enabled",
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_docformat",
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_template_directory",
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_include_undocumented",
+        "test/test_f2p_render_config_isolation.py::test_server_module_page_keeps_creation_edit_url_map"
+      ]
+    },
+    {
+      "id": "F2P-INDEX-PAGE-SNAPSHOT",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T1:B3",
+        "REQ-BEH-T1:C6"
+      ],
+      "tests": [
+        "test/test_f2p_render_config_isolation.py::test_server_index_page_keeps_creation_logo",
+        "test/test_f2p_render_config_isolation.py::test_server_index_page_keeps_creation_search_toggle"
+      ]
+    },
+    {
+      "id": "F2P-SEARCH-INDEX-SNAPSHOT",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T1:B3",
+        "REQ-BEH-T1:B4",
+        "REQ-BEH-T1:B5"
+      ],
+      "tests": [
+        "test/test_f2p_render_config_isolation.py::test_server_search_index_keeps_creation_search_enabled",
+        "test/test_f2p_render_config_isolation.py::test_server_search_index_keeps_creation_search_disabled"
+      ]
+    },
+    {
+      "id": "F2P-ERROR-PAGE-SNAPSHOT",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T1:B3",
+        "REQ-BEH-T1:B6"
+      ],
+      "tests": [
+        "test/test_f2p_render_config_isolation.py::test_server_404_page_keeps_creation_favicon",
+        "test/test_f2p_render_config_isolation.py::test_server_404_page_keeps_creation_math_toggle",
+        "test/test_f2p_render_config_isolation.py::test_server_500_page_keeps_creation_mermaid_toggle"
+      ]
+    },
+    {
+      "id": "F2P-SERVER-INSTANCE-INDEPENDENCE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T1:B3",
+        "REQ-BEH-T1:B1",
+        "REQ-STRUCT-001"
+      ],
+      "tests": [
+        "test/test_f2p_render_config_isolation.py::test_two_servers_keep_independent_configurations",
+        "test/test_f2p_render_config_isolation.py::test_server_index_matches_static_export_after_config_change",
+        "test/test_f2p_render_config_isolation.py::test_server_module_matches_static_export_after_config_change"
+      ]
+    },
+    {
+      "id": "F2P-CLI-WEB-SNAPSHOT",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-BEH-T1:B3",
+        "REQ-BEH-T1:C5"
+      ],
+      "tests": [
+        "test/test_f2p_render_config_isolation.py::test_cli_web_server_keeps_configuration_from_cli_invocation"
+      ]
+    },
+    {
+      "id": "P2P-AUDIT-CONTRACT-COVERAGE",
+      "kind": "P2P",
+      "tests": [
+        "test/test_p2p_render_contract.py::test_late_extensions_preserve_original_public_mappings",
+        "test/test_p2p_render_contract.py::test_imported_macro_preserves_direct_render_bytes",
+        "test/test_p2p_render_contract.py::test_import_and_error_render_on_supported_python311"
+      ]
+    },
+    {
+      "id": "F2P-AUDIT-CONTRACT-COVERAGE",
+      "kind": "F2P",
+      "tests": [
+        "test/test_f2p_render_config_isolation.py::test_rendering_does_not_read_or_mutate_shared_configuration",
+        "test/test_f2p_render_config_isolation.py::test_imported_macro_keeps_server_creation_configuration[cold]",
+        "test/test_f2p_render_config_isolation.py::test_imported_macro_keeps_server_creation_configuration[warm]"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "7e69d62fd9de6627a7c7f36b37f4d9fe180c6f14029047d2976432c66035af66",
+    "test_patch_sha256": "cdbcf703fcc7721ef499635f345160fc28965d15f1e34c82cddfd5c4396edb2c"
+  },
+  "junit_assertion_adapter": "pytest",
+  "node_relations": [],
+  "p2p": [
+    "test/test__pydantic.py::test_no_pydantic",
+    "test/test__pydantic.py::test_with_pydantic",
+    "test/test_doc.py::test_repr_tb",
+    "test/test_doc.py::test_order",
+    "test/test_doc.py::test_attrs",
+    "test/test_doc.py::test_all_with_import_err",
+    "test/test_doc.py::test_all_with_objects_instead_of_strings",
+    "test/test_doc.py::test_var_with_raising_repr",
+    "test/test_doc.py::test_class_with_raising_getattr",
+    "test/test_doc.py::test_builtin_source",
+    "test/test_doc.py::test_raising_getdoc",
+    "test/test_doc.py::test_raising_submodules",
+    "test/test_doc.py::test_default_value_masks_env_vars",
+    "test/test_doc.py::test_source_file_method",
+    "test/test_doc_ast.py::test_dedent",
+    "test/test_doc_ast.py::test_parse_error",
+    "test/test_doc_ast.py::test_type_checking_sections[import typing\\nif typing.TYPE_CHECKING:\\n\\tprint(42)-1]",
+    "test/test_doc_ast.py::test_type_checking_sections[from typing import TYPE_CHECKING\\nif TYPE_CHECKING:\\n\\tprint(42)\\n\\tprint(43)-2]",
+    "test/test_doc_ast.py::test_type_checking_sections[print(1234)-0]",
+    "test/test_doc_pyi.py::test_type_stub_mismatch",
+    "test/test_doc_pyi.py::test_invalid_stub_file",
+    "test/test_doc_types.py::test_eval_fail[totally_unknown_module]",
+    "test/test_doc_types.py::test_eval_fail[!!!!]",
+    "test/test_doc_types.py::test_eval_fail[html.unknown_attr]",
+    "test/test_doc_types.py::test_eval_fail2",
+    "test/test_doc_types.py::test_eval_fail3",
+    "test/test_doc_types.py::test_eval_fail_import_nonexistent",
+    "test/test_doc_types.py::test_recurse",
+    "test/test_docstrings.py::test_google",
+    "test/test_docstrings.py::test_numpy",
+    "test/test_docstrings.py::test_rst",
+    "test/test_docstrings.py::test_rst_extract_options_fuzz",
+    "test/test_docstrings.py::test_convert_exception",
+    "test/test_docstrings.py::test_rst_extract_options",
+    "test/test_docstrings.py::test_rst_include_trim_lines",
+    "test/test_docstrings.py::test_rst_include_trim_pattern",
+    "test/test_docstrings.py::test_rst_include_trim_start_after_applied_first",
+    "test/test_docstrings.py::test_rst_include_trim_mixture",
+    "test/test_docstrings.py::test_rst_include_nonexistent",
+    "test/test_docstrings.py::test_rst_include_invalid_options",
+    "test/test_extract.py::test_walk_specs",
+    "test/test_extract.py::test_parse_spec",
+    "test/test_extract.py::test_parse_spec_mod_and_dir",
+    "test/test_extract.py::test_module_mtime",
+    "test/test_extract.py::test_invalidate_caches",
+    "test/test_extract.py::test_mock_sideeffects",
+    "test/test_main.py::test_cli",
+    "test/test_main.py::test_cli_version",
+    "test/test_main.py::test_cli_web",
+    "test/test_main.py::test_cli_web_port_used",
+    "test/test_main.py::test_api",
+    "test/test_main.py::test_patch_showwarnings",
+    "test/test_render_helpers.py::test_relative_link[foo-foo-]",
+    "test/test_render_helpers.py::test_relative_link[foo-bar-bar.html]",
+    "test/test_render_helpers.py::test_relative_link[foo.foo-foo-../foo.html]",
+    "test/test_render_helpers.py::test_relative_link[foo.foo-bar-../bar.html]",
+    "test/test_render_helpers.py::test_relative_link[foo.bar-foo.bar.baz-bar/baz.html]",
+    "test/test_render_helpers.py::test_relative_link[foo.bar.baz-foo.qux.quux-../qux/quux.html]",
+    "test/test_render_helpers.py::test_qualname_candidates[-candidates0]",
+    "test/test_render_helpers.py::test_qualname_candidates[foo-candidates1]",
+    "test/test_render_helpers.py::test_qualname_candidates[foo.bar-candidates2]",
+    "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-qux-candidates0]",
+    "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-foo.bar-candidates1]",
+    "test/test_render_helpers.py::test_module_candidates[foo.bar.baz-foo-candidates2]",
+    "test/test_render_helpers.py::test_edit_url[demo-False-mapping0-None]",
+    "test/test_render_helpers.py::test_edit_url[demo-False-mapping1-https://github.com/mhils/pdoc/blob/master/test/testdata/demo.py]",
+    "test/test_render_helpers.py::test_edit_url[demo-True-mapping2-https://github.com/mhils/pdoc/blob/master/test/testdata/demo/__init__.py]",
+    "test/test_render_helpers.py::test_split_identifier[all_modules0-a.b.c.d-result0]",
+    "test/test_render_helpers.py::test_split_identifier[all_modules1-a.c.b.d-result1]",
+    "test/test_render_helpers.py::test_possible_sources[all_modules0-a.B-result0]",
+    "test/test_render_helpers.py::test_possible_sources[all_modules1-a.b-result1]",
+    "test/test_render_helpers.py::test_possible_sources[all_modules2-a-result2]",
+    "test/test_render_helpers.py::test_possible_sources[all_modules3-a.b.c.d-result3]",
+    "test/test_render_helpers.py::test_markdown_toc",
+    "test/test_render_helpers.py::test_mixed_toc",
+    "test/test_render_helpers.py::test_markdown_autolink[https://example.com/-<p><a href=\"https://example.com/\">https://example.com/</a></p>\\n]",
+    "test/test_render_helpers.py::test_markdown_autolink[<https://example.com>-<p><a href=\"https://example.com\">https://example.com</a></p>\\n]",
+    "test/test_render_helpers.py::test_markdown_autolink[<a href=\"https://example.com\">link</a>-<p><a href=\"https://example.com\">link</a></p>\\n]",
+    "test/test_render_helpers.py::test_markdown_autolink[[link](https://example.com)-<p><a href=\"https://example.com\">link</a></p>\\n]",
+    "test/test_render_helpers.py::test_markdown_autolink[See the [Python home page ](https://www.python.org) for info.-<p>See the <a href=\"https://www.python.org\">Python home page </a> for info.</p>\\n]",
+    "test/test_render_helpers.py::test_markdown_autolink[See https://www.python.org.-<p>See <a href=\"https://www.python.org\">https://www.python.org</a>.</p>\\n]",
+    "test/test_render_helpers.py::test_markdown_autolink[See **https://www.python.org**.-<p>See <strong>https://www.python.org</strong>.</p>\\n]",
+    "test/test_search.py::test_node_executable",
+    "test/test_search.py::test_precompile_index",
+    "test/test_smoke.py::test_smoke[pdoc]",
+    "test/test_smoke.py::test_smoke[abc]",
+    "test/test_smoke.py::test_smoke[annotationlib]",
+    "test/test_smoke.py::test_smoke[antigravity]",
+    "test/test_smoke.py::test_smoke[argparse]",
+    "test/test_smoke.py::test_smoke[ast]",
+    "test/test_smoke.py::test_smoke[asyncio]",
+    "test/test_smoke.py::test_smoke[base64]",
+    "test/test_smoke.py::test_smoke[bdb]",
+    "test/test_smoke.py::test_smoke[bisect]",
+    "test/test_smoke.py::test_smoke[bz2]",
+    "test/test_smoke.py::test_smoke[cProfile]",
+    "test/test_smoke.py::test_smoke[calendar]",
+    "test/test_smoke.py::test_smoke[cmd]",
+    "test/test_smoke.py::test_smoke[code]",
+    "test/test_smoke.py::test_smoke[codecs]",
+    "test/test_smoke.py::test_smoke[codeop]",
+    "test/test_smoke.py::test_smoke[collections]",
+    "test/test_smoke.py::test_smoke[colorsys]",
+    "test/test_smoke.py::test_smoke[compileall]",
+    "test/test_smoke.py::test_smoke[compression]",
+    "test/test_smoke.py::test_smoke[concurrent]",
+    "test/test_smoke.py::test_smoke[configparser]",
+    "test/test_smoke.py::test_smoke[contextlib]",
+    "test/test_smoke.py::test_smoke[contextvars]",
+    "test/test_smoke.py::test_smoke[copy]",
+    "test/test_smoke.py::test_smoke[copyreg]",
+    "test/test_smoke.py::test_smoke[csv]",
+    "test/test_smoke.py::test_smoke[ctypes]",
+    "test/test_smoke.py::test_smoke[curses]",
+    "test/test_smoke.py::test_smoke[dataclasses]",
+    "test/test_smoke.py::test_smoke[datetime]",
+    "test/test_smoke.py::test_smoke[dbm]",
+    "test/test_smoke.py::test_smoke[decimal]",
+    "test/test_smoke.py::test_smoke[difflib]",
+    "test/test_smoke.py::test_smoke[dis]",
+    "test/test_smoke.py::test_smoke[doctest]",
+    "test/test_smoke.py::test_smoke[email]",
+    "test/test_smoke.py::test_smoke[encodings]",
+    "test/test_smoke.py::test_smoke[ensurepip]",
+    "test/test_smoke.py::test_smoke[enum]",
+    "test/test_smoke.py::test_smoke[filecmp]",
+    "test/test_smoke.py::test_smoke[fileinput]",
+    "test/test_smoke.py::test_smoke[fnmatch]",
+    "test/test_smoke.py::test_smoke[fractions]",
+    "test/test_smoke.py::test_smoke[ftplib]",
+    "test/test_smoke.py::test_smoke[functools]",
+    "test/test_smoke.py::test_smoke[genericpath]",
+    "test/test_smoke.py::test_smoke[getopt]",
+    "test/test_smoke.py::test_smoke[getpass]",
+    "test/test_smoke.py::test_smoke[gettext]",
+    "test/test_smoke.py::test_smoke[glob]",
+    "test/test_smoke.py::test_smoke[graphlib]",
+    "test/test_smoke.py::test_smoke[gzip]",
+    "test/test_smoke.py::test_smoke[hashlib]",
+    "test/test_smoke.py::test_smoke[heapq]",
+    "test/test_smoke.py::test_smoke[hmac]",
+    "test/test_smoke.py::test_smoke[html]",
+    "test/test_smoke.py::test_smoke[http]",
+    "test/test_smoke.py::test_smoke[imaplib]",
+    "test/test_smoke.py::test_smoke[importlib]",
+    "test/test_smoke.py::test_smoke[inspect]",
+    "test/test_smoke.py::test_smoke[io]",
+    "test/test_smoke.py::test_smoke[ipaddress]",
+    "test/test_smoke.py::test_smoke[json]",
+    "test/test_smoke.py::test_smoke[keyword]",
+    "test/test_smoke.py::test_smoke[linecache]",
+    "test/test_smoke.py::test_smoke[locale]",
+    "test/test_smoke.py::test_smoke[logging]",
+    "test/test_smoke.py::test_smoke[lzma]",
+    "test/test_smoke.py::test_smoke[mailbox]",
+    "test/test_smoke.py::test_smoke[mimetypes]",
+    "test/test_smoke.py::test_smoke[modulefinder]",
+    "test/test_smoke.py::test_smoke[multiprocessing]",
+    "test/test_smoke.py::test_smoke[netrc]",
+    "test/test_smoke.py::test_smoke[ntpath]",
+    "test/test_smoke.py::test_smoke[nturl2path]",
+    "test/test_smoke.py::test_smoke[numbers]",
+    "test/test_smoke.py::test_smoke[opcode]",
+    "test/test_smoke.py::test_smoke[operator]",
+    "test/test_smoke.py::test_smoke[optparse]",
+    "test/test_smoke.py::test_smoke[os]",
+    "test/test_smoke.py::test_smoke[pathlib]",
+    "test/test_smoke.py::test_smoke[pdb]",
+    "test/test_smoke.py::test_smoke[pickle]",
+    "test/test_smoke.py::test_smoke[pickletools]",
+    "test/test_smoke.py::test_smoke[pkgutil]",
+    "test/test_smoke.py::test_smoke[platform]",
+    "test/test_smoke.py::test_smoke[plistlib]",
+    "test/test_smoke.py::test_smoke[poplib]",
+    "test/test_smoke.py::test_smoke[posixpath]",
+    "test/test_smoke.py::test_smoke[pprint]",
+    "test/test_smoke.py::test_smoke[profile]",
+    "test/test_smoke.py::test_smoke[pstats]",
+    "test/test_smoke.py::test_smoke[pty]",
+    "test/test_smoke.py::test_smoke[py_compile]",
+    "test/test_smoke.py::test_smoke[pyclbr]",
+    "test/test_smoke.py::test_smoke[pydoc]",
+    "test/test_smoke.py::test_smoke[pydoc_data]",
+    "test/test_smoke.py::test_smoke[queue]",
+    "test/test_smoke.py::test_smoke[quopri]",
+    "test/test_smoke.py::test_smoke[random]",
+    "test/test_smoke.py::test_smoke[re]",
+    "test/test_smoke.py::test_smoke[reprlib]",
+    "test/test_smoke.py::test_smoke[rlcompleter]",
+    "test/test_smoke.py::test_smoke[runpy]",
+    "test/test_smoke.py::test_smoke[sched]",
+    "test/test_smoke.py::test_smoke[secrets]",
+    "test/test_smoke.py::test_smoke[selectors]",
+    "test/test_smoke.py::test_smoke[shelve]",
+    "test/test_smoke.py::test_smoke[shlex]",
+    "test/test_smoke.py::test_smoke[shutil]",
+    "test/test_smoke.py::test_smoke[signal]",
+    "test/test_smoke.py::test_smoke[site]",
+    "test/test_smoke.py::test_smoke[smtplib]",
+    "test/test_smoke.py::test_smoke[socket]",
+    "test/test_smoke.py::test_smoke[socketserver]",
+    "test/test_smoke.py::test_smoke[sqlite3]",
+    "test/test_smoke.py::test_smoke[sre_compile]",
+    "test/test_smoke.py::test_smoke[sre_constants]",
+    "test/test_smoke.py::test_smoke[sre_parse]",
+    "test/test_smoke.py::test_smoke[ssl]",
+    "test/test_smoke.py::test_smoke[stat]",
+    "test/test_smoke.py::test_smoke[statistics]",
+    "test/test_smoke.py::test_smoke[string]",
+    "test/test_smoke.py::test_smoke[stringprep]",
+    "test/test_smoke.py::test_smoke[struct]",
+    "test/test_smoke.py::test_smoke[subprocess]",
+    "test/test_smoke.py::test_smoke[symtable]",
+    "test/test_smoke.py::test_smoke[sysconfig]",
+    "test/test_smoke.py::test_smoke[tabnanny]",
+    "test/test_smoke.py::test_smoke[tarfile]",
+    "test/test_smoke.py::test_smoke[tempfile]",
+    "test/test_smoke.py::test_smoke[textwrap]",
+    "test/test_smoke.py::test_smoke[this]",
+    "test/test_smoke.py::test_smoke[threading]",
+    "test/test_smoke.py::test_smoke[timeit]",
+    "test/test_smoke.py::test_smoke[tkinter]",
+    "test/test_smoke.py::test_smoke[token]",
+    "test/test_smoke.py::test_smoke[tokenize]",
+    "test/test_smoke.py::test_smoke[tomllib]",
+    "test/test_smoke.py::test_smoke[trace]",
+    "test/test_smoke.py::test_smoke[traceback]",
+    "test/test_smoke.py::test_smoke[tracemalloc]",
+    "test/test_smoke.py::test_smoke[tty]",
+    "test/test_smoke.py::test_smoke[turtle]",
+    "test/test_smoke.py::test_smoke[turtledemo]",
+    "test/test_smoke.py::test_smoke[types]",
+    "test/test_smoke.py::test_smoke[typing]",
+    "test/test_smoke.py::test_smoke[unittest]",
+    "test/test_smoke.py::test_smoke[urllib]",
+    "test/test_smoke.py::test_smoke[uuid]",
+    "test/test_smoke.py::test_smoke[venv]",
+    "test/test_smoke.py::test_smoke[warnings]",
+    "test/test_smoke.py::test_smoke[wave]",
+    "test/test_smoke.py::test_smoke[weakref]",
+    "test/test_smoke.py::test_smoke[webbrowser]",
+    "test/test_smoke.py::test_smoke[wsgiref]",
+    "test/test_smoke.py::test_smoke[xml]",
+    "test/test_smoke.py::test_smoke[xmlrpc]",
+    "test/test_smoke.py::test_smoke[zipapp]",
+    "test/test_smoke.py::test_smoke[zipfile]",
+    "test/test_smoke.py::test_smoke[zipimport]",
+    "test/test_smoke.py::test_smoke[zoneinfo]",
+    "test/test_smoke.py::test_smoke[7ae574991b77ef47acad__mypyc]",
+    "test/test_smoke.py::test_smoke[annotated_types]",
+    "test/test_smoke.py::test_smoke[attr]",
+    "test/test_smoke.py::test_smoke[attrs]",
+    "test/test_smoke.py::test_smoke[cachetools]",
+    "test/test_smoke.py::test_smoke[chardet]",
+    "test/test_smoke.py::test_smoke[colorama]",
+    "test/test_smoke.py::test_smoke[coverage]",
+    "test/test_smoke.py::test_smoke[distlib]",
+    "test/test_smoke.py::test_smoke[filelock]",
+    "test/test_smoke.py::test_smoke[hypothesis]",
+    "test/test_smoke.py::test_smoke[iniconfig]",
+    "test/test_smoke.py::test_smoke[jinja2]",
+    "test/test_smoke.py::test_smoke[markdown2]",
+    "test/test_smoke.py::test_smoke[markupsafe]",
+    "test/test_smoke.py::test_smoke[mypy]",
+    "test/test_smoke.py::test_smoke[mypy_extensions]",
+    "test/test_smoke.py::test_smoke[mypyc]",
+    "test/test_smoke.py::test_smoke[native_internal]",
+    "test/test_smoke.py::test_smoke[packaging]",
+    "test/test_smoke.py::test_smoke[pathspec]",
+    "test/test_smoke.py::test_smoke[pdoc_pyo3_sample_library]",
+    "test/test_smoke.py::test_smoke[platformdirs]",
+    "test/test_smoke.py::test_smoke[pluggy]",
+    "test/test_smoke.py::test_smoke[pydantic]",
+    "test/test_smoke.py::test_smoke[pydantic_core]",
+    "test/test_smoke.py::test_smoke[pygments]",
+    "test/test_smoke.py::test_smoke[pyproject_api]",
+    "test/test_smoke.py::test_smoke[pytest]",
+    "test/test_smoke.py::test_smoke[pytest_cov]",
+    "test/test_smoke.py::test_smoke[pytest_timeout]",
+    "test/test_smoke.py::test_smoke[ruff]",
+    "test/test_smoke.py::test_smoke[sortedcontainers]",
+    "test/test_smoke.py::test_smoke[tox]",
+    "test/test_smoke.py::test_smoke[tox_uv]",
+    "test/test_smoke.py::test_smoke[typing_extensions]",
+    "test/test_smoke.py::test_smoke[typing_inspection]",
+    "test/test_smoke.py::test_smoke[uv]",
+    "test/test_smoke.py::test_smoke[virtualenv]",
+    "test/test_smoke.py::test_smoke[unittest.mock]",
+    "test/test_snapshot.py::test_snapshots[html-ast_parsing]",
+    "test/test_snapshot.py::test_snapshots[html-collections_abc]",
+    "test/test_snapshot.py::test_snapshots[html-demo]",
+    "test/test_snapshot.py::test_snapshots[html-enums]",
+    "test/test_snapshot.py::test_snapshots[html-flavors_google]",
+    "test/test_snapshot.py::test_snapshots[html-flavors_numpy]",
+    "test/test_snapshot.py::test_snapshots[html-flavors_rst]",
+    "test/test_snapshot.py::test_snapshots[html-example_customtemplate]",
+    "test/test_snapshot.py::test_snapshots[html-example_darkmode]",
+    "test/test_snapshot.py::test_snapshots[html-example_mkdocs]",
+    "test/test_snapshot.py::test_snapshots[html-demo_long]",
+    "test/test_snapshot.py::test_snapshots[html-demo_eager]",
+    "test/test_snapshot.py::test_snapshots[html-demopackage]",
+    "test/test_snapshot.py::test_snapshots[html-demopackage_dir]",
+    "test/test_snapshot.py::test_snapshots[html-misc]",
+    "test/test_snapshot.py::test_snapshots[html-misc_py310]",
+    "test/test_snapshot.py::test_snapshots[html-misc_py312]",
+    "test/test_snapshot.py::test_snapshots[html-misc_py313_0]",
+    "test/test_snapshot.py::test_snapshots[html-misc_py313_1]",
+    "test/test_snapshot.py::test_snapshots[html-math_demo]",
+    "test/test_snapshot.py::test_snapshots[html-math_misc]",
+    "test/test_snapshot.py::test_snapshots[html-mermaid_demo]",
+    "test/test_snapshot.py::test_snapshots[html-render_options]",
+    "test/test_snapshot.py::test_snapshots[html-pyo3_sample_library]",
+    "test/test_snapshot.py::test_snapshots[html-top_level_reimports]",
+    "test/test_snapshot.py::test_snapshots[html-type_checking_imports]",
+    "test/test_snapshot.py::test_snapshots[html-typed_dict]",
+    "test/test_snapshot.py::test_snapshots[html-type_stubs]",
+    "test/test_snapshot.py::test_snapshots[html-visibility]",
+    "test/test_snapshot.py::test_snapshots[html-with_pydantic]",
+    "test/test_snapshot.py::test_snapshots[repr-ast_parsing]",
+    "test/test_snapshot.py::test_snapshots[repr-collections_abc]",
+    "test/test_snapshot.py::test_snapshots[repr-demo]",
+    "test/test_snapshot.py::test_snapshots[repr-enums]",
+    "test/test_snapshot.py::test_snapshots[repr-flavors_google]",
+    "test/test_snapshot.py::test_snapshots[repr-flavors_numpy]",
+    "test/test_snapshot.py::test_snapshots[repr-flavors_rst]",
+    "test/test_snapshot.py::test_snapshots[repr-example_customtemplate]",
+    "test/test_snapshot.py::test_snapshots[repr-example_darkmode]",
+    "test/test_snapshot.py::test_snapshots[repr-example_mkdocs]",
+    "test/test_snapshot.py::test_snapshots[repr-demo_long]",
+    "test/test_snapshot.py::test_snapshots[repr-demo_eager]",
+    "test/test_snapshot.py::test_snapshots[repr-demopackage]",
+    "test/test_snapshot.py::test_snapshots[repr-demopackage_dir]",
+    "test/test_snapshot.py::test_snapshots[repr-misc]",
+    "test/test_snapshot.py::test_snapshots[repr-misc_py310]",
+    "test/test_snapshot.py::test_snapshots[repr-misc_py312]",
+    "test/test_snapshot.py::test_snapshots[repr-misc_py313_0]",
+    "test/test_snapshot.py::test_snapshots[repr-misc_py313_1]",
+    "test/test_snapshot.py::test_snapshots[repr-math_demo]",
+    "test/test_snapshot.py::test_snapshots[repr-math_misc]",
+    "test/test_snapshot.py::test_snapshots[repr-mermaid_demo]",
+    "test/test_snapshot.py::test_snapshots[repr-render_options]",
+    "test/test_snapshot.py::test_snapshots[repr-pyo3_sample_library]",
+    "test/test_snapshot.py::test_snapshots[repr-top_level_reimports]",
+    "test/test_snapshot.py::test_snapshots[repr-type_checking_imports]",
+    "test/test_snapshot.py::test_snapshots[repr-typed_dict]",
+    "test/test_snapshot.py::test_snapshots[repr-type_stubs]",
+    "test/test_snapshot.py::test_snapshots[repr-visibility]",
+    "test/test_snapshot.py::test_snapshots[repr-with_pydantic]",
+    "test/test_web.py::test_head_index",
+    "test/test_web.py::test_get_index",
+    "test/test_web.py::test_get_search_json",
+    "test/test_web.py::test_get_module",
+    "test/test_web.py::test_get_module_url_escape_sequences",
+    "test/test_web.py::test_get_dependency",
+    "test/test_web.py::test_get_module_err",
+    "test/test_web.py::test_get_module_mtime",
+    "test/test_web.py::test_get_unknown",
+    "test/test_web.py::test_get_not_normalized",
+    "test/test_p2p_render_contract.py::test_configure_signature_defaults",
+    "test/test_p2p_render_contract.py::test_configure_is_keyword_only",
+    "test/test_p2p_render_contract.py::test_configure_returns_none",
+    "test/test_p2p_render_contract.py::test_configure_affects_later_module_rendering",
+    "test/test_p2p_render_contract.py::test_configure_affects_later_search_rendering",
+    "test/test_p2p_render_contract.py::test_html_module_entry_point_keeps_arguments_and_str_result",
+    "test/test_p2p_render_contract.py::test_html_index_entry_point_keeps_str_result",
+    "test/test_p2p_render_contract.py::test_html_error_entry_point_keeps_arguments_and_str_result",
+    "test/test_p2p_render_contract.py::test_search_index_entry_point_keeps_str_result",
+    "test/test_p2p_render_contract.py::test_repr_module_entry_point_keeps_str_result",
+    "test/test_p2p_render_contract.py::test_pdoc_returns_first_module",
+    "test/test_p2p_render_contract.py::test_pdoc_writes_static_artifacts",
+    "test/test_p2p_render_contract.py::test_search_disabled_empties_index",
+    "test/test_p2p_render_contract.py::test_search_disabled_skips_static_artifact",
+    "test/test_p2p_render_contract.py::test_custom_env_globals_affect_later_rendering",
+    "test/test_p2p_render_contract.py::test_custom_env_filters_affect_later_rendering",
+    "test/test_p2p_render_contract.py::test_env_identity_survives_render_module_cache_invalidation",
+    "test/test_p2p_render_contract.py::test_env_custom_state_survives_render_module_cache_invalidation",
+    "test/test_p2p_render_contract.py::test_render_config_survives_render_module_cache_invalidation",
+    "test/test_p2p_render_contract.py::test_html_error_escapes_template_values",
+    "test/test_p2p_render_contract.py::test_project_python_requirement_unchanged",
+    "test/test_p2p_render_contract.py::test_project_runtime_dependencies_unchanged",
+    "test/test_p2p_web_cli_contract.py::test_web_index_route_aliases_keep_html_response",
+    "test/test_p2p_web_cli_contract.py::test_web_module_route_keeps_html_response",
+    "test/test_p2p_web_cli_contract.py::test_web_module_mtime_route_keeps_plain_text_response",
+    "test/test_p2p_web_cli_contract.py::test_web_search_route_keeps_javascript_response",
+    "test/test_p2p_web_cli_contract.py::test_web_missing_module_route_keeps_404_page",
+    "test/test_p2p_web_cli_contract.py::test_web_import_error_route_keeps_500_page",
+    "test/test_p2p_web_cli_contract.py::test_web_dotted_path_keeps_404_response",
+    "test/test_p2p_web_cli_contract.py::test_web_error_page_keeps_autoescaping",
+    "test/test_p2p_web_cli_contract.py::test_web_renders_with_config_in_effect_before_start",
+    "test/test_p2p_web_cli_contract.py::test_web_search_index_is_computed_once_per_server",
+    "test/test_p2p_web_cli_contract.py::test_web_index_response_matches_static_export",
+    "test/test_p2p_web_cli_contract.py::test_web_module_response_matches_static_export",
+    "test/test_p2p_web_cli_contract.py::test_cli_export_writes_static_index",
+    "test/test_p2p_web_cli_contract.py::test_cli_no_search_flag_disables_search_output",
+    "test/test_p2p_web_cli_contract.py::test_cli_no_show_source_flag_hides_source_link",
+    "test/test_p2p_web_cli_contract.py::test_cli_math_flag_enables_math_output",
+    "test/test_p2p_web_cli_contract.py::test_cli_mermaid_flag_enables_mermaid_output",
+    "test/test_p2p_web_cli_contract.py::test_cli_footer_text_flag_sets_footer",
+    "test/test_p2p_web_cli_contract.py::test_cli_logo_flag_sets_logo",
+    "test/test_p2p_web_cli_contract.py::test_cli_logo_link_flag_sets_logo_target",
+    "test/test_p2p_web_cli_contract.py::test_cli_favicon_flag_sets_favicon",
+    "test/test_p2p_web_cli_contract.py::test_cli_edit_url_flag_sets_edit_link",
+    "test/test_p2p_web_cli_contract.py::test_cli_search_is_enabled_by_default",
+    "test/test_p2p_web_cli_contract.py::test_cli_source_links_are_enabled_by_default",
+    "test/test_p2p_web_cli_contract.py::test_cli_math_is_disabled_by_default",
+    "test/test_p2p_web_cli_contract.py::test_cli_mermaid_is_disabled_by_default",
+    "test/test_p2p_web_cli_contract.py::test_cli_docformat_flag_selects_docstring_flavor",
+    "test/test_p2p_web_cli_contract.py::test_cli_web_uses_requested_host_and_port",
+    "test/test_p2p_web_cli_contract.py::test_cli_web_no_browser_flag_suppresses_opening",
+    "test/test_p2p_web_cli_contract.py::test_cli_web_opens_browser_by_default",
+    "test/test_p2p_web_cli_contract.py::test_web_index_render_errors_remain_outside_500_boundary",
+    "test/test_p2p_web_cli_contract.py::test_web_search_render_errors_preserve_header_order_and_propagate",
+    "test/test_p2p_web_cli_contract.py::test_web_module_mtime_errors_remain_outside_500_boundary",
+    "test/test_p2p_web_cli_contract.py::test_web_search_index_excludes_failed_import_records",
+    "test/test_p2p_render_contract.py::test_late_extensions_preserve_original_public_mappings",
+    "test/test_p2p_render_contract.py::test_imported_macro_preserves_direct_render_bytes",
+    "test/test_p2p_render_contract.py::test_import_and_error_render_on_supported_python311"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": false,
+  "restoration_paths": [
+    "test/test__pydantic.py",
+    "test/test_doc.py",
+    "test/test_doc_ast.py",
+    "test/test_doc_pyi.py",
+    "test/test_doc_types.py",
+    "test/test_docstrings.py",
+    "test/test_extract.py",
+    "test/test_main.py",
+    "test/test_render_helpers.py",
+    "test/test_search.py",
+    "test/test_smoke.py",
+    "test/test_snapshot.py",
+    "test/test_web.py"
+  ],
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "pdoc-pdoc-render-py-jin-14f11e26",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "test/test_f2p_render_config_isolation.py",
+    "test/test_p2p_render_contract.py",
+    "test/test_p2p_web_cli_contract.py"
+  ],
+  "timeout_seconds": 600,
+  "verifier": "/tests/verifier/verifier.py",
+  "reward_mode": "VERIFIER_ONLY"
+}

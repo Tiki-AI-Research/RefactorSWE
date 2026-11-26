@@ -1,0 +1,971 @@
+diff --git a/tests/f2p/test_session_options_f2p.py b/tests/f2p/test_session_options_f2p.py
+new file mode 100644
+index 00000000..ffdd32cf
+--- /dev/null
++++ b/tests/f2p/test_session_options_f2p.py
+@@ -0,0 +1,357 @@
++"""Route A public behavior checks, salvaged from the original F2P inventory.
++
++Boolean string meanings are independent of letter case. Silent success with
++missing external imports is never legal. These tests use real configuration
++files, real imports, the public lint entry point and output.
++"""
++
++import ast
++import inspect
++from pathlib import Path
++import re
++
++import pytest
++
++import importlinter
++from importlinter import configuration
++from importlinter.application import use_cases
++from importlinter.application.user_options import UserOptions
++from importlinter.contracts.forbidden import ForbiddenContract
++from importlinter.application.use_cases import lint_imports
++
++
++@pytest.fixture(autouse=True)
++def _default_configuration():
++    configuration.configure()
++    yield
++    configuration.configure()
++
++
++def _package(directory, name, modules):
++    package = directory / name
++    package.mkdir()
++    (package / "__init__.py").write_text("")
++    for filename, source in modules.items():
++        (package / filename).write_text(source)
++
++
++def _ini(directory, roots, source, forbidden):
++    config = directory / "setup.cfg"
++    root_option = (
++        f"root_package = {roots[0]}\n" if len(roots) == 1
++        else "root_packages =\n" + "".join(f"    {root}\n" for root in roots)
++    )
++    config.write_text(
++        "[importlinter]\n" + root_option + "include_external_packages = TRUE\n\n"
++        "[importlinter:contract:one]\nname = External forbidden contract\n"
++        f"type = forbidden\nsource_modules = {source}\nforbidden_modules = {forbidden}\n"
++    )
++    return config
++
++
++def _lint(config):
++    try:
++        return lint_imports(
++            config_filename=str(config), cache_dir=None, no_logo=True,
++            is_debug_mode=True,
++        ), False
++    except ValueError as error:
++        # Preserve Lean v2's existing option-error channel without prescribing wording.
++        assert "include_external_packages" in str(error)
++        return False, True
++
++
++def test_ini_imported_external_at_root_is_not_accepted(tmp_path, monkeypatch):
++    """F05: INI singular root imports the forbidden dependency in __init__.py."""
++    _package(tmp_path, "f2p_owner_ini_external", {"__init__.py": "import routeadependency\n"})
++    (tmp_path / "routeadependency.py").write_text("")
++    config = _ini(tmp_path, ["f2p_owner_ini_external"], "f2p_owner_ini_external", "routeadependency")
++    monkeypatch.syspath_prepend(str(tmp_path))
++
++    result, _ = _lint(config)
++
++    assert result is False, "an imported forbidden external dependency was accepted"
++
++
++def test_external_consumers_agree_when_forbidden_external_is_not_imported(
++    tmp_path, monkeypatch, capsys
++):
++    """F09: a kept contract must have analyzed the separately imported external."""
++    _package(tmp_path, "f2p_agree_external", {"core.py": "import routeadependency\n"})
++    (tmp_path / "routeadependency.py").write_text("")
++    config = _ini(tmp_path, ["f2p_agree_external"], "f2p_agree_external.core", "unusedexternal")
++    monkeypatch.syspath_prepend(str(tmp_path))
++
++    result, rejected = _lint(config)
++    output = capsys.readouterr().out
++
++    if not rejected:
++        assert result is True
++        assert re.search(r"Analyzed \d+ files, 1 dependencies\.", output), (
++            "the external contract accepted TRUE while the public report omitted the external edge"
++        )
++
++
++def test_mixed_case_external_packages_option_rejects_imported_external_forbidden_module(
++    tmp_path, monkeypatch
++):
++    """F10: the original submodule-to-external forbidden import scenario."""
++    _package(tmp_path, "f2p_external_import_consumer", {"core.py": "import routeadependency\n"})
++    (tmp_path / "routeadependency.py").write_text("")
++    config = _ini(
++        tmp_path, ["f2p_external_import_consumer"],
++        "f2p_external_import_consumer.core", "routeadependency",
++    )
++    monkeypatch.syspath_prepend(str(tmp_path))
++
++    result, _ = _lint(config)
++
++    assert result is False, "an imported forbidden external dependency was accepted"
++
++
++def test_toml_imported_external_is_not_accepted(tmp_path, monkeypatch):
++    """F11: TOML string TRUE follows the same public contract as INI."""
++    _package(tmp_path, "f2p_owner_toml_external", {"core.py": "from routeadependency import item\n"})
++    (tmp_path / "routeadependency.py").write_text("item = 1\n")
++    config = tmp_path / "pyproject.toml"
++    config.write_text(
++        '[tool.importlinter]\nroot_package = "f2p_owner_toml_external"\n'
++        'include_external_packages = "TRUE"\n\n'
++        '[[tool.importlinter.contracts]]\nname = "External forbidden contract"\n'
++        'type = "forbidden"\nsource_modules = ["f2p_owner_toml_external.core"]\n'
++        'forbidden_modules = ["routeadependency"]\n'
++    )
++    monkeypatch.syspath_prepend(str(tmp_path))
++
++    result, _ = _lint(config)
++
++    assert result is False, "a TOML-configured forbidden external dependency was accepted"
++
++
++def test_second_root_indirect_external_import_is_not_accepted(tmp_path, monkeypatch):
++    """N01: plural roots; only the second root reaches the external, indirectly."""
++    _package(tmp_path, "f2p_first_root", {})
++    _package(tmp_path, "f2p_second_root", {
++        "core.py": "from f2p_second_root import bridge\n",
++        "bridge.py": "import routeadependency\n",
++    })
++    (tmp_path / "routeadependency.py").write_text("")
++    config = _ini(
++        tmp_path, ["f2p_first_root", "f2p_second_root"],
++        "f2p_second_root.core", "routeadependency",
++    )
++    monkeypatch.syspath_prepend(str(tmp_path))
++
++    result, _ = _lint(config)
++
++    assert result is False, "the second root's indirect forbidden external import was accepted"
++
++
++# F-CORE: inspect semantic ownership without requiring a particular class or layout.
++_OPTION_KEYS = {
++    "root_packages", "include_external_packages", "exclude_type_checking_imports", "show_timings"
++}
++_BOOLEAN_KEYS = _OPTION_KEYS - {"root_packages"}
++
++
++def _option_keys(node):
++    keys = {
++        item.value for item in ast.walk(node)
++        if isinstance(item, ast.Constant) and isinstance(item.value, str)
++        and item.value in _OPTION_KEYS | {"root_package"}
++    }
++    keys |= {item.target.id for item in ast.walk(node)
++             if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
++             and item.target.id in _OPTION_KEYS}
++    if "root_package" in keys:
++        keys.add("root_packages")
++    return keys
++
++
++def _annotation_names(node):
++    annotations = []
++    for item in ast.walk(node):
++        if isinstance(item, ast.AnnAssign):
++            annotations.append(item.annotation)
++        elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.returns:
++            annotations.append(item.returns)
++    annotations = [ast.parse(annotation.value, mode="eval")
++                   if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str)
++                   else annotation for annotation in annotations]
++    return {
++        child.id for annotation in annotations for child in ast.walk(annotation)
++        if isinstance(child, ast.Name)
++    }
++
++
++def _typed_owner_candidates(trees):
++    # Properties, annotated fields and typed factory functions are all supported.
++    # In particular, a dataclass may use different attribute names from raw keys.
++    classes = [node for tree in trees for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
++    functions = [node for tree in trees for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
++    candidates = []
++    for cls in classes:
++        annotations = _annotation_names(cls)
++        if "bool" not in annotations or not annotations.intersection({"list", "List", "tuple", "Sequence"}):
++            continue
++        keys = _option_keys(cls)
++        for function in functions:
++            creates_owner = any(
++                isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == cls.name
++                for node in ast.walk(function)
++            )
++            if creates_owner:
++                keys |= _option_keys(function)
++        if _OPTION_KEYS <= keys:
++            candidates.append(cls)
++    return candidates
++
++
++def test_typed_owner_represents_all_four_session_options():
++    package_directory = Path(importlinter.__file__).parent
++    trees = [ast.parse(path.read_text()) for path in package_directory.rglob("*.py")]
++    assert _typed_owner_candidates(trees), (
++        "session options need a typed semantic owner for roots, externals, type checking and timings"
++    )
++
++
++def test_consumers_delegate_root_reading_and_boolean_interpretation():
++    # Loading/normalizing raw roots is allowed. Passing them straight from raw
++    # storage to graph construction bypasses the semantic owner.
++    application_tree = ast.parse(inspect.getsource(use_cases))
++    forbidden_tree = ast.parse(inspect.getsource(ForbiddenContract))
++    package_directory = Path(importlinter.__file__).parent
++    source_trees = [application_tree, forbidden_tree] + [
++        ast.parse(path.read_text()) for path in package_directory.rglob("*.py")
++    ]
++    owners = _typed_owner_candidates(source_trees)
++    owner_routines = {id(routine) for owner in owners
++                      for routine in ast.walk(owner) if isinstance(routine, ast.FunctionDef)}
++    typed_dictionary_owner = any(
++        any(isinstance(base, ast.Name) and base.id == "TypedDict" for base in owner.bases)
++        for owner in owners
++    )
++    for tree in (application_tree, forbidden_tree):
++        for routine in ast.walk(tree):
++            if not isinstance(routine, (ast.FunctionDef, ast.AsyncFunctionDef)):
++                continue
++            returns_owner = bool(_annotation_names(routine).intersection({owner.name for owner in owners}))
++            if id(routine) in owner_routines or (returns_owner and _OPTION_KEYS <= _option_keys(routine)):
++                continue
++            raw_boolean_reads = []
++            for node in ast.walk(routine):
++                if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
++                    if node.slice.value in _BOOLEAN_KEYS:
++                        raw_boolean_reads.append(node)
++                elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
++                    if node.func.attr == "get" and node.args and isinstance(node.args[0], ast.Constant):
++                        if node.args[0].value in _BOOLEAN_KEYS:
++                            raw_boolean_reads.append(node)
++            compares_raw_boolean = any(
++                isinstance(node, ast.Compare)
++                and any(isinstance(value, ast.Constant) and value.value in {"True", "true", "False", "false"}
++                        for value in ast.walk(node))
++                for node in ast.walk(routine)
++            )
++            assert not (raw_boolean_reads and compares_raw_boolean), (
++                f"{routine.name} keeps a private raw session-option comparison"
++            )
++            if tree is application_tree and not typed_dictionary_owner:
++                for node in ast.walk(routine):
++                    if isinstance(node, ast.keyword) and node.arg == "root_package_names":
++                        assert not any(
++                            isinstance(value, ast.Subscript) and isinstance(value.slice, ast.Constant)
++                            and value.slice.value == "root_packages"
++                            for value in ast.walk(node.value)
++                        ), "graph root consumer bypasses semantic ownership"
++
++
++def test_external_consumers_agree_on_the_actual_typed_session(tmp_path, monkeypatch):
++    # Case changes preserve the boolean meaning for both real consumers.
++    for index, raw_value in enumerate(("TRUE", "tRuE", "FALSE", "fAlSe")):
++        directory = tmp_path / str(index)
++        directory.mkdir()
++        with monkeypatch.context() as context:
++            _assert_external_consumers_agree(directory, context, raw_value)
++
++
++def _assert_external_consumers_agree(tmp_path, monkeypatch, raw_value):
++    _package(tmp_path, "f2p_actual_session", {"core.py": "import actual_dependency\n"})
++    (tmp_path / "actual_dependency.py").write_text("")
++    filename = _ini(tmp_path, ["f2p_actual_session"], "f2p_actual_session.core", "unused_external")
++    filename.write_text(filename.read_text().replace(
++        "include_external_packages = TRUE", f"include_external_packages = {raw_value}"
++    ))
++    monkeypatch.syspath_prepend(str(tmp_path))
++    builder = configuration.settings.GRAPH_BUILDER
++    original_build = builder.build
++    original_check = ForbiddenContract.check
++    builds, checks = [], []
++
++    def record_build(*args, **kwargs):
++        graph = original_build(*args, **kwargs)
++        builds.append((kwargs, graph))
++        return graph
++
++    def record_check(self, graph, verbose):
++        checks.append((self.session_options, graph))
++        return original_check(self, graph, verbose)
++
++    monkeypatch.setattr(builder, "build", record_build)
++    monkeypatch.setattr(ForbiddenContract, "check", record_check)
++    error = None
++    result = None
++    try:
++        result = lint_imports(
++            config_filename=str(filename), cache_dir=None, no_logo=True, is_debug_mode=True
++        )
++    except ValueError as caught:
++        error = caught
++    assert len(builds) == len(checks) == 1, "both real consumers must be reached"
++    arguments, graph = builds[0]
++    assert checks[0][1].modules == graph.modules
++    included = arguments["include_external_packages"]
++    assert type(included) is bool
++    assert included is (raw_value.lower() == "true"), (
++        "changing only letter case must preserve the session boolean meaning"
++    )
++    if included:
++        assert "actual_dependency" in graph.modules
++        assert error is None, "Forbidden rejected externals that graph building included"
++        assert result is True
++    else:
++        assert "actual_dependency" not in graph.modules
++        assert isinstance(error, ValueError), "Forbidden accepted externals omitted by graph building"
++        assert "include_external_packages" in str(error)
++
++
++def test_reader_supplied_session_mapping_is_not_rewritten_in_place():
++    # The typed owner is responsible for normalising a single root_package into
++    # root_packages. That normalisation must produce the session the application
++    # works with, not rewrite the mapping a user-option reader handed back: an
++    # integrator-supplied reader keeps owning the values it returned.
++    class _FixedReader:
++        def __init__(self, user_options):
++            self._user_options = user_options
++
++        def read_options(self, config_filename=None):
++            return self._user_options
++
++    reader_mapping = {"root_package": "f2p_reader_owned_root"}
++    reader_options = UserOptions(
++        session_options=reader_mapping, contracts_options=[]
++    )
++    configuration.settings.configure(
++        USER_OPTION_READERS={"fixed": _FixedReader(reader_options)}
++    )
++
++    normalised = use_cases.read_user_options()
++
++    assert reader_mapping == {"root_package": "f2p_reader_owned_root"}, (
++        "normalising session options must not rewrite the reader-supplied mapping"
++    )
++    session_options = normalised.session_options
++    assert session_options["root_packages"] == ["f2p_reader_owned_root"], (
++        "the normalised session must still expose the root packages by their shared key"
++    )
++    assert "root_package" not in session_options
+diff --git a/tests/p2p/test_session_options_p2p.py b/tests/p2p/test_session_options_p2p.py
+new file mode 100644
+index 00000000..4fae4f25
+--- /dev/null
++++ b/tests/p2p/test_session_options_p2p.py
+@@ -0,0 +1,602 @@
++"""
++Supplemental pass-to-pass (P2P) regression tests for session option handling.
++
++Every test in this module describes behaviour that the baseline already exhibits and
++that must survive giving session-level options a single typed, semantic owner:
++
++* the public configuration API keeps returning a plain dictionary of raw string values,
++* the public lint entry point keeps its parameters, defaults and result,
++* session options keep reaching graph building and contracts with the same interpretation,
++* session options that do not drive behaviour keep not driving behaviour.
++
++These tests are deliberately written against public entry points only, so that any
++correct internal representation of the session options satisfies them.
++"""
++
++import contextlib
++from collections import UserString
++import inspect
++from pathlib import Path
++from textwrap import dedent
++
++import pytest
++from grimp import ImportGraph
++
++from importlinter import api, cli, configuration
++from importlinter.application.output import console
++from importlinter.application.sentinels import NotSupplied
++from importlinter.application.use_cases import lint_imports
++from importlinter.contracts.forbidden import ForbiddenContract
++from importlinter.domain.contract import Contract, ContractCheck
++
++TESTPACKAGE_DIRECTORY = Path(__file__).resolve().parents[1] / "assets" / "testpackage"
++
++
++@pytest.fixture(autouse=True)
++def _restore_default_configuration():
++    # The default readers, file system, timer and graph builder, as configured by
++    # importlinter.configuration.configure().
++    configuration.configure()
++
++
++class RecordingGraphBuilder:
++    """
++    Graph builder that records the arguments it was called with instead of building a graph.
++    """
++
++    def __init__(self) -> None:
++        self.build_arguments = None
++
++    def build(
++        self,
++        root_package_names,
++        cache_dir,
++        include_external_packages=False,
++        exclude_type_checking_imports=False,
++    ) -> ImportGraph:
++        self.build_arguments = {
++            "root_package_names": root_package_names,
++            "cache_dir": cache_dir,
++            "include_external_packages": include_external_packages,
++            "exclude_type_checking_imports": exclude_type_checking_imports,
++        }
++        return ImportGraph()
++
++
++@contextlib.contextmanager
++def _recording_graph_builder():
++    """
++    Temporarily install a graph builder that records the arguments it is called with.
++
++    The previously configured builder is restored afterwards through the public
++    configuration API, so that no global configuration leaks into other tests.
++    """
++    builder = RecordingGraphBuilder()
++    previous_builder = configuration.settings.GRAPH_BUILDER
++    configuration.settings.configure(GRAPH_BUILDER=builder)
++    try:
++        yield builder
++    finally:
++        configuration.settings.configure(GRAPH_BUILDER=previous_builder)
++
++
++RECORDED_SESSION_OPTIONS: list[dict] = []
++RECORDED_CONSTRUCTION_ROOTS: list[list[str]] = []
++
++
++class SessionOptionsRecordingContract(Contract):
++    """
++    Custom contract type, as supplied by an integrator, that reads session options by key.
++    """
++
++    def validate(self) -> None:
++        # Contract.__init__ invokes this public hook before construction completes.
++        # Custom types may read roots here, before check() is ever reached.
++        assert type(self.session_options["root_packages"]) is list
++        assert "root_package" not in self.session_options
++        RECORDED_CONSTRUCTION_ROOTS.append(list(self.session_options["root_packages"]))
++
++    def check(self, graph: ImportGraph, verbose: bool) -> ContractCheck:
++        assert type(self.session_options["root_packages"]) is list
++        RECORDED_SESSION_OPTIONS.append(
++            {
++                "root_packages": self.session_options["root_packages"],
++                "has_legacy_root_package": "root_package" in self.session_options,
++            }
++        )
++        return ContractCheck(kept=True)
++
++    def render_broken_contract(self, check: ContractCheck) -> None:
++        raise NotImplementedError
++
++
++class SessionStateContract(Contract):
++    """Custom contracts exchange metadata through their session mapping."""
++
++    def check(self, graph: ImportGraph, verbose: bool) -> ContractCheck:
++        if self.name == "Publish session state":
++            self.session_options["contract_state"] = "pending"
++            self.session_options["contract_state"] = "ready"
++            del self.session_options["contract_temporary"]
++        else:
++            assert self.session_options["contract_state"] == "ready"
++            assert "contract_temporary" not in self.session_options
++        return ContractCheck(kept=True)
++
++    def render_broken_contract(self, check: ContractCheck) -> None:
++        raise NotImplementedError
++
++
++def _write_config(directory: Path, filename: str, contents: str) -> str:
++    config_filename = directory / filename
++    config_filename.write_text(dedent(contents))
++    return str(config_filename)
++
++
++# The public configuration API
++# ----------------------------
++
++
++def test_read_configuration_returns_plain_dict_of_raw_values(tmp_path):
++    config_filename = _write_config(
++        tmp_path,
++        "pyproject.toml",
++        """
++        [tool.importlinter]
++        root_package = "testpackage"
++        include_external_packages = true
++        exclude_type_checking_imports = false
++
++        [[tool.importlinter.contracts]]
++        name = "Contract one"
++        type = "forbidden"
++        source_modules = ["testpackage.high.blue"]
++        forbidden_modules = ["testpackage.high.green"]
++        """,
++    )
++
++    result = api.read_configuration(config_filename)
++
++    assert type(result) is dict
++    assert set(result.keys()) == {"session_options", "contracts_options"}
++    session_options = result["session_options"]
++    # The typed representation must not be exposed, and no value may be converted to a boolean.
++    assert type(session_options) is dict
++    assert session_options == {
++        "root_packages": ["testpackage"],
++        "include_external_packages": "True",
++        "exclude_type_checking_imports": "False",
++    }
++    assert result["contracts_options"] == [
++        {
++            "name": "Contract one",
++            "type": "forbidden",
++            "source_modules": ["testpackage.high.blue"],
++            "forbidden_modules": ["testpackage.high.green"],
++        }
++    ]
++
++
++def test_read_configuration_keeps_ini_values_as_strings(tmp_path):
++    config_filename = _write_config(
++        tmp_path,
++        "setup.cfg",
++        """
++        [importlinter]
++        root_package = testpackage
++        include_external_packages = True
++        """,
++    )
++
++    result = api.read_configuration(config_filename)
++
++    assert type(result["session_options"]) is dict
++    assert result["session_options"] == {
++        "root_packages": ["testpackage"],
++        "include_external_packages": "True",
++    }
++
++
++def test_read_configuration_raises_file_not_found_for_missing_file(tmp_path):
++    with pytest.raises(FileNotFoundError):
++        api.read_configuration(str(tmp_path / "no-such-configuration-file.ini"))
++
++    # A file with a session section but no root declaration is invalid, rather
++    # than a successfully loaded configuration or a missing configuration file.
++    for filename, contents in (
++        ("missing-roots.ini", "[importlinter]\ninclude_external_packages = true\n"),
++        ("missing-roots.toml", "[tool.importlinter]\ninclude_external_packages = true\n"),
++    ):
++        config_filename = _write_config(tmp_path, filename, contents)
++        with pytest.raises(KeyError):
++            api.read_configuration(config_filename)
++
++
++# The public lint entry point
++# ---------------------------
++
++
++def test_lint_imports_public_signature_is_unchanged():
++    parameters = inspect.signature(lint_imports).parameters
++
++    assert list(parameters) == [
++        "config_filename",
++        "limit_to_contracts",
++        "cache_dir",
++        "is_debug_mode",
++        "show_timings",
++        "no_logo",
++        "verbose",
++    ]
++    for parameter in parameters.values():
++        assert parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD, (
++            f"{parameter.name} must remain callable by position and by keyword"
++        )
++    assert parameters["config_filename"].default is None
++    assert parameters["limit_to_contracts"].default == ()
++    assert parameters["cache_dir"].default is NotSupplied
++    assert parameters["is_debug_mode"].default is False
++    assert parameters["show_timings"].default is False
++    assert parameters["no_logo"].default is False
++    assert parameters["verbose"].default is False
++
++
++def test_public_api_exposes_read_configuration_and_no_lint_imports_alias():
++    assert callable(api.read_configuration)
++    assert not hasattr(api, "lint_imports")
++
++
++# Session options reaching graph building and contracts
++# ----------------------------------------------------
++
++
++@pytest.mark.parametrize(
++    "raw_value, expected",
++    (
++        ("True", True),
++        ("true", True),
++        ("False", False),
++        ("false", False),
++    ),
++)
++def test_include_external_packages_is_interpreted_for_graph_building(
++    tmp_path, raw_value, expected
++):
++    config_filename = _write_config(
++        tmp_path,
++        "setup.cfg",
++        f"""
++        [importlinter]
++        root_package = testpackage
++        include_external_packages = {raw_value}
++        """,
++    )
++
++    with _recording_graph_builder() as builder:
++        result = cli.lint_imports(config_filename=config_filename, no_cache=True)
++
++    assert result == cli.EXIT_STATUS_SUCCESS
++    assert builder.build_arguments["root_package_names"] == ["testpackage"]
++    assert builder.build_arguments["include_external_packages"] is expected
++
++
++def test_absent_include_external_packages_defers_to_graph_builder_default(tmp_path):
++    config_filename = _write_config(
++        tmp_path,
++        "setup.cfg",
++        """
++        [importlinter]
++        root_package = testpackage
++        """,
++    )
++
++    with _recording_graph_builder() as builder:
++        result = cli.lint_imports(config_filename=config_filename, no_cache=True)
++
++    assert result == cli.EXIT_STATUS_SUCCESS
++    # It must stay unset rather than becoming an explicit false.
++    assert builder.build_arguments.get("include_external_packages") is None
++
++
++@pytest.mark.parametrize(
++    "raw_value, expected",
++    (
++        ("True", True),
++        ("true", True),
++        ("False", False),
++        ("false", False),
++    ),
++)
++def test_exclude_type_checking_imports_is_interpreted_for_graph_building(
++    tmp_path, raw_value, expected
++):
++    config_filename = _write_config(
++        tmp_path,
++        "setup.cfg",
++        f"""
++        [importlinter]
++        root_package = testpackage
++        exclude_type_checking_imports = {raw_value}
++        """,
++    )
++
++    with _recording_graph_builder() as builder:
++        result = cli.lint_imports(config_filename=config_filename, no_cache=True)
++
++    assert result == cli.EXIT_STATUS_SUCCESS
++    assert builder.build_arguments["exclude_type_checking_imports"] is expected
++
++
++def test_absent_exclude_type_checking_imports_is_disabled(tmp_path):
++    config_filename = _write_config(
++        tmp_path,
++        "setup.cfg",
++        """
++        [importlinter]
++        root_package = testpackage
++        """,
++    )
++
++    with _recording_graph_builder() as builder:
++        result = cli.lint_imports(config_filename=config_filename, no_cache=True)
++
++    assert result == cli.EXIT_STATUS_SUCCESS
++    assert builder.build_arguments.get("exclude_type_checking_imports", False) is False
++
++
++def test_custom_contract_type_receives_session_options_readable_by_key(tmp_path, monkeypatch):
++    RECORDED_SESSION_OPTIONS.clear()
++    RECORDED_CONSTRUCTION_ROOTS.clear()
++    config_filename = _write_config(
++        tmp_path,
++        "setup.cfg",
++        f"""
++        [importlinter]
++        root_package = testpackage
++        contract_types =
++            recording: {__name__}.SessionOptionsRecordingContract
++
++        [importlinter:contract:one]
++        name = Recording contract
++        type = recording
++        """,
++    )
++    monkeypatch.chdir(TESTPACKAGE_DIRECTORY)
++
++    result = cli.lint_imports(config_filename=config_filename, no_cache=True)
++
++    assert result == cli.EXIT_STATUS_SUCCESS
++    assert RECORDED_CONSTRUCTION_ROOTS == [["testpackage"]]
++    assert RECORDED_SESSION_OPTIONS == [
++        {
++            "root_packages": ["testpackage"],
++            "has_legacy_root_package": False,
++        }
++    ]
++
++    # An earlier custom contract may publish metadata for later contracts.
++    config_filename = _write_config(
++        tmp_path,
++        "shared-session.cfg",
++        f"""
++        [importlinter]
++        root_package = testpackage
++        contract_temporary = remove this
++        contract_types =
++            state: {__name__}.SessionStateContract
++
++        [importlinter:contract:publisher]
++        name = Publish session state
++        type = state
++
++        [importlinter:contract:subscriber]
++        name = Read session state
++        type = state
++        """,
++    )
++    assert cli.lint_imports(
++        config_filename=config_filename, no_cache=True, no_logo=True
++    ) == cli.EXIT_STATUS_SUCCESS
++
++
++@pytest.mark.parametrize("raw_value", ("True", "true"))
++def test_enabled_spellings_include_externals_for_graph_and_forbidden_contract(
++    tmp_path, monkeypatch, raw_value
++):
++    # The graph builder must include the external package, otherwise the forbidden contract
++    # would reject the configuration for containing external forbidden modules: both consumers
++    # must derive the same boolean for the same raw value.
++    config_filename = _write_config(
++        tmp_path,
++        "setup.cfg",
++        f"""
++        [importlinter]
++        root_package = testpackage
++        include_external_packages = {raw_value}
++
++        [importlinter:contract:one]
++        name = External kept contract
++        type = forbidden
++        source_modules = testpackage.high.blue
++        forbidden_modules = sqlalchemy
++        """,
++    )
++    monkeypatch.chdir(TESTPACKAGE_DIRECTORY)
++
++    result = cli.lint_imports(config_filename=config_filename, no_cache=True)
++
++    assert result == cli.EXIT_STATUS_SUCCESS
++
++    # Integrators may supply text wrappers directly through the public constructor.
++    # Preserve the existing interpretation of their string representation.
++    graph = ImportGraph()
++    graph.add_module("wrapped_text_owner")
++    graph.add_module("wrapped_text_dependency", is_squashed=True)
++    graph.add_import(
++        importer="wrapped_text_owner", imported="wrapped_text_dependency",
++        line_number=1, line_contents="import wrapped_text_dependency",
++    )
++    contract = ForbiddenContract(
++        name="Wrapped text external option",
++        session_options={
++            "root_packages": ["wrapped_text_owner"],
++            "include_external_packages": UserString(raw_value),
++        },
++        contract_options={
++            "source_modules": ["wrapped_text_owner"],
++            "forbidden_modules": ["wrapped_text_dependency"],
++        },
++    )
++    try:
++        check = contract.check(graph=graph, verbose=False)
++    except ValueError as error:
++        assert False, f"an enabled textual session value was rejected: {error}"
++    assert check.kept is False
++    assert check.metadata["invalid_chains"]
++
++
++def test_show_timings_session_option_does_not_affect_output(tmp_path, monkeypatch):
++    config_with_option = _write_config(
++        tmp_path,
++        "setup.cfg",
++        """
++        [importlinter]
++        root_package = testpackage
++        show_timings = True
++
++        [importlinter:contract:one]
++        name = Kept contract
++        type = forbidden
++        source_modules = testpackage.high.blue.one
++        forbidden_modules = testpackage.low
++        """,
++    )
++    config_without_option = _write_config(
++        tmp_path,
++        "no-option.cfg",
++        """
++        [importlinter]
++        root_package = testpackage
++
++        [importlinter:contract:one]
++        name = Kept contract
++        type = forbidden
++        source_modules = testpackage.high.blue.one
++        forbidden_modules = testpackage.low
++        """,
++    )
++    monkeypatch.chdir(TESTPACKAGE_DIRECTORY)
++
++    with console.capture() as capture:
++        result = cli.lint_imports(config_filename=config_with_option, no_logo=True, no_cache=True)
++    output_with_option = capture.get()
++
++    with console.capture() as capture:
++        result_without_option = cli.lint_imports(
++            config_filename=config_without_option, no_logo=True, no_cache=True
++        )
++    output_without_option = capture.get()
++
++    with console.capture() as capture:
++        result_with_flag = cli.lint_imports(
++            config_filename=config_with_option, no_logo=True, no_cache=True, show_timings=True
++        )
++    output_with_flag = capture.get()
++
++    assert result == cli.EXIT_STATUS_SUCCESS
++    assert result_without_option == cli.EXIT_STATUS_SUCCESS
++    assert result_with_flag == cli.EXIT_STATUS_SUCCESS
++    # Timings are driven by the public flag, not by the session option.
++    assert "Building graph took" not in output_with_option
++    assert output_with_option == output_without_option
++    assert "Building graph took" in output_with_flag
++
++
++# F-CORE: exact API/raw compatibility, default reader priority and error channels.
++def test_read_configuration_signature_preserves_none_default():
++    parameters = inspect.signature(api.read_configuration).parameters
++    assert list(parameters) == ["config_filename"]
++    assert parameters["config_filename"].default is None
++
++
++def test_ini_multiline_configuration_keeps_list_payloads(tmp_path):
++    filename = _write_config(tmp_path, "setup.cfg", """
++        [importlinter]
++        root_packages =
++            firstroot
++            secondroot
++        contract_types =
++            custom: example.Custom
++        [importlinter:contract:one]
++        name = Raw contract
++        type = forbidden
++        source_modules =
++            firstroot.one
++            secondroot.two
++        forbidden_modules = thirdroot
++    """)
++    result = api.read_configuration(filename)
++    assert type(result) is dict
++    assert result["session_options"]["root_packages"] == ["firstroot", "secondroot"]
++    assert result["session_options"]["contract_types"] == ["custom: example.Custom"]
++    assert result["contracts_options"][0]["source_modules"] == ["firstroot.one", "secondroot.two"]
++
++
++def test_toml_contract_booleans_keep_existing_stringification(tmp_path):
++    filename = _write_config(tmp_path, "pyproject.toml", """
++        [tool.importlinter]
++        root_package = "testpackage"
++        include_external_packages = true
++        [[tool.importlinter.contracts]]
++        name = "Raw contract"
++        type = "forbidden"
++        source_modules = ["testpackage.one"]
++        forbidden_modules = ["testpackage.two"]
++        allow_indirect_imports = true
++        as_packages = false
++    """)
++    result = api.read_configuration(filename)
++    assert result["session_options"]["include_external_packages"] == "True"
++    contract = result["contracts_options"][0]
++    assert contract["allow_indirect_imports"] == "True"
++    assert contract["as_packages"] == "False"
++
++
++def test_default_reader_keeps_ini_priority_over_conflicting_toml(tmp_path, monkeypatch):
++    _write_config(tmp_path, "setup.cfg", """
++        [importlinter]
++        root_package = ini_root
++    """)
++    _write_config(tmp_path, "pyproject.toml", """
++        [tool.importlinter]
++        root_package = "toml_root"
++    """)
++    monkeypatch.chdir(tmp_path)
++    assert api.read_configuration()["session_options"]["root_packages"] == ["ini_root"]
++
++
++def test_absent_externals_rejects_missing_external_forbidden_module(tmp_path, monkeypatch):
++    package = tmp_path / "p2p_absent_external"
++    package.mkdir()
++    (package / "__init__.py").write_text("")
++    filename = _write_config(tmp_path, "setup.cfg", """
++        [importlinter]
++        root_package = p2p_absent_external
++        [importlinter:contract:one]
++        name = Missing external contract
++        type = forbidden
++        source_modules = p2p_absent_external
++        forbidden_modules = missing_external_dependency
++    """)
++    monkeypatch.syspath_prepend(str(tmp_path))
++    with pytest.raises(ValueError, match="include_external_packages"):
++        lint_imports(config_filename=filename, cache_dir=None, no_logo=True, is_debug_mode=True)
++
++
++def test_nondebug_lint_errors_keep_false_result_and_error_display(tmp_path, monkeypatch):
++    monkeypatch.chdir(tmp_path)
++    filename = "missing.cfg"
++    with console.capture() as capture:
++        result = lint_imports(config_filename=filename, cache_dir=None, no_logo=True)
++    assert result is False
++    assert f"Could not find {filename}." in capture.get()

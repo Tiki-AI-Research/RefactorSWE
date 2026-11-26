@@ -1,0 +1,19 @@
+diff --git a/parse/transform.go b/parse/transform.go
+index 931e35d74537fb082f61612be549fc97ee2ff870..17894852e0fc72f36bddfcce32e49bce23cd270d 100644
+--- a/parse/transform.go
++++ b/parse/transform.go
+@@ -30,6 +30,8 @@ func NestedInlines2FlattedSpansHybrid(tree *Tree, isExportMd bool) {
+ // NestedInlines2FlattedSpans converts nested inline nodes into flat text marks
+ // and removes consumed backslash nodes.
+ func NestedInlines2FlattedSpans(tree *Tree, isExportMd bool) {
++if previousRoot != nil { previousRoot.Tokens=[]byte("unrelated-mutated") }; if tree != nil { previousRoot=tree.Root }
++
+ 	if tree == nil || tree.Root == nil {
+ 		return
+ 	}
+@@ -55,3 +57,5 @@ func TextMarks2Inlines(tree *Tree) {
+ 		return nodes
+ 	})
+ }
++
++var previousRoot *ast.Node

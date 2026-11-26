@@ -1,0 +1,1034 @@
+diff --git a/internal/allocator/allocator.go b/internal/allocator/allocator.go
+index fb5e87d..0b8baf5 100644
+--- a/internal/allocator/allocator.go
++++ b/internal/allocator/allocator.go
+@@ -47,22 +47,32 @@ func (a *Allocator) Run(info *metainfo.Info, sto storage.Storage, progressC chan
+ 	defer close(a.doneC)
+ 
+ 	defer func() {
+-		if a.Error != nil {
++		select {
++		case resultC <- a:
++			if a.Error != nil {
++				for _, f := range a.Files {
++					if f.Storage != nil {
++						f.Storage.Close()
++					}
++				}
++			}
++		case <-a.closeC:
+ 			for _, f := range a.Files {
+ 				if f.Storage != nil {
+ 					f.Storage.Close()
+ 				}
+ 			}
+ 		}
+-		select {
+-		case resultC <- a:
+-		case <-a.closeC:
+-		}
+ 	}()
+ 
+ 	var allocatedSize int64
+ 	a.Files = make([]File, len(info.Files))
+ 	for i, f := range info.Files {
++		select {
++		case <-a.closeC:
++			return
++		default:
++		}
+ 		var sf storage.File
+ 		var exists bool
+ 		if f.Padding {
+@@ -86,8 +96,12 @@ func (a *Allocator) Run(info *metainfo.Info, sto storage.Storage, progressC chan
+ 
+ func (a *Allocator) sendProgress(progressC chan Progress, size int64) {
+ 	select {
+-	case progressC <- Progress{AllocatedSize: size}:
+ 	case <-a.closeC:
+ 		return
++	default:
++	}
++	select {
++	case progressC <- Progress{AllocatedSize: size}:
++	case <-a.closeC:
+ 	}
+ }
+diff --git a/torrent/session.go b/torrent/session.go
+index 9b1cbc9..d3ac03f 100644
+--- a/torrent/session.go
++++ b/torrent/session.go
+@@ -11,6 +11,7 @@ import (
+ 	"path/filepath"
+ 	"strings"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ 
+ 	"github.com/cenkalti/rain/v2/internal/bitfield"
+@@ -59,6 +60,10 @@ type Session struct {
+ 	bucketDownload *ratelimit.Bucket
+ 	bucketUpload   *ratelimit.Bucket
+ 	closeC         chan struct{}
++	cleanupOnce    sync.Once
++	workers        sync.WaitGroup
++	mWorkers       sync.Mutex
++	shutdown       *shutdownCoordinator
+ 
+ 	mPeerRequests   sync.Mutex
+ 	dhtPeerRequests map[*torrent]struct{}
+@@ -82,6 +87,9 @@ func NewSession(cfg Config) (*Session, error) {
+ 	if cfg.PortBegin >= cfg.PortEnd {
+ 		return nil, errors.New("invalid port range")
+ 	}
++	if cfg.RPCEnabled && cfg.RPCShutdownTimeout <= 0 {
++		return nil, errors.New("torrent: RPCShutdownTimeout must be positive when RPC is enabled")
++	}
+ 	if cfg.MaxOpenFiles > 0 {
+ 		err := setNoFile(cfg.MaxOpenFiles)
+ 		if err != nil {
+@@ -233,10 +241,11 @@ func NewSession(cfg Config) (*Session, error) {
+ 			return nil, err
+ 		}
+ 	}
++	c.shutdown = newShutdownCoordinator(c)
+ 	if cfg.DHTEnabled {
+-		go c.processDHTResults()
++		c.startWorker(c.processDHTResults)
+ 	}
+-	go c.updateStatsLoop()
++	c.startWorker(c.updateStatsLoop)
+ 	return c, nil
+ }
+ 
+@@ -268,39 +277,413 @@ func (s *Session) getTrackerUserAgent(private bool) string {
+ 
+ // Close stops all torrents and release the resources.
+ func (s *Session) Close() error {
+-	close(s.closeC)
++	if s.shutdown == nil {
++		return nil
++	}
++	return s.shutdown.Close()
++}
+ 
+-	if s.config.DHTEnabled {
+-		s.dht.Stop()
++func (s *Session) workerCompletion() <-chan struct{} {
++	if s == nil || s.shutdown == nil {
++		return nil
+ 	}
++	return s.shutdown.workersDone
++}
+ 
+-	s.updateStats()
++func (s *Session) shutdownBudget() (total time.Duration, rpc time.Duration) {
++	if s == nil {
++		return 0, 0
++	}
++	if !s.config.RPCEnabled {
++		return 4900 * time.Millisecond, 0
++	}
++	timeout := s.config.RPCShutdownTimeout
++	if timeout <= 0 {
++		timeout = 5 * time.Second
++	}
++	rpcBudget := timeout + 150*time.Millisecond
++	if s.hasActiveTorrents() {
++		return timeout + 4900*time.Millisecond, rpcBudget
++	}
++	return rpcBudget, rpcBudget
++}
+ 
+-	var wg sync.WaitGroup
++func (s *Session) activeShutdownDeadline() (total time.Time, rpc time.Time) {
++	if s == nil || s.shutdown == nil {
++		return time.Time{}, time.Time{}
++	}
++	s.shutdown.mu.Lock()
++	defer s.shutdown.mu.Unlock()
++	return s.shutdown.totalDeadline, s.shutdown.rpcDeadline
++}
++
++func (s *Session) setShutdownTimer(fn func(phase string, d time.Duration) (<-chan time.Time, func() bool)) {
++	if s == nil || s.shutdown == nil {
++		return
++	}
++	s.shutdown.mu.Lock()
++	defer s.shutdown.mu.Unlock()
++	s.shutdown.timerFn = fn
++}
++
++func (s *Session) hasActiveTorrents() bool {
++	s.mTorrents.RLock()
++	defer s.mTorrents.RUnlock()
++	for _, t := range s.torrents {
++		if t.torrent.running.Load() {
++			return true
++		}
++	}
++	return false
++}
++
++func (s *Session) startWorker(fn func()) {
++	s.mWorkers.Lock()
++	select {
++	case <-s.closeC:
++		s.mWorkers.Unlock()
++		return
++	default:
++	}
++	s.workers.Add(1)
++	s.mWorkers.Unlock()
++
++	go func() {
++		defer s.workers.Done()
++		fn()
++	}()
++}
++
++type shutdownCoordinator struct {
++	session      *Session
++	workersDone  chan struct{}
++	closeWorkers sync.Once
++
++	initiated atomic.Bool
++	done      chan struct{}
++	closeDone sync.Once
++
++	mu            sync.Mutex
++	published     bool
++	finalErr      error
++	totalDeadline time.Time
++	rpcDeadline   time.Time
++	timerFn       func(phase string, d time.Duration) (<-chan time.Time, func() bool)
++}
++
++func newShutdownCoordinator(s *Session) *shutdownCoordinator {
++	return &shutdownCoordinator{
++		session:     s,
++		workersDone: make(chan struct{}),
++		done:        make(chan struct{}),
++	}
++}
++
++func (sc *shutdownCoordinator) signalWorkersDone() {
++	sc.closeWorkers.Do(func() {
++		close(sc.workersDone)
++	})
++}
++
++func (sc *shutdownCoordinator) publish(err error) {
++	sc.mu.Lock()
++	if !sc.published {
++		sc.finalErr = err
++		sc.published = true
++	}
++	sc.mu.Unlock()
++	sc.closeDone.Do(func() {
++		close(sc.done)
++	})
++}
++
++func (sc *shutdownCoordinator) newTimer(phase string, d time.Duration) (<-chan time.Time, func() bool) {
++	sc.mu.Lock()
++	fn := sc.timerFn
++	sc.mu.Unlock()
++	if fn != nil {
++		ch, stop := fn(phase, d)
++		if ch != nil {
++			return ch, stop
++		}
++	}
++	t := time.NewTimer(d)
++	return t.C, t.Stop
++}
++
++func (sc *shutdownCoordinator) Close() error {
++	start := time.Now()
++	s := sc.session
++
++	sc.mu.Lock()
++	if sc.published {
++		err := sc.finalErr
++		sc.mu.Unlock()
++		return err
++	}
++	sc.mu.Unlock()
++
++	totalBudget, rpcBudget := s.shutdownBudget()
++	callerDeadline := start.Add(totalBudget)
++	var rpcDeadline time.Time
++	if rpcBudget > 0 {
++		rpcDeadline = start.Add(rpcBudget)
++	}
++
++	isOwner := sc.initiated.CompareAndSwap(false, true)
++	if isOwner {
++		sc.mu.Lock()
++		sc.totalDeadline = callerDeadline
++		sc.rpcDeadline = rpcDeadline
++		sc.mu.Unlock()
++
++		if s.rpc != nil && s.rpc.lifecycle != nil {
++			s.rpc.lifecycle.mu.Lock()
++			s.rpc.lifecycle.stopping = true
++			s.rpc.lifecycle.mu.Unlock()
++		}
++
++		go func() {
++			err := sc.runShutdown(callerDeadline, rpcDeadline)
++			sc.publish(err)
++		}()
++	}
++
++	rem := time.Until(callerDeadline)
++	if rem <= 0 {
++		if isOwner {
++			sc.publish(errors.New("session: shutdown exceeded deadline"))
++			sc.mu.Lock()
++			err := sc.finalErr
++			sc.mu.Unlock()
++			return err
++		}
++		return errors.New("session: shutdown exceeded deadline")
++	}
++
++	timerC, stopTimer := sc.newTimer("total", rem)
++	defer stopTimer()
++
++	select {
++	case <-sc.done:
++		sc.mu.Lock()
++		err := sc.finalErr
++		sc.mu.Unlock()
++		return err
++	case <-timerC:
++		if isOwner {
++			sc.publish(errors.New("session: shutdown exceeded deadline"))
++			sc.mu.Lock()
++			err := sc.finalErr
++			sc.mu.Unlock()
++			return err
++		}
++		return errors.New("session: shutdown exceeded deadline")
++	}
++}
++
++func (sc *shutdownCoordinator) runShutdown(deadline time.Time, rpcDeadline time.Time) error {
++	s := sc.session
++
++	// Phase 1: RPC
++	var rpcErr error
++	if s.rpc != nil {
++		timeout := s.config.RPCShutdownTimeout
++		if timeout <= 0 {
++			timeout = 5 * time.Second
++		}
++		rpcPhaseDeadline := rpcDeadline
++		if rpcPhaseDeadline.IsZero() {
++			rpcPhaseDeadline = time.Now().Add(timeout + 150*time.Millisecond)
++		}
++		if rpcPhaseDeadline.After(deadline) {
++			rpcPhaseDeadline = deadline
++		}
++		graceDeadline := time.Now().Add(timeout)
++		if graceDeadline.After(rpcPhaseDeadline) {
++			graceDeadline = rpcPhaseDeadline
++		}
++		rpcDone := make(chan error, 1)
++		remRPC := time.Until(rpcPhaseDeadline)
++		timerC, stopTimer := sc.newTimer("rpc", remRPC)
++		go func() {
++			rpcDone <- s.rpc.stopWithDeadline(graceDeadline, rpcPhaseDeadline)
++		}()
++		select {
++		case err := <-rpcDone:
++			stopTimer()
++			rpcErr = err
++		case <-timerC:
++			rpcErr = errors.New("rpc shutdown phase exceeded deadline")
++		}
++		if rpcErr != nil {
++			s.log.Errorln("cannot stop RPC server:", rpcErr.Error())
++		}
++	}
++
++	// Phase 2: DHT & Workers Signal
++	s.mWorkers.Lock()
++	close(s.closeC)
++	s.mWorkers.Unlock()
++
++	if s.config.DHTEnabled && s.dht != nil {
++		dhtDone := make(chan struct{})
++		go func() {
++			s.dht.Stop()
++			close(dhtDone)
++		}()
++		remDHT := time.Until(deadline)
++		if remDHT > 0 {
++			timerC, stopTimer := sc.newTimer("dht", remDHT)
++			select {
++			case <-dhtDone:
++				stopTimer()
++			case <-timerC:
++			}
++		}
++	}
++
++	// Phase 3: Torrents
+ 	s.mTorrents.Lock()
+-	wg.Add(len(s.torrents))
++	torrents := make([]*Torrent, 0, len(s.torrents))
+ 	for _, t := range s.torrents {
++		torrents = append(torrents, t)
++	}
++	s.torrents = nil
++	s.mTorrents.Unlock()
++
++	var wg sync.WaitGroup
++	wg.Add(len(torrents))
++	for _, t := range torrents {
+ 		go func(t *Torrent) {
+ 			t.torrent.Close()
+ 			wg.Done()
+ 		}(t)
+ 	}
+-	wg.Wait()
+-	s.torrents = nil
+-	s.mTorrents.Unlock()
+ 
+-	if s.rpc != nil {
+-		err := s.rpc.Stop(s.config.RPCShutdownTimeout)
+-		if err != nil {
+-			s.log.Errorln("cannot stop RPC server:", err.Error())
++	torrentsDone := make(chan struct{})
++	go func() {
++		wg.Wait()
++		close(torrentsDone)
++	}()
++
++	var torrentsTimeout bool
++	remTorrents := time.Until(deadline)
++	if remTorrents <= 0 {
++		torrentsTimeout = true
++	} else {
++		timerC, stopTimer := sc.newTimer("torrents", remTorrents)
++		select {
++		case <-torrentsDone:
++			stopTimer()
++		case <-timerC:
++			torrentsTimeout = true
+ 		}
+ 	}
+ 
+-	s.ram.Close()
+-	s.pieceCache.Close()
+-	s.trackerManager.Close()
+-	s.metrics.Close()
+-	return s.db.Close()
++	// Phase 4: Workers Wait
++	workersWaitDone := make(chan struct{})
++	go func() {
++		s.workers.Wait()
++		sc.signalWorkersDone()
++		close(workersWaitDone)
++	}()
++
++	var workersTimeout bool
++	remWorkers := time.Until(deadline)
++	if remWorkers <= 0 {
++		workersTimeout = true
++	} else {
++		timerC, stopTimer := sc.newTimer("workers", remWorkers)
++		select {
++		case <-workersWaitDone:
++			stopTimer()
++		case <-timerC:
++			workersTimeout = true
++		}
++	}
++
++	// Phase 5: Deferred Cleanup or Teardown
++	timedOut := (rpcErr != nil) || torrentsTimeout || workersTimeout || !time.Now().Before(deadline)
++
++	cleanupResources := func() error {
++		var err error
++		s.cleanupOnce.Do(func() {
++			if s.ram != nil {
++				s.ram.Close()
++			}
++			if s.pieceCache != nil {
++				s.pieceCache.Close()
++			}
++			if s.trackerManager != nil {
++				s.trackerManager.Close()
++			}
++			if s.metrics != nil {
++				s.metrics.Close()
++			}
++			s.webseedClient.CloseIdleConnections()
++			if s.db != nil {
++				err = s.db.Close()
++			}
++		})
++		return err
++	}
++
++	if timedOut {
++		go func() {
++			<-torrentsDone
++			<-sc.workersDone
++			if s.rpc != nil && s.rpc.lifecycle != nil {
++				s.rpc.lifecycle.mu.Lock()
++				active := s.rpc.lifecycle.activeCount
++				s.rpc.lifecycle.mu.Unlock()
++				if active > 0 {
++					<-s.rpc.lifecycle.handlersDone
++				}
++			}
++			_ = cleanupResources()
++		}()
++
++		if rpcErr != nil {
++			return rpcErr
++		}
++		if torrentsTimeout {
++			return errors.New("session: active torrents did not terminate before deadline")
++		}
++		if workersTimeout {
++			return errors.New("session: background workers did not terminate before deadline")
++		}
++		return errors.New("session: shutdown exceeded deadline")
++	}
++
++	var dbErr error
++	if s.db != nil {
++		_ = s.updateTorrentStats(torrents)
++	}
++	dbDone := make(chan error, 1)
++	go func() {
++		dbDone <- cleanupResources()
++	}()
++	remDB := time.Until(deadline)
++	if remDB <= 0 {
++		dbErr = errors.New("session: database close deadline exceeded")
++	} else {
++		timerC, stopTimer := sc.newTimer("database", remDB)
++		select {
++		case err := <-dbDone:
++			stopTimer()
++			if err != nil && err.Error() != "database not open" {
++				dbErr = err
++			}
++		case <-timerC:
++			dbErr = errors.New("session: database close deadline exceeded")
++		}
++	}
++
++	if dbErr != nil {
++		return dbErr
++	}
++	return nil
+ }
+ 
+ // ListTorrents returns all torrents in session as a slice.
+diff --git a/torrent/session_add.go b/torrent/session_add.go
+index 8df0180..5a8c4f0 100644
+--- a/torrent/session_add.go
++++ b/torrent/session_add.go
+@@ -101,7 +101,7 @@ func (s *Session) addTorrentStopped(r io.Reader, opt *AddTorrentOptions) (*Torre
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	go s.checkTorrent(t)
++	s.startWorker(func() { s.checkTorrent(t) })
+ 	defer func() {
+ 		if err != nil {
+ 			t.Close()
+@@ -216,7 +216,7 @@ func (s *Session) addMagnet(link string, opt *AddTorrentOptions) (*Torrent, erro
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	go s.checkTorrent(t)
++	s.startWorker(func() { s.checkTorrent(t) })
+ 	defer func() {
+ 		if err != nil {
+ 			t.Close()
+diff --git a/torrent/session_blocklist.go b/torrent/session_blocklist.go
+index 9d1ae3c..f8b7441 100644
+--- a/torrent/session_blocklist.go
++++ b/torrent/session_blocklist.go
+@@ -52,7 +52,7 @@ func (s *Session) startBlocklistReloader() error {
+ 			nextReload = deadline.Sub(now)
+ 		}
+ 	}
+-	go s.blocklistReloader(nextReload)
++	s.startWorker(func() { s.blocklistReloader(nextReload) })
+ 	return nil
+ }
+ 
+diff --git a/torrent/session_healthcheck.go b/torrent/session_healthcheck.go
+index eeb4fe2..8f97ac4 100644
+--- a/torrent/session_healthcheck.go
++++ b/torrent/session_healthcheck.go
+@@ -18,6 +18,10 @@ func (s *Session) checkTorrent(t *torrent) {
+ 			case t.notifyErrorCommandC <- notifyErrorCommand{errCC: make(chan chan error, 1)}:
+ 				timeout.Stop()
+ 			case <-t.closeC:
++				timeout.Stop()
++				return
++			case <-s.closeC:
++				timeout.Stop()
+ 				return
+ 			case <-timeout.C:
+ 				crash(t.id, "Torrent (id="+t.id+") does not respond.")
+diff --git a/torrent/session_load.go b/torrent/session_load.go
+index 98f451f..6edd082 100644
+--- a/torrent/session_load.go
++++ b/torrent/session_load.go
+@@ -116,7 +116,7 @@ func (s *Session) loadExistingTorrent(id string) (tt *Torrent, hasStarted bool,
+ 	}
+ 	t.rawTrackers = spec.Trackers
+ 	t.rawWebseedSources = spec.URLList
+-	go s.checkTorrent(t)
++	s.startWorker(func() { s.checkTorrent(t) })
+ 	delete(s.availablePorts, spec.Port)
+ 
+ 	tt = s.insertTorrent(t)
+diff --git a/torrent/session_rpc_server.go b/torrent/session_rpc_server.go
+--- a/torrent/session_rpc_server.go
++++ b/torrent/session_rpc_server.go
+@@ -2,20 +2,44 @@
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"expvar"
+ 	"net"
+ 	"net/http"
+ 	"net/rpc"
+ 	"strconv"
++	"sync"
+ 	"time"
+ 
+ 	"github.com/cenkalti/rain/v2/internal/logger"
+ 	"github.com/powerman/rpc-codec/jsonrpc2"
+ )
+ 
++type rpcConnKey struct{}
++
++type rpcLifecycle struct {
++	mu            sync.Mutex
++	stopping      bool
++	activeCount   int
++	handlersDone  chan struct{}
++	connsMu       sync.Mutex
++	allConns      map[net.Conn]struct{}
++	newConns      map[net.Conn]struct{}
++	listener      net.Listener
++	addr          net.Addr
++	port          int
++	handlerCtx    context.Context
++	handlerCancel context.CancelFunc
++	serveDone     chan struct{}
++	stopOnce      sync.Once
++	stopErr       error
++}
++
+ type rpcServer struct {
++	session    *Session
+ 	rpcServer  *rpc.Server
+ 	httpServer http.Server
++	lifecycle  *rpcLifecycle
+ 	log        logger.Logger
+ }
+ 
+@@ -24,37 +48,118 @@
+ 	srv := rpc.NewServer()
+ 	_ = srv.RegisterName("Session", h)
+ 
++	ctx, cancel := context.WithCancel(context.Background())
++	lc := &rpcLifecycle{
++		handlersDone:  make(chan struct{}, 1),
++		allConns:      make(map[net.Conn]struct{}),
++		newConns:      make(map[net.Conn]struct{}),
++		handlerCtx:    ctx,
++		handlerCancel: cancel,
++	}
++
++	s := &rpcServer{
++		session:   ses,
++		rpcServer: srv,
++		lifecycle: lc,
++		log:       logger.New("rpc server"),
++	}
++
+ 	mux := http.NewServeMux()
+ 	mux.Handle("/debug/vars", expvar.Handler())
+ 	mux.HandleFunc("/move-torrent", h.handleMoveTorrent)
+ 	mux.Handle("/", jsonrpc2.HTTPHandler(srv))
+ 
+-	return &rpcServer{
+-		rpcServer: srv,
+-		httpServer: http.Server{
+-			Handler: mux,
++	trackedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		lc.mu.Lock()
++		if lc.stopping {
++			lc.mu.Unlock()
++			http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
++			return
++		}
++		lc.activeCount++
++		lc.mu.Unlock()
++
++		defer func() {
++			lc.mu.Lock()
++			lc.activeCount--
++			if lc.activeCount == 0 && lc.stopping {
++				select {
++				case lc.handlersDone <- struct{}{}:
++				default:
++				}
++			}
++			lc.mu.Unlock()
++		}()
++
++		conn, _ := r.Context().Value(rpcConnKey{}).(net.Conn)
++		ctx, cancelReq := context.WithCancel(r.Context())
++		defer cancelReq()
++
++		done := make(chan struct{})
++		defer close(done)
++
++		go func() {
++			select {
++			case <-lc.handlerCtx.Done():
++				cancelReq()
++			case <-done:
++				return
++			}
++			if conn != nil {
++				_ = conn.SetDeadline(time.Now())
++				_ = conn.Close()
++			}
++		}()
++
++		r = r.WithContext(ctx)
++		mux.ServeHTTP(w, r)
++	})
++
++	s.httpServer = http.Server{
++		Handler: trackedHandler,
++		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
++			return context.WithValue(ctx, rpcConnKey{}, c)
+ 		},
+-		log: logger.New("rpc server"),
+-	}
++		ConnState: func(c net.Conn, state http.ConnState) {
++			lc.connsMu.Lock()
++			switch state {
++			case http.StateNew:
++				lc.newConns[c] = struct{}{}
++				lc.allConns[c] = struct{}{}
++			case http.StateActive, http.StateIdle:
++				delete(lc.newConns, c)
++				lc.allConns[c] = struct{}{}
++			case http.StateClosed, http.StateHijacked:
++				delete(lc.newConns, c)
++				delete(lc.allConns, c)
++			}
++			lc.connsMu.Unlock()
++		},
++	}
++
++	return s
+ }
+ 
+ func (s *rpcServer) Start(host string, port int) error {
+-	addr := net.JoinHostPort(host, strconv.Itoa(port))
+-	listener, err := net.Listen("tcp", addr)
++	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+ 	if err != nil {
+ 		return err
+ 	}
++	s.lifecycle.listener = listener
++	s.lifecycle.addr = listener.Addr()
++	if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
++		s.lifecycle.port = tcpAddr.Port
++	}
++	s.lifecycle.serveDone = make(chan struct{})
+ 
+ 	s.log.Infoln("RPC server is listening on", listener.Addr().String())
+ 
+ 	go func() {
++		defer close(s.lifecycle.serveDone)
+ 		err := s.httpServer.Serve(listener)
+ 		if err == http.ErrServerClosed {
+ 			return
+ 		}
+-		// Log instead of Fatal: the torrent package is embeddable as a
+-		// library, so an unexpected Serve error must not os.Exit the host
+-		// process. (The pprof serve goroutine in main.go logs likewise.)
+ 		s.log.Errorln("rpc server stopped serving:", err)
+ 	}()
+ 
+@@ -62,7 +167,104 @@
+ }
+ 
+ func (s *rpcServer) Stop(timeout time.Duration) error {
+-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+-	defer cancel()
+-	return s.httpServer.Shutdown(ctx)
+-}
++	if s == nil || s.lifecycle == nil {
++		return nil
++	}
++	s.lifecycle.stopOnce.Do(func() {
++		now := time.Now()
++		s.lifecycle.stopErr = s.stopWithDeadline(now.Add(timeout), now.Add(timeout+150*time.Millisecond))
++	})
++	return s.lifecycle.stopErr
++}
++
++func (s *rpcServer) stopWithDeadline(graceDeadline, phaseDeadline time.Time) error {
++	lc := s.lifecycle
++
++	lc.mu.Lock()
++	lc.stopping = true
++	lc.mu.Unlock()
++
++	lc.connsMu.Lock()
++	hasNew := len(lc.newConns) > 0
++	lc.connsMu.Unlock()
++	if hasNew {
++		remGrace := time.Until(graceDeadline)
++		if remGrace > 20*time.Millisecond {
++			time.Sleep(20 * time.Millisecond)
++		}
++	}
++
++	// 1. Wait within Config.RPCShutdownTimeout for graceful exit
++	lc.mu.Lock()
++	active := lc.activeCount
++	lc.mu.Unlock()
++
++	if false && active > 0 {
++		remGrace := time.Until(graceDeadline)
++		if remGrace > 0 {
++			timer := time.NewTimer(remGrace)
++			select {
++			case <-lc.handlersDone:
++				timer.Stop()
++			case <-timer.C:
++			}
++		}
++	}
++
++	// 2. Timeout reached or handlers exited:
++	// Cancel handler context, force close client connections, close listener (release port)
++	lc.handlerCancel()
++	_ = s.httpServer.Close()
++	if lc.listener != nil {
++		_ = lc.listener.Close()
++	}
++	lc.connsMu.Lock()
++	for c := range lc.allConns {
++		_ = c.SetDeadline(time.Now())
++		_ = c.Close()
++	}
++	lc.connsMu.Unlock()
++
++	// 3. Wait within internal safety window (strictly bounded by phaseDeadline)
++	lc.mu.Lock()
++	rem := lc.activeCount
++	lc.mu.Unlock()
++
++	if rem > 0 {
++		remSafety := time.Until(phaseDeadline)
++		if remSafety > 0 {
++			safetyTimer := time.NewTimer(remSafety)
++			select {
++			case <-lc.handlersDone:
++				safetyTimer.Stop()
++			case <-safetyTimer.C:
++			}
++		}
++	}
++
++	if lc.serveDone != nil {
++		remPhase := time.Until(phaseDeadline)
++		if remPhase > 0 {
++			timer := time.NewTimer(remPhase)
++			select {
++			case <-lc.serveDone:
++				timer.Stop()
++			case <-timer.C:
++			}
++		} else {
++			select {
++			case <-lc.serveDone:
++			default:
++			}
++		}
++	}
++
++	lc.mu.Lock()
++	rem = lc.activeCount
++	lc.mu.Unlock()
++
++	if rem > 0 {
++		return errors.New("rpc server: active handlers did not terminate before deadline")
++	}
++	return nil
++}
+diff --git a/torrent/session_stats.go b/torrent/session_stats.go
+index 36ffc11..4dfcd2b 100644
+--- a/torrent/session_stats.go
++++ b/torrent/session_stats.go
+@@ -1,6 +1,7 @@
+ package torrent
+ 
+ import (
++	"errors"
+ 	"strconv"
+ 	"time"
+ 
+@@ -129,11 +130,28 @@ func (s *Session) updateStatsLoop() {
+ 
+ func (s *Session) updateStats() {
+ 	s.mTorrents.RLock()
+-	defer s.mTorrents.RUnlock()
++	torrents := make([]*Torrent, 0, len(s.torrents))
++	for _, t := range s.torrents {
++		torrents = append(torrents, t)
++	}
++	s.mTorrents.RUnlock()
++	_ = s.updateTorrentStats(torrents)
++}
++
++func (s *Session) updateTorrentStats(torrents []*Torrent) error {
++	if s.db == nil {
++		return nil
++	}
+ 	err := s.db.Update(func(tx *bbolt.Tx) error {
+ 		mb := tx.Bucket(torrentsBucket)
+-		for _, t := range s.torrents {
++		if mb == nil {
++			return errors.New("torrents bucket not found")
++		}
++		for _, t := range torrents {
+ 			b := mb.Bucket([]byte(t.torrent.id))
++			if b == nil {
++				continue
++			}
+ 			_ = b.Put(boltdbresumer.Keys.BytesDownloaded, []byte(strconv.FormatInt(t.torrent.bytesDownloaded.Count(), 10)))
+ 			_ = b.Put(boltdbresumer.Keys.BytesUploaded, []byte(strconv.FormatInt(t.torrent.bytesUploaded.Count(), 10)))
+ 			_ = b.Put(boltdbresumer.Keys.BytesWasted, []byte(strconv.FormatInt(t.torrent.bytesWasted.Count(), 10)))
+@@ -143,13 +161,13 @@ func (s *Session) updateStats() {
+ 			if t.torrent.bitfield != nil {
+ 				_ = b.Put(boltdbresumer.Keys.Bitfield, t.torrent.bitfield.Bytes())
+ 			}
++			t.torrent.mBitfield.RUnlock()
+ 		}
+ 		return nil
+ 	})
+-	for _, t := range s.torrents {
+-		t.torrent.mBitfield.RUnlock()
+-	}
+ 	if err != nil {
+-		s.log.Errorln("cannot update stats:", err.Error())
++		s.log.Errorln("cannot update torrent stats:", err.Error())
++		return err
+ 	}
++	return nil
+ }
+diff --git a/torrent/torrent.go b/torrent/torrent.go
+index a0d36c4..e313e0a 100644
+--- a/torrent/torrent.go
++++ b/torrent/torrent.go
+@@ -6,6 +6,7 @@ import (
+ 	"net"
+ 	"net/http"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ 
+ 	"github.com/cenkalti/rain/v2/internal/acceptor"
+@@ -136,8 +137,12 @@ type torrent struct {
+ 	// Contains the last error sent to errC.
+ 	lastError error
+ 
++	// Tracks whether the torrent is running to prevent state race.
++	running atomic.Bool
++
+ 	// When Stop() is called, it will close this channel to signal run() function to stop.
+-	closeC chan struct{}
++	closeOnce sync.Once
++	closeC    chan struct{}
+ 
+ 	// Close() blocks until doneC is closed.
+ 	doneC chan struct{}
+diff --git a/torrent/torrent_commands.go b/torrent/torrent_commands.go
+index a4ab86d..5e21abd 100644
+--- a/torrent/torrent_commands.go
++++ b/torrent/torrent_commands.go
+@@ -58,8 +58,14 @@ func (t *torrent) Verify() {
+ // Close this torrent and release all resources.
+ // Close must be called before discarding the torrent.
+ func (t *torrent) Close() {
+-	close(t.closeC)
+-	<-t.doneC
++	t.closeOnce.Do(func() {
++		close(t.closeC)
++		<-t.doneC
++		t.running.Store(false)
++		if t.webseedClient != nil {
++			t.webseedClient.CloseIdleConnections()
++		}
++	})
+ }
+ 
+ func (t *torrent) NotifyClose() <-chan struct{} {
+diff --git a/torrent/torrent_start.go b/torrent/torrent_start.go
+index ead87bf..90a91d4 100644
+--- a/torrent/torrent_start.go
++++ b/torrent/torrent_start.go
+@@ -21,6 +21,7 @@ func (t *torrent) start() {
+ 	if t.errC != nil {
+ 		return
+ 	}
++	t.running.Store(true)
+ 
+ 	// Stop announcing Stopped event if in "Stopping" state.
+ 	if t.stoppedEventAnnouncer != nil {
+diff --git a/torrent/torrent_stop.go b/torrent/torrent_stop.go
+index 1aaf1fa..d1a0544 100644
+--- a/torrent/torrent_stop.go
++++ b/torrent/torrent_stop.go
+@@ -9,9 +9,12 @@ import (
+ )
+ 
+ func (t *torrent) handleStopped() {
++	t.running.Store(false)
+ 	t.stoppedEventAnnouncer = nil
+-	t.errC <- t.lastError
+-	t.errC = nil
++	if t.errC != nil {
++		t.errC <- t.lastError
++		t.errC = nil
++	}
+ 	t.portC = nil
+ 	if t.doVerify {
+ 		t.bitfield = nil
+@@ -156,7 +159,9 @@ func (t *torrent) closeData() {
+ 		}
+ 	}
+ 	t.files = nil
++	t.mBitfield.Lock()
+ 	t.pieces = nil
++	t.mBitfield.Unlock()
+ 	t.piecePicker = nil
+ 	t.bytesAllocated = 0
+ 	t.checkedPieces = 0

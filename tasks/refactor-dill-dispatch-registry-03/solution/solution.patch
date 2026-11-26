@@ -1,0 +1,397 @@
+diff --git a/dill/_dill.py b/dill/_dill.py
+index 096a661e34106e6a5bd272b9e248fa376fc138d6..9230bf25d3e17c2cf0c1087c87d3f145a2c1455a 100644
+--- a/dill/_dill.py
++++ b/dill/_dill.py
+@@ -343,11 +343,32 @@ class PicklingWarning(PickleWarning, PicklingError):
+ class UnpicklingWarning(PickleWarning, UnpicklingError):
+     pass
+ 
++class _PicklerRegistry:
++    def __init__(self):
++        self._initial_stock_dispatch = StockPickler.dispatch.copy()
++        self.dispatch = MetaCatchingDict(StockPickler.dispatch.copy())
++
++    def register(self, t, func):
++        self.dispatch[t] = func
++
++    def extend(self):
++        for t, func in self.dispatch.items():
++            StockPickler.dispatch[t] = func
++
++    def revert(self):
++        for type, func in list(StockPickler.dispatch.items()):
++            if getattr(func, '__module__', None) == __name__:
++                del StockPickler.dispatch[type]
++                if type in self._initial_stock_dispatch:
++                    StockPickler.dispatch[type] = self._initial_stock_dispatch[type]
++
++_registry = _PicklerRegistry()
++
+ ### Extend the Picklers
+ class Pickler(StockPickler):
+     """python's Pickler extended to interpreter sessions"""
+     dispatch: typing.Dict[type, typing.Callable[[Pickler, typing.Any], None]] \
+-            = MetaCatchingDict(StockPickler.dispatch.copy())
++            = _registry.dispatch
+     """The dispatch table, a dictionary of serializing functions used
+     by Pickler to save objects of specific types.  Use :func:`pickle`
+     or :func:`register` to associate types to custom functions.
+@@ -467,27 +488,23 @@ def dispatch_table():
+     return Pickler.dispatch
+ '''
+ 
+-pickle_dispatch_copy = StockPickler.dispatch.copy()
++pickle_dispatch_copy = _registry._initial_stock_dispatch
+ 
+ def pickle(t, func):
+     """expose :attr:`~Pickler.dispatch` table for user-created extensions"""
+-    Pickler.dispatch[t] = func
++    _registry.register(t, func)
+     return
+ 
+ def register(t):
+     """decorator to register types to Pickler's :attr:`~Pickler.dispatch` table"""
+     def proxy(func):
+-        Pickler.dispatch[t] = func
++        _registry.register(t, func)
+         return func
+     return proxy
+ 
+ def _revert_extension():
+     """drop dill-registered types from pickle's dispatch table"""
+-    for type, func in list(StockPickler.dispatch.items()):
+-        if func.__module__ == __name__:
+-            del StockPickler.dispatch[type]
+-            if type in pickle_dispatch_copy:
+-                StockPickler.dispatch[type] = pickle_dispatch_copy[type]
++    _registry.revert()
+ 
+ def use_diff(on=True):
+     """
+@@ -1318,8 +1335,8 @@ for __dicttype in (
+     __obj = __dicttype()
+     for __funcname, __savefunc in save_dict_view(__dicttype):
+         __tview = type(getattr(__obj, __funcname)())
+-        if __tview not in Pickler.dispatch:
+-            Pickler.dispatch[__tview] = __savefunc
++        if __tview not in _registry.dispatch:
++            _registry.register(__tview, __savefunc)
+ del __dicttype, __obj, __funcname, __tview, __savefunc
+ 
+ 
+@@ -2252,12 +2269,7 @@ def is_dill(pickler, child=None):
+ 
+ def _extend():
+     """extend pickle with all of dill's registered types"""
+-    # need to have pickle not choke on _main_module?  use is_dill(pickler)
+-    for t,func in Pickler.dispatch.items():
+-        try:
+-            StockPickler.dispatch[t] = func
+-        except Exception: #TypeError, PicklingError, UnpicklingError
+-            logger.trace(pickler, "skip: %s", t)
++    _registry.extend()
+     return
+ 
+ del diff, _use_diff, use_diff
+diff --git a/dill/tests/test_extendpickle.py b/dill/tests/test_extendpickle.py
+index f86e44a55a1c8ff57ff878efcc1bf5c38091da5c..5092d9879033ac10d1759856bf6fbc6ae2ea9372 100644
+--- a/dill/tests/test_extendpickle.py
++++ b/dill/tests/test_extendpickle.py
+@@ -7,7 +7,12 @@
+ #  - https://github.com/uqfoundation/dill/blob/master/LICENSE
+ 
+ import dill as pickle
++from pickle import _Pickler as StockPickler
+ from io import BytesIO as StringIO
++import contextlib
++import subprocess
++import sys
++import os
+ 
+ 
+ def my_fn(x):
+@@ -48,6 +53,284 @@ def test_isdill():
+         pass
+ 
+ 
++@contextlib.contextmanager
++def preserve_dispatch():
++    stock_copy = StockPickler.dispatch.copy()
++    dill_copy = pickle.Pickler.dispatch.copy()
++    try:
++        yield
++    finally:
++        StockPickler.dispatch.clear()
++        StockPickler.dispatch.update(stock_copy)
++        pickle.Pickler.dispatch.clear()
++        pickle.Pickler.dispatch.update(dill_copy)
++
++
++def test_registration_and_dispatch():
++    class TypeA: pass
++    class TypeB: pass
++    class MetaC(type): pass
++    def fn1(p, obj): pass
++    def fn2(p, obj): pass
++
++    with preserve_dispatch():
++        dec = pickle.register(t=TypeA)
++        assert TypeA not in pickle.Pickler.dispatch
++        res = dec(fn1)
++        assert res is fn1
++        assert pickle.Pickler.dispatch[TypeA] is fn1
++        assert pickle.register(TypeA)(fn2) is fn2
++        assert pickle.Pickler.dispatch[TypeA] is fn2
++
++        ret = pickle.pickle(t=TypeB, func=fn1)
++        assert ret is None
++        assert pickle.Pickler.dispatch[TypeB] is fn1
++        ret2 = pickle.pickle(TypeB, fn2)
++        assert ret2 is None
++        assert pickle.Pickler.dispatch[TypeB] is fn2
++
++        assert pickle.Pickler.dispatch[MetaC] is pickle._dill.save_type
++        assert MetaC not in pickle.Pickler.dispatch
++
++        class MissingType: pass
++        try:
++            _ = pickle.Pickler.dispatch[MissingType]
++            assert False, "expected KeyError"
++        except KeyError:
++            pass
++        assert pickle.Pickler.dispatch.get(MissingType, 42) == 42
++
++        pickle.Pickler.dispatch[MissingType] = fn1
++        assert MissingType in pickle.Pickler.dispatch
++        del pickle.Pickler.dispatch[MissingType]
++        assert MissingType not in pickle.Pickler.dispatch
++
++
++def test_serialization_and_lifecycle():
++    class CustomObj:
++        def __init__(self, val): self.val = val
++
++    def custom_save(pickler, obj):
++        pickler.save_reduce(int, (obj.val * 2,))
++
++    with preserve_dispatch():
++        assert pickle.extend() is None
++        assert pickle.extend(True) is None
++        assert pickle.extend(False) is None
++        assert pickle.extend(use_dill=False) is None
++        assert pickle.extend(use_dill=True) is None
++
++        pickle.extend(False)
++
++        buf_existing = StringIO()
++        p_existing = pickle.Pickler(buf_existing)
++
++        pickle.pickle(CustomObj, custom_save)
++        assert CustomObj not in StockPickler.dispatch
++
++        p_existing.dump(CustomObj(5))
++        assert pickle.loads(buf_existing.getvalue()) == 10
++
++        buf_new = StringIO()
++        pickle.Pickler(buf_new).dump(CustomObj(6))
++        assert pickle.loads(buf_new.getvalue()) == 12
++
++        class DecoratorObj:
++            def __init__(self, val): self.val = val
++
++        @pickle.register(DecoratorObj)
++        def dec_save(pickler, obj):
++            pickler.save_reduce(int, (obj.val * 4,))
++
++        buf_dec = StringIO()
++        pickle.Pickler(buf_dec).dump(DecoratorObj(3))
++        assert pickle.loads(buf_dec.getvalue()) == 12
++
++        class DirectObj:
++            def __init__(self, val): self.val = val
++
++        def direct_save(pickler, obj):
++            pickler.save_reduce(int, (obj.val * 5,))
++
++        pickle.Pickler.dispatch[DirectObj] = direct_save
++        buf_dir = StringIO()
++        pickle.Pickler(buf_dir).dump(DirectObj(4))
++        assert pickle.loads(buf_dir.getvalue()) == 20
++
++        pickle.extend(True)
++        assert StockPickler.dispatch[CustomObj] is custom_save
++        buf_stock = StringIO()
++        StockPickler(buf_stock).dump(CustomObj(7))
++        assert pickle.loads(buf_stock.getvalue()) == 14
++
++        def custom_save2(pickler, obj):
++            pickler.save_reduce(int, (obj.val * 3,))
++        pickle.pickle(CustomObj, custom_save2)
++        pickle.extend(True)
++        assert StockPickler.dispatch[CustomObj] is custom_save2
++        buf_stock2 = StringIO()
++        StockPickler(buf_stock2).dump(CustomObj(7))
++        assert pickle.loads(buf_stock2.getvalue()) == 21
++
++        dill_items_before = dict(pickle.Pickler.dispatch)
++        pickle.extend(False)
++        assert dict(pickle.Pickler.dispatch) == dill_items_before
++        pickle.extend(True)
++        assert dict(pickle.Pickler.dispatch) == dill_items_before
++
++
++def test_revert_and_external_handlers():
++    class ExternalType: pass
++    def external_save(pickler, obj): pass
++
++    with preserve_dispatch():
++        pickle.extend(True)
++        assert StockPickler.dispatch[type].__module__ == 'dill._dill'
++
++        pickle.pickle(ExternalType, external_save)
++        pickle.extend(True)
++        assert StockPickler.dispatch[ExternalType] is external_save
++
++        class RegisteredExtType: pass
++        def reg_ext_save(pickler, obj): pass
++        pickle.register(RegisteredExtType)(reg_ext_save)
++        pickle.extend(True)
++        assert StockPickler.dispatch[RegisteredExtType] is reg_ext_save
++
++        class AssignedExtType: pass
++        def assign_ext_save(pickler, obj): pass
++        pickle.Pickler.dispatch[AssignedExtType] = assign_ext_save
++        pickle.extend(True)
++        assert StockPickler.dispatch[AssignedExtType] is assign_ext_save
++
++        def external_int(pickler, obj): pass
++        pickle.pickle(int, external_int)
++        pickle.extend(True)
++        assert StockPickler.dispatch[int] is external_int
++
++        class DirectType: pass
++        def direct_save(pickler, obj): pass
++        StockPickler.dispatch[DirectType] = direct_save
++
++        def direct_str_save(pickler, obj): pass
++        StockPickler.dispatch[str] = direct_str_save
++
++        def direct_type_save(pickler, obj): pass
++        StockPickler.dispatch[type] = direct_type_save
++
++        if float in StockPickler.dispatch:
++            del StockPickler.dispatch[float]
++
++        pickle.extend(False)
++        assert StockPickler.dispatch[ExternalType] is external_save
++        assert StockPickler.dispatch[RegisteredExtType] is reg_ext_save
++        assert StockPickler.dispatch[AssignedExtType] is assign_ext_save
++        assert StockPickler.dispatch[int] is external_int
++        assert StockPickler.dispatch[DirectType] is direct_save
++        assert StockPickler.dispatch[str] is direct_str_save
++        assert StockPickler.dispatch[type] is direct_type_save
++        assert float not in StockPickler.dispatch
++
++        pickle.extend(False)
++        assert StockPickler.dispatch[ExternalType] is external_save
++        assert StockPickler.dispatch[RegisteredExtType] is reg_ext_save
++        assert StockPickler.dispatch[AssignedExtType] is assign_ext_save
++        assert StockPickler.dispatch[int] is external_int
++        assert StockPickler.dispatch[str] is direct_str_save
++        assert StockPickler.dispatch[type] is direct_type_save
++
++        pickle.extend(True)
++        assert StockPickler.dispatch[type].__module__ == 'dill._dill'
++
++
++def test_exception_propagation():
++    class BadType: pass
++    def failing_save(pickler, obj):
++        raise ValueError("custom serialization error")
++
++    with preserve_dispatch():
++        pickle.pickle(BadType, failing_save)
++        obj = BadType()
++
++        try:
++            pickle.dumps(obj)
++            assert False, "expected ValueError"
++        except ValueError as e:
++            assert str(e) == "custom serialization error"
++
++        assert pickle.pickles(obj, safe=True) is False
++
++        try:
++            pickle.pickles(obj, safe=False)
++            assert False, "expected ValueError from pickles(safe=False)"
++        except ValueError as e:
++            assert str(e) == "custom serialization error"
++
++        err = pickle.detect.errors(obj)
++        assert isinstance(err, ValueError)
++        assert str(err) == "custom serialization error"
++
++
++def test_auto_extend_on_import():
++    cmd = [
++        sys.executable,
++        '-c',
++        '''
++import pickle
++orig_stock = dict(pickle._Pickler.dispatch)
++orig_type_handler = orig_stock[type]
++
++import dill
++import types
++
++stock = pickle._Pickler.dispatch
++assert stock[type] is not orig_type_handler
++assert getattr(stock[type], "__module__", None) == "dill._dill"
++
++code_type = types.CodeType
++assert code_type not in orig_stock
++assert code_type in stock
++assert getattr(stock[code_type], "__module__", None) == "dill._dill"
++
++dill.extend(False)
++assert stock[type] is orig_type_handler
++assert code_type not in stock
++assert dict(stock) == orig_stock
++
++dill.extend(False)
++assert dict(stock) == orig_stock
++
++dill.extend(True)
++assert stock[type] is not orig_type_handler
++assert code_type in stock
++dill.extend(False)
++assert dict(stock) == orig_stock
++'''
++    ]
++    subprocess.check_call(cmd, env=os.environ)
++
++
++def test_numpy():
++    try:
++        import numpy as np
++    except ImportError:
++        return
++    with preserve_dispatch():
++        buf = StringIO()
++        p = pickle.Pickler(buf)
++        p.dump(np.add)
++        loaded = pickle.loads(buf.getvalue())
++        assert loaded is np.add
++        pickle.extend(True)
++        assert type(np.add) in StockPickler.dispatch
++
++
+ if __name__ == '__main__':
+     test_extend()
+     test_isdill()
++    test_registration_and_dispatch()
++    test_serialization_and_lifecycle()
++    test_revert_and_external_handlers()
++    test_exception_propagation()
++    test_auto_extend_on_import()
++    test_numpy()

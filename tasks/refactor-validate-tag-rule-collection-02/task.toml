@@ -1,0 +1,88 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+[task]
+name = "tikiai/refactor-validate-tag-rule-collection-02"
+description = "Move tag-based rule collection out of the struct data source and share field discovery across traversals."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "refactor-validate-tag-rule-collection-02"
+display_title = "Struct tag rule collection"
+category = "module_boundary"
+language = "Go"
+repository_url = "https://github.com/gookit/validate"
+base_commit_hash = "e6e7ae6b751ee3c3ce29eee733c5281f2718dbe0"
+
+[tests]
+fail_to_pass_count = 25
+pass_to_pass_count = 748
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+user = "root"
+network_mode = "public"
+environment_mode = "separate"
+timeout_sec = 1800.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:refactor-validate-tag-rule-collection-02-verifier-image-20261125"
+image_digest = "sha256:43a277ddd6c2cc87aa8a001bc532282f7749a6d8fe5ea284f0c458b0a1648574"
+network_mode = "public"
+build_timeout_sec = 3600.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "set -eu\nmkdir -p /logs/artifacts\nrm -f /logs/artifacts/model.patch\ncollect_tmp=$(mktemp -d /logs/artifacts/.collect.XXXXXX)\ntrap 'rm -rf \"$collect_tmp\"' EXIT\nexport GIT_INDEX_FILE=\"$collect_tmp/index\"\nattributes_file=\"$collect_tmp/attributes\"\nprintf '* -diff\\n' > \"$attributes_file\"\ngit -C /workspace/repo rev-parse --verify 'e6e7ae6b751ee3c3ce29eee733c5281f2718dbe0^{commit}' >/dev/null\ngit -C /workspace/repo read-tree e6e7ae6b751ee3c3ce29eee733c5281f2718dbe0\ngit -C /workspace/repo add -A -- .\ngit -c core.attributesFile=\"$attributes_file\" -C /workspace/repo diff --cached --binary --full-index --no-ext-diff --no-textconv e6e7ae6b751ee3c3ce29eee733c5281f2718dbe0 -- > \"$collect_tmp/model.patch\"\nmv \"$collect_tmp/model.patch\" /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+user = "agent"
+network_mode = "public"
+timeout_sec = 7200.0
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:refactor-validate-tag-rule-collection-02-task-image-20261125"
+image_digest = "sha256:9bdb2dde3a9e5cb1c7b3e95bda78744dea875d1273a80ba28b01b6219b523689"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[verifier.env]
+
+[solution.env]
+
+# Verifier calibration round 1 (2026-10-28); fixed inputs and reproducible evidence.
+# instruction_sha256: 8b6352781fb9003087427f4a8486b2bec4d5a4d676504d73d7fde7c68e38efb5
+# Contract: "Configuration changes affecting collection must invalidate relevant metadata and templates, including field visibility and nested cascade settings; ResetTypeCache() must keep working."
+# Gap: existing configuration P2P creates fresh data sources; it misses a warmed StructData reused after Config(CheckSubOnParentMarked=false).
+# Minimal change: one public-behavior F2P for cascade invalidation on that same source, without a cache reset after Config.
+# Baseline exhibits stale-template behavior, so this is F2P, not P2P. No original P2P was relabelled or removed.
+# Four-way check: instruction explicitly requires invalidation; baseline fails; solution refreshes metadata and passes;
+# W4VAL4S passes with a different version-aware collector; the other seven candidates observably ignore the new cascade policy.
+# Oracle reads only public FromStruct/Create/Config/Validate/Errors; private helper names and patch text never affect its verdict.
+# Replay: Go 1.21.13, frozen baseline test restoration + final test.patch, GOPROXY=off;
+# go run ./tests/f2p_runner -select <all-config-p2p-and-f2p-selectors> -report <junit-output>.
+# Results: baseline P2P 762/762, F2P 0/25; solution P2P 762/762, F2P 25/25.
+# Fixed 8 candidates: all P2P 762/762; W4VAL4S F2P 25/25; six F2P 24/25; frgHq8u F2P 17/25.
+# Local node replay therefore projects 1/8 full scores and solution 1.0 under the unchanged scoring formula.
+# No harbor run or final regrade was performed; recorded trial outputs were not modified.
+# Prior snapshots: all hard gates PASS; all P2P 762/762; seven F2P 24/24, frgHq8u F2P 17/24.
+# candidate_analysis follows (one JSON object per fixed candidate):
+# {"trial":"8vB7YA3","model_patch":"../candidates-regrade/refactor-validate-tag-rule-colle__8vB7YA3/artifacts/logs/artifacts/model.patch","sha256":"755118f312254f09791a81a9447f984b009838a0ad00b295708550060788cbf1","snapshot_reward":1.0,"implementation_path":"struct_scan.go cached direct scan; struct_rules.go free collector and template replay retain bound metadata","satisfied_contract_evidence":"762 P2P and 24/24 previous F2P pass; snapshot hard gate PASS","gap":"warmed same source still skips Child.Name after disabling marked-parent cascade","local_f2p_passed":24,"local_f2p_total":25,"infrastructure_errors":[],"verifier_misjudgment":"previous full score missed explicit configuration invalidation","verdict":"fails new behavior F2P"}
+# {"trial":"W4VAL4S","model_patch":"../candidates-regrade/refactor-validate-tag-rule-colle__W4VAL4S/artifacts/logs/artifacts/model.patch","sha256":"ecc2d52dfdcecca02028b4c8649f4cc7acb0efc0d9ba921192d11615720e1818","snapshot_reward":1.0,"implementation_path":"cache.go direct field cache and merged metadata classification; struct_rules.go version-aware collector refreshes bound metadata","satisfied_contract_evidence":"762 P2P and 24/24 previous F2P pass; snapshot hard gate PASS","gap":"none for cascade invalidation","local_f2p_passed":25,"local_f2p_total":25,"infrastructure_errors":[],"verifier_misjudgment":"none reproduced","verdict":"all required local nodes pass"}
+# {"trial":"zAuoJ4M","model_patch":"../candidates-regrade/refactor-validate-tag-rule-colle__zAuoJ4M/artifacts/logs/artifacts/model.patch","sha256":"679add5c7019823f1d8d06dabbe3b9880a1f7e5f9f0f1af9c7b4b8beaf1c7539","snapshot_reward":1.0,"implementation_path":"struct_scan.go cached raw-tag layout; struct_rules.go collector and template replay retain bound metadata","satisfied_contract_evidence":"762 P2P and 24/24 previous F2P pass; snapshot hard gate PASS","gap":"warmed same source still skips Child.Name after disabling marked-parent cascade","local_f2p_passed":24,"local_f2p_total":25,"infrastructure_errors":[],"verifier_misjudgment":"previous full score missed explicit configuration invalidation","verdict":"fails new behavior F2P"}
+# {"trial":"GPYn6ux","model_patch":"../candidates-regrade/refactor-validate-tag-rule-colle__GPYn6ux/artifacts/logs/artifacts/model.patch","sha256":"a2026adbd02590c39f75d5a113206eeef6c9b0d30f62606c48526908048d2483","snapshot_reward":1.0,"implementation_path":"struct_scan.go scanned-field cache; struct_rules.go collector and template replay retain bound metadata","satisfied_contract_evidence":"762 P2P and 24/24 previous F2P pass; snapshot hard gate PASS","gap":"warmed same source still skips Child.Name after disabling marked-parent cascade","local_f2p_passed":24,"local_f2p_total":25,"infrastructure_errors":[],"verifier_misjudgment":"previous full score missed explicit configuration invalidation","verdict":"fails new behavior F2P"}
+# {"trial":"r9j78ng","model_patch":"../candidates-regrade/refactor-validate-tag-rule-colle__r9j78ng/artifacts/logs/artifacts/model.patch","sha256":"7ef93d4a1313bf526611ae97d6c08f81c4e45c15e903c4ed6f59ab64bfb38f87","snapshot_reward":1.0,"implementation_path":"struct_scan.go cached tag accessors; struct_rules.go collector and template replay retain bound metadata","satisfied_contract_evidence":"762 P2P and 24/24 previous F2P pass; snapshot hard gate PASS","gap":"warmed same source still skips Child.Name after disabling marked-parent cascade","local_f2p_passed":24,"local_f2p_total":25,"infrastructure_errors":[],"verifier_misjudgment":"previous full score missed explicit configuration invalidation","verdict":"fails new behavior F2P"}
+# {"trial":"frgHq8u","model_patch":"../candidates-regrade/refactor-validate-tag-rule-colle__frgHq8u/artifacts/logs/artifacts/model.patch","sha256":"b07b120e76f972e98d2e43b89532178fbbb7b5f72c1e1ac483cc4a9b8145e1fe","snapshot_reward":0.7083333333333334,"implementation_path":"struct_scan.go field cache and struct_collect.go collector; StructData template replay methods remain; bound metadata retained","satisfied_contract_evidence":"762 P2P and 17/24 previous F2P pass; snapshot hard gate PASS","gap":"warmed same source still skips Child.Name after disabling marked-parent cascade","local_f2p_passed":17,"local_f2p_total":25,"infrastructure_errors":[],"verifier_misjudgment":"none reproduced","verdict":"fails new behavior F2P; also retains seven previous boundary failures"}
+# {"trial":"XbDfsGw","model_patch":"../candidates-regrade/refactor-validate-tag-rule-colle__XbDfsGw/artifacts/logs/artifacts/model.patch","sha256":"2de69e1a54b679aa9240435a83d02da248c125824e1b54a56cbd64225f545319","snapshot_reward":1.0,"implementation_path":"cache.go cached structural scan; struct_rules.go collector and template replay retain bound metadata","satisfied_contract_evidence":"762 P2P and 24/24 previous F2P pass; snapshot hard gate PASS","gap":"warmed same source still skips Child.Name after disabling marked-parent cascade","local_f2p_passed":24,"local_f2p_total":25,"infrastructure_errors":[],"verifier_misjudgment":"previous full score missed explicit configuration invalidation","verdict":"fails new behavior F2P"}
+# {"trial":"Mi8BDmQ","model_patch":"../candidates-regrade/refactor-validate-tag-rule-colle__Mi8BDmQ/artifacts/logs/artifacts/model.patch","sha256":"a1fee15452bb74c5c12fec6ef7addd2a44c35b861b65c183301af4864a15e88d","snapshot_reward":1.0,"implementation_path":"cache.go reachable-type layout map; struct_rules.go collector and template replay retain bound metadata","satisfied_contract_evidence":"762 P2P and 24/24 previous F2P pass; snapshot hard gate PASS","gap":"warmed same source still skips Child.Name after disabling marked-parent cascade","local_f2p_passed":24,"local_f2p_total":25,"infrastructure_errors":[],"verifier_misjudgment":"previous full score missed explicit configuration invalidation","verdict":"fails new behavior F2P"}

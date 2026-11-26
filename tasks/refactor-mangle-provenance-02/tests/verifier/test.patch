@@ -1,0 +1,4542 @@
+diff --git a/cmd/mgwhy/mgwhy_p2p_test.go b/cmd/mgwhy/mgwhy_p2p_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..a467497bca85a8c248575fe075ec2e7f49d9a43a
+--- /dev/null
++++ b/cmd/mgwhy/mgwhy_p2p_test.go
+@@ -0,0 +1,114 @@
++// Supplemental P2P regression coverage for the mgwhy CLI: the -mode flag must
++// keep selecting post-hoc ("simple") versus recording-based ("full")
++// construction, and the tree/facts output formats must stay unchanged.
++package main
++
++import (
++	"io"
++	"os"
++	"path/filepath"
++	"sort"
++	"strings"
++	"testing"
++
++	"codeberg.org/TauCeti/mangle-go/provenance"
++)
++
++const p2pCLIPlainProgram = `
++	bar(1).
++	baz(1).
++	foo(X) :- bar(X), baz(X).
++`
++
++const p2pCLITransformProgram = `
++	measurement(1, 10).
++	measurement(2, 20).
++	scaled(ID, V) :- measurement(ID, Raw) |> let V = fn:mult(Raw, 2).
++`
++
++func p2pWriteProgram(t *testing.T, src string) string {
++	t.Helper()
++	path := filepath.Join(t.TempDir(), "program.mg")
++	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
++		t.Fatalf("write program: %v", err)
++	}
++	return path
++}
++
++// p2pCaptureStdout runs fn with os.Stdout redirected to a pipe and returns
++// everything fn wrote. run() writes directly to os.Stdout.
++func p2pCaptureStdout(t *testing.T, fn func() error) string {
++	t.Helper()
++	r, w, err := os.Pipe()
++	if err != nil {
++		t.Fatalf("pipe: %v", err)
++	}
++	old := os.Stdout
++	os.Stdout = w
++	runErr := fn()
++	os.Stdout = old
++	if err := w.Close(); err != nil {
++		t.Fatalf("close pipe: %v", err)
++	}
++	data, readErr := io.ReadAll(r)
++	if err := r.Close(); err != nil {
++		t.Fatalf("close read end: %v", err)
++	}
++	if runErr != nil {
++		t.Fatalf("run: %v", runErr)
++	}
++	if readErr != nil {
++		t.Fatalf("read stdout: %v", readErr)
++	}
++	return string(data)
++}
++
++func p2pSortedLines(s string) string {
++	lines := strings.Split(strings.TrimSpace(s), "\n")
++	sort.Strings(lines)
++	return strings.Join(lines, "\n")
++}
++
++func TestP2PCLIModeFlagSelectsBuilderAndFormats(t *testing.T) {
++	plain := p2pWriteProgram(t, p2pCLIPlainProgram)
++
++	// Plain Datalog: both modes must print the same tree and emit the same
++	// facts.
++	simpleTree := p2pCaptureStdout(t, func() error { return run(plain, "", "foo(1)", "simple", "tree", 1, 64) })
++	fullTree := p2pCaptureStdout(t, func() error { return run(plain, "", "foo(1)", "full", "tree", 1, 64) })
++	if simpleTree != fullTree {
++		t.Errorf("tree output differs between simple and full modes:\nsimple:\n%s\nfull:\n%s", simpleTree, fullTree)
++	}
++	if !strings.Contains(simpleTree, "bar(1)") || !strings.Contains(simpleTree, "by rule /rule/") {
++		t.Errorf("tree output missing expected proof structure:\n%s", simpleTree)
++	}
++
++	simpleFacts := p2pCaptureStdout(t, func() error { return run(plain, "", "foo(1)", "simple", "facts", 1, 64) })
++	fullFacts := p2pCaptureStdout(t, func() error { return run(plain, "", "foo(1)", "full", "facts", 1, 64) })
++	if p2pSortedLines(simpleFacts) != p2pSortedLines(fullFacts) {
++		t.Errorf("facts output differs between simple and full modes:\nsimple:\n%s\nfull:\n%s", simpleFacts, fullFacts)
++	}
++	for _, want := range []string{"proves(", "uses_rule(", "premise(", "edb_leaf(", "binding("} {
++		if !strings.Contains(simpleFacts, want) {
++			t.Errorf("facts output missing %q:\n%s", want, simpleFacts)
++		}
++	}
++
++	// Transform program: the post-hoc mode cannot reconstruct it, the
++	// recording-based mode replays the let-transform.
++	transform := p2pWriteProgram(t, p2pCLITransformProgram)
++	if err := run(transform, "", "scaled(1,20)", "simple", "tree", 1, 64); err != provenance.ErrNoProof {
++		t.Errorf("simple mode on a transform-derived goal: err = %v, want ErrNoProof", err)
++	}
++	fullTransformTree := p2pCaptureStdout(t, func() error { return run(transform, "", "scaled(1,20)", "full", "tree", 1, 64) })
++	if !strings.Contains(fullTransformTree, "transform:") {
++		t.Errorf("full mode tree missing the transform text:\n%s", fullTransformTree)
++	}
++	if !strings.Contains(fullTransformTree, "scaled(1,20)") {
++		t.Errorf("full mode tree missing the goal fact:\n%s", fullTransformTree)
++	}
++	fullTransformFacts := p2pCaptureStdout(t, func() error { return run(transform, "", "scaled(1,20)", "full", "facts", 1, 64) })
++	if !strings.Contains(fullTransformFacts, "uses_transform(") {
++		t.Errorf("full mode facts output missing uses_transform:\n%s", fullTransformFacts)
++	}
++}
+diff --git a/provenance/p2p_regression_test.go b/provenance/p2p_regression_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c67b93ae556e56f1dadc68ad5a8de32a14e16fcd
+--- /dev/null
++++ b/provenance/p2p_regression_test.go
+@@ -0,0 +1,989 @@
++// Supplemental P2P regression coverage for the provenance construction
++// refactor. These tests pin observable behavior that the baseline already
++// exhibits and that must not change when the duplicated proof-graph
++// construction skeleton is converged into one shared component.
++//
++// They intentionally use only the exported provenance API so that internal
++// helper reorganization remains free (REQ-BEH-T5:C8).
++package provenance_test
++
++import (
++	"bytes"
++	"crypto/sha256"
++	"fmt"
++	"io"
++	"sort"
++	"strings"
++	"testing"
++
++	"codeberg.org/TauCeti/mangle-go/analysis"
++	"codeberg.org/TauCeti/mangle-go/ast"
++	"codeberg.org/TauCeti/mangle-go/engine"
++	"codeberg.org/TauCeti/mangle-go/factstore"
++	"codeberg.org/TauCeti/mangle-go/parse"
++	"codeberg.org/TauCeti/mangle-go/provenance"
++	"codeberg.org/TauCeti/mangle-go/unionfind"
++)
++
++// p2pEvalProgram parses, analyzes and evaluates source, optionally attaching
++// a derivation recorder, and returns the program info and fact store.
++func p2pEvalProgram(t *testing.T, source string, rec *provenance.MemoryRecorder) (*analysis.ProgramInfo, factstore.SimpleInMemoryStore) {
++	t.Helper()
++	unit, err := parse.Unit(strings.NewReader(source))
++	if err != nil {
++		t.Fatalf("parse: %v", err)
++	}
++	pi, err := analysis.AnalyzeOneUnit(unit, nil)
++	if err != nil {
++		t.Fatalf("analyze: %v", err)
++	}
++	store := factstore.NewSimpleInMemoryStore()
++	for _, f := range pi.InitialFacts {
++		store.Add(f)
++	}
++	strata, predToStratum, err := analysis.Stratify(analysis.Program{
++		EdbPredicates: pi.EdbPredicates,
++		IdbPredicates: pi.IdbPredicates,
++		Rules:         pi.Rules,
++	})
++	if err != nil {
++		t.Fatalf("stratify: %v", err)
++	}
++	var evalOpts []engine.EvalOption
++	if rec != nil {
++		evalOpts = append(evalOpts, engine.WithDerivationRecorder(rec))
++	}
++	if _, err := engine.EvalStratifiedProgramWithStats(pi, strata, predToStratum, store, evalOpts...); err != nil {
++		t.Fatalf("eval: %v", err)
++	}
++	return pi, store
++}
++
++func p2pAtom(t *testing.T, s string) ast.Atom {
++	t.Helper()
++	a, err := parse.Atom(s)
++	if err != nil {
++		t.Fatalf("parse atom %q: %v", s, err)
++	}
++	return a
++}
++
++// p2pWalk visits every unique node of the given proofs.
++func p2pWalk(proofs []*provenance.ProofNode, fn func(*provenance.ProofNode)) {
++	seen := map[string]bool{}
++	var rec func(n *provenance.ProofNode)
++	rec = func(n *provenance.ProofNode) {
++		if n == nil || seen[n.ID] {
++			return
++		}
++		seen[n.ID] = true
++		fn(n)
++		for _, sub := range n.Premises {
++			rec(sub)
++		}
++	}
++	for _, p := range proofs {
++		rec(p)
++	}
++}
++
++func p2pPrintOutput(t *testing.T, proofs []*provenance.ProofNode) string {
++	t.Helper()
++	var buf bytes.Buffer
++	if err := provenance.Print(&buf, proofs); err != nil {
++		t.Fatalf("Print: %v", err)
++	}
++	return buf.String()
++}
++
++// p2pFactsDump renders the EmitFacts payload as sorted "fact" lines so that
++// comparisons are independent of fact-store iteration order.
++func p2pFactsDump(t *testing.T, proofs []*provenance.ProofNode) string {
++	t.Helper()
++	out := factstore.NewSimpleInMemoryStore()
++	if err := provenance.EmitFacts(proofs, &out); err != nil {
++		t.Fatalf("EmitFacts: %v", err)
++	}
++	var lines []string
++	for _, p := range out.ListPredicates() {
++		out.GetFacts(ast.NewQuery(p), func(a ast.Atom) error {
++			lines = append(lines, a.String())
++			return nil
++		})
++	}
++	sort.Strings(lines)
++	return strings.Join(lines, "\n")
++}
++
++func p2pIDSet(proofs []*provenance.ProofNode) map[string]bool {
++	out := map[string]bool{}
++	p2pWalk(proofs, func(n *provenance.ProofNode) { out[n.ID] = true })
++	return out
++}
++
++// --- post-hoc contract ---
++
++// TestP2PExplainEDBLeafShape pins the stored-EDB leaf shape: bare KindEDB
++// node with a content-addressed /proof/<32 hex> identifier.
++func TestP2PExplainEDBLeafShape(t *testing.T) {
++	pi, store := p2pEvalProgram(t, `bar(1).`, nil)
++	proofs, err := provenance.Explain(pi, store, p2pAtom(t, "bar(1)"), provenance.Options{})
++	if err != nil {
++		t.Fatalf("Explain: %v", err)
++	}
++	if len(proofs) != 1 {
++		t.Fatalf("got %d proofs, want 1", len(proofs))
++	}
++	p := proofs[0]
++	if p.Kind != provenance.KindEDB {
++		t.Errorf("kind = %v, want KindEDB", p.Kind)
++	}
++	if !strings.HasPrefix(p.ID, "/proof/") || len(p.ID) != len("/proof/")+32 {
++		t.Errorf("id = %q, want /proof/<32 hex>", p.ID)
++	}
++	if p.Rule != nil || p.RuleID != "" || len(p.Premises) != 0 || len(p.Bindings) != 0 || p.Partial {
++		t.Errorf("EDB leaf must be bare: rule=%v ruleID=%q premises=%d bindings=%d partial=%v",
++			p.Rule, p.RuleID, len(p.Premises), len(p.Bindings), p.Partial)
++	}
++}
++
++// TestP2PExplainDefaultsAndCaps pins the post-hoc entry point's option
++// defaults (zero MaxProofs means one proof) and explicit MaxProofs caps.
++func TestP2PExplainDefaultsAndCaps(t *testing.T) {
++	source := `
++		a(1).
++		b(1).
++		c(1).
++		foo(X) :- a(X).
++		foo(X) :- b(X).
++		foo(X) :- c(X).
++	`
++	pi, store := p2pEvalProgram(t, source, nil)
++	goal := p2pAtom(t, "foo(1)")
++
++	got, err := provenance.Explain(pi, store, goal, provenance.Options{})
++	if err != nil {
++		t.Fatalf("Explain: %v", err)
++	}
++	if len(got) != 1 {
++		t.Errorf("default MaxProofs: got %d proofs, want 1", len(got))
++	}
++	two, err := provenance.Explain(pi, store, goal, provenance.Options{MaxProofs: 2})
++	if err != nil {
++		t.Fatalf("Explain: %v", err)
++	}
++	if len(two) != 2 {
++		t.Errorf("MaxProofs=2: got %d proofs, want 2", len(two))
++	}
++	three, err := provenance.Explain(pi, store, goal, provenance.Options{MaxProofs: 3})
++	if err != nil {
++		t.Fatalf("Explain: %v", err)
++	}
++	if len(three) != 3 {
++		t.Errorf("MaxProofs=3: got %d proofs, want 3", len(three))
++	}
++}
++
++// TestP2PExplainDepthPartial pins depth-capping semantics: exceeding MaxDepth
++// yields partial subproofs (no error), and the default cap leaves ordinary
++// proofs fully expanded.
++func TestP2PExplainDepthPartial(t *testing.T) {
++	p2pCheckExactDepth(t, false)
++	source := `
++		edge(1, 2).
++		edge(2, 3).
++		edge(3, 4).
++		edge(4, 5).
++		edge(5, 6).
++		edge(6, 7).
++		edge(7, 8).
++		edge(8, 9).
++		edge(9, 10).
++		edge(10, 11).
++		edge(11, 12).
++		path(X, Y) :- edge(X, Y).
++		path(X, Z) :- edge(X, Y), path(Y, Z).
++	`
++	pi, store := p2pEvalProgram(t, source, nil)
++	goal := p2pAtom(t, "path(1, 12)")
++
++	deep, err := provenance.Explain(pi, store, goal, provenance.Options{})
++	if err != nil {
++		t.Fatalf("default depth: %v", err)
++	}
++	p2pWalk(deep, func(n *provenance.ProofNode) {
++		if n.Partial {
++			t.Errorf("default MaxDepth must fully expand path(1,12); node %s is Partial", n.ID)
++		}
++	})
++
++	shallow, err := provenance.Explain(pi, store, goal, provenance.Options{MaxDepth: 2})
++	if err != nil {
++		t.Fatalf("MaxDepth=2 must not fail: %v", err)
++	}
++	if len(shallow) == 0 {
++		t.Fatalf("MaxDepth=2 returned no proofs")
++	}
++	var truncated int
++	p2pWalk(shallow, func(n *provenance.ProofNode) {
++		if n.Partial && strings.HasPrefix(n.ID, "/proof/partial/") {
++			truncated++
++		}
++	})
++	if truncated == 0 {
++		t.Errorf("MaxDepth=2 must mark depth-limited subproofs Partial with /proof/partial/ ids")
++	}
++}
++
++// --- recording-based contract ---
++
++// TestP2PRecordingDepthPartial pins the same depth-capping semantics for the
++// recording-based entry point.
++func TestP2PRecordingDepthPartial(t *testing.T) {
++	p2pCheckExactDepth(t, true)
++	source := `
++		edge(1, 2).
++		edge(2, 3).
++		edge(3, 4).
++		edge(4, 5).
++		edge(5, 6).
++		edge(6, 7).
++		edge(7, 8).
++		edge(8, 9).
++		edge(9, 10).
++		edge(10, 11).
++		edge(11, 12).
++		path(X, Y) :- edge(X, Y).
++		path(X, Z) :- edge(X, Y), path(Y, Z).
++	`
++	rec := provenance.NewMemoryRecorder()
++	_, store := p2pEvalProgram(t, source, rec)
++	goal := p2pAtom(t, "path(1, 12)")
++
++	deep, err := provenance.BuildFromRecording(rec, store, goal, provenance.Options{})
++	if err != nil {
++		t.Fatalf("default depth: %v", err)
++	}
++	p2pWalk(deep, func(n *provenance.ProofNode) {
++		if n.Partial {
++			t.Errorf("default MaxDepth must fully expand path(1,12) in recording mode; node %s is Partial", n.ID)
++		}
++	})
++
++	shallow, err := provenance.BuildFromRecording(rec, store, goal, provenance.Options{MaxDepth: 2})
++	if err != nil {
++		t.Fatalf("MaxDepth=2 must not fail: %v", err)
++	}
++	var truncated int
++	p2pWalk(shallow, func(n *provenance.ProofNode) {
++		if n.Partial && strings.HasPrefix(n.ID, "/proof/partial/") {
++			truncated++
++		}
++	})
++	if truncated == 0 {
++		t.Errorf("recording MaxDepth=2 must mark depth-limited subproofs Partial with /proof/partial/ ids")
++	}
++}
++
++// TestP2PRecordingErrorsAndDefaults pins sentinel errors and option defaults
++// for the recording-based entry point: non-ground goals are rejected before
++// any premise is resolved (nil proof slice), missing proofs return ErrNoProof,
++// and MaxProofs defaults to 1.
++func TestP2PRecordingErrorsAndDefaults(t *testing.T) {
++	p2pCheckGroundErrorOrdering(t)
++	source := `
++		a(1).
++		b(1).
++		c(1).
++		foo(X) :- a(X).
++		foo(X) :- b(X).
++		foo(X) :- c(X).
++	`
++	rec := provenance.NewMemoryRecorder()
++	_, store := p2pEvalProgram(t, source, rec)
++
++	if proofs, err := provenance.BuildFromRecording(rec, store, ast.NewAtom("foo", ast.Variable{Symbol: "X"}), provenance.Options{}); err != provenance.ErrGoalNotGround || proofs != nil {
++		t.Errorf("non-ground: proofs=%v err=%v, want (nil, ErrGoalNotGround)", proofs, err)
++	}
++	if proofs, err := provenance.BuildFromRecording(rec, store, p2pAtom(t, "nope(9)"), provenance.Options{}); err != provenance.ErrNoProof || proofs != nil {
++		t.Errorf("no proof: proofs=%v err=%v, want (nil, ErrNoProof)", proofs, err)
++	}
++	got, err := provenance.BuildFromRecording(rec, store, p2pAtom(t, "foo(1)"), provenance.Options{})
++	if err != nil {
++		t.Fatalf("BuildFromRecording: %v", err)
++	}
++	if len(got) != 1 {
++		t.Errorf("default MaxProofs: got %d proofs, want 1", len(got))
++	}
++}
++
++// TestP2PRecordingAlternativesAndCaps pins that the recording-based entry
++// point returns all alternative derivations up to MaxProofs with distinct
++// content-addressed identifiers, and honors explicit caps.
++func TestP2PRecordingAlternativesAndCaps(t *testing.T) {
++	source := `
++		a(1).
++		b(1).
++		c(1).
++		foo(X) :- a(X).
++		foo(X) :- b(X).
++		foo(X) :- c(X).
++	`
++	rec := provenance.NewMemoryRecorder()
++	_, store := p2pEvalProgram(t, source, rec)
++
++	all, err := provenance.BuildFromRecording(rec, store, p2pAtom(t, "foo(1)"), provenance.Options{MaxProofs: 10})
++	if err != nil {
++		t.Fatalf("BuildFromRecording: %v", err)
++	}
++	if len(all) != 3 {
++		t.Fatalf("MaxProofs=10: got %d proofs, want 3", len(all))
++	}
++	ids := map[string]bool{}
++	ruleIDs := map[string]bool{}
++	for _, p := range all {
++		ids[p.ID] = true
++		ruleIDs[p.RuleID] = true
++	}
++	if len(ids) != 3 || len(ruleIDs) != 3 {
++		t.Errorf("expected 3 distinct proof ids and rule ids, got ids=%d ruleIDs=%d", len(ids), len(ruleIDs))
++	}
++
++	two, err := provenance.BuildFromRecording(rec, store, p2pAtom(t, "foo(1)"), provenance.Options{MaxProofs: 2})
++	if err != nil {
++		t.Fatalf("BuildFromRecording: %v", err)
++	}
++	if len(two) != 2 {
++		t.Errorf("MaxProofs=2: got %d proofs, want 2", len(two))
++	}
++}
++
++// TestP2PRecordingAbsenceLeaf pins closed-world negation in recording mode:
++// a satisfied negated premise contributes a KindAbsence leaf (not Partial),
++// and a negated premise that holds in the store yields no proof.
++func TestP2PRecordingAbsenceLeaf(t *testing.T) {
++	source := `
++		node(1).
++		node(2).
++		node(3).
++		reachable(1).
++		reachable(2).
++		unreachable(X) :- node(X), !reachable(X).
++	`
++	rec := provenance.NewMemoryRecorder()
++	_, store := p2pEvalProgram(t, source, rec)
++
++	proofs, err := provenance.BuildFromRecording(rec, store, p2pAtom(t, "unreachable(3)"), provenance.Options{})
++	if err != nil {
++		t.Fatalf("BuildFromRecording: %v", err)
++	}
++	p := proofs[0]
++	if p.Partial {
++		t.Errorf("closed-world negation must not be Partial")
++	}
++	last := p.Premises[len(p.Premises)-1]
++	if last.Kind != provenance.KindAbsence {
++		t.Fatalf("last premise kind = %v, want KindAbsence", last.Kind)
++	}
++	if last.Fact.String() != "reachable(3)" {
++		t.Errorf("absence fact = %q, want reachable(3)", last.Fact.String())
++	}
++	if _, err := provenance.BuildFromRecording(rec, store, p2pAtom(t, "unreachable(1)"), provenance.Options{}); err != provenance.ErrNoProof {
++		t.Errorf("unreachable(1) (reachable(1) exists): err = %v, want ErrNoProof", err)
++	}
++}
++
++// TestP2PExplainSkipsTransforms pins that post-hoc proofs stay derived from
++// fact-store queries and closed-world absence checks and never include
++// transform nodes: a fact only derivable through a transform has no post-hoc
++// proof.
++func TestP2PExplainSkipsTransforms(t *testing.T) {
++	source := `
++		measurement(1, 10).
++		measurement(2, 20).
++		scaled(ID, V) :- measurement(ID, Raw) |> let V = fn:mult(Raw, 2).
++		totals(Sum) :- measurement(ID, Raw) |> do fn:group_by(), let Sum = fn:sum(Raw).
++	`
++	pi, store := p2pEvalProgram(t, source, nil)
++	if !store.Contains(p2pAtom(t, "scaled(1, 20)")) {
++		t.Fatalf("scaled(1, 20) not derived by the evaluator")
++	}
++	if !store.Contains(p2pAtom(t, "totals(30)")) {
++		t.Fatalf("totals(30) not derived by the evaluator")
++	}
++	if _, err := provenance.Explain(pi, store, p2pAtom(t, "scaled(1, 20)"), provenance.Options{}); err != provenance.ErrNoProof {
++		t.Errorf("post-hoc let-transform: err = %v, want ErrNoProof", err)
++	}
++	if _, err := provenance.Explain(pi, store, p2pAtom(t, "totals(30)"), provenance.Options{}); err != provenance.ErrNoProof {
++		t.Errorf("post-hoc do-transform: err = %v, want ErrNoProof", err)
++	}
++}
++
++// --- shared construction invariants ---
++
++// TestP2PCrossModeIdenticalIDs pins that shared construction produces
++// identical node identifiers and rule identifiers across both entry points
++// for the same derivation, including closed-world absence leaves.
++func TestP2PCrossModeIdenticalIDs(t *testing.T) {
++	source := `
++		node(1).
++		node(2).
++		blocked(1).
++		edge(1, 2).
++		edge(2, 3).
++		path(X, Y) :- edge(X, Y).
++		path(X, Z) :- edge(X, Y), path(Y, Z).
++		allowed(X) :- node(X), !blocked(X).
++	`
++	rec := provenance.NewMemoryRecorder()
++	pi, store := p2pEvalProgram(t, source, rec)
++
++	for _, goalStr := range []string{"allowed(2)", "path(1, 3)"} {
++		goal := p2pAtom(t, goalStr)
++		simple, err := provenance.Explain(pi, store, goal, provenance.Options{})
++		if err != nil {
++			t.Fatalf("Explain(%s): %v", goalStr, err)
++		}
++		full, err := provenance.BuildFromRecording(rec, store, goal, provenance.Options{})
++		if err != nil {
++			t.Fatalf("BuildFromRecording(%s): %v", goalStr, err)
++		}
++		a, b := p2pIDSet(simple), p2pIDSet(full)
++		for id := range a {
++			if !b[id] {
++				t.Errorf("%s: node id %s present in post-hoc but missing in recording mode", goalStr, id)
++			}
++		}
++		for id := range b {
++			if !a[id] {
++				t.Errorf("%s: node id %s present in recording mode but missing in post-hoc", goalStr, id)
++			}
++		}
++		if simple[0].ID != full[0].ID {
++			t.Errorf("%s: root id differs across modes: %q vs %q", goalStr, simple[0].ID, full[0].ID)
++		}
++		if simple[0].RuleID != full[0].RuleID {
++			t.Errorf("%s: rule id differs across modes: %q vs %q", goalStr, simple[0].RuleID, full[0].RuleID)
++		}
++	}
++}
++
++// TestP2PSharedSubProofCollapse pins that a sub-derivation shared by two
++// alternative proofs within one call collapses onto one memoized node.
++func TestP2PSharedSubProofCollapse(t *testing.T) {
++	source := `
++		bar(1).
++		baz(1).
++		qux(1).
++		foo1(X) :- bar(X), baz(X).
++		foo2(X) :- bar(X), qux(X).
++		mid(X) :- foo1(X).
++		mid(X) :- foo2(X).
++	`
++	pi, store := p2pEvalProgram(t, source, nil)
++	proofs, err := provenance.Explain(pi, store, p2pAtom(t, "mid(1)"), provenance.Options{MaxProofs: 2})
++	if err != nil {
++		t.Fatalf("Explain: %v", err)
++	}
++	if len(proofs) != 2 {
++		t.Fatalf("got %d proofs, want 2 alternatives", len(proofs))
++	}
++	var barIDs []string
++	for _, p := range proofs {
++		for _, sub := range p.Premises {
++			for _, leaf := range sub.Premises {
++				if leaf.Fact.String() == "bar(1)" {
++					barIDs = append(barIDs, leaf.ID)
++				}
++			}
++		}
++	}
++	if len(barIDs) != 2 {
++		t.Fatalf("expected bar(1) as a sub-proof of both derivations, got %d occurrences", len(barIDs))
++	}
++	if barIDs[0] != barIDs[1] {
++		t.Errorf("shared sub-proof should collapse onto one id, got %q and %q", barIDs[0], barIDs[1])
++	}
++}
++
++// TestP2PMemoizationIsolationAcrossCalls pins that memoization does not leak
++// across entry-point calls: the same goal atom proved against a different
++// program/store must use that call's own derivation, and repeating an
++// identical call must reproduce the same identifiers.
++func TestP2PMemoizationIsolationAcrossCalls(t *testing.T) {
++	pi1, store1 := p2pEvalProgram(t, `bar(1). foo(X) :- bar(X).`, nil)
++	pi2, store2 := p2pEvalProgram(t, `bar(1). baz(1). foo(X) :- bar(X), baz(X).`, nil)
++	goal := p2pAtom(t, "foo(1)")
++
++	first, err := provenance.Explain(pi1, store1, goal, provenance.Options{})
++	if err != nil {
++		t.Fatalf("Explain #1: %v", err)
++	}
++	second, err := provenance.Explain(pi2, store2, goal, provenance.Options{})
++	if err != nil {
++		t.Fatalf("Explain #2: %v", err)
++	}
++	if len(first[0].Premises) != 1 {
++		t.Errorf("first call: got %d premises, want 1", len(first[0].Premises))
++	}
++	if len(second[0].Premises) != 2 {
++		t.Errorf("second call: got %d premises, want 2 (memoization leaked across calls?)", len(second[0].Premises))
++	}
++	if first[0].ID == second[0].ID {
++		t.Errorf("different derivations must not share a proof id: %q", first[0].ID)
++	}
++
++	again, err := provenance.Explain(pi1, store1, goal, provenance.Options{})
++	if err != nil {
++		t.Fatalf("Explain #1 repeated: %v", err)
++	}
++	if again[0].ID != first[0].ID {
++		t.Errorf("repeated identical call changed the proof id: %q vs %q", again[0].ID, first[0].ID)
++	}
++}
++
++// TestP2PCycleTerminationBothModes pins that cyclic derivations terminate in
++// both modes. A goal currently under proof contributes no proof on that
++// branch; the recording mode retains its existing partial fallback shape.
++func TestP2PCycleTerminationBothModes(t *testing.T) {
++	source := `
++		base(1).
++		p(X) :- base(X).
++		p(X) :- q(X).
++		q(X) :- p(X).
++	`
++	rec := provenance.NewMemoryRecorder()
++	pi, store := p2pEvalProgram(t, source, rec)
++
++	simple, err := provenance.Explain(pi, store, p2pAtom(t, "p(1)"), provenance.Options{MaxProofs: 5})
++	if err != nil {
++		t.Fatalf("Explain: %v", err)
++	}
++	if len(simple) == 0 {
++		t.Fatalf("post-hoc: expected at least the base-case proof")
++	}
++	full, err := provenance.BuildFromRecording(rec, store, p2pAtom(t, "p(1)"), provenance.Options{MaxProofs: 5})
++	if err != nil {
++		t.Fatalf("BuildFromRecording: %v", err)
++	}
++	if len(full) == 0 {
++		t.Fatalf("recording: expected at least the base-case proof")
++	}
++	if len(simple) != 1 || len(full) != 2 {
++		t.Errorf("cycle pruning: simple roots=%d recording roots=%d; want 1 and 2 (including the replay fallback)", len(simple), len(full))
++	}
++	p2pAssertFrozenOutput(t, "cycle/false", simple)
++	p2pAssertFrozenOutput(t, "cycle/true", full)
++	if !p2pIDSet(full)[simple[0].ID] {
++		t.Errorf("base-case proof id %s (post-hoc) is missing from the recording-mode proofs", simple[0].ID)
++	}
++}
++
++// TestP2PModeOutputsMatchForDeterministicProgram pins that both modes print
++// and emit identical trees/facts for a program with a single derivation.
++func TestP2PModeOutputsMatchForDeterministicProgram(t *testing.T) {
++	source := `
++		bar(1).
++		baz(1).
++		foo(X) :- bar(X), baz(X).
++	`
++	rec := provenance.NewMemoryRecorder()
++	pi, store := p2pEvalProgram(t, source, rec)
++	goal := p2pAtom(t, "foo(1)")
++
++	simple, err := provenance.Explain(pi, store, goal, provenance.Options{})
++	if err != nil {
++		t.Fatalf("Explain: %v", err)
++	}
++	full, err := provenance.BuildFromRecording(rec, store, goal, provenance.Options{})
++	if err != nil {
++		t.Fatalf("BuildFromRecording: %v", err)
++	}
++	if got, want := p2pPrintOutput(t, full), p2pPrintOutput(t, simple); got != want {
++		t.Errorf("printed trees differ across modes:\npost-hoc:\n%s\nrecording:\n%s", want, got)
++	}
++	if got, want := p2pFactsDump(t, full), p2pFactsDump(t, simple); got != want {
++		t.Errorf("emitted facts differ across modes:\npost-hoc:\n%s\nrecording:\n%s", want, got)
++	}
++}
++
++// TestP2PEmitFactsSharedSubProofReference pins the printed-tree reference to
++// shared subproofs by identifier and the deduplication of emitted facts.
++func TestP2PEmitFactsSharedSubProofReference(t *testing.T) {
++	for label, proofs := range p2pFrozenOutputCases(t) {
++		p2pAssertFrozenOutput(t, label, proofs)
++	}
++	source := `
++		bar(1).
++		baz(1).
++		qux(1).
++		foo1(X) :- bar(X), baz(X).
++		foo2(X) :- bar(X), qux(X).
++		both(X) :- foo1(X), foo2(X).
++	`
++	pi, store := p2pEvalProgram(t, source, nil)
++	proofs, err := provenance.Explain(pi, store, p2pAtom(t, "both(1)"), provenance.Options{})
++	if err != nil {
++		t.Fatalf("Explain: %v", err)
++	}
++	printed := p2pPrintOutput(t, proofs)
++	if !strings.Contains(printed, "... see /proof/") {
++		t.Errorf("printed tree must reference shared subproofs by id:\n%s", printed)
++	}
++
++	out := factstore.NewSimpleInMemoryStore()
++	if err := provenance.EmitFacts(proofs, &out); err != nil {
++		t.Fatalf("EmitFacts: %v", err)
++	}
++	var barLeaves int
++	for _, p := range out.ListPredicates() {
++		if p.Symbol != "edb_leaf" {
++			continue
++		}
++		out.GetFacts(ast.NewQuery(p), func(a ast.Atom) error {
++			if strings.Contains(a.Args[1].String(), "bar") {
++				barLeaves++
++			}
++			return nil
++		})
++	}
++	if barLeaves != 1 {
++		t.Errorf("shared bar(1) leaf emitted %d times, want 1 (deduplicated by id)", barLeaves)
++	}
++}
++
++// TestP2PPinnedContentAddressedIdentifiers pins the exact content-addressed
++// identifiers produced on the baseline: unifying rule-identifier memoization
++// must not change rule identifiers or proof node identifiers.
++func TestP2PPinnedContentAddressedIdentifiers(t *testing.T) {
++	source := `
++		bar(1).
++		baz(1).
++		foo(X) :- bar(X), baz(X).
++	`
++	pi, store := p2pEvalProgram(t, source, nil)
++	proofs, err := provenance.Explain(pi, store, p2pAtom(t, "foo(1)"), provenance.Options{})
++	if err != nil {
++		t.Fatalf("Explain: %v", err)
++	}
++	p := proofs[0]
++	if p.ID != "/proof/6ba7965905408316e9f9788095f43d23" {
++		t.Errorf("root proof id = %q", p.ID)
++	}
++	if p.RuleID != "/rule/1c266c6cf731536679df9f21c8ce1642" {
++		t.Errorf("rule id = %q", p.RuleID)
++	}
++	if p.Premises[0].ID != "/proof/ec34ff4012fd45ea622a2456b2375e04" {
++		t.Errorf("bar(1) leaf id = %q", p.Premises[0].ID)
++	}
++	if p.Premises[1].ID != "/proof/d10e924c8740b9706a034f603e880543" {
++		t.Errorf("baz(1) leaf id = %q", p.Premises[1].ID)
++	}
++}
++
++// --- exported contract pins ---
++
++// Compile-time pins: the exported entry points, option fields, proof-node
++// fields, error sentinels, kind values and recorder API must keep their
++// signatures and types.
++var (
++	_ func(*analysis.ProgramInfo, factstore.ReadOnlyFactStore, ast.Atom, provenance.Options) ([]*provenance.ProofNode, error)      = provenance.Explain
++	_ func(*provenance.MemoryRecorder, factstore.ReadOnlyFactStore, ast.Atom, provenance.Options) ([]*provenance.ProofNode, error) = provenance.BuildFromRecording
++	_ func([]*provenance.ProofNode, factstore.FactStore) error                                                                     = provenance.EmitFacts
++	_ func(io.Writer, []*provenance.ProofNode) error                                                                               = provenance.Print
++	_ func() *provenance.MemoryRecorder                                                                                            = provenance.NewMemoryRecorder
++	_ engine.DerivationRecorder                                                                                                    = provenance.NewMemoryRecorder()
++	_ error                                                                                                                        = provenance.ErrNoProof
++	_ error                                                                                                                        = provenance.ErrGoalNotGround
++	_ func(*provenance.MemoryRecorder, ast.Clause, ast.Atom, unionfind.UnionFind, []ast.Atom)                                      = (*provenance.MemoryRecorder).RuleFired
++	_ func(*provenance.MemoryRecorder, ast.Clause, ast.Atom, ast.ConstSubstList, ast.Atom)                                         = (*provenance.MemoryRecorder).LetEmit
++	_ func(*provenance.MemoryRecorder, ast.Clause, ast.Atom, []ast.Constant, []ast.Atom, ast.Atom)                                 = (*provenance.MemoryRecorder).DoEmit
++	_ func(*provenance.MemoryRecorder) []*provenance.Event                                                                         = (*provenance.MemoryRecorder).Events
++	_ func(*provenance.MemoryRecorder, ast.Atom) []*provenance.Event                                                               = (*provenance.MemoryRecorder).EventsFor
++)
++
++// TestP2PExportedContractPins exercises the pinned field names/types and the
++// frozen Kind enumerator values.
++func TestP2PExportedContractPins(t *testing.T) {
++	opts := provenance.Options{MaxProofs: 2, MaxDepth: 3}
++	if opts.MaxProofs != 2 || opts.MaxDepth != 3 {
++		t.Errorf("Options fields changed: %+v", opts)
++	}
++	node := &provenance.ProofNode{
++		ID:            "/proof/x",
++		Fact:          p2pAtom(t, "foo(1)"),
++		Kind:          provenance.KindDerived,
++		Rule:          &ast.Clause{},
++		RuleID:        "/rule/x",
++		Bindings:      []provenance.Binding{{Var: ast.Variable{Symbol: "X"}, Value: ast.Number(1)}},
++		Premises:      []*provenance.ProofNode{{ID: "/proof/y", Kind: provenance.KindEDB}},
++		GroupKey:      []ast.Constant{ast.String("k")},
++		TransformText: "tt",
++		Partial:       true,
++	}
++	if node.Bindings[0].Var.Symbol != "X" || node.Bindings[0].Value.String() != "1" {
++		t.Errorf("Binding fields changed: %+v", node.Bindings[0])
++	}
++
++	got := []int{
++		int(provenance.KindEDB),
++		int(provenance.KindDerived),
++		int(provenance.KindAbsence),
++		int(provenance.KindLetRow),
++		int(provenance.KindDoAggregate),
++	}
++	want := []int{0, 1, 2, 3, 4}
++	for i := range want {
++		if got[i] != want[i] {
++			t.Errorf("Kind value %d = %d, want %d", i, got[i], want[i])
++		}
++	}
++}
++
++// TestP2PRecorderEngineIntegration pins that MemoryRecorder remains usable
++// with the engine: callbacks fire for rule, let-transform and do-transform
++// derivations, EventsFor resolves recorded outputs, and fresh recorders stay
++// isolated.
++func TestP2PRecorderEngineIntegration(t *testing.T) {
++	source := `
++		bar(1).
++		baz(1).
++		foo(X) :- bar(X), baz(X).
++		measurement(1, 10).
++		scaled(ID, V) :- measurement(ID, Raw) |> let V = fn:mult(Raw, 2).
++		sale("apple", 3).
++		sale("apple", 5).
++		totals(Product, Sum) :- sale(Product, N)
++			|> do fn:group_by(Product), let Sum = fn:sum(N).
++	`
++	rec := provenance.NewMemoryRecorder()
++	if len(rec.Events()) != 0 {
++		t.Fatalf("fresh recorder must be empty")
++	}
++	_, store := p2pEvalProgram(t, source, rec)
++	if len(rec.Events()) == 0 {
++		t.Fatalf("engine did not fire derivation callbacks with a recorder attached")
++	}
++	for _, fact := range []string{"foo(1)", "scaled(1, 20)", `totals("apple", 8)`} {
++		if got := rec.EventsFor(p2pAtom(t, fact)); len(got) == 0 {
++			t.Errorf("EventsFor(%s) is empty", fact)
++		}
++	}
++	if !store.Contains(p2pAtom(t, `totals("apple", 8)`)) {
++		t.Errorf("derived fact missing from the store")
++	}
++
++	other := provenance.NewMemoryRecorder()
++	if len(other.Events()) != 0 {
++		t.Errorf("a new recorder must not see another recorder's events")
++	}
++	_, _ = p2pEvalProgram(t, `bar(1). foo(X) :- bar(X).`, nil)
++	if len(other.Events()) != 0 {
++		t.Errorf("recorder without engine attachment must stay empty")
++	}
++}
++
++// These fingerprints were captured from the task's frozen baseline, using
++// only exported APIs. Keep the readable shape assertions as well: a digest
++// mismatch must not be mistaken for a compiler or collection failure.
++func p2pOutputFingerprint(t *testing.T, proofs []*provenance.ProofNode) string {
++	t.Helper()
++	var kinds []string
++	p2pWalk(proofs, func(n *provenance.ProofNode) {
++		kinds = append(kinds, fmt.Sprintf("%s|%d|%t|%s", n.Fact.String(), n.Kind, n.Partial, n.ID))
++	})
++	value := strings.Join(kinds, "\n") + "\nTREE\n" + p2pPrintOutput(t, proofs) + "\nFACTS\n" + p2pFactsDump(t, proofs)
++	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
++}
++
++func p2pAssertFrozenOutput(t *testing.T, label string, proofs []*provenance.ProofNode) {
++	t.Helper()
++	want, ok := p2pFrozenOutputs[label]
++	if !ok {
++		t.Fatalf("missing frozen baseline fixture for %s", label)
++	}
++	if got := p2pOutputFingerprint(t, proofs); got != want {
++		t.Errorf("%s: proof fields, tree or fact records changed: fingerprint %s, want %s", label, got, want)
++	}
++}
++
++func p2pDeepProofs(t *testing.T, recording bool, limit int) []*provenance.ProofNode {
++	t.Helper()
++	var source strings.Builder
++	source.WriteString("step0(1).\n")
++	for i := 1; i <= 70; i++ {
++		fmt.Fprintf(&source, "step%d(X) :- step%d(X).\n", i, i-1)
++	}
++	rec := provenance.NewMemoryRecorder()
++	pi, store := p2pEvalProgram(t, source.String(), rec)
++	goal := p2pAtom(t, "step70(1)")
++	opts := provenance.Options{MaxDepth: limit}
++	var proofs []*provenance.ProofNode
++	var err error
++	if recording {
++		proofs, err = provenance.BuildFromRecording(rec, store, goal, opts)
++	} else {
++		proofs, err = provenance.Explain(pi, store, goal, opts)
++	}
++	if err != nil || len(proofs) != 1 {
++		t.Fatalf("depth %d recording=%t: proofs=%d error=%v", limit, recording, len(proofs), err)
++	}
++	return proofs
++}
++
++func p2pCheckExactDepth(t *testing.T, recording bool) {
++	t.Helper()
++	for _, limit := range []int{0, 1, 2, 64, 65, 70} {
++		t.Run(fmt.Sprintf("exact-depth-%t-%d", recording, limit), func(t *testing.T) {
++			proofs := p2pDeepProofs(t, recording, limit)
++			effective := limit
++			if effective == 0 {
++				effective = 64
++			}
++			terminalDepth := effective + 1
++			truncated := terminalDepth < 70
++			if !truncated {
++				terminalDepth = 70
++			}
++			n := proofs[0]
++			for depth := 0; depth <= terminalDepth; depth++ {
++				if n == nil {
++					t.Fatalf("missing node at depth %d", depth)
++				}
++				wantFact := fmt.Sprintf("step%d(1)", 70-depth)
++				// Simple mode propagates Partial to ancestors; replay keeps
++				// the original per-node flag, including only the cutoff leaf
++				// for this chain. This refactor must preserve both contracts.
++				wantPartial := truncated && (!recording || depth == terminalDepth)
++				if n.Fact.String() != wantFact || n.Partial != wantPartial {
++					t.Fatalf("depth %d: fact=%s partial=%t; want %s partial=%t", depth, n.Fact, n.Partial, wantFact, wantPartial)
++				}
++				if depth == terminalDepth {
++					if len(n.Premises) != 0 || n.Kind != provenance.KindEDB || n.Rule != nil || n.RuleID != "" {
++						t.Fatal("cutoff/EDB leaf has unexpected construction fields")
++					}
++					if strings.HasPrefix(n.ID, "/proof/partial/") != truncated {
++						t.Fatalf("terminal ID=%q partial=%t", n.ID, truncated)
++					}
++				} else {
++					if n.Kind != provenance.KindDerived || n.Rule == nil || n.RuleID == "" || len(n.Premises) != 1 {
++						t.Fatalf("depth %d must remain a single-premise derived node", depth)
++					}
++					n = n.Premises[0]
++				}
++			}
++			p2pAssertFrozenOutput(t, fmt.Sprintf("depth/%t/%d", recording, limit), proofs)
++		})
++	}
++}
++
++type p2pAccessCountingStore struct {
++	factstore.ReadOnlyFactStore
++	reads int
++}
++
++func (s *p2pAccessCountingStore) GetFacts(a ast.Atom, fn func(ast.Atom) error) error {
++	s.reads++
++	return s.ReadOnlyFactStore.GetFacts(a, fn)
++}
++
++func (s *p2pAccessCountingStore) Contains(a ast.Atom) bool {
++	s.reads++
++	return s.ReadOnlyFactStore.Contains(a)
++}
++
++func (s *p2pAccessCountingStore) ListPredicates() []ast.PredicateSym {
++	s.reads++
++	return s.ReadOnlyFactStore.ListPredicates()
++}
++
++func (s *p2pAccessCountingStore) EstimateFactCount() int {
++	s.reads++
++	return s.ReadOnlyFactStore.EstimateFactCount()
++}
++
++func p2pCheckGroundErrorOrdering(t *testing.T) {
++	t.Helper()
++	rec := provenance.NewMemoryRecorder()
++	pi, store := p2pEvalProgram(t, "a(1). foo(X) :- a(X).", rec)
++	goal := ast.NewAtom("foo", ast.Variable{Symbol: "X"})
++	for _, recording := range []bool{false, true} {
++		t.Run(fmt.Sprintf("non-ground-before-premises-%t", recording), func(t *testing.T) {
++			counted := &p2pAccessCountingStore{ReadOnlyFactStore: store}
++			var proofs []*provenance.ProofNode
++			var err error
++			if recording {
++				proofs, err = provenance.BuildFromRecording(rec, counted, goal, provenance.Options{})
++			} else {
++				proofs, err = provenance.Explain(pi, counted, goal, provenance.Options{})
++			}
++			if err != provenance.ErrGoalNotGround || proofs != nil || counted.reads != 0 {
++				t.Errorf("proofs=%v error=%v store reads=%d; want nil, ErrGoalNotGround, 0", proofs, err, counted.reads)
++			}
++		})
++	}
++	// A recorder is not needed to reject an invalid goal. Dereferencing this
++	// nil recorder would reveal event lookup before ground validation.
++	if proofs, err := provenance.BuildFromRecording(nil, store, goal, provenance.Options{}); err != provenance.ErrGoalNotGround || proofs != nil {
++		t.Errorf("nil recorder non-ground rejection: proofs=%v error=%v", proofs, err)
++	}
++}
++
++func p2pFrozenOutputCases(t *testing.T) map[string][]*provenance.ProofNode {
++	t.Helper()
++	cases := map[string][]*provenance.ProofNode{}
++	rec := provenance.NewMemoryRecorder()
++	pi, store := p2pEvalProgram(t, "a(1). b(1). blocked(2). foo(X) :- a(X), b(X), !blocked(X).", rec)
++	for _, recording := range []bool{false, true} {
++		var proofs []*provenance.ProofNode
++		var err error
++		if recording {
++			proofs, err = provenance.BuildFromRecording(rec, store, p2pAtom(t, "foo(1)"), provenance.Options{})
++		} else {
++			proofs, err = provenance.Explain(pi, store, p2pAtom(t, "foo(1)"), provenance.Options{})
++		}
++		if err != nil || len(proofs) != 1 {
++			t.Fatalf("ordinary output: proofs=%d error=%v", len(proofs), err)
++		}
++		// The repeated root exercises shared-subproof references as well as
++		// zero-based indices 0,1,2 and absence leaves in the fact schema.
++		cases[fmt.Sprintf("output/ordinary/%t", recording)] = append(proofs, proofs[0])
++		cases[fmt.Sprintf("output/partial/%t", recording)] = p2pDeepProofs(t, recording, 1)
++	}
++	for _, input := range []struct{ label, source, goal string }{
++		{"let", "measurement(1,10). scaled(ID,V) :- measurement(ID,Raw) |> let V = fn:mult(Raw,2).", "scaled(1,20)"},
++		{"aggregate", `sale("apple",3). sale("apple",5). totals(Product,Sum) :- sale(Product,N) |> do fn:group_by(Product), let Sum = fn:sum(N).`, `totals("apple",8)`},
++	} {
++		rec := provenance.NewMemoryRecorder()
++		_, store := p2pEvalProgram(t, input.source, rec)
++		proofs, err := provenance.BuildFromRecording(rec, store, p2pAtom(t, input.goal), provenance.Options{})
++		if err != nil || len(proofs) != 1 {
++			t.Fatalf("%s output: proofs=%d error=%v", input.label, len(proofs), err)
++		}
++		cases["output/"+input.label] = proofs
++	}
++	return cases
++}
++
++var p2pFrozenOutputs = map[string]string{
++	"cycle/false":           "ec1a8b1c6f55c192253a8255fa7d2232797c30a91aaade2bc9e602fd15ad607d",
++	"cycle/true":            "49432748c5ba5ddd7aca1cd3a530a63873e61270b4e39045eeb1421e8e4cdeba",
++	"depth/false/0":         "cce4877dd23e87c59b911f4060a50403ade59f46c83fcc584354ebef0e62314c",
++	"depth/false/1":         "3beebddbd03dd7edcfe0b02268fc5b129c67343c9024b4146dce0316dc6fe5ed",
++	"depth/false/2":         "fb0bd7a069b35ae8c99260752a2da1e6fe49f6fb76e1d24fadeea359d8a3c1db",
++	"depth/false/64":        "cce4877dd23e87c59b911f4060a50403ade59f46c83fcc584354ebef0e62314c",
++	"depth/false/65":        "5137d80f9663cc63ff1b70977f81f3bec9314d32b647ddf2a35f218816ea4fe8",
++	"depth/false/70":        "3b14c40bcf3079947ef02d59fb59f7fe54d75dc0c65a7c0bb466a99efaaf0a93",
++	"depth/true/0":          "1f99d1a961401bfe917e3a66de8bfe03d10c3a6cc0ba8b4f8592c57880cb5415",
++	"depth/true/1":          "0da0a3bf387b61b1fc8bc3b89b931fa54b612595638b75d8efaf6b0d3bd24f4d",
++	"depth/true/2":          "a89121cbaa72235448a2da93b939abee6e759d6a3b1b1b2d8ca8c1ac0aeebea8",
++	"depth/true/64":         "1f99d1a961401bfe917e3a66de8bfe03d10c3a6cc0ba8b4f8592c57880cb5415",
++	"depth/true/65":         "9d962dc9b8343f2712e5414b0f7fafd164745cb71a3eb7a7da8080166e83cc2f",
++	"depth/true/70":         "3b14c40bcf3079947ef02d59fb59f7fe54d75dc0c65a7c0bb466a99efaaf0a93",
++	"output/aggregate":      "40c77aadfc527891875d50793e22154924f30ff420dc29ce12efe865bb113566",
++	"output/let":            "ad48d9a6e4135ed34cb112d22b2b0232cd2dd33b3fe12cd61b4e48429bc514f4",
++	"output/ordinary/false": "794eef58caccb80882af8e040bb5239a7a289fd00692454b3393055feebe314e",
++	"output/ordinary/true":  "794eef58caccb80882af8e040bb5239a7a289fd00692454b3393055feebe314e",
++	"output/partial/false":  "3beebddbd03dd7edcfe0b02268fc5b129c67343c9024b4146dce0316dc6fe5ed",
++	"output/partial/true":   "0da0a3bf387b61b1fc8bc3b89b931fa54b612595638b75d8efaf6b0d3bd24f4d",
++}
+diff --git a/provenance/test/p2p_runner.go b/provenance/test/p2p_runner.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f55cc1a5a91bcc08eef9af8cb87b30f9b616256a
+--- /dev/null
++++ b/provenance/test/p2p_runner.go
+@@ -0,0 +1,559 @@
++// Command p2p_runner executes the declared P2P regression nodes of the
++// provenance package and writes a JUnit XML report.
++//
++// It is intentionally self-contained: it shells out to the Go toolchain that
++// is already required to build this module, reads no selection manifest other
++// than the pipeline-provided {p2p_select} file (when present), and produces
++// the report at the caller-provided path.
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"encoding/xml"
++	"flag"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"sort"
++	"strings"
++	"time"
++)
++
++// manifest lists the exact leaf selectors of every collected P2P node:
++// the original provenance tests (restored from the baseline) and the
++// supplemental regression tests added by the P2P owner.
++var manifest = []string{
++	// --- original: provenance/provenance_test.go ---
++	"provenance/provenance_test.go::TestExplainSimpleDerivation",
++	"provenance/provenance_test.go::TestExplainNoProof",
++	"provenance/provenance_test.go::TestExplainNonGroundGoal",
++	"provenance/provenance_test.go::TestExplainMultipleDerivations",
++	"provenance/provenance_test.go::TestExplainRecursiveClosure",
++	"provenance/provenance_test.go::TestExplainCycleDetection",
++	"provenance/provenance_test.go::TestContentHashDeterminism",
++	"provenance/provenance_test.go::TestSharedSubProofID",
++	"provenance/provenance_test.go::TestEmitFactsSchema",
++	"provenance/provenance_test.go::TestEmitFactsAtomEncoding",
++	"provenance/provenance_test.go::TestPrintOutput",
++	"provenance/provenance_test.go::TestMaxProofs",
++	"provenance/provenance_test.go::TestExplainStratifiedNegation",
++	"provenance/provenance_test.go::TestEmitFactsAbsenceLeaf",
++	"provenance/provenance_test.go::TestExplainShowcase",
++	// --- original: provenance/recorder_test.go ---
++	"provenance/recorder_test.go::TestFullModeMatchesSimpleOnDatalog",
++	"provenance/recorder_test.go::TestFullExplainLetTransform",
++	"provenance/recorder_test.go::TestFullExplainAggregation",
++	"provenance/recorder_test.go::TestFullEmitFactsSchema",
++	"provenance/recorder_test.go::TestFullPrintAggregation",
++	// --- supplemental: provenance/p2p_regression_test.go ---
++	"provenance/p2p_regression_test.go::TestP2PExplainEDBLeafShape",
++	"provenance/p2p_regression_test.go::TestP2PExplainDefaultsAndCaps",
++	"provenance/p2p_regression_test.go::TestP2PExplainDepthPartial",
++	"provenance/p2p_regression_test.go::TestP2PRecordingDepthPartial",
++	"provenance/p2p_regression_test.go::TestP2PRecordingErrorsAndDefaults",
++	"provenance/p2p_regression_test.go::TestP2PRecordingAlternativesAndCaps",
++	"provenance/p2p_regression_test.go::TestP2PRecordingAbsenceLeaf",
++	"provenance/p2p_regression_test.go::TestP2PCrossModeIdenticalIDs",
++	"provenance/p2p_regression_test.go::TestP2PExplainSkipsTransforms",
++	"provenance/p2p_regression_test.go::TestP2PSharedSubProofCollapse",
++	"provenance/p2p_regression_test.go::TestP2PMemoizationIsolationAcrossCalls",
++	"provenance/p2p_regression_test.go::TestP2PCycleTerminationBothModes",
++	"provenance/p2p_regression_test.go::TestP2PModeOutputsMatchForDeterministicProgram",
++	"provenance/p2p_regression_test.go::TestP2PEmitFactsSharedSubProofReference",
++	"provenance/p2p_regression_test.go::TestP2PPinnedContentAddressedIdentifiers",
++	"provenance/p2p_regression_test.go::TestP2PExportedContractPins",
++	"provenance/p2p_regression_test.go::TestP2PRecorderEngineIntegration",
++	// --- supplemental: cmd/mgwhy/mgwhy_p2p_test.go ---
++	"cmd/mgwhy/mgwhy_p2p_test.go::TestP2PCLIModeFlagSelectsBuilderAndFormats",
++}
++
++type sel struct {
++	selector string
++	path     string
++	leaf     string
++}
++
++func parseSelector(s string) (sel, error) {
++	i := strings.Index(s, "::")
++	if i <= 0 || i+2 >= len(s) {
++		return sel{}, fmt.Errorf("not a path::leaf selector: %q", s)
++	}
++	p, l := s[:i], s[i+2:]
++	if p == "" || l == "" || strings.Contains(l, "::") {
++		return sel{}, fmt.Errorf("not a path::leaf selector: %q", s)
++	}
++	return sel{selector: s, path: p, leaf: l}, nil
++}
++
++// nodeResult is the outcome of one declared selector.
++type nodeResult struct {
++	sel     sel
++	result  string // pass|fail|skip|error
++	message string
++	typ     string
++	body    string
++	elapsed float64
++}
++
++type testResult struct {
++	action  string
++	elapsed float64
++	output  []string
++}
++
++type junitTestSuites struct {
++	XMLName  xml.Name         `xml:"testsuites"`
++	Name     string           `xml:"name,attr"`
++	Tests    int              `xml:"tests,attr"`
++	Failures int              `xml:"failures,attr"`
++	Errors   int              `xml:"errors,attr"`
++	Skipped  int              `xml:"skipped,attr"`
++	Time     string           `xml:"time,attr"`
++	Suites   []junitTestSuite `xml:"testsuite"`
++}
++
++type junitTestSuite struct {
++	Name      string          `xml:"name,attr"`
++	Tests     int             `xml:"tests,attr"`
++	Failures  int             `xml:"failures,attr"`
++	Errors    int             `xml:"errors,attr"`
++	Skipped   int             `xml:"skipped,attr"`
++	Time      string          `xml:"time,attr"`
++	TestCases []junitTestCase `xml:"testcase"`
++}
++
++type junitTestCase struct {
++	Classname string        `xml:"classname,attr"`
++	Name      string        `xml:"name,attr"`
++	File      string        `xml:"file,attr"`
++	Time      string        `xml:"time,attr"`
++	Failure   *junitMessage `xml:"failure,omitempty"`
++	Error     *junitMessage `xml:"error,omitempty"`
++	Skipped   *junitMessage `xml:"skipped,omitempty"`
++}
++
++type junitMessage struct {
++	Message string `xml:"message,attr"`
++	Type    string `xml:"type,attr"`
++	Body    string `xml:",chardata"`
++}
++
++func main() {
++	var (
++		reportPath = flag.String("report", "", "path of the JUnit XML report to write (required)")
++		selectPath = flag.String("select", "", "optional pipeline-provided p2p_select file listing path::leaf selectors")
++		one        = flag.String("selector", "", "optional single path::leaf selector to execute (node mode)")
++		rootFlag   = flag.String("root", "", "optional module root")
++		deadline   = flag.Duration("deadline", 240*time.Second, "internal deadline for the go test invocation")
++	)
++	flag.Parse()
++	if *reportPath == "" {
++		fmt.Fprintln(os.Stderr, "p2p_runner: -report is required")
++		os.Exit(2)
++	}
++
++	root, err := findModuleRoot(*rootFlag)
++	if err != nil {
++		fmt.Fprintf(os.Stderr, "p2p_runner: %v\n", err)
++		os.Exit(2)
++	}
++
++	selByKey := map[string]sel{}
++	for _, s := range manifest {
++		parsed, err := parseSelector(s)
++		if err != nil {
++			fmt.Fprintf(os.Stderr, "p2p_runner: bad manifest entry: %v\n", err)
++			os.Exit(2)
++		}
++		selByKey[parsed.selector] = parsed
++	}
++
++	wanted := make([]string, 0, len(manifest))
++	seen := map[string]bool{}
++	add := func(s string) {
++		if _, ok := selByKey[s]; !ok {
++			fmt.Fprintf(os.Stderr, "p2p_runner: ignoring selector not in the declared node set: %q\n", s)
++			return
++		}
++		if seen[s] {
++			return
++		}
++		seen[s] = true
++		wanted = append(wanted, s)
++	}
++	if *one != "" {
++		add(*one)
++	} else {
++		for _, s := range manifest {
++			add(s)
++		}
++		if *selectPath != "" {
++			if data, err := os.ReadFile(*selectPath); err == nil {
++				for _, line := range strings.Split(string(data), "\n") {
++					line = strings.TrimSpace(line)
++					if line == "" || strings.HasPrefix(line, "#") {
++						continue
++					}
++					add(line)
++				}
++			} else {
++				fmt.Fprintf(os.Stderr, "p2p_runner: p2p_select %q not readable (%v); continuing with the declared node set\n", *selectPath, err)
++			}
++		}
++	}
++	sort.Strings(wanted)
++
++	selectors := make([]sel, 0, len(wanted))
++	for _, s := range wanted {
++		selectors = append(selectors, selByKey[s])
++	}
++
++	// Verify each declared node is actually collectable in its file.
++	pkgDirs := map[string]bool{}
++	missing := map[string]string{}
++	for _, s := range selectors {
++		full := filepath.Join(root, filepath.FromSlash(s.path))
++		data, err := os.ReadFile(full)
++		if err != nil {
++			missing[s.selector] = fmt.Sprintf("test file %s not readable: %v", s.path, err)
++			continue
++		}
++		if !regexp.MustCompile(`(?m)^func ` + regexp.QuoteMeta(s.leaf) + `\(`).Match(data) {
++			missing[s.selector] = fmt.Sprintf("leaf %s not found in %s", s.leaf, s.path)
++			continue
++		}
++		pkgDirs[filepath.Dir(s.path)] = true
++	}
++
++	pkgs := make([]string, 0, len(pkgDirs))
++	for d := range pkgDirs {
++		pkgs = append(pkgs, "./"+filepath.ToSlash(d))
++	}
++	sort.Strings(pkgs)
++
++	var leaves []string
++	for _, s := range selectors {
++		leaves = append(leaves, regexp.QuoteMeta(s.leaf))
++	}
++
++	results := map[string]testResult{}
++	pkgOutput := map[string][]string{}
++	buildOutput := map[string][]string{}
++	buildFailed := map[string]bool{}
++	runnerErr := ""
++	testStderr := ""
++	if len(pkgs) == 0 {
++		runnerErr = "no collectable test package found"
++	} else {
++		ctx, cancel := context.WithTimeout(context.Background(), *deadline)
++		defer cancel()
++		args := []string{"test", "-json", "-count=1", "-v", "-run", "^(" + strings.Join(leaves, "|") + ")$"}
++		args = append(args, pkgs...)
++		cmd := exec.CommandContext(ctx, "go", args...)
++		cmd.Dir = root
++		cmd.Env = buildEnv(root)
++		stdout, err := cmd.StdoutPipe()
++		if err != nil {
++			runnerErr = fmt.Sprintf("stdout pipe: %v", err)
++		} else {
++			var stderr strings.Builder
++			cmd.Stderr = &stderr
++			if err := cmd.Start(); err != nil {
++				runnerErr = fmt.Sprintf("start go test: %v", err)
++			} else {
++				dec := json.NewDecoder(stdout)
++				for {
++					var ev struct {
++						Action      string  `json:"Action"`
++						Package     string  `json:"Package"`
++						ImportPath  string  `json:"ImportPath"`
++						Test        string  `json:"Test"`
++						Output      string  `json:"Output"`
++						Elapsed     float64 `json:"Elapsed"`
++						FailedBuild string  `json:"FailedBuild"`
++					}
++					if err := dec.Decode(&ev); err != nil {
++						break
++					}
++					switch ev.Action {
++					case "build-output":
++						base := ev.ImportPath
++						if i := strings.Index(base, " ["); i >= 0 {
++							base = base[:i]
++						}
++						buildOutput[base] = append(buildOutput[base], ev.Output)
++					case "build-fail":
++						base := ev.ImportPath
++						if i := strings.Index(base, " ["); i >= 0 {
++							base = base[:i]
++						}
++						buildFailed[base] = true
++					case "output":
++						if ev.Test == "" {
++							pkgOutput[ev.Package] = append(pkgOutput[ev.Package], ev.Output)
++						} else {
++							key := ev.Package + "|" + ev.Test
++							r := results[key]
++							r.output = append(r.output, ev.Output)
++							results[key] = r
++						}
++					case "pass", "fail", "skip":
++						if ev.Test == "" {
++							if ev.Action == "fail" && ev.FailedBuild != "" {
++								base := ev.FailedBuild
++								if i := strings.Index(base, " ["); i >= 0 {
++									base = base[:i]
++								}
++								buildFailed[base] = true
++							}
++							continue
++						}
++						key := ev.Package + "|" + ev.Test
++						r := results[key]
++						r.action = ev.Action
++						r.elapsed = ev.Elapsed
++						results[key] = r
++					}
++				}
++				waitErr := cmd.Wait()
++				if ctx.Err() == context.DeadlineExceeded {
++					runnerErr = fmt.Sprintf("go test exceeded the internal deadline of %s", deadline.String())
++				} else if waitErr != nil && len(results) == 0 && len(pkgOutput) == 0 {
++					runnerErr = fmt.Sprintf("go test failed to produce any output: %v; stderr: %s", waitErr, strings.TrimSpace(stderr.String()))
++				}
++				testStderr = strings.TrimSpace(stderr.String())
++			}
++		}
++	}
++
++	nodes := make([]nodeResult, 0, len(selectors))
++	for _, s := range selectors {
++		n := nodeResult{sel: s}
++		if msg, ok := missing[s.selector]; ok {
++			n.result = "error"
++			n.typ = "not_collected"
++			n.message = "selector not collected"
++			n.body = msg
++			nodes = append(nodes, n)
++			continue
++		}
++		pkg := pkgPath(root, s.path)
++		r, ok := results[pkg+"|"+s.leaf]
++		switch {
++		case !ok:
++			n.result = "error"
++			switch {
++			case buildFailed[pkg] || strings.Contains(strings.Join(pkgOutput[pkg], ""), "build failed"):
++				n.typ = "build_error"
++				n.message = "package failed to build"
++				n.body = strings.Join(buildOutput[pkg], "") + strings.Join(pkgOutput[pkg], "")
++			case runnerErr != "":
++				n.typ = "not_run"
++				n.message = "selector did not run"
++				n.body = runnerErr
++			default:
++				n.typ = "not_run"
++				n.message = "selector did not run"
++				n.body = "no test event observed for this selector"
++				if extra := strings.Join(pkgOutput[pkg], ""); extra != "" {
++					n.body += "; package output: " + strings.TrimSpace(extra)
++				} else if testStderr != "" {
++					n.body += "; go test stderr: " + testStderr
++				}
++			}
++		case r.action == "pass":
++			n.result = "pass"
++			n.elapsed = r.elapsed
++		case r.action == "skip":
++			n.result = "skip"
++			n.body = strings.Join(r.output, "")
++		default:
++			n.result = "fail"
++			n.typ = "assertion"
++			n.message = "test failed"
++			body := strings.Join(r.output, "")
++			if strings.Contains(body, "panic:") {
++				n.typ = "panic"
++				n.message = "test panicked"
++			}
++			n.body = body
++			n.elapsed = r.elapsed
++		}
++		nodes = append(nodes, n)
++	}
++
++	suites := buildSuites(nodes)
++
++	out := junitTestSuites{Name: "p2p", Suites: suites}
++	for _, s := range suites {
++		out.Tests += s.Tests
++		out.Failures += s.Failures
++		out.Errors += s.Errors
++		out.Skipped += s.Skipped
++	}
++	out.Time = fmt.Sprintf("%.3f", maxSuiteTime(suites))
++
++	if err := writeReport(*reportPath, out); err != nil {
++		fmt.Fprintf(os.Stderr, "p2p_runner: write report: %v\n", err)
++		os.Exit(2)
++	}
++
++	failed := out.Failures + out.Errors
++	fmt.Printf("p2p_runner: %d nodes, %d failures, %d errors, %d skipped (report: %s)\n",
++		out.Tests, out.Failures, out.Errors, out.Skipped, *reportPath)
++	if runnerErr != "" {
++		fmt.Fprintf(os.Stderr, "p2p_runner: %s\n", runnerErr)
++	}
++	if failed > 0 {
++		os.Exit(1)
++	}
++}
++
++func buildSuites(nodes []nodeResult) []junitTestSuite {
++	byPkg := map[string][]int{}
++	var order []string
++	for i, n := range nodes {
++		pkg := filepath.Dir(n.sel.path)
++		if _, ok := byPkg[pkg]; !ok {
++			order = append(order, pkg)
++		}
++		byPkg[pkg] = append(byPkg[pkg], i)
++	}
++	sort.Strings(order)
++	suites := make([]junitTestSuite, 0, len(order))
++	for _, pkg := range order {
++		suite := junitTestSuite{Name: "codeberg.org/TauCeti/mangle-go/" + filepath.ToSlash(pkg)}
++		var total float64
++		for _, i := range byPkg[pkg] {
++			n := nodes[i]
++			tc := junitTestCase{
++				Classname: n.sel.path,
++				Name:      n.sel.leaf,
++				File:      n.sel.path,
++				Time:      fmt.Sprintf("%.3f", n.elapsed),
++			}
++			switch n.result {
++			case "pass":
++				suite.Tests++
++			case "skip":
++				suite.Tests++
++				suite.Skipped++
++				tc.Skipped = &junitMessage{Message: "skipped", Type: "skip", Body: n.body}
++			case "fail":
++				suite.Tests++
++				suite.Failures++
++				tc.Failure = &junitMessage{Message: n.message, Type: n.typ, Body: n.body}
++			default:
++				suite.Tests++
++				suite.Errors++
++				tc.Error = &junitMessage{Message: n.message, Type: n.typ, Body: n.body}
++			}
++			suite.TestCases = append(suite.TestCases, tc)
++			total += n.elapsed
++		}
++		suite.Time = fmt.Sprintf("%.3f", total)
++		suites = append(suites, suite)
++	}
++	return suites
++}
++
++func maxSuiteTime(suites []junitTestSuite) float64 {
++	var max float64
++	for _, s := range suites {
++		var t float64
++		if _, err := fmt.Sscanf(s.Time, "%f", &t); err == nil && t > max {
++			max = t
++		}
++	}
++	return max
++}
++
++func pkgPath(root, relPath string) string {
++	dir := filepath.ToSlash(filepath.Dir(relPath))
++	return "codeberg.org/TauCeti/mangle-go/" + dir
++}
++
++func writeReport(path string, suites junitTestSuites) error {
++	if dir := filepath.Dir(path); dir != "" && dir != "." {
++		if err := os.MkdirAll(dir, 0o755); err != nil {
++			return err
++		}
++	}
++	data, err := xml.MarshalIndent(suites, "", "  ")
++	if err != nil {
++		return err
++	}
++	out := append([]byte(xml.Header), data...)
++	out = append(out, '\n')
++	return os.WriteFile(path, out, 0o644)
++}
++
++// buildEnv returns the environment for the go test invocation. It keeps the
++// image-provided toolchain, module cache and build cache, falls back to a
++// temporary build cache when the inherited one is not usable, and disables
++// any network or toolchain download so replay stays offline.
++func buildEnv(root string) []string {
++	env := os.Environ()
++	cache := os.Getenv("GOCACHE")
++	if cache == "" {
++		if home, err := os.UserHomeDir(); err == nil && home != "" {
++			cache = filepath.Join(home, ".cache", "go-build")
++		}
++	}
++	if cache == "" || !writableDir(cache) {
++		fallback := filepath.Join(os.TempDir(), "p2p-go-build-cache")
++		if err := os.MkdirAll(fallback, 0o755); err == nil {
++			cache = fallback
++		}
++	}
++	if cache != "" {
++		env = append(env, "GOCACHE="+cache)
++	}
++	env = append(env,
++		"GOPROXY=off",
++		"GOTOOLCHAIN=local",
++		"GOFLAGS=-mod=readonly",
++	)
++	return env
++}
++
++func writableDir(dir string) bool {
++	if err := os.MkdirAll(dir, 0o755); err != nil {
++		return false
++	}
++	f, err := os.CreateTemp(dir, ".p2p-write-probe-*")
++	if err != nil {
++		return false
++	}
++	name := f.Name()
++	_ = f.Close()
++	_ = os.Remove(name)
++	return true
++}
++
++func findModuleRoot(override string) (string, error) {
++	candidates := []string{}
++	if override != "" {
++		candidates = append(candidates, override)
++	}
++	if wd, err := os.Getwd(); err == nil {
++		candidates = append(candidates, wd)
++	}
++	for _, start := range candidates {
++		dir := start
++		for {
++			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
++				return dir, nil
++			}
++			parent := filepath.Dir(dir)
++			if parent == dir {
++				break
++			}
++			dir = parent
++		}
++	}
++	return "", fmt.Errorf("could not locate the module root (go.mod) from %v", candidates)
++}
+diff --git a/tests/f2p/analysis_test.go b/tests/f2p/analysis_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..15e09c6a60a7e6148c1d6894a9c253337503d8f5
+--- /dev/null
++++ b/tests/f2p/analysis_test.go
+@@ -0,0 +1,999 @@
++package f2p
++
++import (
++	"fmt"
++	"go/ast"
++	"sort"
++	"strings"
++	"testing"
++)
++
++// constructionAnalysis separates the code that produces the proof slices
++// returned by Explain and BuildFromRecording from the code that only supplies
++// mode-specific premises. It never depends on private symbol names: the
++// construction component is identified by the value flow of each entry
++// point's returned proof slice, and ownership of a responsibility is
++// attributed to the function that directly performs it.
++type constructionAnalysis struct {
++	m    *moduleModel
++	pkg  *pkgModel
++	post *fnInfo
++	rec  *fnInfo
++
++	reachE, reachR   map[string]bool // any-edge reachability from each entry
++	strongE, strongR map[string]bool // statically pinned calls only
++	instE, instR     map[string]bool // struct types constructed in each strong region
++	strongCallers    map[string][]string
++
++	attrE, attrR map[string]bool
++	region       []*fnInfo
++	byKey        map[string]*fnInfo
++}
++
++func newConstructionAnalysis(t *testing.T) *constructionAnalysis {
++	t.Helper()
++	m := moduleSources(t)
++	pkg := m.pkgs[m.modPath+"/provenance"]
++	if pkg == nil {
++		t.Fatalf("package %s/provenance not found in module sources", m.modPath)
++	}
++	post := pkg.fn(entryPostHoc)
++	rec := pkg.fn(entryRecording)
++	if post == nil || rec == nil {
++		t.Fatalf("provenance package must keep the public entry points %s and %s", entryPostHoc, entryRecording)
++	}
++	a := &constructionAnalysis{
++		m: m, pkg: pkg, post: post, rec: rec,
++		reachE: m.reach(post, false), reachR: m.reach(rec, false),
++		strongE: m.reach(post, true), strongR: m.reach(rec, true),
++		strongCallers: m.strongCallers(),
++		byKey:         map[string]*fnInfo{},
++	}
++	a.instE = m.instantiatedStructs(a.strongE)
++	a.instR = m.instantiatedStructs(a.strongR)
++	for _, f := range pkg.funcs {
++		if a.reachE[f.key] || a.reachR[f.key] {
++			a.region = append(a.region, f)
++			a.byKey[f.key] = f
++		}
++	}
++	sort.Slice(a.region, func(i, j int) bool { return a.region[i].key < a.region[j].key })
++	a.attribute()
++	return a
++}
++
++// attribute partitions the region into code private to one entry point and
++// code both entry points can use. A function is entry-private when its
++// receiver type is only constructed in one entry's statically pinned region,
++// or when every pinned call site that can reach it belongs to one entry.
++func (a *constructionAnalysis) attribute() {
++	a.attrE = map[string]bool{}
++	a.attrR = map[string]bool{}
++	for _, f := range a.region {
++		if f.recv != "" {
++			if a.instE[f.recv] && !a.instR[f.recv] {
++				a.attrE[f.key] = true
++			}
++			if a.instR[f.recv] && !a.instE[f.recv] {
++				a.attrR[f.key] = true
++			}
++		}
++		if a.sharedType(f.recv) {
++			// Methods of a component type constructed in both entry points
++			// belong to the shared component even when only one mode
++			// currently calls one of them.
++			continue
++		}
++		if a.strongE[f.key] && !a.reachR[f.key] {
++			a.attrE[f.key] = true
++		}
++		if a.strongR[f.key] && !a.reachE[f.key] {
++			a.attrR[f.key] = true
++		}
++	}
++	for pass := 0; pass < 8; pass++ {
++		changed := false
++		for _, f := range a.region {
++			if a.attrE[f.key] || a.attrR[f.key] || a.sharedType(f.recv) {
++				continue
++			}
++			callers := a.strongCallers[f.key]
++			if len(callers) == 0 {
++				continue
++			}
++			allE, allR := true, true
++			for _, ck := range callers {
++				if !(a.attrE[ck] || ck == a.post.key) {
++					allE = false
++				}
++				if !(a.attrR[ck] || ck == a.rec.key) {
++					allR = false
++				}
++			}
++			switch {
++			case allE && !allR && !a.strongR[f.key]:
++				a.attrE[f.key] = true
++				changed = true
++			case allR && !allE && !a.strongE[f.key]:
++				a.attrR[f.key] = true
++				changed = true
++			}
++		}
++		if !changed {
++			return
++		}
++	}
++}
++
++// sharedType reports whether the receiver type is constructed by both entry
++// points' statically pinned construction code.
++func (a *constructionAnalysis) sharedType(recv string) bool {
++	return recv != "" && a.instE[recv] && a.instR[recv]
++}
++
++// entryPrivate reports whether f is used by exactly one of the two entry
++// points and therefore cannot be the shared construction component.
++func (a *constructionAnalysis) entryPrivate(f *fnInfo) bool {
++	e, r := a.attrE[f.key], a.attrR[f.key]
++	return e != r
++}
++
++// shared reports whether f belongs to code that both entry points can use.
++func (a *constructionAnalysis) shared(f *fnInfo) bool { return !a.entryPrivate(f) }
++
++func (a *constructionAnalysis) location(f *fnInfo) string {
++	return fmt.Sprintf("%s:%d (%s)", f.file, f.startLine, f.key)
++}
++
++func (a *constructionAnalysis) locations(fns []*fnInfo) string {
++	var out []string
++	for _, f := range fns {
++		out = append(out, a.location(f))
++	}
++	sort.Strings(out)
++	return strings.Join(out, "\n  ")
++}
++
++func (a *constructionAnalysis) keys(m map[string]bool) []string {
++	var out []string
++	for k := range m {
++		out = append(out, k)
++	}
++	sort.Strings(out)
++	return out
++}
++
++// --- returned proof-slice value flow ---
++
++func isNilExpr(e ast.Expr) bool {
++	id, ok := e.(*ast.Ident)
++	return ok && id.Name == "nil"
++}
++
++// proofReturns lists the expressions a function returns as its first
++// ([]*ProofNode) result. Returns nested inside function literals are ignored:
++// they are not the declaration's own value.
++func (a *constructionAnalysis) proofReturns(f *fnInfo) []ast.Expr {
++	if f == nil || f.decl == nil || f.decl.Body == nil || !f.returnsProofSlice() {
++		return nil
++	}
++	var out []ast.Expr
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		if _, ok := n.(*ast.FuncLit); ok {
++			return false
++		}
++		rs, ok := n.(*ast.ReturnStmt)
++		if !ok || len(rs.Results) == 0 {
++			return true
++		}
++		first := rs.Results[0]
++		if isNilExpr(first) {
++			return true
++		}
++		out = append(out, first)
++		return true
++	})
++	return out
++}
++
++// exprProducers resolves which functions can produce the value of an
++// expression: calls to a pinned function, or identifiers assigned from such
++// calls. weak=true means the value is produced locally or through dynamic
++// dispatch and cannot be traced further.
++func (a *constructionAnalysis) exprProducers(f *fnInfo, e ast.Expr) (targets []string, weak bool) {
++	switch x := e.(type) {
++	case *ast.ParenExpr:
++		return a.exprProducers(f, x.X)
++	case *ast.CallExpr:
++		ts, w := a.m.resolveCall(f, x)
++		if w || len(ts) == 0 {
++			return nil, true
++		}
++		return ts, false
++	case *ast.Ident:
++		if x.Name == "nil" {
++			return nil, false
++		}
++		rhs := f.assigns[x.Name]
++		if len(rhs) == 0 {
++			return nil, true
++		}
++		var out []string
++		weak := false
++		for _, r := range rhs {
++			ts, w := a.exprProducers(f, r)
++			if w || len(ts) == 0 {
++				weak = true
++			}
++			out = append(out, ts...)
++		}
++		if weak {
++			return nil, true
++		}
++		sort.Strings(out)
++		return dedupeSorted(out), false
++	}
++	return nil, true
++}
++
++// frontier returns the functions at which the value flow of the entry's
++// returned proof slice terminates: the functions that actually build the
++// returned slice. Thin forwarders are traversed; dynamic dispatch stops the
++// trace at the calling function because no further identity is provable.
++func (a *constructionAnalysis) frontier(entry *fnInfo) map[string]bool {
++	frontier := map[string]bool{}
++	visited := map[string]bool{entry.key: true}
++	var expand func(f *fnInfo)
++	expand = func(f *fnInfo) {
++		terminal := false
++		for _, e := range a.proofReturns(f) {
++			targets, weak := a.exprProducers(f, e)
++			if weak || len(targets) == 0 {
++				terminal = true
++				continue
++			}
++			for _, k := range targets {
++				if visited[k] {
++					continue
++				}
++				g := a.byKey[k]
++				if g == nil {
++					terminal = true
++					continue
++				}
++				visited[k] = true
++				expand(g)
++			}
++		}
++		if terminal {
++			frontier[f.key] = true
++		}
++	}
++	expand(entry)
++	return frontier
++}
++
++// --- responsibility detectors ---
++
++func (a *constructionAnalysis) assignedLHS(f *fnInfo) map[ast.Node]bool {
++	lhsNodes := map[ast.Node]bool{}
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		switch s := n.(type) {
++		case *ast.AssignStmt:
++			for _, l := range s.Lhs {
++				lhsNodes[l] = true
++			}
++		case *ast.IncDecStmt:
++			lhsNodes[s.X] = true
++		}
++		return true
++	})
++	return lhsNodes
++}
++
++// writesOptionsFields reports whether the function directly assigns one of
++// the frozen Options fields, or builds an Options value carrying them.
++func (a *constructionAnalysis) writesOptionsFields(f *fnInfo) bool {
++	found := false
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		if found {
++			return false
++		}
++		switch s := n.(type) {
++		case *ast.AssignStmt:
++			for _, l := range s.Lhs {
++				if sel, ok := l.(*ast.SelectorExpr); ok && (sel.Sel.Name == "MaxProofs" || sel.Sel.Name == "MaxDepth") {
++					found = true
++				}
++			}
++		case *ast.IncDecStmt:
++			if sel, ok := s.X.(*ast.SelectorExpr); ok && (sel.Sel.Name == "MaxProofs" || sel.Sel.Name == "MaxDepth") {
++				found = true
++			}
++		case *ast.CompositeLit:
++			name, _ := bareTypeName(s.Type)
++			if name != "Options" {
++				return true
++			}
++			for _, el := range s.Elts {
++				if kv, ok := el.(*ast.KeyValueExpr); ok {
++					if id, ok := kv.Key.(*ast.Ident); ok && (id.Name == "MaxProofs" || id.Name == "MaxDepth") {
++						found = true
++					}
++				}
++			}
++		}
++		return true
++	})
++	return found
++}
++
++// returnsErrGoalNotGround reports whether the function's own body returns the
++// frozen ErrGoalNotGround sentinel.
++func (a *constructionAnalysis) returnsErrGoalNotGround(f *fnInfo) bool {
++	found := false
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		if found {
++			return false
++		}
++		rs, ok := n.(*ast.ReturnStmt)
++		if !ok {
++			return true
++		}
++		for _, r := range rs.Results {
++			if id, ok := r.(*ast.Ident); ok && id.Name == "ErrGoalNotGround" {
++				found = true
++			}
++		}
++		return true
++	})
++	return found
++}
++
++// maxDepthReads reports whether the function reads the frozen MaxDepth option
++// field anywhere (comparison, local hoist, arithmetic or otherwise).
++func (a *constructionAnalysis) maxDepthReads(f *fnInfo) bool {
++	lhs := a.assignedLHS(f)
++	found := false
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		if found {
++			return false
++		}
++		sel, ok := n.(*ast.SelectorExpr)
++		if !ok || sel.Sel.Name != "MaxDepth" {
++			return true
++		}
++		if lhs[sel] {
++			return true
++		}
++		found = true
++		return true
++	})
++	return found
++}
++
++// proofNodeFieldWrites walks the function body, resolving composite literals
++// (including elided element literals of proof-slice literals) and field
++// assignments to the frozen ProofNode fields.
++func (a *constructionAnalysis) proofNodeFieldWrites(f *fnInfo, wanted map[string]bool) []string {
++	var hits []string
++	lhs := a.assignedLHS(f)
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		switch s := n.(type) {
++		case *ast.CompositeLit:
++			typ := ""
++			if s.Type != nil {
++				typ = typeString(s.Type)
++			} else {
++				typ = elidedProofHint
++			}
++			if isProofValueType(f.pkg, typ) {
++				for _, el := range s.Elts {
++					kv, ok := el.(*ast.KeyValueExpr)
++					if !ok {
++						continue
++					}
++					if id, ok := kv.Key.(*ast.Ident); ok && wanted[id.Name] {
++						hits = append(hits, id.Name)
++					}
++				}
++			}
++			// elided composites inside []*ProofNode{...} / []ProofNode{...}
++			if et := elemType(f.pkg.resolve(typ)); et != "" && isProofValueType(f.pkg, et) {
++				for _, el := range s.Elts {
++					inner, ok := el.(*ast.CompositeLit)
++					if !ok || inner.Type != nil {
++						continue
++					}
++					for _, iel := range inner.Elts {
++						kv, ok := iel.(*ast.KeyValueExpr)
++						if !ok {
++							continue
++						}
++						if id, ok := kv.Key.(*ast.Ident); ok && wanted[id.Name] {
++							hits = append(hits, id.Name)
++						}
++					}
++				}
++			}
++		case *ast.AssignStmt:
++			for _, l := range s.Lhs {
++				sel, ok := l.(*ast.SelectorExpr)
++				if !ok || !wanted[sel.Sel.Name] {
++					continue
++				}
++				base := f.pkg.resolve(strings.TrimPrefix(a.m.exprType(f, sel.X), "*"))
++				if isProofValueType(f.pkg, base) {
++					hits = append(hits, sel.Sel.Name)
++				}
++			}
++		}
++		return true
++	})
++	_ = lhs
++	return hits
++}
++
++// elidedProofHint marks composite literals without an explicit type; the
++// caller resolves them through their slice element hint.
++const elidedProofHint = ""
++
++func isProofValueType(pkg *pkgModel, t string) bool {
++	t = strings.ReplaceAll(pkg.resolve(t), " ", "")
++	switch t {
++	case "ProofNode", "*ProofNode", "provenance.ProofNode", "*provenance.ProofNode":
++		return true
++	}
++	return false
++}
++
++func (a *constructionAnalysis) assemblesProofNode(f *fnInfo) bool {
++	if len(a.proofNodeFieldWrites(f, proofNodeFields)) > 0 {
++		return true
++	}
++	found := false
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		if found {
++			return false
++		}
++		switch s := n.(type) {
++		case *ast.CompositeLit:
++			if s.Type != nil && isProofValueType(f.pkg, typeString(s.Type)) {
++				found = true
++			}
++		case *ast.CallExpr:
++			if id, ok := s.Fun.(*ast.Ident); ok && id.Name == "new" && len(s.Args) == 1 {
++				if name, ok := bareTypeName(s.Args[0]); ok && isProofValueType(f.pkg, name) {
++					found = true
++				}
++			}
++		}
++		return true
++	})
++	return found
++}
++
++var proofNodeFields = map[string]bool{
++	"ID": true, "Fact": true, "Kind": true, "Rule": true, "RuleID": true,
++	"Bindings": true, "Premises": true, "GroupKey": true, "TransformText": true,
++	"Partial": true,
++}
++
++func (a *constructionAnalysis) stampsNodeID(f *fnInfo) bool {
++	if len(a.proofNodeFieldWrites(f, map[string]bool{"ID": true})) == 0 {
++		return false
++	}
++	return a.reachesContentAddressedID(f, map[string]bool{})
++}
++
++// reachesContentAddressedID reports whether the function (or a function it
++// calls) builds the frozen "/proof/" or "/rule/" identifiers.
++func (a *constructionAnalysis) reachesContentAddressedID(f *fnInfo, seen map[string]bool) bool {
++	if seen[f.key] {
++		return false
++	}
++	seen[f.key] = true
++	if hasIDPrefixLiteral(f) {
++		return true
++	}
++	for _, cs := range f.calls {
++		for _, k := range cs.targets {
++			if g := a.byKey[k]; g != nil {
++				if a.reachesContentAddressedID(g, seen) {
++					return true
++				}
++			}
++		}
++	}
++	return false
++}
++
++func hasIDPrefixLiteral(f *fnInfo) bool {
++	found := false
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		if found {
++			return false
++		}
++		bl, ok := n.(*ast.BasicLit)
++		if !ok {
++			return true
++		}
++		v := strings.Trim(bl.Value, `"`)
++		if strings.HasPrefix(v, "/proof/") || strings.HasPrefix(v, "/rule/") {
++			found = true
++		}
++		return true
++	})
++	return found
++}
++
++// depthHandling reports whether the function turns the MaxDepth option into
++// a depth truncation decision: it reads the option and either compares a
++// depth value while doing so or marks a proof node Partial. Merely forwarding
++// the configured limit is not ownership of the depth handling.
++func (a *constructionAnalysis) depthHandling(f *fnInfo) bool {
++	if !a.maxDepthReads(f) {
++		return false
++	}
++	if len(a.proofNodeFieldWrites(f, map[string]bool{"Partial": true})) > 0 {
++		return true
++	}
++	found := false
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		if found {
++			return false
++		}
++		be, ok := n.(*ast.BinaryExpr)
++		if !ok {
++			return true
++		}
++		if exprMentionsIdent(be.X, "depth") || exprMentionsIdent(be.Y, "depth") {
++			found = true
++		}
++		return true
++	})
++	return found
++}
++
++func exprMentionsIdent(e ast.Expr, name string) bool {
++	switch t := e.(type) {
++	case nil:
++		return false
++	case *ast.Ident:
++		return t.Name == name
++	case *ast.ParenExpr:
++		return exprMentionsIdent(t.X, name)
++	case *ast.UnaryExpr:
++		return exprMentionsIdent(t.X, name)
++	case *ast.BinaryExpr:
++		return exprMentionsIdent(t.X, name) || exprMentionsIdent(t.Y, name)
++	case *ast.SelectorExpr:
++		return exprMentionsIdent(t.X, name)
++	case *ast.CallExpr:
++		for _, arg := range t.Args {
++			if exprMentionsIdent(arg, name) {
++				return true
++			}
++		}
++		return exprMentionsIdent(t.Fun, name)
++	case *ast.IndexExpr:
++		return exprMentionsIdent(t.X, name) || exprMentionsIdent(t.Index, name)
++	}
++	return false
++}
++
++// --- construction state (memo / cycle / rule-ID maps) ---
++
++type stateKind int
++
++const (
++	stateProof stateKind = iota
++	stateBool
++	stateString
++)
++
++type stateAccess struct {
++	fn    *fnInfo
++	typ   string // struct type declaring the field, "" when accessed through a local
++	field string
++	kind  stateKind
++	write bool
++	line  int
++}
++
++func stateKindOf(pkg *pkgModel, t string) (stateKind, bool) {
++	t = strings.ReplaceAll(pkg.resolve(t), " ", "")
++	switch t {
++	case "[]*ProofNode", "[]ProofNode", "[]*provenance.ProofNode", "[]provenance.ProofNode":
++		return stateProof, true
++	case "bool":
++		return stateBool, true
++	case "string":
++		return stateString, true
++	}
++	return 0, false
++}
++
++// stateAccesses lists every read or write of a map whose value type is a
++// proof slice, a bool, or a string, together with the struct field it lives in
++// when the access goes through one.
++func (a *constructionAnalysis) stateAccesses(f *fnInfo) []stateAccess {
++	var out []stateAccess
++	record := func(index *ast.IndexExpr, write bool) {
++		container := a.m.exprType(f, index.X)
++		if container == "" {
++			return
++		}
++		_ = f.pkg
++		_, val, ok := parseMapType(f.pkg.resolve(container))
++		if !ok {
++			return
++		}
++		kind, ok := stateKindOf(f.pkg, val)
++		if !ok {
++			return
++		}
++		acc := stateAccess{fn: f, kind: kind, write: write, line: f.pkg.fset.Position(index.Pos()).Line}
++		if sel, ok := index.X.(*ast.SelectorExpr); ok {
++			acc.field = sel.Sel.Name
++			acc.typ = strings.TrimPrefix(f.pkg.resolve(a.m.exprType(f, sel.X)), "*")
++			if owner, _, ok := f.pkg.promotedField(acc.typ, sel.Sel.Name, map[string]bool{}); ok {
++				acc.typ = owner
++			}
++		}
++		out = append(out, acc)
++	}
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		switch s := n.(type) {
++		case *ast.AssignStmt:
++			for _, l := range s.Lhs {
++				if idx, ok := l.(*ast.IndexExpr); ok {
++					record(idx, true)
++				}
++			}
++		case *ast.IndexExpr:
++			record(s, false)
++		case *ast.RangeStmt:
++			if idx, ok := s.X.(*ast.IndexExpr); ok {
++				record(idx, false)
++			}
++		}
++		return true
++	})
++	return out
++}
++
++// stateAccessAll returns every state access in the region.
++func (a *constructionAnalysis) stateAccessAll() []stateAccess {
++	var out []stateAccess
++	for _, f := range a.region {
++		out = append(out, a.stateAccesses(f)...)
++	}
++	return out
++}
++
++// compositionEdges follows actual field accesses in the shared construction
++// region, including promoted fields. An unused field or an unrelated local
++// type cannot lend its state to a component merely by having a matching type.
++func (a *constructionAnalysis) compositionEdges() map[string]map[string]bool {
++	edges := map[string]map[string]bool{}
++	add := func(parent, child string) {
++		if parent == child || !a.sharedType(parent) || a.pkg.structs[child] == nil {
++			return
++		}
++		if edges[parent] == nil {
++			edges[parent] = map[string]bool{}
++		}
++		edges[parent][child] = true
++	}
++	for _, f := range a.region {
++		ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++			sel, ok := n.(*ast.SelectorExpr)
++			if !ok {
++				return true
++			}
++			parent := strings.TrimPrefix(f.pkg.resolve(a.m.exprType(f, sel.X)), "*")
++			owner, fieldType, ok := f.pkg.promotedField(parent, sel.Sel.Name, map[string]bool{})
++			if ok {
++				add(parent, owner)
++				add(owner, strings.TrimPrefix(f.pkg.resolve(fieldType), "*"))
++			}
++			return true
++		})
++	}
++	return edges
++}
++
++func compositionContains(edges map[string]map[string]bool, parent, child string, seen map[string]bool) bool {
++	if parent == child {
++		return true
++	}
++	if seen[parent] {
++		return false
++	}
++	seen[parent] = true
++	for nested := range edges[parent] {
++		if compositionContains(edges, nested, child, seen) {
++			return true
++		}
++	}
++	return false
++}
++
++// stateTypes attributes observed state accesses to the component that owns
++// them, allowing private composition instead of requiring all maps to be
++// declared directly on one struct. Full nested helpers are counted with their
++// outer component, while separate construction roots remain separate.
++func (a *constructionAnalysis) stateTypes() map[string]map[stateKind]bool {
++	out := map[string]map[stateKind]bool{}
++	for _, acc := range a.stateAccessAll() {
++		if acc.typ == "" {
++			continue
++		}
++		if out[acc.typ] == nil {
++			out[acc.typ] = map[stateKind]bool{}
++		}
++		out[acc.typ][acc.kind] = true
++	}
++	edges := a.compositionEdges()
++	for changed := true; changed; {
++		changed = false
++		for parent, children := range edges {
++			if out[parent] == nil {
++				out[parent] = map[stateKind]bool{}
++			}
++			for child := range children {
++				for kind := range out[child] {
++					if !out[parent][kind] {
++						out[parent][kind] = true
++						changed = true
++					}
++				}
++			}
++		}
++	}
++	// Do not merge sibling roots or resolve a cycle by arbitrarily selecting
++	// one owner. Only an acyclic enclosing component subsumes a full helper.
++	nested := map[string]bool{}
++	for parent, kinds := range out {
++		if len(kinds) != 3 {
++			continue
++		}
++		for child, childKinds := range out {
++			if parent != child && len(childKinds) == 3 &&
++				compositionContains(edges, parent, child, map[string]bool{}) &&
++				!compositionContains(edges, child, parent, map[string]bool{}) {
++				nested[child] = true
++			}
++		}
++	}
++	for child := range nested {
++		delete(out, child)
++	}
++	return out
++}
++
++// --- mode-specific premise sources ---
++
++func (a *constructionAnalysis) ownStoreQuery(f *fnInfo) bool {
++	found := false
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		if found {
++			return false
++		}
++		call, ok := n.(*ast.CallExpr)
++		if !ok {
++			return true
++		}
++		sel, ok := call.Fun.(*ast.SelectorExpr)
++		if !ok {
++			return true
++		}
++		switch sel.Sel.Name {
++		case "GetFacts", "Contains", "ListPredicates", "EstimateFactCount":
++			recv := f.pkg.resolve(a.m.exprType(f, sel.X))
++			if recv == "" || strings.Contains(recv, "FactStore") {
++				found = true
++			}
++		}
++		return true
++	})
++	return found
++}
++
++// referencesStore reports whether the function queries the fact store itself
++// or strongly delegates to code that does. Dynamic calls are not traversed.
++func (a *constructionAnalysis) referencesStore() map[string]bool {
++	out := map[string]bool{}
++	for _, f := range a.region {
++		if a.ownStoreQuery(f) {
++			out[f.key] = true
++		}
++	}
++	for pass := 0; pass < 8; pass++ {
++		changed := false
++		for _, f := range a.region {
++			if out[f.key] || a.shared(f) {
++				continue
++			}
++			for _, cs := range f.calls {
++				if cs.weak {
++					continue
++				}
++				for _, k := range cs.targets {
++					if out[k] {
++						out[f.key] = true
++						changed = true
++					}
++				}
++			}
++		}
++		if !changed {
++			break
++		}
++	}
++	return out
++}
++
++func (a *constructionAnalysis) ownRecorderAccess(f *fnInfo) bool {
++	found := false
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		if found {
++			return false
++		}
++		switch s := n.(type) {
++		case *ast.SelectorExpr:
++			switch s.Sel.Name {
++			case "EventsFor", "MemoryRecorder":
++				found = true
++			case "Events":
++				recv := f.pkg.resolve(a.m.exprType(f, s.X))
++				if strings.Contains(recv, "MemoryRecorder") {
++					found = true
++				}
++			}
++		case *ast.Ident:
++			if s.Name == "MemoryRecorder" {
++				found = true
++			}
++		}
++		return true
++	})
++	return found
++}
++
++func (a *constructionAnalysis) referencesRecorder() map[string]bool {
++	out := map[string]bool{}
++	for _, f := range a.region {
++		if a.ownRecorderAccess(f) {
++			out[f.key] = true
++		}
++	}
++	for pass := 0; pass < 8; pass++ {
++		changed := false
++		for _, f := range a.region {
++			if out[f.key] || a.shared(f) {
++				continue
++			}
++			for _, cs := range f.calls {
++				if cs.weak {
++					continue
++				}
++				for _, k := range cs.targets {
++					if out[k] {
++						out[f.key] = true
++						changed = true
++					}
++				}
++			}
++		}
++		if !changed {
++			break
++		}
++	}
++	return out
++}
++
++// --- entry error value flow (ground-goal rejection) ---
++
++func (a *constructionAnalysis) errorOrigins(f *fnInfo) []string {
++	var out []string
++	seen := map[string]bool{}
++	add := func(k string) {
++		if !seen[k] {
++			seen[k] = true
++			out = append(out, k)
++		}
++	}
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		if _, ok := n.(*ast.FuncLit); ok {
++			return false
++		}
++		rs, ok := n.(*ast.ReturnStmt)
++		if !ok || len(rs.Results) == 0 {
++			return true
++		}
++		x := rs.Results[len(rs.Results)-1]
++		if len(rs.Results) == 1 {
++			if !f.returnsError() {
++				return true
++			}
++			switch x.(type) {
++			case *ast.CallExpr, *ast.Ident:
++			default:
++				return true
++			}
++		}
++		if isNilExpr(x) {
++			return true
++		}
++		a.originKeys(f, x, add, map[ast.Expr]bool{})
++		return true
++	})
++	sort.Strings(out)
++	return out
++}
++
++func (a *constructionAnalysis) originKeys(f *fnInfo, e ast.Expr, add func(string), seen map[ast.Expr]bool) {
++	if e == nil || seen[e] {
++		return
++	}
++	seen[e] = true
++	switch x := e.(type) {
++	case *ast.ParenExpr:
++		a.originKeys(f, x.X, add, seen)
++	case *ast.CallExpr:
++		ts, weak := a.m.resolveCall(f, x)
++		if weak {
++			return
++		}
++		for _, t := range ts {
++			add(t)
++		}
++	case *ast.Ident:
++		for _, rhs := range f.assigns[x.Name] {
++			a.originKeys(f, rhs, add, seen)
++		}
++	}
++}
++
++// groundErrorChains returns, for each error value returned by the entry, the
++// chain of functions that produce it, stopping at (and including) functions
++// that directly return ErrGoalNotGround. Only chains that end in a ground
++// rejection are reported.
++func (a *constructionAnalysis) groundErrorChains(entry *fnInfo) [][]string {
++	var chains [][]string
++	var walk func(key string, path []string, seen map[string]bool)
++	walk = func(key string, path []string, seen map[string]bool) {
++		if len(path) > 8 || seen[key] {
++			return
++		}
++		g := a.byKey[key]
++		if g == nil {
++			return
++		}
++		seen[key] = true
++		path = append(path, key)
++		if a.returnsErrGoalNotGround(g) {
++			chains = append(chains, append([]string(nil), path...))
++			return
++		}
++		for _, k := range a.errorOrigins(g) {
++			walk(k, path, seen)
++		}
++	}
++	for _, o := range a.errorOrigins(entry) {
++		walk(o, nil, map[string]bool{})
++	}
++	return chains
++}
++
++// --- aggregate ownership view ---
++
++func (a *constructionAnalysis) isConstructionOwner(f *fnInfo) bool {
++	if a.writesOptionsFields(f) || a.returnsErrGoalNotGround(f) ||
++		a.depthHandling(f) || a.assemblesProofNode(f) || a.stampsNodeID(f) {
++		return true
++	}
++	return len(a.stateAccesses(f)) > 0
++}
+diff --git a/tests/f2p/convergence_test.go b/tests/f2p/convergence_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..aff2054ddec7771cc20adf0d605879f1509d58f6
+--- /dev/null
++++ b/tests/f2p/convergence_test.go
+@@ -0,0 +1,335 @@
++package f2p
++
++import (
++	"sort"
++	"strings"
++	"testing"
++)
++
++// The tests in this package verify, by inspecting the production sources of
++// package provenance, that the duplicated proof-graph construction skeleton
++// has been converged into one shared construction component that both public
++// entry points use, and that the two entry points diverge only in premise
++// resolution (store lookups for Explain, recorded-event replay for
++// BuildFromRecording). Ownership evidence is always a data-flow or
++// delegation relation to the shared component: the proof slice returned by an
++// entry point must be produced by shared code, and each construction
++// responsibility must be carried by code the two entries share while no
++// entry-private code carries it.
++
++func (a *constructionAnalysis) ownersWith(pred func(*fnInfo) bool) []*fnInfo {
++	var out []*fnInfo
++	for _, f := range a.region {
++		if pred(f) {
++			out = append(out, f)
++		}
++	}
++	return out
++}
++
++// assertOwnedBySharedCode asserts that at least one function carrying the
++// responsibility is usable by both entry points and that no entry-private
++// code carries it.
++func (a *constructionAnalysis) assertOwnedBySharedCode(t *testing.T, what string, owners []*fnInfo) {
++	t.Helper()
++	if len(owners) == 0 {
++		t.Errorf("no code in the construction paths of %s/%s implements %s", entryPostHoc, entryRecording, what)
++		return
++	}
++	var shared, private []*fnInfo
++	for _, f := range owners {
++		if a.shared(f) {
++			shared = append(shared, f)
++		} else {
++			private = append(private, f)
++		}
++	}
++	if len(shared) == 0 {
++		t.Errorf("%s: no function usable by both %s and %s implements %s; owners are entry-private:\n  %s",
++			what, entryPostHoc, entryRecording, what, a.locations(private))
++	}
++	if len(private) > 0 {
++		t.Errorf("%s is still implemented by code private to one entry point instead of the shared construction component:\n  %s",
++			what, a.locations(private))
++	}
++}
++
++func TestF2PExplainReturnValueProducedBySharedCode(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	fr := a.frontier(a.post)
++	if len(fr) == 0 {
++		t.Fatalf("cannot trace the proof slice returned by %s to any producing function", entryPostHoc)
++	}
++	var private []*fnInfo
++	for k := range fr {
++		f := a.byKey[k]
++		if f == nil {
++			t.Errorf("the returned proof slice of %s is produced by unknown code %q", entryPostHoc, k)
++			continue
++		}
++		if !a.shared(f) {
++			private = append(private, f)
++		}
++	}
++	if len(private) > 0 {
++		t.Errorf("%s returns a proof slice produced by code private to that entry point; the shared construction component must produce it:\n  %s",
++			entryPostHoc, a.locations(private))
++	}
++}
++
++func TestF2PRecordingReturnValueProducedBySharedCode(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	fr := a.frontier(a.rec)
++	if len(fr) == 0 {
++		t.Fatalf("cannot trace the proof slice returned by %s to any producing function", entryRecording)
++	}
++	var private []*fnInfo
++	for k := range fr {
++		f := a.byKey[k]
++		if f == nil {
++			t.Errorf("the returned proof slice of %s is produced by unknown code %q", entryRecording, k)
++			continue
++		}
++		if !a.shared(f) {
++			private = append(private, f)
++		}
++	}
++	if len(private) > 0 {
++		t.Errorf("%s returns a proof slice produced by code private to that entry point; the shared construction component must produce it:\n  %s",
++			entryRecording, a.locations(private))
++	}
++}
++
++func TestF2PBothEntryPointsUseSameConstructionProducer(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	postFrontier := a.frontier(a.post)
++	recFrontier := a.frontier(a.rec)
++	if len(postFrontier) == 0 || len(recFrontier) == 0 {
++		t.Fatalf("cannot trace the proof slices returned by %s/%s to producing functions (%v vs %v)",
++			entryPostHoc, entryRecording, a.keys(postFrontier), a.keys(recFrontier))
++	}
++	var onlyPost, onlyRec, common []string
++	for k := range postFrontier {
++		if recFrontier[k] {
++			common = append(common, k)
++		} else {
++			onlyPost = append(onlyPost, k)
++		}
++	}
++	for k := range recFrontier {
++		if !postFrontier[k] {
++			onlyRec = append(onlyRec, k)
++		}
++	}
++	sort.Strings(common)
++	sort.Strings(onlyPost)
++	sort.Strings(onlyRec)
++	if len(onlyPost) > 0 || len(onlyRec) > 0 {
++		t.Errorf("%s and %s return proof slices built by different construction code; %s-only producers: %v; %s-only producers: %v",
++			entryPostHoc, entryRecording, entryPostHoc, onlyPost, entryRecording, onlyRec)
++	}
++	for _, k := range common {
++		if f := a.byKey[k]; f != nil && !a.shared(f) {
++			t.Errorf("the construction code shared by both entry points (%s) is private to one of them", a.location(f))
++		}
++	}
++}
++
++func TestF2POptionDefaultsOwnedBySharedConstructionCode(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	a.assertOwnedBySharedCode(t, "Options zero-value defaulting", a.ownersWith(a.writesOptionsFields))
++}
++
++func TestF2PGroundGoalRejectionOwnedBySharedConstructionCode(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	owners := a.ownersWith(a.returnsErrGoalNotGround)
++	a.assertOwnedBySharedCode(t, "non-ground goal rejection with ErrGoalNotGround", owners)
++	if len(owners) == 0 {
++		return
++	}
++	for _, entry := range []*fnInfo{a.post, a.rec} {
++		chains := a.groundErrorChains(entry)
++		if len(chains) == 0 {
++			t.Errorf("the error returned by %s for a non-ground goal does not originate in shared validation code", entry.name)
++			continue
++		}
++		for _, chain := range chains {
++			for _, k := range chain {
++				f := a.byKey[k]
++				if f != nil && !a.shared(f) {
++					t.Errorf("the non-ground rejection propagated by %s is produced by entry-private code %s", entry.name, a.location(f))
++				}
++			}
++		}
++	}
++}
++
++func TestF2PDepthLimitOwnedBySharedConstructionCode(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	a.assertOwnedBySharedCode(t, "MaxDepth depth limiting with Partial marking", a.ownersWith(a.depthHandling))
++}
++
++func TestF2PProofNodeAssemblyOwnedBySharedConstructionCode(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	a.assertOwnedBySharedCode(t, "proof-node assembly", a.ownersWith(a.assemblesProofNode))
++}
++
++func TestF2PContentAddressedIDStampingOwnedBySharedConstructionCode(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	a.assertOwnedBySharedCode(t, "content-addressed identifier stamping on proof nodes", a.ownersWith(a.stampsNodeID))
++}
++
++func (a *constructionAnalysis) assertStateOwnedBySharedCode(t *testing.T, what string, kind stateKind) {
++	t.Helper()
++	var owners []*fnInfo
++	seen := map[string]bool{}
++	for _, acc := range a.stateAccessAll() {
++		if acc.kind != kind || seen[acc.fn.key] {
++			continue
++		}
++		seen[acc.fn.key] = true
++		owners = append(owners, acc.fn)
++	}
++	a.assertOwnedBySharedCode(t, what, owners)
++}
++
++func TestF2PProofMemoStateOwnedBySharedConstructionCode(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	a.assertStateOwnedBySharedCode(t, "proof-slice memoization state", stateProof)
++}
++
++func TestF2PCycleTrackingStateOwnedBySharedConstructionCode(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	a.assertStateOwnedBySharedCode(t, "in-progress cycle-tracking state", stateBool)
++}
++
++func TestF2PRuleIDMemoStateOwnedBySharedConstructionCode(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	a.assertStateOwnedBySharedCode(t, "rule-identifier memoization state", stateString)
++}
++
++func TestF2PConstructionStateDeclaredBySingleComponentType(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	types := a.stateTypes()
++	var full []string
++	for typ, kinds := range types {
++		if kinds[stateProof] && kinds[stateBool] && kinds[stateString] {
++			full = append(full, typ)
++		}
++	}
++	sort.Strings(full)
++	if len(full) != 1 {
++		t.Errorf("proof memoization, cycle tracking and rule-identifier memoization must be owned by one construction type; found %d such types: %v",
++			len(full), full)
++		return
++	}
++	owner := full[0]
++	var private []*fnInfo
++	for _, acc := range a.stateAccessAll() {
++		if compositionContains(a.compositionEdges(), owner, acc.typ, map[string]bool{}) && !a.shared(acc.fn) {
++			private = append(private, acc.fn)
++		}
++	}
++	if len(private) > 0 {
++		t.Errorf("construction type %s owns proof-memo, cycle and rule-ID state but its state is accessed by entry-private code:\n  %s",
++			owner, a.locations(private))
++	}
++}
++
++func TestF2PPostHocPremiseResolutionDoesNotOwnConstruction(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	storeRefs := a.referencesStore()
++	if len(storeRefs) == 0 {
++		t.Errorf("no code in the %s construction path queries the fact store; the post-hoc premise source is missing", entryPostHoc)
++		return
++	}
++	var owners []*fnInfo
++	for _, f := range a.region {
++		if a.attrE[f.key] && !a.attrR[f.key] && a.isConstructionOwner(f) {
++			owners = append(owners, f)
++		}
++	}
++	if len(owners) > 0 {
++		t.Errorf("fact-store premise resolution also implements shared construction responsibilities instead of only supplying premises:\n  %s",
++			a.locations(owners))
++	}
++}
++
++func TestF2PRecordingPremiseResolutionDoesNotOwnConstruction(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	recRefs := a.referencesRecorder()
++	if len(recRefs) == 0 {
++		t.Errorf("no code in the %s construction path replays recorder events; the recording premise source is missing", entryRecording)
++		return
++	}
++	var owners []*fnInfo
++	for _, f := range a.region {
++		if a.attrR[f.key] && !a.attrE[f.key] && a.isConstructionOwner(f) {
++			owners = append(owners, f)
++		}
++	}
++	if len(owners) > 0 {
++		t.Errorf("recorded-event premise replay also implements shared construction responsibilities instead of only supplying premises:\n  %s",
++			a.locations(owners))
++	}
++}
++
++// producerLinkedToType reports whether the proof producer is part of the
++// component type: it is a method of that type, takes it as a parameter, or
++// constructs/uses a value of it in its own body.
++func (a *constructionAnalysis) producerLinkedToType(f *fnInfo, typ string) bool {
++	if f.recv == typ {
++		return true
++	}
++	for _, p := range f.params {
++		if strings.TrimPrefix(f.pkg.resolve(p), "*") == typ {
++			return true
++		}
++	}
++	linked := a.m.instantiatedStructs(map[string]bool{f.key: true})
++	return linked[typ]
++}
++
++func TestF2PConstructionStateOwnedByProofProducingComponent(t *testing.T) {
++	a := newConstructionAnalysis(t)
++	postFrontier := a.frontier(a.post)
++	recFrontier := a.frontier(a.rec)
++	var common []string
++	for k := range postFrontier {
++		if recFrontier[k] {
++			common = append(common, k)
++		}
++	}
++	sort.Strings(common)
++	if len(common) == 0 {
++		t.Errorf("%s and %s do not share a proof-producing function, so no component can own the construction state", entryPostHoc, entryRecording)
++		return
++	}
++	types := a.stateTypes()
++	var full []string
++	for typ, kinds := range types {
++		if kinds[stateProof] && kinds[stateBool] && kinds[stateString] {
++			full = append(full, typ)
++		}
++	}
++	if len(full) != 1 {
++		t.Errorf("expected one construction type owning proof-memo, cycle and rule-ID state; found %v", full)
++		return
++	}
++	owner := full[0]
++	var mismatched []string
++	for _, k := range common {
++		f := a.byKey[k]
++		if f == nil {
++			mismatched = append(mismatched, k+" (unknown)")
++			continue
++		}
++		if !a.producerLinkedToType(f, owner) {
++			mismatched = append(mismatched, a.location(f))
++		}
++	}
++	if len(mismatched) > 0 {
++		t.Errorf("the shared proof producers %v are not linked to construction type %s, which owns the memoization, cycle-tracking and rule-ID state",
++			mismatched, owner)
++	}
++}
+diff --git a/tests/f2p/model_test.go b/tests/f2p/model_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..2edda53e768dbdcef38dbe936e7282cc04bff73b
+--- /dev/null
++++ b/tests/f2p/model_test.go
+@@ -0,0 +1,947 @@
++package f2p
++
++import (
++	"fmt"
++	"go/ast"
++	"go/parser"
++	"go/token"
++	"os"
++	"path/filepath"
++	"runtime"
++	"sort"
++	"strings"
++	"sync"
++	"testing"
++)
++
++// This file builds an in-memory model of the Go sources of the mangle module
++// so the convergence tests can inspect, without depending on private symbol
++// names, which code produces the proof slices returned by the two public
++// provenance entry points and which code owns each construction
++// responsibility.
++
++const (
++	entryPostHoc   = "Explain"
++	entryRecording = "BuildFromRecording"
++)
++
++type callSite struct {
++	call    *ast.CallExpr
++	targets []string // resolved callee keys (empty when the callee is dynamic)
++	weak    bool     // resolution relied on interface/name fallback
++}
++
++type fnInfo struct {
++	key        string // "Name" for funcs, "Recv.Name" for methods (Recv without *)
++	name       string
++	recv       string
++	file       string
++	startLine  int
++	endLine    int
++	params     []string
++	paramNames []string
++	results    []string
++	decl       *ast.FuncDecl
++	astFile    *ast.File
++	pkg        *pkgModel
++
++	localTypes map[string]string
++	assigns    map[string][]ast.Expr
++	calls      []callSite
++}
++
++func (f *fnInfo) returnsProofSlice() bool {
++	if len(f.results) == 0 {
++		return false
++	}
++	return isProofSliceType(f.results[0])
++}
++
++func (f *fnInfo) returnsError() bool {
++	for _, r := range f.results {
++		if r == "error" {
++			return true
++		}
++	}
++	return false
++}
++
++type pkgModel struct {
++	dir      string
++	impPath  string
++	fset     *token.FileSet
++	files    []*ast.File
++	funcs    map[string]*fnInfo
++	structs  map[string]map[string]string // struct name -> field -> declared type
++	named    map[string]string            // named type -> underlying type string
++	embedded map[string][]string
++	bindings map[string][]string
++	ifaces   map[string][]string // interface name -> method names
++	imports  map[*ast.File]map[string]string
++}
++
++func (p *pkgModel) fn(key string) *fnInfo { return p.funcs[key] }
++
++// resolve expands named types to their underlying type spelling, recursively.
++// Package-qualified names and unknown identifiers are left untouched.
++func (p *pkgModel) resolve(t string) string {
++	seen := map[string]bool{}
++	for i := 0; i < 32; i++ {
++		t = strings.TrimSpace(t)
++		if t == "" {
++			return ""
++		}
++		if u, ok := p.named[t]; ok && !seen[t] && u != "" && u != "struct{}" && u != "interface{}" && u != "func" {
++			seen[t] = true
++			t = u
++			continue
++		}
++		switch {
++		case strings.HasPrefix(t, "*"):
++			return "*" + p.resolve(t[1:])
++		case strings.HasPrefix(t, "[]"):
++			return "[]" + p.resolve(t[2:])
++		case strings.HasPrefix(t, "map["):
++			k, v, ok := parseMapType(t)
++			if !ok {
++				return t
++			}
++			return "map[" + p.resolve(k) + "]" + p.resolve(v)
++		default:
++			return t
++		}
++	}
++	return t
++}
++
++type moduleModel struct {
++	root    string
++	modPath string
++	pkgs    map[string]*pkgModel // import path -> package
++	dirPath map[string]string    // absolute dir -> import path
++	loadErr error
++}
++
++var (
++	loadOnce sync.Once
++	cached   *moduleModel
++)
++
++func moduleSources(t *testing.T) *moduleModel {
++	t.Helper()
++	loadOnce.Do(func() { cached = mustLoadModule() })
++	if cached.loadErr != nil {
++		t.Fatalf("cannot load module sources: %v", cached.loadErr)
++	}
++	return cached
++}
++
++func mustLoadModule() *moduleModel {
++	_, thisFile, _, ok := runtime.Caller(0)
++	if !ok {
++		return &moduleModel{loadErr: fmt.Errorf("runtime.Caller failed")}
++	}
++	root, err := findModuleRoot(filepath.Dir(thisFile))
++	if err != nil {
++		return &moduleModel{loadErr: err}
++	}
++	modPath, err := readModulePath(root)
++	if err != nil {
++		return &moduleModel{loadErr: err}
++	}
++	m := &moduleModel{root: root, modPath: modPath, pkgs: map[string]*pkgModel{}, dirPath: map[string]string{}}
++	if err := m.scan(); err != nil {
++		return &moduleModel{loadErr: err}
++	}
++	for _, pkg := range m.pkgs {
++		for _, f := range pkg.funcs {
++			m.inferLocalTypes(f)
++		}
++	}
++	m.bindFunctionValues()
++	m.buildCallGraph()
++	return m
++}
++
++func findModuleRoot(start string) (string, error) {
++	dir := start
++	for {
++		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
++			return dir, nil
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			return "", fmt.Errorf("go.mod not found above %s", start)
++		}
++		dir = parent
++	}
++}
++
++func readModulePath(root string) (string, error) {
++	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
++	if err != nil {
++		return "", err
++	}
++	for _, line := range strings.Split(string(data), "\n") {
++		line = strings.TrimSpace(line)
++		if strings.HasPrefix(line, "module ") {
++			return strings.TrimSpace(strings.TrimPrefix(line, "module ")), nil
++		}
++	}
++	return "", fmt.Errorf("module directive not found in go.mod")
++}
++
++func (m *moduleModel) scan() error {
++	fset := token.NewFileSet()
++	return filepath.WalkDir(m.root, func(path string, d os.DirEntry, err error) error {
++		if err != nil {
++			return nil
++		}
++		name := d.Name()
++		if d.IsDir() {
++			if path == m.root {
++				return nil
++			}
++			if strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata" || name == "node_modules" {
++				return filepath.SkipDir
++			}
++			return nil
++		}
++		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
++			return nil
++		}
++		rel, relErr := filepath.Rel(m.root, filepath.Dir(path))
++		if relErr != nil {
++			return nil
++		}
++		impPath := m.modPath
++		if rel != "." {
++			impPath = m.modPath + "/" + filepath.ToSlash(rel)
++		}
++		pkg := m.pkgs[impPath]
++		if pkg == nil {
++			pkg = &pkgModel{dir: filepath.Dir(path), impPath: impPath, fset: fset,
++				funcs: map[string]*fnInfo{}, structs: map[string]map[string]string{},
++				named: map[string]string{}, ifaces: map[string][]string{},
++				imports: map[*ast.File]map[string]string{}}
++			m.pkgs[impPath] = pkg
++			m.dirPath[pkg.dir] = impPath
++		}
++		f, parseErr := parser.ParseFile(fset, path, nil, 0)
++		if parseErr != nil {
++			return nil
++		}
++		pkg.files = append(pkg.files, f)
++		pkg.absorbFile(f)
++		return nil
++	})
++}
++
++func (p *pkgModel) absorbFile(f *ast.File) {
++	if p.embedded == nil {
++		p.embedded = map[string][]string{}
++		p.bindings = map[string][]string{}
++	}
++	imports := map[string]string{}
++	for _, spec := range f.Imports {
++		path := strings.Trim(spec.Path.Value, `"`)
++		alias := ""
++		if spec.Name != nil {
++			alias = spec.Name.Name
++		} else {
++			base := path
++			if i := strings.LastIndex(base, "/"); i >= 0 {
++				base = base[i+1:]
++			}
++			alias = base
++		}
++		imports[alias] = path
++	}
++	p.imports[f] = imports
++
++	for _, decl := range f.Decls {
++		switch d := decl.(type) {
++		case *ast.FuncDecl:
++			fi := &fnInfo{
++				name:       d.Name.Name,
++				decl:       d,
++				astFile:    f,
++				pkg:        p,
++				localTypes: map[string]string{},
++				assigns:    map[string][]ast.Expr{},
++				file:       p.fset.Position(d.Pos()).Filename,
++			}
++			fi.startLine = p.fset.Position(d.Pos()).Line
++			fi.endLine = p.fset.Position(d.End()).Line
++			if d.Recv != nil && len(d.Recv.List) > 0 {
++				name, _ := bareTypeName(d.Recv.List[0].Type)
++				fi.recv = name
++			}
++			if d.Type.Results != nil {
++				for _, r := range d.Type.Results.List {
++					n := len(r.Names)
++					if n == 0 {
++						n = 1
++					}
++					for i := 0; i < n; i++ {
++						fi.results = append(fi.results, typeString(r.Type))
++					}
++				}
++			}
++			if d.Type.Params != nil {
++				idx := 0
++				for _, prm := range d.Type.Params.List {
++					n := len(prm.Names)
++					if n == 0 {
++						n = 1
++					}
++					for i := 0; i < n; i++ {
++						fi.params = append(fi.params, typeString(prm.Type))
++						name := ""
++						if i < len(prm.Names) {
++							name = prm.Names[i].Name
++						}
++						fi.paramNames = append(fi.paramNames, name)
++						idx++
++					}
++				}
++			}
++			if fi.recv != "" {
++				fi.key = fi.recv + "." + fi.name
++			} else {
++				fi.key = fi.name
++			}
++			p.funcs[fi.key] = fi
++		case *ast.GenDecl:
++			for _, spec := range d.Specs {
++				ts, ok := spec.(*ast.TypeSpec)
++				if !ok {
++					continue
++				}
++				switch tt := ts.Type.(type) {
++				case *ast.StructType:
++					fields := map[string]string{}
++					for _, fl := range tt.Fields.List {
++						if len(fl.Names) == 0 {
++							if name, ok := bareTypeName(fl.Type); ok {
++								fields[name] = typeString(fl.Type)
++								p.embedded[ts.Name.Name] = append(p.embedded[ts.Name.Name], name)
++							}
++						}
++						for _, nm := range fl.Names {
++							fields[nm.Name] = typeString(fl.Type)
++						}
++					}
++					p.structs[ts.Name.Name] = fields
++					p.named[ts.Name.Name] = "struct{}"
++				case *ast.InterfaceType:
++					var ms []string
++					for _, mth := range tt.Methods.List {
++						if ft, ok := mth.Type.(*ast.FuncType); ok && ft != nil {
++							for _, nm := range mth.Names {
++								ms = append(ms, nm.Name)
++							}
++						}
++					}
++					p.ifaces[ts.Name.Name] = ms
++					p.named[ts.Name.Name] = "interface{}"
++				default:
++					p.named[ts.Name.Name] = typeString(ts.Type)
++				}
++			}
++		}
++	}
++}
++
++// typeString renders a type expression into a canonical, comparable string.
++func typeString(e ast.Expr) string {
++	switch t := e.(type) {
++	case *ast.Ident:
++		return t.Name
++	case *ast.StarExpr:
++		return "*" + typeString(t.X)
++	case *ast.SelectorExpr:
++		return typeString(t.X) + "." + t.Sel.Name
++	case *ast.ArrayType:
++		return "[]" + typeString(t.Elt)
++	case *ast.MapType:
++		return "map[" + typeString(t.Key) + "]" + typeString(t.Value)
++	case *ast.InterfaceType:
++		return "interface{}"
++	case *ast.StructType:
++		return "struct{}"
++	case *ast.FuncType:
++		return "func"
++	case *ast.ChanType:
++		return "chan " + typeString(t.Value)
++	case *ast.Ellipsis:
++		return "..." + typeString(t.Elt)
++	case *ast.IndexExpr:
++		return typeString(t.X)
++	case *ast.IndexListExpr:
++		return typeString(t.X)
++	case *ast.ParenExpr:
++		return typeString(t.X)
++	}
++	return "?"
++}
++
++func parseMapType(s string) (key, val string, ok bool) {
++	if !strings.HasPrefix(s, "map[") {
++		return "", "", false
++	}
++	depth := 0
++	for i := 4; i < len(s); i++ {
++		switch s[i] {
++		case '[':
++			depth++
++		case ']':
++			if depth == 0 {
++				return s[4:i], s[i+1:], true
++			}
++			depth--
++		}
++	}
++	return "", "", false
++}
++
++func elemType(s string) string {
++	if strings.HasPrefix(s, "[]") {
++		return strings.TrimPrefix(s, "[]")
++	}
++	return ""
++}
++
++func (m *moduleModel) inferLocalTypes(f *fnInfo) {
++	if f.decl.Body == nil {
++		return
++	}
++	if f.decl.Recv != nil && len(f.decl.Recv.List) > 0 && len(f.decl.Recv.List[0].Names) > 0 {
++		f.localTypes[f.decl.Recv.List[0].Names[0].Name] = typeString(f.decl.Recv.List[0].Type)
++	}
++	for i, name := range f.paramNames {
++		if name != "" && i < len(f.params) {
++			f.localTypes[name] = f.params[i]
++		}
++	}
++	for pass := 0; pass < 3; pass++ {
++		ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++			switch s := n.(type) {
++			case *ast.AssignStmt:
++				for i, lhs := range s.Lhs {
++					id, ok := lhs.(*ast.Ident)
++					if !ok || id.Name == "_" {
++						continue
++					}
++					switch {
++					case len(s.Lhs) == len(s.Rhs) && i < len(s.Rhs):
++						f.assigns[id.Name] = append(f.assigns[id.Name], s.Rhs[i])
++						if t := m.exprType(f, s.Rhs[i]); t != "" {
++							f.localTypes[id.Name] = t
++						}
++					case len(s.Rhs) == 1:
++						f.assigns[id.Name] = append(f.assigns[id.Name], s.Rhs[0])
++						if ts := m.callResultTypes(f, s.Rhs[0]); i < len(ts) && ts[i] != "" {
++							f.localTypes[id.Name] = ts[i]
++						}
++					}
++				}
++			case *ast.DeclStmt:
++				gd, ok := s.Decl.(*ast.GenDecl)
++				if !ok {
++					return true
++				}
++				for _, spec := range gd.Specs {
++					vs, ok := spec.(*ast.ValueSpec)
++					if !ok {
++						continue
++					}
++					for i, nm := range vs.Names {
++						if len(vs.Values) == len(vs.Names) && i < len(vs.Values) {
++							f.assigns[nm.Name] = append(f.assigns[nm.Name], vs.Values[i])
++						}
++						if vs.Type != nil {
++							f.localTypes[nm.Name] = typeString(vs.Type)
++						} else if len(vs.Values) == len(vs.Names) && i < len(vs.Values) {
++							if t := m.exprType(f, vs.Values[i]); t != "" {
++								f.localTypes[nm.Name] = t
++							}
++						}
++					}
++				}
++			case *ast.RangeStmt:
++				if s.Tok != token.DEFINE && s.Tok != token.ASSIGN {
++					return true
++				}
++				container := f.pkg.resolve(m.exprType(f, s.X))
++				if k, v, ok := parseMapType(container); ok {
++					if id, ok := s.Key.(*ast.Ident); ok && id.Name != "_" {
++						f.localTypes[id.Name] = k
++					}
++					if id, ok := s.Value.(*ast.Ident); ok && id.Name != "_" {
++						f.localTypes[id.Name] = v
++					}
++				} else if et := elemType(container); et != "" {
++					if id, ok := s.Value.(*ast.Ident); ok && id.Name != "_" {
++						f.localTypes[id.Name] = et
++					}
++				}
++			}
++			return true
++		})
++	}
++}
++
++func (m *moduleModel) callResultTypes(f *fnInfo, e ast.Expr) []string {
++	call, ok := e.(*ast.CallExpr)
++	if !ok {
++		return nil
++	}
++	if id, ok := call.Fun.(*ast.Ident); ok {
++		switch id.Name {
++		case "new":
++			if len(call.Args) > 0 {
++				return []string{"*" + typeString(call.Args[0])}
++			}
++			return nil
++		case "make":
++			if len(call.Args) > 0 {
++				return []string{typeString(call.Args[0])}
++			}
++			return nil
++		}
++	}
++	targets, weak := m.resolveCall(f, call)
++	if weak || len(targets) != 1 {
++		return nil
++	}
++	if g := f.pkg.funcs[targets[0]]; g != nil {
++		return g.results
++	}
++	return nil
++}
++
++func (m *moduleModel) exprType(f *fnInfo, e ast.Expr) string {
++	if e == nil {
++		return ""
++	}
++	switch t := e.(type) {
++	case *ast.Ident:
++		if v, ok := f.localTypes[t.Name]; ok {
++			return v
++		}
++		return ""
++	case *ast.ParenExpr:
++		return m.exprType(f, t.X)
++	case *ast.StarExpr:
++		return strings.TrimPrefix(m.exprType(f, t.X), "*")
++	case *ast.UnaryExpr:
++		inner := m.exprType(f, t.X)
++		if t.Op == token.AND {
++			return "*" + inner
++		}
++		return inner
++	case *ast.SelectorExpr:
++		base := strings.TrimPrefix(f.pkg.resolve(m.exprType(f, t.X)), "*")
++		if _, ft, ok := f.pkg.promotedField(base, t.Sel.Name, map[string]bool{}); ok {
++			return ft
++		}
++		return ""
++	case *ast.CompositeLit:
++		return typeString(t.Type)
++	case *ast.CallExpr:
++		if id, ok := uninstantiate(t.Fun).(*ast.Ident); ok {
++			switch id.Name {
++			case "make":
++				if len(t.Args) > 0 {
++					return typeString(t.Args[0])
++				}
++				return ""
++			case "new":
++				if len(t.Args) > 0 {
++					return "*" + typeString(t.Args[0])
++				}
++				return ""
++			case "append":
++				if len(t.Args) > 0 {
++					return m.exprType(f, t.Args[0])
++				}
++				return ""
++			}
++			if target, ok := f.pkg.funcs[id.Name]; ok && target.recv == "" && len(target.results) == 1 {
++				return target.results[0]
++			}
++			if _, ok := f.pkg.named[id.Name]; ok {
++				return id.Name
++			}
++			if _, ok := f.pkg.structs[id.Name]; ok {
++				return id.Name
++			}
++			return ""
++		}
++		if _, ok := uninstantiate(t.Fun).(*ast.SelectorExpr); ok {
++			if ts := m.callResultTypes(f, t); len(ts) == 1 {
++				return ts[0]
++			}
++		}
++		return ""
++	case *ast.IndexExpr:
++		base := f.pkg.resolve(m.exprType(f, t.X))
++		if _, v, ok := parseMapType(base); ok {
++			return v
++		}
++		if et := elemType(base); et != "" {
++			return et
++		}
++		return ""
++	case *ast.TypeAssertExpr:
++		return typeString(t.Type)
++	}
++	return ""
++}
++
++// resolveCall resolves a call expression to same-package function keys.
++// weak is true when the callee could not be pinned to a unique concrete
++// function (interface dispatch, func-typed field, unknown receiver), in which
++// case targets lists the candidate methods for reachability purposes but must
++// not be treated as proof of value flow.
++func (m *moduleModel) resolveCall(f *fnInfo, call *ast.CallExpr) (targets []string, weak bool) {
++	switch fun := uninstantiate(call.Fun).(type) {
++	case *ast.Ident:
++		if target, ok := f.pkg.funcs[fun.Name]; ok && target.recv == "" {
++			return []string{target.key}, false
++		}
++		return f.pkg.bindings["local:"+f.key+":"+fun.Name], true
++	case *ast.SelectorExpr:
++		if id, ok := fun.X.(*ast.Ident); ok {
++			if _, isImport := f.pkg.imports[f.astFile][id.Name]; isImport {
++				return nil, false
++			}
++		}
++		base := strings.TrimPrefix(f.pkg.resolve(m.exprType(f, fun.X)), "*")
++		if _, ok := f.pkg.structs[base]; ok {
++			if keys := f.pkg.promotedMethods(base, fun.Sel.Name, map[string]bool{}); len(keys) > 0 {
++				return keys, len(keys) != 1
++			}
++			owner, _, ok := f.pkg.promotedField(base, fun.Sel.Name, map[string]bool{})
++			if ok {
++				return f.pkg.bindings["field:"+owner+":"+fun.Sel.Name], true
++			}
++			return nil, true
++		}
++		if _, ok := f.pkg.ifaces[base]; ok {
++			return f.pkg.methodCandidates(fun.Sel.Name), true
++		}
++		return f.pkg.methodCandidates(fun.Sel.Name), true
++	}
++	return nil, true
++}
++
++func (p *pkgModel) methodCandidates(name string) []string {
++	var out []string
++	for key, cand := range p.funcs {
++		if cand.recv != "" && cand.name == name {
++			out = append(out, key)
++		}
++	}
++	sort.Strings(out)
++	return out
++}
++
++func (m *moduleModel) buildCallGraph() {
++	for _, pkg := range m.pkgs {
++		for _, f := range pkg.funcs {
++			if f.decl.Body == nil {
++				continue
++			}
++			ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++				call, ok := n.(*ast.CallExpr)
++				if !ok {
++					return true
++				}
++				targets, weak := m.resolveCall(f, call)
++				f.calls = append(f.calls, callSite{call: call, targets: targets, weak: weak})
++				return true
++			})
++		}
++	}
++}
++
++// reach returns every function key reachable from f. With strongOnly set,
++// calls that could not be pinned to a concrete function are not traversed.
++func (m *moduleModel) reach(f *fnInfo, strongOnly bool) map[string]bool {
++	seen := map[string]bool{f.key: true}
++	queue := []*fnInfo{f}
++	for len(queue) > 0 {
++		cur := queue[0]
++		queue = queue[1:]
++		for _, cs := range cur.calls {
++			if strongOnly && cs.weak {
++				continue
++			}
++			for _, k := range cs.targets {
++				if seen[k] {
++					continue
++				}
++				seen[k] = true
++				if next := m.fnByKey(k); next != nil {
++					queue = append(queue, next)
++				}
++			}
++		}
++	}
++	return seen
++}
++
++func (m *moduleModel) fnByKey(key string) *fnInfo {
++	for _, pkg := range m.pkgs {
++		if f := pkg.funcs[key]; f != nil {
++			return f
++		}
++	}
++	return nil
++}
++
++// strongCallers maps a function key to the functions that call it through a
++// statically pinned (non-weak) call site.
++func (m *moduleModel) strongCallers() map[string][]string {
++	out := map[string][]string{}
++	for _, pkg := range m.pkgs {
++		for _, f := range pkg.funcs {
++			for _, cs := range f.calls {
++				if cs.weak {
++					continue
++				}
++				for _, k := range cs.targets {
++					out[k] = append(out[k], f.key)
++				}
++			}
++		}
++	}
++	for k := range out {
++		sort.Strings(out[k])
++		out[k] = dedupeSorted(out[k])
++	}
++	return out
++}
++
++// instantiatedStructs returns the struct type names constructed with a
++// composite literal or new() anywhere in the bodies of the given functions.
++// Nested function literals are included because they are part of the
++// enclosing declaration's construction path.
++func (m *moduleModel) instantiatedStructs(funcs map[string]bool) map[string]bool {
++	out := map[string]bool{}
++	for key := range funcs {
++		f := m.fnByKey(key)
++		if f == nil || f.decl.Body == nil {
++			continue
++		}
++		ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++			switch t := n.(type) {
++			case *ast.CompositeLit:
++				if name, ok := bareTypeName(t.Type); ok {
++					if _, isStruct := f.pkg.structs[name]; isStruct {
++						out[name] = true
++					}
++				}
++			case *ast.CallExpr:
++				if id, ok := t.Fun.(*ast.Ident); ok && id.Name == "new" && len(t.Args) == 1 {
++					if name, ok := bareTypeName(t.Args[0]); ok {
++						if _, isStruct := f.pkg.structs[name]; isStruct {
++							out[name] = true
++						}
++					}
++				}
++			}
++			return true
++		})
++	}
++	return out
++}
++
++func bareTypeName(e ast.Expr) (string, bool) {
++	switch t := e.(type) {
++	case *ast.Ident:
++		return t.Name, true
++	case *ast.StarExpr:
++		return bareTypeName(t.X)
++	case *ast.IndexExpr:
++		return bareTypeName(t.X)
++	case *ast.IndexListExpr:
++		return bareTypeName(t.X)
++	case *ast.ParenExpr:
++		return bareTypeName(t.X)
++	}
++	return "", false
++}
++
++func dedupeSorted(in []string) []string {
++	var out []string
++	for i, v := range in {
++		if i > 0 && in[i-1] == v {
++			continue
++		}
++		out = append(out, v)
++	}
++	return out
++}
++
++// isProofSliceType reports whether the resolved type is a slice of proof
++// nodes, i.e. the result type of the two public entry points.
++func isProofSliceType(t string) bool {
++	t = strings.ReplaceAll(t, " ", "")
++	switch t {
++	case "[]*ProofNode", "[]ProofNode", "[]*provenance.ProofNode", "[]provenance.ProofNode":
++		return true
++	}
++	return false
++}
++
++// Instantiation changes type arguments, not the declaration that owns code.
++func uninstantiate(e ast.Expr) ast.Expr {
++	switch x := e.(type) {
++	case *ast.IndexExpr:
++		return uninstantiate(x.X)
++	case *ast.IndexListExpr:
++		return uninstantiate(x.X)
++	case *ast.ParenExpr:
++		return uninstantiate(x.X)
++	}
++	return e
++}
++func (p *pkgModel) promotedMethods(base, name string, seen map[string]bool) []string {
++	if seen[base] {
++		return nil
++	}
++	seen[base] = true
++	if f := p.funcs[base+"."+name]; f != nil {
++		return []string{f.key}
++	}
++	var out []string
++	for _, embed := range p.embedded[base] {
++		out = append(out, p.promotedMethods(embed, name, seen)...)
++	}
++	sort.Strings(out)
++	return dedupeSorted(out)
++}
++func (p *pkgModel) promotedField(base, name string, seen map[string]bool) (string, string, bool) {
++	if seen[base] {
++		return "", "", false
++	}
++	seen[base] = true
++	if t, ok := p.structs[base][name]; ok {
++		return base, t, true
++	}
++	var owner, typ string
++	count := 0
++	for _, embed := range p.embedded[base] {
++		if o, t, ok := p.promotedField(embed, name, seen); ok {
++			owner, typ = o, t
++			count++
++		}
++	}
++	return owner, typ, count == 1
++}
++
++// Function values are linked only through assignments and actual arguments;
++// a same-named unrelated method is not evidence of a callback connection.
++func (m *moduleModel) valueKey(f *fnInfo, e ast.Expr) string {
++	switch x := e.(type) {
++	case *ast.Ident:
++		return "local:" + f.key + ":" + x.Name
++	case *ast.SelectorExpr:
++		base := strings.TrimPrefix(f.pkg.resolve(m.exprType(f, x.X)), "*")
++		owner, _, ok := f.pkg.promotedField(base, x.Sel.Name, map[string]bool{})
++		if ok {
++			return "field:" + owner + ":" + x.Sel.Name
++		}
++	}
++	return ""
++}
++func (m *moduleModel) valueTargets(f *fnInfo, e ast.Expr) []string {
++	if e == nil {
++		return nil
++	}
++	e = uninstantiate(e)
++	switch x := e.(type) {
++	case *ast.Ident:
++		if g := f.pkg.funcs[x.Name]; g != nil && g.recv == "" {
++			return []string{g.key}
++		}
++	case *ast.SelectorExpr:
++		base := strings.TrimPrefix(f.pkg.resolve(m.exprType(f, x.X)), "*")
++		if keys := f.pkg.promotedMethods(base, x.Sel.Name, map[string]bool{}); len(keys) > 0 {
++			return keys
++		}
++	}
++	return f.pkg.bindings[m.valueKey(f, e)]
++}
++func (m *moduleModel) bindFunctionValues() {
++	for pass := 0; pass < 32; pass++ {
++		changed := false
++		for _, p := range m.pkgs {
++			for _, f := range p.funcs {
++				if f.decl.Body == nil {
++					continue
++				}
++				add := func(key string, values []string) {
++					if key == "" || len(values) == 0 {
++						return
++					}
++					old := p.bindings[key]
++					v := append(append([]string{}, old...), values...)
++					sort.Strings(v)
++					v = dedupeSorted(v)
++					if len(v) != len(old) {
++						p.bindings[key] = v
++						changed = true
++					}
++				}
++				ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++					switch x := n.(type) {
++					case *ast.AssignStmt:
++						if len(x.Lhs) == len(x.Rhs) {
++							for i, l := range x.Lhs {
++								add(m.valueKey(f, l), m.valueTargets(f, x.Rhs[i]))
++							}
++						}
++					case *ast.ValueSpec:
++						if len(x.Names) == len(x.Values) {
++							for i, l := range x.Names {
++								add(m.valueKey(f, l), m.valueTargets(f, x.Values[i]))
++							}
++						}
++					case *ast.CompositeLit:
++						base, _ := bareTypeName(x.Type)
++						for _, elt := range x.Elts {
++							if kv, ok := elt.(*ast.KeyValueExpr); ok {
++								if name, ok := kv.Key.(*ast.Ident); ok {
++									add("field:"+base+":"+name.Name, m.valueTargets(f, kv.Value))
++								}
++							}
++						}
++					case *ast.CallExpr:
++						targets, weak := m.resolveCall(f, x)
++						if !weak {
++							for _, key := range targets {
++								g := p.funcs[key]
++								if g == nil {
++									continue
++								}
++								for i, arg := range x.Args {
++									if i < len(g.paramNames) {
++										add("local:"+g.key+":"+g.paramNames[i], m.valueTargets(f, arg))
++									}
++								}
++							}
++						}
++					}
++					return true
++				})
++			}
++		}
++		if !changed {
++			return
++		}
++	}
++}
+diff --git a/tests/f2p/runner/main.go b/tests/f2p/runner/main.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..28821c87ad7b6dc2bd93c453c5605c9da0a3bc72
+--- /dev/null
++++ b/tests/f2p/runner/main.go
+@@ -0,0 +1,557 @@
++// Command f2p_runner executes the exact leaf selectors declared for this task
++// and writes a JUnit XML report.
++//
++// The runner is self-contained: it shells out to the Go toolchain that is
++// already required to build this module and reads the frozen selector sets
++// from the pipeline-provided config file ({config}). The config's "p2p" and
++// "f2p" arrays are the only source of the final selection set; the frozen
++// {p2p_select} file is not used here because it does not contain the F2P
++// leaves.
++//
++// Modes:
++//
++//	f2p_runner --report <path> --config <config.json>   run every frozen P2P and F2P selector
++//	f2p_runner --report <path> --selector <sel> ...     run exactly the given selectors
++//
++// A selector is "<repo-relative .go file>::<top-level test function>".
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"encoding/xml"
++	"flag"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"sort"
++	"strings"
++	"time"
++)
++
++type sel struct {
++	selector string
++	path     string
++	leaf     string
++}
++
++func parseSelector(s string) (sel, error) {
++	i := strings.Index(s, "::")
++	if i <= 0 || i+2 >= len(s) {
++		return sel{}, fmt.Errorf("not a path::leaf selector: %q", s)
++	}
++	p, l := s[:i], s[i+2:]
++	if p == "" || l == "" || strings.Contains(l, "::") {
++		return sel{}, fmt.Errorf("not a path::leaf selector: %q", s)
++	}
++	return sel{selector: s, path: p, leaf: l}, nil
++}
++
++// nodeResult is the outcome of one declared selector.
++type nodeResult struct {
++	sel     sel
++	result  string // pass|fail|skip|error
++	message string
++	typ     string
++	body    string
++	elapsed float64
++}
++
++type testResult struct {
++	action  string
++	elapsed float64
++	output  []string
++}
++
++type junitTestSuites struct {
++	XMLName  xml.Name         `xml:"testsuites"`
++	Name     string           `xml:"name,attr"`
++	Tests    int              `xml:"tests,attr"`
++	Failures int              `xml:"failures,attr"`
++	Errors   int              `xml:"errors,attr"`
++	Skipped  int              `xml:"skipped,attr"`
++	Time     string           `xml:"time,attr"`
++	Suites   []junitTestSuite `xml:"testsuite"`
++}
++
++type junitTestSuite struct {
++	Name      string          `xml:"name,attr"`
++	Tests     int             `xml:"tests,attr"`
++	Failures  int             `xml:"failures,attr"`
++	Errors    int             `xml:"errors,attr"`
++	Skipped   int             `xml:"skipped,attr"`
++	Time      string          `xml:"time,attr"`
++	TestCases []junitTestCase `xml:"testcase"`
++}
++
++type junitTestCase struct {
++	Classname string        `xml:"classname,attr"`
++	Name      string        `xml:"name,attr"`
++	File      string        `xml:"file,attr"`
++	Time      string        `xml:"time,attr"`
++	Failure   *junitMessage `xml:"failure,omitempty"`
++	Error     *junitMessage `xml:"error,omitempty"`
++	Skipped   *junitMessage `xml:"skipped,omitempty"`
++}
++
++type junitMessage struct {
++	Message string `xml:"message,attr"`
++	Type    string `xml:"type,attr"`
++	Body    string `xml:",chardata"`
++}
++
++type selectorList []string
++
++func (s *selectorList) String() string { return strings.Join(*s, ",") }
++func (s *selectorList) Set(v string) error {
++	if strings.TrimSpace(v) == "" {
++		return fmt.Errorf("empty selector")
++	}
++	*s = append(*s, v)
++	return nil
++}
++
++func main() {
++	var (
++		reportPath = flag.String("report", "", "path of the JUnit XML report to write (required)")
++		configPath = flag.String("config", "", "path of the pipeline config.json holding the frozen p2p and f2p selector arrays")
++		deadline   = flag.Float64("deadline", 240, "internal deadline for the go test invocation, in seconds")
++	)
++	var selectors selectorList
++	flag.Var(&selectors, "selector", "run exactly this selector (repeatable)")
++	flag.Parse()
++
++	if *reportPath == "" {
++		fmt.Fprintln(os.Stderr, "f2p_runner: --report is required")
++		os.Exit(2)
++	}
++
++	var wanted []string
++	if len(selectors) > 0 {
++		wanted = append(wanted, selectors...)
++	} else if *configPath != "" {
++		fromConfig, err := readConfigSelectors(*configPath)
++		if err != nil {
++			writeFatal(*reportPath, fmt.Sprintf("cannot read selector configuration: %v", err))
++			os.Exit(2)
++		}
++		wanted = fromConfig
++	} else {
++		fmt.Fprintln(os.Stderr, "f2p_runner: one of --config or --selector is required")
++		os.Exit(2)
++	}
++
++	seen := map[string]bool{}
++	var unique []string
++	for _, s := range wanted {
++		s = strings.TrimSpace(s)
++		if s == "" || seen[s] {
++			continue
++		}
++		seen[s] = true
++		unique = append(unique, s)
++	}
++	sort.Strings(unique)
++	if len(unique) == 0 {
++		writeFatal(*reportPath, "no selectors were declared in the configuration")
++		os.Exit(2)
++	}
++
++	parsed := make([]sel, 0, len(unique))
++	for _, s := range unique {
++		p, err := parseSelector(s)
++		if err != nil {
++			writeFatal(*reportPath, err.Error())
++			os.Exit(2)
++		}
++		parsed = append(parsed, p)
++	}
++
++	root, err := findModuleRoot()
++	if err != nil {
++		writeFatal(*reportPath, fmt.Sprintf("cannot locate the module root: %v", err))
++		os.Exit(2)
++	}
++	modulePath, err := modulePath(root)
++	if err != nil {
++		writeFatal(*reportPath, fmt.Sprintf("cannot read the module path: %v", err))
++		os.Exit(2)
++	}
++
++	// Verify each declared node is collectable in its file; keep the rest.
++	nodes := map[string]nodeResult{}
++	pkgDirs := map[string]bool{}
++	for _, s := range parsed {
++		full := filepath.Join(root, filepath.FromSlash(s.path))
++		data, err := os.ReadFile(full)
++		if err != nil {
++			nodes[s.selector] = nodeResult{sel: s, result: "error", typ: "setup",
++				message: fmt.Sprintf("test file %s not readable: %v", s.path, err)}
++			continue
++		}
++		if !regexp.MustCompile(`(?m)^func ` + regexp.QuoteMeta(s.leaf) + `\(`).Match(data) {
++			nodes[s.selector] = nodeResult{sel: s, result: "error", typ: "setup",
++				message: fmt.Sprintf("leaf %s not found in %s", s.leaf, s.path)}
++			continue
++		}
++		pkgDirs[filepath.Dir(s.path)] = true
++	}
++
++	pkgs := make([]string, 0, len(pkgDirs))
++	for d := range pkgDirs {
++		pkgs = append(pkgs, "./"+filepath.ToSlash(d))
++	}
++	sort.Strings(pkgs)
++
++	var leaves []string
++	for _, s := range parsed {
++		if _, ok := nodes[s.selector]; ok {
++			continue
++		}
++		leaves = append(leaves, regexp.QuoteMeta(s.leaf))
++	}
++
++	results := map[string]testResult{}
++	runnerErr := ""
++	if len(pkgs) > 0 {
++		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*deadline*float64(time.Second)))
++		defer cancel()
++		args := []string{"test", "-json", "-count=1", "-v", "-run", "^(" + strings.Join(leaves, "|") + ")$"}
++		args = append(args, pkgs...)
++		cmd := exec.CommandContext(ctx, "go", args...)
++		cmd.Dir = root
++		cmd.Env = buildEnv()
++		stdout, err := cmd.StdoutPipe()
++		if err != nil {
++			runnerErr = fmt.Sprintf("stdout pipe: %v", err)
++		} else {
++			var stderr strings.Builder
++			cmd.Stderr = &stderr
++			if err := cmd.Start(); err != nil {
++				runnerErr = fmt.Sprintf("start go test: %v", err)
++			} else {
++				dec := json.NewDecoder(stdout)
++				for {
++					var ev struct {
++						Action  string  `json:"Action"`
++						Package string  `json:"Package"`
++						Test    string  `json:"Test"`
++						Output  string  `json:"Output"`
++						Elapsed float64 `json:"Elapsed"`
++					}
++					if err := dec.Decode(&ev); err != nil {
++						break
++					}
++					switch ev.Action {
++					case "output", "pass", "fail", "skip":
++						if ev.Test == "" {
++							continue
++						}
++						key := ev.Package + "|" + topLevelTest(ev.Test)
++						r := results[key]
++						if ev.Action == "output" {
++							r.output = append(r.output, ev.Output)
++						} else {
++							r.action = ev.Action
++							r.elapsed = ev.Elapsed
++						}
++						results[key] = r
++					}
++				}
++				waitErr := cmd.Wait()
++				if ctx.Err() == context.DeadlineExceeded {
++					runnerErr = fmt.Sprintf("go test exceeded the internal deadline of %.0fs", *deadline)
++				} else if waitErr != nil && len(results) == 0 {
++					runnerErr = fmt.Sprintf("go test produced no test events: %v; stderr: %s", waitErr, strings.TrimSpace(stderr.String()))
++				}
++			}
++		}
++	}
++
++	failed := false
++	for _, s := range parsed {
++		if _, ok := nodes[s.selector]; ok {
++			failed = true
++			continue
++		}
++		key := pkgImportPath(modulePath, s.path) + "|" + s.leaf
++		r, ok := results[key]
++		if !ok {
++			nodes[s.selector] = nodeResult{sel: s, result: "error", typ: "not_run",
++				message: "test was not executed by the go test invocation"}
++			failed = true
++			continue
++		}
++		switch r.action {
++		case "pass":
++			nodes[s.selector] = nodeResult{sel: s, result: "pass", elapsed: r.elapsed}
++		case "skip":
++			nodes[s.selector] = nodeResult{sel: s, result: "skip", body: strings.Join(r.output, "")}
++		default:
++			body := strings.Join(r.output, "")
++			typ := "assertion"
++			message := "test failed"
++			if strings.Contains(body, "panic:") {
++				typ = "panic"
++				message = "test panicked"
++			}
++			nodes[s.selector] = nodeResult{sel: s, result: "fail", typ: typ, message: message, body: body, elapsed: r.elapsed}
++			failed = true
++		}
++	}
++
++	var ordered []nodeResult
++	for _, s := range parsed {
++		ordered = append(ordered, nodes[s.selector])
++	}
++	suites := buildSuites(ordered)
++	out := junitTestSuites{Name: "grader-verifier", Suites: suites}
++	for _, suite := range suites {
++		out.Tests += suite.Tests
++		out.Failures += suite.Failures
++		out.Errors += suite.Errors
++		out.Skipped += suite.Skipped
++	}
++	out.Time = fmt.Sprintf("%.3f", maxSuiteTime(suites))
++	if err := writeReport(*reportPath, out); err != nil {
++		fmt.Fprintf(os.Stderr, "f2p_runner: write report: %v\n", err)
++		os.Exit(2)
++	}
++	fmt.Printf("f2p_runner: %d nodes, %d failures, %d errors, %d skipped (report: %s)\n",
++		out.Tests, out.Failures, out.Errors, out.Skipped, *reportPath)
++	if runnerErr != "" {
++		fmt.Fprintf(os.Stderr, "f2p_runner: %s\n", runnerErr)
++	}
++	if failed {
++		os.Exit(1)
++	}
++}
++
++// topLevelTest strips subtest qualifiers so a selector maps to its declared
++// top-level test function.
++func topLevelTest(name string) string {
++	if i := strings.Index(name, "/"); i >= 0 {
++		return name[:i]
++	}
++	return name
++}
++
++// readConfigSelectors reads the frozen exact selectors from the pipeline
++// config's p2p and f2p arrays. Both plain-string entries and row objects with
++// selector/test fields are accepted.
++func readConfigSelectors(path string) ([]string, error) {
++	data, err := os.ReadFile(path)
++	if err != nil {
++		return nil, err
++	}
++	var doc struct {
++		P2P []json.RawMessage `json:"p2p"`
++		F2P []json.RawMessage `json:"f2p"`
++	}
++	if err := json.Unmarshal(data, &doc); err != nil {
++		return nil, err
++	}
++	var out []string
++	for _, group := range [][]json.RawMessage{doc.P2P, doc.F2P} {
++		for _, raw := range group {
++			var s string
++			if err := json.Unmarshal(raw, &s); err == nil && s != "" {
++				out = append(out, s)
++				continue
++			}
++			var row struct {
++				Selector string `json:"selector"`
++				Test     string `json:"test"`
++			}
++			if err := json.Unmarshal(raw, &row); err != nil {
++				continue
++			}
++			if row.Selector != "" {
++				out = append(out, row.Selector)
++			} else if row.Test != "" {
++				out = append(out, row.Test)
++			}
++		}
++	}
++	return out, nil
++}
++
++func buildSuites(nodes []nodeResult) []junitTestSuite {
++	byPkg := map[string][]int{}
++	var order []string
++	for i, n := range nodes {
++		pkg := filepath.Dir(n.sel.path)
++		if _, ok := byPkg[pkg]; !ok {
++			order = append(order, pkg)
++		}
++		byPkg[pkg] = append(byPkg[pkg], i)
++	}
++	sort.Strings(order)
++	suites := make([]junitTestSuite, 0, len(order))
++	for _, pkg := range order {
++		suite := junitTestSuite{Name: "codeberg.org/TauCeti/mangle-go/" + filepath.ToSlash(pkg)}
++		var total float64
++		for _, i := range byPkg[pkg] {
++			n := nodes[i]
++			tc := junitTestCase{
++				Classname: n.sel.path,
++				Name:      n.sel.leaf,
++				File:      n.sel.path,
++				Time:      fmt.Sprintf("%.3f", n.elapsed),
++			}
++			switch n.result {
++			case "pass":
++				suite.Tests++
++			case "skip":
++				suite.Tests++
++				suite.Skipped++
++				tc.Skipped = &junitMessage{Message: "skipped", Type: "skip", Body: n.body}
++			case "fail":
++				suite.Tests++
++				suite.Failures++
++				tc.Failure = &junitMessage{Message: n.message, Type: n.typ, Body: n.body}
++			default:
++				suite.Tests++
++				suite.Errors++
++				tc.Error = &junitMessage{Message: n.message, Type: n.typ, Body: n.body}
++			}
++			suite.TestCases = append(suite.TestCases, tc)
++			total += n.elapsed
++		}
++		suite.Time = fmt.Sprintf("%.3f", total)
++		suites = append(suites, suite)
++	}
++	return suites
++}
++
++func maxSuiteTime(suites []junitTestSuite) float64 {
++	var max float64
++	for _, s := range suites {
++		var t float64
++		if _, err := fmt.Sscanf(s.Time, "%f", &t); err == nil && t > max {
++			max = t
++		}
++	}
++	return max
++}
++
++func pkgImportPath(modulePath, relPath string) string {
++	dir := filepath.ToSlash(filepath.Dir(relPath))
++	if dir == "." {
++		return modulePath
++	}
++	return modulePath + "/" + dir
++}
++
++func writeReport(path string, suites junitTestSuites) error {
++	if dir := filepath.Dir(path); dir != "" && dir != "." {
++		if err := os.MkdirAll(dir, 0o755); err != nil {
++			return err
++		}
++	}
++	data, err := xml.MarshalIndent(suites, "", "  ")
++	if err != nil {
++		return err
++	}
++	out := append([]byte(xml.Header), data...)
++	out = append(out, '\n')
++	return os.WriteFile(path, out, 0o644)
++}
++
++// writeFatal records an infrastructure failure as an error testcase so the
++// report still exists and the node ledger shows the selection was not run.
++func writeFatal(reportPath, message string) {
++	suites := junitTestSuites{Name: "grader-verifier", Tests: 1, Errors: 1}
++	suites.Suites = []junitTestSuite{{
++		Name:   "grader-verifier/f2p_runner",
++		Tests:  1,
++		Errors: 1,
++		Time:   "0.000",
++		TestCases: []junitTestCase{{
++			Classname: "provenance/f2p/runner",
++			Name:      "f2p_runner_setup",
++			File:      "provenance/f2p/runner/main.go",
++			Time:      "0.000",
++			Error:     &junitMessage{Message: message, Type: "setup", Body: message},
++		}},
++	}}
++	if err := writeReport(reportPath, suites); err != nil {
++		fmt.Fprintf(os.Stderr, "f2p_runner: write fatal report: %v\n", err)
++	}
++	fmt.Fprintf(os.Stderr, "f2p_runner: %s\n", message)
++}
++
++func findModuleRoot() (string, error) {
++	dir, err := os.Getwd()
++	if err != nil {
++		return "", err
++	}
++	for {
++		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
++			return dir, nil
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			return "", fmt.Errorf("could not locate the module root (go.mod) from %s", dir)
++		}
++		dir = parent
++	}
++}
++
++func modulePath(root string) (string, error) {
++	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
++	if err != nil {
++		return "", err
++	}
++	for _, line := range strings.Split(string(data), "\n") {
++		line = strings.TrimSpace(line)
++		if strings.HasPrefix(line, "module ") {
++			return strings.TrimSpace(strings.TrimPrefix(line, "module ")), nil
++		}
++	}
++	return "", fmt.Errorf("module directive not found in go.mod")
++}
++
++// buildEnv keeps the image-provided toolchain and module cache, falls back to
++// a temporary build cache when the inherited one is not usable, and disables
++// any network or toolchain download so replay stays offline.
++func buildEnv() []string {
++	env := os.Environ()
++	cache := os.Getenv("GOCACHE")
++	if cache == "" {
++		if home, err := os.UserHomeDir(); err == nil && home != "" {
++			cache = filepath.Join(home, ".cache", "go-build")
++		}
++	}
++	if cache == "" || !writableDir(cache) {
++		fallback := filepath.Join(os.TempDir(), "f2p-go-build-cache")
++		if err := os.MkdirAll(fallback, 0o755); err == nil {
++			cache = fallback
++		}
++	}
++	if cache != "" {
++		env = append(env, "GOCACHE="+cache)
++	}
++	env = append(env,
++		"GOPROXY=off",
++		"GOTOOLCHAIN=local",
++		"GOFLAGS=-mod=readonly",
++	)
++	return env
++}
++
++func writableDir(dir string) bool {
++	if err := os.MkdirAll(dir, 0o755); err != nil {
++		return false
++	}
++	f, err := os.CreateTemp(dir, ".f2p-write-probe-*")
++	if err != nil {
++		return false
++	}
++	name := f.Name()
++	_ = f.Close()
++	_ = os.Remove(name)
++	return true
++}

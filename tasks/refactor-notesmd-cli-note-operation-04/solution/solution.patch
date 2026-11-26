@@ -1,0 +1,547 @@
+diff --git a/pkg/actions/frontmatter.go b/pkg/actions/frontmatter.go
+index 24f0eb61d1e7de13742c7aa845b06b2b5a860d18..e4bc890ef31ec208c383a38a3e2b5f7aad51ad2a 100644
+--- a/pkg/actions/frontmatter.go
++++ b/pkg/actions/frontmatter.go
+@@ -35,30 +35,41 @@ func Frontmatter(vault obsidian.VaultManager, note obsidian.NoteManager, params
+ 		return "", err
+ 	}
+ 
+-	// Handle print operation
++	op := &frontmatterOp{
++		note:      note,
++		vaultPath: vaultPath,
++		noteName:  params.NoteName,
++		contents:  contents,
++	}
++
+ 	if params.Print {
+-		return handlePrint(contents)
++		return op.print()
+ 	}
+ 
+-	// Handle edit operation
+ 	if params.Edit {
+-		return handleEdit(note, vaultPath, params.NoteName, contents, params.Key, params.Value)
++		return op.edit(params.Key, params.Value)
+ 	}
+ 
+-	// Handle delete operation
+ 	if params.Delete {
+-		return handleDelete(note, vaultPath, params.NoteName, contents, params.Key)
++		return op.delete(params.Key)
+ 	}
+ 
+ 	return "", errors.New("no operation specified: use --print, --edit, or --delete")
+ }
+ 
+-func handlePrint(contents string) (string, error) {
+-	if !frontmatter.HasFrontmatter(contents) {
++type frontmatterOp struct {
++	note      obsidian.NoteManager
++	vaultPath string
++	noteName  string
++	contents  string
++}
++
++func (op *frontmatterOp) print() (string, error) {
++	if !frontmatter.HasFrontmatter(op.contents) {
+ 		return "", nil // Return empty for notes without frontmatter
+ 	}
+ 
+-	fm, _, err := frontmatter.Parse(contents)
++	fm, _, err := frontmatter.Parse(op.contents)
+ 	if err != nil {
+ 		return "", err
+ 	}
+@@ -71,7 +82,7 @@ func handlePrint(contents string) (string, error) {
+ 	return formatted, nil
+ }
+ 
+-func handleEdit(note obsidian.NoteManager, vaultPath, noteName, contents, key, value string) (string, error) {
++func (op *frontmatterOp) edit(key, value string) (string, error) {
+ 	if key == "" {
+ 		return "", errors.New("--key is required for edit operation")
+ 	}
+@@ -79,33 +90,33 @@ func handleEdit(note obsidian.NoteManager, vaultPath, noteName, contents, key, v
+ 		return "", errors.New("--value is required for edit operation")
+ 	}
+ 
+-	updatedContent, err := frontmatter.SetKey(contents, key, value)
++	updatedContent, err := frontmatter.SetKey(op.contents, key, value)
+ 	if err != nil {
+ 		return "", err
+ 	}
+ 
+-	err = note.SetContents(vaultPath, noteName, updatedContent)
++	err = op.note.SetContents(op.vaultPath, op.noteName, updatedContent)
+ 	if err != nil {
+ 		return "", err
+ 	}
+ 
+-	return fmt.Sprintf("Updated frontmatter key '%s' in %s", key, noteName), nil
++	return fmt.Sprintf("Updated frontmatter key '%s' in %s", key, op.noteName), nil
+ }
+ 
+-func handleDelete(note obsidian.NoteManager, vaultPath, noteName, contents, key string) (string, error) {
++func (op *frontmatterOp) delete(key string) (string, error) {
+ 	if key == "" {
+ 		return "", errors.New("--key is required for delete operation")
+ 	}
+ 
+-	updatedContent, err := frontmatter.DeleteKey(contents, key)
++	updatedContent, err := frontmatter.DeleteKey(op.contents, key)
+ 	if err != nil {
+ 		return "", err
+ 	}
+ 
+-	err = note.SetContents(vaultPath, noteName, updatedContent)
++	err = op.note.SetContents(op.vaultPath, op.noteName, updatedContent)
+ 	if err != nil {
+ 		return "", err
+ 	}
+ 
+-	return fmt.Sprintf("Deleted frontmatter key '%s' from %s", key, noteName), nil
++	return fmt.Sprintf("Deleted frontmatter key '%s' from %s", key, op.noteName), nil
+ }
+diff --git a/pkg/actions/frontmatter_test.go b/pkg/actions/frontmatter_test.go
+index 2cead4688ffb3620e84e157944c6c33b75bf3b79..91ad2391d5d39b7cae22c2aeaafea3aab55bfeb5 100644
+--- a/pkg/actions/frontmatter_test.go
++++ b/pkg/actions/frontmatter_test.go
+@@ -235,3 +235,288 @@ func TestFrontmatter_NoOperation(t *testing.T) {
+ 		assert.Contains(t, err.Error(), "no operation specified")
+ 	})
+ }
++
++type recordingVault struct {
++	mocks.MockVaultOperator
++	name           string
++	defaultNameErr error
++	pathErr        error
++	events         *[]string
++}
++
++func (v *recordingVault) DefaultName() (string, error) {
++	if v.events != nil {
++		*v.events = append(*v.events, "DefaultName")
++	}
++	if v.defaultNameErr != nil {
++		return "", v.defaultNameErr
++	}
++	return v.name, nil
++}
++
++func (v *recordingVault) Path() (string, error) {
++	if v.events != nil {
++		*v.events = append(*v.events, "Path")
++	}
++	if v.pathErr != nil {
++		return "", v.pathErr
++	}
++	return "/vault/" + v.name, nil
++}
++
++type recordingNote struct {
++	mocks.MockNoteManager
++	contents       string
++	getContentsErr error
++	setContentsErr error
++	setCalls       int
++	lastVaultPath  string
++	lastNoteName   string
++	lastWritten    string
++	events         *[]string
++}
++
++func (n *recordingNote) GetContents(vaultPath, noteName string) (string, error) {
++	if n.events != nil {
++		*n.events = append(*n.events, "GetContents")
++	}
++	if n.getContentsErr != nil {
++		return "", n.getContentsErr
++	}
++	return n.contents, nil
++}
++
++func (n *recordingNote) SetContents(vaultPath, noteName, contents string) error {
++	if n.events != nil {
++		*n.events = append(*n.events, "SetContents")
++	}
++	n.setCalls++
++	n.lastVaultPath = vaultPath
++	n.lastNoteName = noteName
++	n.lastWritten = contents
++	if n.setContentsErr != nil {
++		return n.setContentsErr
++	}
++	return nil
++}
++
++func TestFrontmatter_PrintEdgeCases(t *testing.T) {
++	t.Run("empty frontmatter block returns empty with zero writes", func(t *testing.T) {
++		v := &recordingVault{name: "v"}
++		n := &recordingNote{contents: "---\n---\nBody"}
++		out, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "note1", Print: true})
++		assert.NoError(t, err)
++		assert.Equal(t, "", out)
++		assert.Equal(t, 0, n.setCalls)
++	})
++
++	t.Run("invalid YAML returns error with zero writes", func(t *testing.T) {
++		v := &recordingVault{name: "v"}
++		n := &recordingNote{contents: "---\ninvalid: [unclosed\n---\nBody"}
++		_, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "note1", Print: true})
++		assert.EqualError(t, err, "frontmatter contains invalid YAML")
++		assert.Equal(t, 0, n.setCalls)
++	})
++
++	t.Run("exact YAML output without body and zero writes", func(t *testing.T) {
++		v := &recordingVault{name: "v"}
++		n := &recordingNote{contents: "---\ntitle: Test\n---\nBody"}
++		out, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "note1", Print: true})
++		assert.NoError(t, err)
++		assert.Equal(t, "title: Test\n", out)
++		assert.Equal(t, 0, n.setCalls)
++	})
++}
++
++func TestFrontmatter_SideEffectsAndErrors(t *testing.T) {
++	t.Run("edit input validation zero writes", func(t *testing.T) {
++		v := &recordingVault{name: "v"}
++		n := &recordingNote{contents: "---\ntitle: Old\n---\nBody"}
++		_, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Edit: true, Value: "val"})
++		assert.EqualError(t, err, "--key is required for edit operation")
++		assert.Equal(t, 0, n.setCalls)
++
++		_, err = actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Edit: true, Key: "k"})
++		assert.EqualError(t, err, "--value is required for edit operation")
++		assert.Equal(t, 0, n.setCalls)
++	})
++
++	t.Run("edit invalid YAML zero writes", func(t *testing.T) {
++		v := &recordingVault{name: "v"}
++		n := &recordingNote{contents: "---\ninvalid: [unclosed\n---\nBody"}
++		_, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Edit: true, Key: "k", Value: "v"})
++		assert.EqualError(t, err, "frontmatter contains invalid YAML")
++		assert.Equal(t, 0, n.setCalls)
++	})
++
++	t.Run("edit success wording and exactly one write", func(t *testing.T) {
++		v := &recordingVault{name: "v"}
++		n := &recordingNote{contents: "---\ntitle: Old\n---\nBody"}
++		out, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Edit: true, Key: "title", Value: "New"})
++		assert.NoError(t, err)
++		assert.Equal(t, "Updated frontmatter key 'title' in n1", out)
++		assert.Equal(t, 1, n.setCalls)
++		assert.Equal(t, "/vault/v", n.lastVaultPath)
++		assert.Equal(t, "n1", n.lastNoteName)
++		assert.Equal(t, "---\ntitle: New\n---\nBody", n.lastWritten)
++	})
++
++	t.Run("edit create when no frontmatter writes once", func(t *testing.T) {
++		v := &recordingVault{name: "v"}
++		n := &recordingNote{contents: "Just body"}
++		out, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Edit: true, Key: "title", Value: "New"})
++		assert.NoError(t, err)
++		assert.Equal(t, "Updated frontmatter key 'title' in n1", out)
++		assert.Equal(t, 1, n.setCalls)
++		assert.Equal(t, "---\ntitle: New\n---\nJust body", n.lastWritten)
++	})
++
++	t.Run("delete input validation and empty frontmatter zero writes", func(t *testing.T) {
++		v := &recordingVault{name: "v"}
++		n := &recordingNote{contents: "---\ntitle: Old\n---\nBody"}
++		_, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Delete: true})
++		assert.EqualError(t, err, "--key is required for delete operation")
++		assert.Equal(t, 0, n.setCalls)
++
++		n.contents = "Just body"
++		_, err = actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Delete: true, Key: "k"})
++		assert.EqualError(t, err, "note does not contain frontmatter")
++		assert.Equal(t, 0, n.setCalls)
++
++		n.contents = "---\n---\nBody"
++		_, err = actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Delete: true, Key: "k"})
++		assert.EqualError(t, err, "note does not contain frontmatter")
++		assert.Equal(t, 0, n.setCalls)
++
++		n.contents = "---\ninvalid: [unclosed\n---\nBody"
++		_, err = actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Delete: true, Key: "k"})
++		assert.EqualError(t, err, "frontmatter contains invalid YAML")
++		assert.Equal(t, 0, n.setCalls)
++	})
++
++	t.Run("delete success wording and write", func(t *testing.T) {
++		v := &recordingVault{name: "v"}
++		n := &recordingNote{contents: "---\ntitle: Old\n---\nBody"}
++		out, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Delete: true, Key: "title"})
++		assert.NoError(t, err)
++		assert.Equal(t, "Deleted frontmatter key 'title' from n1", out)
++		assert.Equal(t, 1, n.setCalls)
++		assert.Equal(t, "Body", n.lastWritten)
++
++		// Deleting non-existent key still writes once
++		n = &recordingNote{contents: "---\ntitle: Old\n---\nBody"}
++		out, err = actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Delete: true, Key: "missing"})
++		assert.NoError(t, err)
++		assert.Equal(t, "Deleted frontmatter key 'missing' from n1", out)
++		assert.Equal(t, 1, n.setCalls)
++		assert.Equal(t, "---\ntitle: Old\n---\nBody", n.lastWritten)
++	})
++
++	t.Run("write error propagation occurs after single write attempt", func(t *testing.T) {
++		v := &recordingVault{name: "v"}
++		writeErr := errors.New("write failed")
++		n := &recordingNote{contents: "---\ntitle: Old\n---\nBody", setContentsErr: writeErr}
++		_, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Edit: true, Key: "title", Value: "New"})
++		assert.Equal(t, writeErr, err)
++		assert.Equal(t, 1, n.setCalls)
++	})
++}
++
++func TestFrontmatter_OperationPriority(t *testing.T) {
++	v := &recordingVault{name: "v"}
++
++	t.Run("print takes precedence over edit", func(t *testing.T) {
++		n := &recordingNote{contents: "---\ntitle: Test\n---\nBody"}
++		out, err := actions.Frontmatter(v, n, actions.FrontmatterParams{
++			NoteName: "n1",
++			Print:    true,
++			Edit:     true,
++			Key:      "title",
++			Value:    "New",
++		})
++		assert.NoError(t, err)
++		assert.Equal(t, "title: Test\n", out)
++		assert.Equal(t, 0, n.setCalls)
++	})
++
++	t.Run("edit takes precedence over delete", func(t *testing.T) {
++		n := &recordingNote{contents: "---\ntitle: Test\n---\nBody"}
++		out, err := actions.Frontmatter(v, n, actions.FrontmatterParams{
++			NoteName: "n1",
++			Edit:     true,
++			Delete:   true,
++			Key:      "title",
++			Value:    "New",
++		})
++		assert.NoError(t, err)
++		assert.Equal(t, "Updated frontmatter key 'title' in n1", out)
++		assert.Equal(t, 1, n.setCalls)
++		assert.Equal(t, "---\ntitle: New\n---\nBody", n.lastWritten)
++	})
++
++	t.Run("all three specified chooses print", func(t *testing.T) {
++		n := &recordingNote{contents: "---\ntitle: Test\n---\nBody"}
++		out, err := actions.Frontmatter(v, n, actions.FrontmatterParams{
++			NoteName: "n1",
++			Print:    true,
++			Edit:     true,
++			Delete:   true,
++			Key:      "title",
++			Value:    "New",
++		})
++		assert.NoError(t, err)
++		assert.Equal(t, "title: Test\n", out)
++		assert.Equal(t, 0, n.setCalls)
++	})
++}
++
++func TestFrontmatter_ErrorPrecedence(t *testing.T) {
++	t.Run("default name error precedence", func(t *testing.T) {
++		events := []string{}
++		defErr := errors.New("default err")
++		v := &recordingVault{name: "v", defaultNameErr: defErr, events: &events}
++		n := &recordingNote{contents: "Body", events: &events}
++		_, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1"})
++		assert.Equal(t, defErr, err)
++		assert.Equal(t, []string{"DefaultName"}, events)
++	})
++
++	t.Run("path error precedence", func(t *testing.T) {
++		events := []string{}
++		pathErr := errors.New("path err")
++		v := &recordingVault{name: "v", pathErr: pathErr, events: &events}
++		n := &recordingNote{contents: "Body", events: &events}
++		_, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1"})
++		assert.Equal(t, pathErr, err)
++		assert.Equal(t, []string{"DefaultName", "Path"}, events)
++	})
++
++	t.Run("get contents error precedence", func(t *testing.T) {
++		events := []string{}
++		getErr := errors.New("get err")
++		v := &recordingVault{name: "v", events: &events}
++		n := &recordingNote{getContentsErr: getErr, events: &events}
++		_, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1"})
++		assert.Equal(t, getErr, err)
++		assert.Equal(t, []string{"DefaultName", "Path", "GetContents"}, events)
++	})
++
++	t.Run("all prerequisites succeed before no-op error", func(t *testing.T) {
++		events := []string{}
++		v := &recordingVault{name: "v", events: &events}
++		n := &recordingNote{contents: "Body", events: &events}
++		_, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1"})
++		assert.EqualError(t, err, "no operation specified: use --print, --edit, or --delete")
++		assert.Equal(t, []string{"DefaultName", "Path", "GetContents"}, events)
++	})
++
++	t.Run("read error precedes edit validation error", func(t *testing.T) {
++		events := []string{}
++		getErr := errors.New("get err")
++		v := &recordingVault{name: "v", events: &events}
++		n := &recordingNote{getContentsErr: getErr, events: &events}
++		_, err := actions.Frontmatter(v, n, actions.FrontmatterParams{NoteName: "n1", Edit: true})
++		assert.Equal(t, getErr, err)
++		assert.Equal(t, []string{"DefaultName", "Path", "GetContents"}, events)
++	})
++}
+diff --git a/pkg/frontmatter/frontmatter.go b/pkg/frontmatter/frontmatter.go
+index cad29c634a6f76a9ad2a2a92b75f308aa88e0886..8b3f3dfbc143b617d294a0f1206da10d7993cdf3 100644
+--- a/pkg/frontmatter/frontmatter.go
++++ b/pkg/frontmatter/frontmatter.go
+@@ -54,11 +54,7 @@ func SetKey(content, key, value string) (string, error) {
+ 	if !HasFrontmatter(content) {
+ 		// Create new frontmatter
+ 		fm := map[string]interface{}{key: parsedValue}
+-		fmStr, err := yaml.Marshal(fm)
+-		if err != nil {
+-			return "", err
+-		}
+-		return Delimiter + "\n" + string(fmStr) + Delimiter + "\n" + content, nil
++		return rebuildContent(fm, content)
+ 	}
+ 
+ 	// Parse existing frontmatter
+@@ -74,13 +70,7 @@ func SetKey(content, key, value string) (string, error) {
+ 	// Update the key
+ 	fm[key] = parsedValue
+ 
+-	// Reconstruct content
+-	fmStr, err := yaml.Marshal(fm)
+-	if err != nil {
+-		return "", err
+-	}
+-
+-	return Delimiter + "\n" + string(fmStr) + Delimiter + "\n" + body, nil
++	return rebuildContent(fm, body)
+ }
+ 
+ // DeleteKey removes a key from the frontmatter, returning the full updated content.
+@@ -106,12 +96,14 @@ func DeleteKey(content, key string) (string, error) {
+ 		return strings.TrimPrefix(body, "\n"), nil
+ 	}
+ 
+-	// Reconstruct content
++	return rebuildContent(fm, body)
++}
++
++func rebuildContent(fm map[string]interface{}, body string) (string, error) {
+ 	fmStr, err := yaml.Marshal(fm)
+ 	if err != nil {
+ 		return "", err
+ 	}
+-
+ 	return Delimiter + "\n" + string(fmStr) + Delimiter + "\n" + body, nil
+ }
+ 
+diff --git a/pkg/frontmatter/frontmatter_test.go b/pkg/frontmatter/frontmatter_test.go
+index 5e7d1ed518481f90821746ceb37d610603fde6ec..8c8d3130b3a993c8b4cb98ad52e4a48ada0c96d6 100644
+--- a/pkg/frontmatter/frontmatter_test.go
++++ b/pkg/frontmatter/frontmatter_test.go
+@@ -170,3 +170,95 @@ func TestDeleteKey(t *testing.T) {
+ 		assert.Contains(t, result, "title: Test")
+ 	})
+ }
++
++func TestGoldenOutputsAndExactErrors(t *testing.T) {
++	t.Run("SetKey golden outputs", func(t *testing.T) {
++		tests := []struct {
++			name     string
++			content  string
++			key      string
++			val      string
++			expected string
++		}{
++			{"update", "---\ntitle: Old\n---\nBody", "title", "New", "---\ntitle: New\n---\nBody"},
++			{"add", "---\ntitle: Test\n---\nBody", "author", "John", "---\nauthor: John\ntitle: Test\n---\nBody"},
++			{"create", "Just body", "title", "New", "---\ntitle: New\n---\nJust body"},
++			{"bool true", "---\n---\nBody", "draft", "true", "---\ndraft: true\n---\nBody"},
++			{"bool false", "---\n---\nBody", "published", "false", "---\npublished: false\n---\nBody"},
++			{"array", "---\n---\nBody", "tags", "[one, two, three]", "---\ntags:\n    - one\n    - two\n    - three\n---\nBody"},
++			{"empty array", "---\n---\nBody", "tags", "[]", "---\ntags: []\n---\nBody"},
++			{"numeric string", "---\n---\nBody", "count", "123", "---\ncount: \"123\"\n---\nBody"},
++			{"multiline body", "---\ntitle: Test\n---\nLine1\nLine2\n", "title", "New", "---\ntitle: New\n---\nLine1\nLine2\n"},
++		}
++		for _, tc := range tests {
++			t.Run(tc.name, func(t *testing.T) {
++				actual, err := frontmatter.SetKey(tc.content, tc.key, tc.val)
++				assert.NoError(t, err)
++				assert.Equal(t, tc.expected, actual)
++			})
++		}
++	})
++
++	t.Run("DeleteKey golden outputs", func(t *testing.T) {
++		tests := []struct {
++			name     string
++			content  string
++			key      string
++			expected string
++		}{
++			{"retain keys", "---\nauthor: John\ntitle: Test\n---\nBody", "author", "---\ntitle: Test\n---\nBody"},
++			{"final key", "---\ntitle: Test\n---\nBody", "title", "Body"},
++			{"final key with newline", "---\ntitle: Test\n---\n\nBody", "title", "Body"},
++			{"multiline body", "---\ntitle: Test\n---\nLine1\nLine2", "title", "Line1\nLine2"},
++			{"nonexistent key", "---\ntitle: Test\n---\nBody", "missing", "---\ntitle: Test\n---\nBody"},
++		}
++		for _, tc := range tests {
++			t.Run(tc.name, func(t *testing.T) {
++				actual, err := frontmatter.DeleteKey(tc.content, tc.key)
++				assert.NoError(t, err)
++				assert.Equal(t, tc.expected, actual)
++			})
++		}
++	})
++
++	t.Run("Reconstruction layout", func(t *testing.T) {
++		actual, err := frontmatter.SetKey("body", "k", "v")
++		assert.NoError(t, err)
++		parts := strings.Split(actual, "\n")
++		assert.Equal(t, frontmatter.Delimiter, parts[0])
++		assert.Equal(t, "k: v", parts[1])
++		assert.Equal(t, frontmatter.Delimiter, parts[2])
++		assert.Equal(t, "body", parts[3])
++	})
++
++	t.Run("Exact errors", func(t *testing.T) {
++		_, _, err := frontmatter.Parse("---\ninvalid: [unclosed\n---\nBody")
++		assert.EqualError(t, err, frontmatter.InvalidFrontmatterError)
++
++		_, err = frontmatter.SetKey("---\ninvalid: [unclosed\n---\nBody", "k", "v")
++		assert.EqualError(t, err, frontmatter.InvalidFrontmatterError)
++
++		_, err = frontmatter.DeleteKey("Just body", "k")
++		assert.EqualError(t, err, frontmatter.NoFrontmatterError)
++
++		_, err = frontmatter.DeleteKey("---\n---\nBody", "k")
++		assert.EqualError(t, err, frontmatter.NoFrontmatterError)
++
++		_, err = frontmatter.DeleteKey("---\ninvalid: [unclosed\n---\nBody", "k")
++		assert.EqualError(t, err, frontmatter.InvalidFrontmatterError)
++	})
++
++	t.Run("Format exact output", func(t *testing.T) {
++		formatted, err := frontmatter.Format(map[string]interface{}{"title": "Test"})
++		assert.NoError(t, err)
++		assert.Equal(t, "title: Test\n", formatted)
++
++		empty, err := frontmatter.Format(map[string]interface{}{})
++		assert.NoError(t, err)
++		assert.Equal(t, "", empty)
++
++		nilMap, err := frontmatter.Format(nil)
++		assert.NoError(t, err)
++		assert.Equal(t, "", nilMap)
++	})
++}

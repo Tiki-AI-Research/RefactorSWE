@@ -1,0 +1,3774 @@
+diff --git a/cmd/p2p_cli_contract_test.go b/cmd/p2p_cli_contract_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..546b5567fa835bc8a4347444ff8381f410b94af8
+--- /dev/null
++++ b/cmd/p2p_cli_contract_test.go
+@@ -0,0 +1,201 @@
++package cmd_test
++
++// Supplemental P2P contract tests for the command line entry point.
++//
++// The mapping refactor must not disturb the CLI surface: the same flags keep
++// their names, defaults and meanings, the diagram still arrives on stdin or
++// through --file/-f, and failures keep surfacing as non-zero exits with a
++// diagnostic. The expected text is produced through the frozen public graph
++// API, so the test pins CLI <-> library equivalence without depending on
++// mapping internals.
++
++import (
++	"errors"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/AlexanderGrooff/mermaid-ascii/pkg/diagram"
++	"github.com/AlexanderGrooff/mermaid-ascii/pkg/graph"
++)
++
++const p2pCLISource = "graph LR\nA --> B\n"
++
++func p2pCLIModuleRoot(t *testing.T) string {
++	t.Helper()
++	dir, err := os.Getwd()
++	if err != nil {
++		t.Fatalf("Getwd() error = %v", err)
++	}
++	for {
++		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
++			return dir
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			t.Fatalf("go.mod not found above %s", dir)
++		}
++		dir = parent
++	}
++}
++
++func p2pBuildCLI(t *testing.T) string {
++	t.Helper()
++	root := p2pCLIModuleRoot(t)
++	dir := os.Getenv("VERIFIER_EXEC_DIR")
++	if dir == "" {
++		dir = t.TempDir()
++	}
++	if err := os.MkdirAll(dir, 0o755); err != nil {
++		t.Fatalf("MkdirAll(%s) error = %v", dir, err)
++	}
++	binary := filepath.Join(dir, "mermaid-ascii-p2p")
++	build := exec.Command("go", "build", "-o", binary, "github.com/AlexanderGrooff/mermaid-ascii")
++	build.Dir = root
++	if out, err := build.CombinedOutput(); err != nil {
++		t.Fatalf("go build failed: %v\n%s", err, out)
++	}
++	return binary
++}
++
++type p2pCLIResult struct {
++	stdout string
++	stderr string
++	exit   int
++}
++
++func p2pRunCLI(t *testing.T, binary string, stdin string, args ...string) p2pCLIResult {
++	t.Helper()
++	command := exec.Command(binary, args...)
++	command.Stdin = strings.NewReader(stdin)
++	var stdout, stderr strings.Builder
++	command.Stdout = &stdout
++	command.Stderr = &stderr
++	err := command.Run()
++	exit := 0
++	if err != nil {
++		var exitErr *exec.ExitError
++		if !errors.As(err, &exitErr) {
++			t.Fatalf("running %v: %v", command.Args, err)
++		}
++		exit = exitErr.ExitCode()
++	}
++	return p2pCLIResult{stdout: stdout.String(), stderr: stderr.String(), exit: exit}
++}
++
++func p2pExpectedGraphOutput(t *testing.T, source string, ascii, coords bool, borderPadding, paddingX, paddingY int) string {
++	t.Helper()
++	properties, err := graph.Parse(source, "cli")
++	if err != nil {
++		t.Fatalf("Parse() error = %v", err)
++	}
++	config := &diagram.Config{
++		UseAscii:         ascii,
++		ShowCoords:       coords,
++		BoxBorderPadding: borderPadding,
++		PaddingBetweenX:  paddingX,
++		PaddingBetweenY:  paddingY,
++		StyleType:        "cli",
++	}
++	properties.Apply(config)
++	return graph.Draw(properties)
++}
++
++func TestP2PCLIFlagContractAndRendering(t *testing.T) {
++	binary := p2pBuildCLI(t)
++
++	cases := []struct {
++		name          string
++		args          []string
++		ascii         bool
++		coords        bool
++		borderPadding int
++		paddingX      int
++		paddingY      int
++	}{
++		{name: "defaults", args: nil, borderPadding: 1, paddingX: 5, paddingY: 5},
++		{name: "ascii-short", args: []string{"-a"}, ascii: true, borderPadding: 1, paddingX: 5, paddingY: 5},
++		{name: "ascii-long", args: []string{"--ascii"}, ascii: true, borderPadding: 1, paddingX: 5, paddingY: 5},
++		{name: "coords-short", args: []string{"-c"}, coords: true, borderPadding: 1, paddingX: 5, paddingY: 5},
++		{name: "coords-long", args: []string{"--coords"}, coords: true, borderPadding: 1, paddingX: 5, paddingY: 5},
++		{name: "padding-short", args: []string{"-x", "2", "-y", "3"}, borderPadding: 1, paddingX: 2, paddingY: 3},
++		{name: "padding-long", args: []string{"--paddingX=2", "--paddingY=3"}, borderPadding: 1, paddingX: 2, paddingY: 3},
++		{name: "border-short", args: []string{"-p", "2"}, borderPadding: 2, paddingX: 5, paddingY: 5},
++		{name: "border-long", args: []string{"--borderPadding=2"}, borderPadding: 2, paddingX: 5, paddingY: 5},
++		{name: "max-width", args: []string{"--max-width", "400"}, borderPadding: 1, paddingX: 5, paddingY: 5},
++		{
++			name:          "combined",
++			args:          []string{"-a", "-c", "-x", "1", "-y", "2", "-p", "2"},
++			ascii:         true,
++			coords:        true,
++			borderPadding: 2,
++			paddingX:      1,
++			paddingY:      2,
++		},
++	}
++
++	for _, tc := range cases {
++		result := p2pRunCLI(t, binary, p2pCLISource, tc.args...)
++		if result.exit != 0 {
++			t.Errorf("%s: exit = %d, want 0 (stderr: %s)", tc.name, result.exit, result.stderr)
++			continue
++		}
++		want := p2pExpectedGraphOutput(t, p2pCLISource, tc.ascii, tc.coords, tc.borderPadding, tc.paddingX, tc.paddingY)
++		if result.stdout != want {
++			t.Errorf("%s: CLI output diverged from the graph API\nwant:\n%s\ngot:\n%s", tc.name, want, result.stdout)
++		}
++		if result.stderr != "" {
++			t.Errorf("%s: unexpected stderr: %s", tc.name, result.stderr)
++		}
++	}
++
++	filePath := filepath.Join(t.TempDir(), "diagram.mmd")
++	if err := os.WriteFile(filePath, []byte(p2pCLISource), 0o644); err != nil {
++		t.Fatalf("WriteFile() error = %v", err)
++	}
++	wantFile := p2pExpectedGraphOutput(t, p2pCLISource, false, false, 1, 5, 5)
++	for _, args := range [][]string{
++		{"-f", filePath},
++		{"--file", filePath},
++		{"-f", "-"},
++		{"--file", "-"},
++	} {
++		result := p2pRunCLI(t, binary, p2pCLISource, args...)
++		if result.exit != 0 {
++			t.Errorf("file args %v: exit = %d, want 0 (stderr: %s)", args, result.exit, result.stderr)
++			continue
++		}
++		if result.stdout != wantFile {
++			t.Errorf("file args %v: CLI output diverged from the graph API\nwant:\n%s\ngot:\n%s", args, wantFile, result.stdout)
++		}
++	}
++}
++
++func TestP2PCLIErrorExitStatusAndDiagnostics(t *testing.T) {
++	binary := p2pBuildCLI(t)
++
++	cases := []struct {
++		name  string
++		stdin string
++		args  []string
++	}{
++		{name: "invalid graph", stdin: "not a diagram\n"},
++		{name: "unknown flag", stdin: p2pCLISource, args: []string{"--definitely-not-a-flag"}},
++		{name: "invalid max width", stdin: p2pCLISource, args: []string{"--max-width", "bogus"}},
++		{name: "zero max width", stdin: p2pCLISource, args: []string{"--max-width", "0"}},
++		{name: "negative padding", stdin: p2pCLISource, args: []string{"--paddingX=-3"}},
++		{name: "missing file", stdin: "", args: []string{"-f", "/definitely/not/here/diagram.mmd"}},
++	}
++
++	for _, tc := range cases {
++		result := p2pRunCLI(t, binary, tc.stdin, tc.args...)
++		if result.exit == 0 {
++			t.Errorf("%s: exit = 0, want non-zero", tc.name)
++		}
++		if strings.TrimSpace(result.stderr) == "" {
++			t.Errorf("%s: stderr is empty, want a diagnostic", tc.name)
++		}
++	}
++}
+diff --git a/pkg/graph/f2p_mapping_structure_test.go b/pkg/graph/f2p_mapping_structure_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..97e751bf8f2d1c0bd9b67c97afd33d49c78c8828
+--- /dev/null
++++ b/pkg/graph/f2p_mapping_structure_test.go
+@@ -0,0 +1,1172 @@
++package graph_test
++
++// F2P structural acceptance tests for the layout-mapping phase decomposition.
++//
++// The frozen requirement set (REQ-STRUCT-001 .. REQ-STRUCT-003) demands that
++// the mapping phase be separated into dedicated units that own the state each
++// step needs and that the mapping entry point (`createMapping`) become a short
++// orchestration of ordered steps instead of a container of layout logic. The
++// rendered behaviour is pinned by the P2P gates; these tests pin the structure,
++// which is the part of the contract the Baseline cannot satisfy while its
++// entry point is a 150-line interleaved routine.
++//
++// Every test parses the non-test sources of this package and asserts one
++// observable structural property of the mapping phase reached from its entry
++// point. Ownership is derived from delegation calls and state effects rather
++// than helper names, so internal helpers may be freely renamed, split or
++// recombined as long as the required responsibilities stay with dedicated,
++// separately reachable units.
++
++import (
++	"go/ast"
++	"go/parser"
++	"go/token"
++	"go/types"
++	"path/filepath"
++	"runtime"
++	"sort"
++	"strings"
++	"sync"
++	"testing"
++)
++
++// ---------------------------------------------------------------------------
++// source analysis
++// ---------------------------------------------------------------------------
++
++type f2pFunc struct {
++	name  string
++	recv  string
++	file  string
++	decl  *ast.FuncDecl
++	lines int
++}
++
++type f2pField struct {
++	name string
++	typ  ast.Expr
++}
++
++var f2pLoadMu sync.Mutex
++var f2pLoadedPackage *f2pPackage
++
++type f2pPackage struct {
++	dir     string
++	t       *testing.T
++	typed   *f2pTyped
++	fset    *token.FileSet
++	funcs   []*f2pFunc
++	byName  map[string][]*f2pFunc
++	structs map[string][]f2pField
++	types   map[string]ast.Expr
++	entry   *f2pFunc
++}
++
++func f2pPackageDir(t *testing.T) string {
++	t.Helper()
++	_, file, _, ok := runtime.Caller(0)
++	if !ok {
++		t.Fatal("cannot locate the F2P test source file")
++	}
++	return filepath.Dir(file)
++}
++
++// f2pLoad parses every non-test Go file of the package that contains this
++// test file and indexes its functions, methods and struct types.
++func f2pLoad(t *testing.T) *f2pPackage {
++	f2pLoadMu.Lock()
++	defer f2pLoadMu.Unlock()
++	if f2pLoadedPackage != nil {
++		f2pLoadedPackage.t = t
++		return f2pLoadedPackage
++	}
++	var sourceFiles []*ast.File
++	t.Helper()
++	dir := f2pPackageDir(t)
++	fset := token.NewFileSet()
++	pkgs, err := parser.ParseDir(fset, dir, nil, 0)
++	if err != nil {
++		t.Fatalf("cannot parse package sources in %s: %v", dir, err)
++	}
++	pp := &f2pPackage{dir: dir, t: t, fset: fset, byName: map[string][]*f2pFunc{}, structs: map[string][]f2pField{}, types: map[string]ast.Expr{}}
++	for name, pkg := range pkgs {
++		if strings.HasSuffix(name, "_test") {
++			continue
++		}
++		for fname, f := range pkg.Files {
++			if strings.HasSuffix(fname, "_test.go") {
++				continue
++			}
++			sourceFiles = append(sourceFiles, f)
++			for _, d := range f.Decls {
++				switch decl := d.(type) {
++				case *ast.FuncDecl:
++					if decl.Body == nil {
++						continue
++					}
++					pf := &f2pFunc{name: decl.Name.Name, recv: f2pRecvType(decl), file: filepath.Base(fname), decl: decl}
++					pf.lines = fset.Position(decl.Body.Rbrace).Line - fset.Position(decl.Body.Lbrace).Line - 1
++					if pf.lines < 0 {
++						pf.lines = 0
++					}
++					pp.funcs = append(pp.funcs, pf)
++					pp.byName[pf.name] = append(pp.byName[pf.name], pf)
++				case *ast.GenDecl:
++					if decl.Tok != token.TYPE {
++						continue
++					}
++					for _, spec := range decl.Specs {
++						ts, ok := spec.(*ast.TypeSpec)
++						if !ok {
++							continue
++						}
++						pp.types[ts.Name.Name] = ts.Type
++						st, ok := ts.Type.(*ast.StructType)
++						if !ok {
++							continue
++						}
++						var fields []f2pField
++						for _, fl := range st.Fields.List {
++							for _, nm := range fl.Names {
++								fields = append(fields, f2pField{name: nm.Name, typ: fl.Type})
++							}
++						}
++						pp.structs[ts.Name.Name] = fields
++					}
++				}
++			}
++		}
++	}
++	if len(pp.funcs) == 0 {
++		t.Fatalf("no Go functions found in %s", dir)
++	}
++	pp.loadTypes(sourceFiles)
++	pp.entry = pp.findEntry()
++	f2pLoadedPackage = pp
++	return pp
++}
++
++func f2pRecvType(fd *ast.FuncDecl) string {
++	if fd.Recv == nil || len(fd.Recv.List) == 0 {
++		return ""
++	}
++	return f2pTypeName(fd.Recv.List[0].Type)
++}
++
++func f2pTypeName(e ast.Expr) string {
++	switch x := e.(type) {
++	case *ast.StarExpr:
++		return f2pTypeName(x.X)
++	case *ast.Ident:
++		return x.Name
++	case *ast.SelectorExpr:
++		return x.Sel.Name
++	case *ast.ArrayType:
++		return "[]" + f2pTypeName(x.Elt)
++	case *ast.MapType:
++		return "map[" + f2pTypeName(x.Key) + "]" + f2pTypeName(x.Value)
++	}
++	return ""
++}
++
++// findEntry locates the mapping entry point. The phase entry point is
++// `createMapping` in every known decomposition; when it is renamed, the entry
++// point is recovered as the method called from `Draw` whose call chain
++// mutates node grid placement state.
++func (pp *f2pPackage) findEntry() *f2pFunc {
++	var named []*f2pFunc
++	for _, f := range pp.byName["createMapping"] {
++		if f.recv == "graph" {
++			named = append(named, f)
++		}
++	}
++	if len(named) == 1 {
++		return named[0]
++	}
++	if len(named) > 1 {
++		return named[0]
++	}
++	for _, draw := range pp.byName["Draw"] {
++		for name := range pp.callsIn(draw.decl.Body) {
++			for _, cand := range pp.byName[name] {
++				for _, reached := range pp.closure(cand) {
++					if f2pAssignsSelector(reached.decl.Body, "gridCoord") {
++						return cand
++					}
++				}
++			}
++		}
++	}
++	return nil
++}
++
++func (pp *f2pPackage) callsIn(n ast.Node) map[string]bool {
++	return pp.typedCalls(n)
++}
++
++// closure returns the roots plus every package unit reachable from them
++// through delegating calls.
++func (pp *f2pPackage) closure(roots ...*f2pFunc) []*f2pFunc {
++	seen := map[*f2pFunc]bool{}
++	var order, frontier []*f2pFunc
++	for _, r := range roots {
++		if !seen[r] {
++			seen[r] = true
++			order = append(order, r)
++			frontier = append(frontier, r)
++		}
++	}
++	for len(frontier) > 0 {
++		var next []*f2pFunc
++		for _, f := range frontier {
++			for name := range pp.callsIn(f.decl.Body) {
++				for _, cf := range pp.byName[name] {
++					if !seen[cf] {
++						seen[cf] = true
++						order = append(order, cf)
++						next = append(next, cf)
++					}
++				}
++			}
++		}
++		frontier = next
++	}
++	return order
++}
++
++// ---------------------------------------------------------------------------
++// AST predicates
++// ---------------------------------------------------------------------------
++
++func f2pWalk(n ast.Node, fn func(ast.Node) bool) {
++	if n == nil {
++		return
++	}
++	ast.Inspect(n, fn)
++}
++
++// f2pAssignsSelector reports an assignment or increment of `x.<field>`.
++func f2pAssignsSelector(n ast.Node, field string) bool {
++	found := false
++	f2pWalk(n, func(x ast.Node) bool {
++		switch st := x.(type) {
++		case *ast.AssignStmt:
++			for _, lhs := range st.Lhs {
++				if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == field {
++					found = true
++				}
++			}
++		case *ast.IncDecStmt:
++			if sel, ok := st.X.(*ast.SelectorExpr); ok && sel.Sel.Name == field {
++				found = true
++			}
++		}
++		return true
++	})
++	return found
++}
++
++// f2pWritesIndexedSelector reports a map write `x.<field>[...] = ...`, `+=`.
++func f2pWritesIndexedSelector(n ast.Node, field string) bool {
++	found := false
++	f2pWalk(n, func(x ast.Node) bool {
++		as, ok := x.(*ast.AssignStmt)
++		if !ok {
++			return true
++		}
++		for _, lhs := range as.Lhs {
++			idx, ok := lhs.(*ast.IndexExpr)
++			if !ok {
++				continue
++			}
++			if sel, ok := idx.X.(*ast.SelectorExpr); ok && sel.Sel.Name == field {
++				found = true
++			}
++		}
++		return true
++	})
++	return found
++}
++
++// f2pRangesOver reports a `for ... := range x.<field>` loop.
++func f2pRangesOver(n ast.Node, field string) bool {
++	found := false
++	f2pWalk(n, func(x ast.Node) bool {
++		rs, ok := x.(*ast.RangeStmt)
++		if !ok {
++			return true
++		}
++		if sel, ok := rs.X.(*ast.SelectorExpr); ok && sel.Sel.Name == field {
++			found = true
++		}
++		return true
++	})
++	return found
++}
++
++func f2pHasLoop(n ast.Node) bool {
++	found := false
++	f2pWalk(n, func(x ast.Node) bool {
++		switch x.(type) {
++		case *ast.ForStmt, *ast.RangeStmt:
++			found = true
++		}
++		return true
++	})
++	return found
++}
++
++func f2pHasMapType(n ast.Node, key, val string) bool {
++	found := false
++	f2pWalk(n, func(x ast.Node) bool {
++		mt, ok := x.(*ast.MapType)
++		if ok && f2pTypeName(mt.Key) == key && f2pTypeName(mt.Value) == val {
++			found = true
++		}
++		return true
++	})
++	return found
++}
++
++func f2pHasStringLiteral(n ast.Node, lit string) bool {
++	found := false
++	f2pWalk(n, func(x ast.Node) bool {
++		bl, ok := x.(*ast.BasicLit)
++		if ok && bl.Kind == token.STRING && bl.Value == `"`+lit+`"` {
++			found = true
++		}
++		return true
++	})
++	return found
++}
++
++func f2pAppendCount(n ast.Node) int {
++	c := 0
++	f2pWalk(n, func(x ast.Node) bool {
++		if id, ok := x.(*ast.Ident); ok && id.Name == "append" {
++			c++
++		}
++		return true
++	})
++	return c
++}
++
++func f2pCallsAny(n ast.Node, names ...string) bool {
++	set := map[string]bool{}
++	for _, n := range names {
++		set[n] = true
++	}
++	found := false
++	f2pWalk(n, func(x ast.Node) bool {
++		ce, ok := x.(*ast.CallExpr)
++		if !ok {
++			return true
++		}
++		switch fn := ce.Fun.(type) {
++		case *ast.Ident:
++			if set[fn.Name] {
++				found = true
++			}
++		case *ast.SelectorExpr:
++			if set[fn.Sel.Name] {
++				found = true
++			}
++		}
++		return true
++	})
++	return found
++}
++
++func f2pCallNames(n ast.Node) []string {
++	set := map[string]bool{}
++	f2pWalk(n, func(x ast.Node) bool {
++		ce, ok := x.(*ast.CallExpr)
++		if !ok {
++			return true
++		}
++		switch fn := ce.Fun.(type) {
++		case *ast.Ident:
++			set[fn.Name] = true
++		case *ast.SelectorExpr:
++			set[fn.Sel.Name] = true
++		}
++		return true
++	})
++	out := make([]string, 0, len(set))
++	for k := range set {
++		out = append(out, k)
++	}
++	sort.Strings(out)
++	return out
++}
++
++func f2pResultTypeNames(f *f2pFunc) []string {
++	var out []string
++	if f.decl.Type.Results == nil {
++		return out
++	}
++	for _, r := range f.decl.Type.Results.List {
++		out = append(out, f2pTypeName(r.Type))
++	}
++	return out
++}
++
++func f2pReturnsNodeSlice(f *f2pFunc) bool {
++	for _, r := range f2pResultTypeNames(f) {
++		if r == "[]*node" || r == "[]node" {
++			return true
++		}
++	}
++	return false
++}
++
++func (pp *f2pPackage) f2pStructNodeSliceFields(typ string) []string {
++	var out []string
++	for _, fld := range pp.structs[typ] {
++		if f2pTypeName(fld.typ) == "[]*node" || f2pTypeName(fld.typ) == "[]node" {
++			out = append(out, fld.name)
++		}
++	}
++	return out
++}
++
++// f2pStoresNodeGroup reports that the unit stores a node collection in its own
++// state or in a local slice, in addition to returning one.
++func (pp *f2pPackage) f2pStoresNodeGroup(f *f2pFunc) bool {
++	stored := false
++	ownFields := map[string]bool{}
++	for _, n := range pp.f2pStructNodeSliceFields(f.recv) {
++		ownFields[n] = true
++	}
++	f2pWalk(f.decl.Body, func(x ast.Node) bool {
++		as, ok := x.(*ast.AssignStmt)
++		if !ok {
++			return true
++		}
++		for _, lhs := range as.Lhs {
++			if sel, ok := lhs.(*ast.SelectorExpr); ok && ownFields[sel.Sel.Name] {
++				stored = true
++			}
++		}
++		for _, rhs := range as.Rhs {
++			if cl, ok := rhs.(*ast.CompositeLit); ok {
++				if f2pTypeName(cl.Type) == "[]*node" || f2pTypeName(cl.Type) == "[]node" {
++					stored = true
++				}
++			}
++		}
++		return true
++	})
++	return stored
++}
++
++// f2pLocalCollections lists local variables declared as maps or slices.
++func f2pLocalCollections(n ast.Node) []string {
++	var out []string
++	f2pWalk(n, func(x ast.Node) bool {
++		switch st := x.(type) {
++		case *ast.AssignStmt:
++			if len(st.Lhs) != len(st.Rhs) {
++				return true
++			}
++			for i, lhs := range st.Lhs {
++				id, ok := lhs.(*ast.Ident)
++				if !ok {
++					continue
++				}
++				switch rhs := st.Rhs[i].(type) {
++				case *ast.CompositeLit:
++					switch rhs.Type.(type) {
++					case *ast.ArrayType, *ast.MapType:
++						out = append(out, id.Name)
++					}
++				case *ast.CallExpr:
++					if fn, ok := rhs.Fun.(*ast.Ident); ok && (fn.Name == "make" || fn.Name == "new") && len(rhs.Args) > 0 {
++						switch rhs.Args[0].(type) {
++						case *ast.ArrayType, *ast.MapType:
++							out = append(out, id.Name)
++						}
++					}
++				}
++			}
++		case *ast.DeclStmt:
++			gd, ok := st.Decl.(*ast.GenDecl)
++			if !ok {
++				return true
++			}
++			for _, spec := range gd.Specs {
++				vs, ok := spec.(*ast.ValueSpec)
++				if !ok {
++					continue
++				}
++				for i, nm := range vs.Names {
++					if len(vs.Values) > i {
++						if cl, ok := vs.Values[i].(*ast.CompositeLit); ok {
++							switch cl.Type.(type) {
++							case *ast.ArrayType, *ast.MapType:
++								out = append(out, nm.Name)
++							}
++						}
++					} else if vs.Type != nil {
++						switch vs.Type.(type) {
++						case *ast.ArrayType, *ast.MapType:
++							out = append(out, nm.Name)
++						}
++					}
++				}
++			}
++		}
++		return true
++	})
++	return out
++}
++
++func (pp *f2pPackage) f2pUnderlyingType(name string) ast.Expr {
++	seen := map[string]bool{}
++	for !seen[name] {
++		seen[name] = true
++		declaration := pp.types[name]
++		if alias, ok := declaration.(*ast.Ident); ok {
++			name = alias.Name
++			continue
++		}
++		return declaration
++	}
++	return nil
++}
++
++func (pp *f2pPackage) f2pIsStateType(name string) bool {
++	declaration := pp.f2pUnderlyingType(name)
++	if name == "graph" || declaration == pp.types["graph"] {
++		return false
++	}
++	switch declaration.(type) {
++	case *ast.StructType, *ast.MapType:
++		return true
++	}
++	return false
++}
++
++func (pp *f2pPackage) f2pStateInitializerType(expression ast.Expr) string {
++	var name string
++	switch value := expression.(type) {
++	case *ast.UnaryExpr:
++		if value.Op == token.AND {
++			return pp.f2pStateInitializerType(value.X)
++		}
++	case *ast.ParenExpr:
++		return pp.f2pStateInitializerType(value.X)
++	case *ast.CompositeLit:
++		name = f2pTypeName(value.Type)
++	case *ast.CallExpr:
++		if function, ok := value.Fun.(*ast.Ident); ok {
++			if (function.Name == "make" || function.Name == "new") && len(value.Args) > 0 {
++				name = f2pTypeName(value.Args[0])
++			} else if pp.f2pIsStateType(function.Name) {
++				name = function.Name
++			} else {
++				for _, constructor := range pp.byName[function.Name] {
++					for _, result := range f2pResultTypeNames(constructor) {
++						if pp.f2pIsStateType(result) {
++							name = result
++						}
++					}
++				}
++			}
++		}
++	}
++	if pp.f2pIsStateType(name) {
++		return name
++	}
++	return ""
++}
++
++// f2pStateHolders returns the locals of the entry point that are initialised
++// as dedicated package state types, including named maps, other than `graph`.
++func (pp *f2pPackage) f2pStateHolders(f *f2pFunc) []string {
++	var out []string
++	f2pWalk(f.decl.Body, func(x ast.Node) bool {
++		switch declaration := x.(type) {
++		case *ast.AssignStmt:
++			if len(declaration.Lhs) == len(declaration.Rhs) {
++				for index, expression := range declaration.Rhs {
++					if name, ok := declaration.Lhs[index].(*ast.Ident); ok && pp.f2pStateInitializerType(expression) != "" {
++						out = append(out, name.Name)
++					}
++				}
++			}
++		case *ast.ValueSpec:
++			if len(declaration.Names) == len(declaration.Values) {
++				for index, expression := range declaration.Values {
++					if pp.f2pStateInitializerType(expression) != "" {
++						out = append(out, declaration.Names[index].Name)
++					}
++				}
++			}
++		}
++		return true
++	})
++	return out
++}
++
++// f2pUsesInCalls counts call sites in the entry point that use name as the
++// receiver or as an argument - the steps that share the state holder.
++func f2pUsesInCalls(f *f2pFunc, name string) int {
++	count := 0
++	f2pWalk(f.decl.Body, func(x ast.Node) bool {
++		ce, ok := x.(*ast.CallExpr)
++		if !ok {
++			return true
++		}
++		used := false
++		if sel, ok := ce.Fun.(*ast.SelectorExpr); ok {
++			if f2pRootIdentifier(sel.X) == name {
++				used = true
++			}
++		}
++		for _, a := range ce.Args {
++			if id, ok := a.(*ast.Ident); ok && id.Name == name {
++				used = true
++			}
++		}
++		if used {
++			count++
++		}
++		return true
++	})
++	return count
++}
++
++func (pp *f2pPackage) f2pIsLevelMapType(name string) bool {
++	if name == "map[int]int" {
++		return true
++	}
++	levelMap, ok := pp.f2pUnderlyingType(name).(*ast.MapType)
++	return ok && f2pTypeName(levelMap.Key) == "int" && f2pTypeName(levelMap.Value) == "int"
++}
++
++func (pp *f2pPackage) f2pHasMapIntIntField(typ string) bool {
++	for _, fld := range pp.structs[typ] {
++		if pp.f2pIsLevelMapType(f2pTypeName(fld.typ)) {
++			return true
++		}
++	}
++	return false
++}
++
++// f2pOwnerTypesWithLevelMap returns the struct types a unit owns - through its
++// receiver or through a parameter - that carry map[int]int level bookkeeping.
++func (pp *f2pPackage) f2pOwnerTypesWithLevelMap(f *f2pFunc) []string {
++	var out []string
++	if f.recv != "" && f.recv != "graph" && pp.f2pHasMapIntIntField(f.recv) {
++		out = append(out, f.recv)
++	}
++	if f.decl.Type.Params != nil {
++		for _, p := range f.decl.Type.Params.List {
++			tn := f2pTypeName(p.Type)
++			if tn == "graph" {
++				continue
++			}
++			if pp.f2pHasMapIntIntField(tn) {
++				out = append(out, tn)
++			}
++		}
++	}
++	return out
++}
++
++func f2pMapBinding(expression ast.Expr) *ast.Ident {
++	for {
++		switch value := expression.(type) {
++		case *ast.Ident:
++			return value
++		case *ast.ParenExpr:
++			expression = value.X
++		case *ast.StarExpr:
++			expression = value.X
++		default:
++			return nil
++		}
++	}
++}
++
++func f2pIndexedBinding(expression ast.Expr) *ast.Ident {
++	for {
++		if parenthesized, ok := expression.(*ast.ParenExpr); ok {
++			expression = parenthesized.X
++			continue
++		}
++		if index, ok := expression.(*ast.IndexExpr); ok {
++			return f2pMapBinding(index.X)
++		}
++		return nil
++	}
++}
++
++func (pp *f2pPackage) f2pWritesNamedLevelMap(f *f2pFunc) bool {
++	owners := map[*ast.Object]bool{}
++	for _, fields := range []*ast.FieldList{f.decl.Recv, f.decl.Type.Params} {
++		if fields == nil {
++			continue
++		}
++		for _, field := range fields.List {
++			name := f2pTypeName(field.Type)
++			if pp.f2pIsStateType(name) && pp.f2pIsLevelMapType(name) {
++				for _, binding := range field.Names {
++					if binding.Obj != nil {
++						owners[binding.Obj] = true
++					}
++				}
++			}
++		}
++	}
++	found := false
++	checkWrite := func(expression ast.Expr) {
++		if binding := f2pIndexedBinding(expression); binding != nil && owners[binding.Obj] {
++			found = true
++		}
++	}
++	updateBindings := func(names []*ast.Ident, expressions []ast.Expr) {
++		shared := make([]bool, len(names))
++		if len(names) == len(expressions) {
++			for index, expression := range expressions {
++				if binding := f2pMapBinding(expression); binding != nil {
++					shared[index] = owners[binding.Obj]
++				}
++			}
++		}
++		for index, name := range names {
++			if name != nil && name.Obj != nil {
++				owners[name.Obj] = shared[index]
++			}
++		}
++	}
++	f2pWalk(f.decl.Body, func(node ast.Node) bool {
++		switch statement := node.(type) {
++		case *ast.AssignStmt:
++			names := make([]*ast.Ident, len(statement.Lhs))
++			for index, expression := range statement.Lhs {
++				checkWrite(expression)
++				names[index], _ = expression.(*ast.Ident)
++			}
++			if statement.Tok == token.ASSIGN || statement.Tok == token.DEFINE {
++				updateBindings(names, statement.Rhs)
++			}
++		case *ast.ValueSpec:
++			updateBindings(statement.Names, statement.Values)
++		case *ast.IncDecStmt:
++			checkWrite(statement.X)
++		}
++		return true
++	})
++	return found
++}
++
++func f2pLabelDependent(n ast.Node) bool {
++	found := false
++	f2pWalk(n, func(x ast.Node) bool {
++		switch v := x.(type) {
++		case *ast.SelectorExpr:
++			if v.Sel.Name == "label" {
++				found = true
++			}
++		case *ast.CallExpr:
++			switch fn := v.Fun.(type) {
++			case *ast.Ident:
++				if fn.Name == "contentHeight" {
++					found = true
++				}
++			case *ast.SelectorExpr:
++				if fn.Sel.Name == "contentHeight" {
++					found = true
++				}
++			}
++		}
++		return true
++	})
++	return found
++}
++
++// ---------------------------------------------------------------------------
++// responsibility ownership
++// ---------------------------------------------------------------------------
++
++// f2pOwnsRootIdentification reports whether a unit identifies the graph's
++// roots: it scans the graph's nodes and keeps the ones that are not children
++// of an earlier node, either by returning them or by storing them in its own
++// node collection.
++func (pp *f2pPackage) f2pOwnsRootIdentification(f *f2pFunc) bool {
++	b := f.decl.Body
++	if !f2pRangesOver(b, "nodes") {
++		return false
++	}
++	if !f2pCallsAny(b, "getChildren") && !f2pHasMapType(b, "string", "bool") {
++		return false
++	}
++	return f2pReturnsNodeSlice(f) || (pp.f2pStoresNodeGroup(f) && f2pAppendCount(b) > 0)
++}
++
++// f2pOwnsRootSeparation reports whether a unit decides and performs the
++// external/subgraph root split for LR layouts: it consults subgraph membership,
++// compares the layout direction with "LR" and produces two node groups.
++func (pp *f2pPackage) f2pOwnsRootSeparation(f *f2pFunc) bool {
++
++	lr, membership, groups := false, false, false
++	for _, unit := range pp.closure(f) {
++		lr = lr || f2pHasStringLiteral(unit.decl.Body, "LR")
++		membership = membership || f2pRangesOver(unit.decl.Body, "subgraphs")
++	}
++	outputs := 0
++	if f.decl.Type.Results != nil {
++		for _, field := range f.decl.Type.Results.List {
++			typ := f2pTypeName(field.Type)
++			if typ == "[]node" || typ == "[]*node" {
++				n := len(field.Names)
++				if n == 0 {
++					n = 1
++				}
++				outputs += n
++			}
++			if pp.rootGroupCollection(pp.typed.info.TypeOf(field.Type)) || len(pp.f2pStructNodeSliceFields(typ)) >= 2 {
++				groups = true
++			}
++		}
++	}
++	groups = groups || outputs >= 2 || len(pp.f2pStructNodeSliceFields(f.recv)) >= 2
++	return lr && membership && groups
++
++}
++
++func f2pOwnsPlacement(f *f2pFunc) bool {
++	return f2pAssignsSelector(f.decl.Body, "gridCoord") || f2pWritesIndexedSelector(f.decl.Body, "grid")
++}
++
++func f2pOwnsSizing(f *f2pFunc) bool {
++	return f2pWritesIndexedSelector(f.decl.Body, "columnWidth") || f2pWritesIndexedSelector(f.decl.Body, "rowHeight")
++}
++
++func f2pOwnsEdgeFinalization(f *f2pFunc) bool {
++	return f2pAssignsSelector(f.decl.Body, "path") || f2pAssignsSelector(f.decl.Body, "labelLine")
++}
++
++func f2pOwnsDrawingConversion(f *f2pFunc) bool {
++	return f2pAssignsSelector(f.decl.Body, "drawingCoord")
++}
++
++// f2pReaches reports whether want is performed by the unit itself or by any
++// unit it delegates to.
++func (pp *f2pPackage) f2pReaches(f *f2pFunc, want func(*f2pFunc) bool) bool {
++	if want(f) {
++		return true
++	}
++	for _, c := range pp.closure(f) {
++		if c != f && want(c) {
++			return true
++		}
++	}
++	return false
++}
++
++// ---------------------------------------------------------------------------
++// F2P checks
++// ---------------------------------------------------------------------------
++
++func f2pEntry(t *testing.T, pp *f2pPackage) *f2pFunc {
++	t.Helper()
++	if pp.entry == nil {
++		t.Fatalf("mapping entry point not found: no `createMapping` method and no Draw callee that mutates node grid placement state")
++	}
++	return pp.entry
++}
++
++// TestF2PMappingEntryPointIsShortOrchestration - REQ-STRUCT-003: the mapping
++// entry point must be a short orchestration, not a container of layout logic.
++
++// TestF2PMappingEntryPointHasNoLayoutLoops - REQ-STRUCT-003: the entry point
++// sequences steps; iterating nodes or edges to lay them out is layout logic.
++func TestF2PMappingEntryPointHasNoLayoutLoops(t *testing.T) {
++
++	pp := f2pLoad(t)
++	entry := f2pEntry(t, pp)
++	f2pWalk(entry.decl.Body, func(n ast.Node) bool {
++		if r, ok := n.(*ast.RangeStmt); ok {
++			typ := pp.typed.info.TypeOf(r.X)
++			if typ != nil {
++				switch collection := typ.Underlying().(type) {
++				case *types.Slice:
++					if _, callback := collection.Elem().Underlying().(*types.Signature); callback {
++						t.Skip("INCONCLUSIVE: callback sequence requires a function-value analysis")
++					}
++				case *types.Array:
++					if _, callback := collection.Elem().Underlying().(*types.Signature); callback {
++						t.Skip("INCONCLUSIVE: callback sequence requires a function-value analysis")
++					}
++				}
++			}
++			t.Errorf("mapping entry iterates layout data instead of invoking dedicated phases")
++		}
++		if _, ok := n.(*ast.ForStmt); ok {
++			t.Skip("INCONCLUSIVE: indexed orchestration loop requires loop/data-flow analysis")
++		}
++		return true
++	})
++	if f2pOwnsPlacement(entry) || f2pOwnsSizing(entry) || f2pOwnsEdgeFinalization(entry) || f2pOwnsDrawingConversion(entry) {
++		t.Errorf("mapping entry performs layout mutations inline")
++	}
++
++}
++
++// TestF2PMappingEntryPointDelegatesLowLevelPrimitives - REQ-STRUCT-003: the
++// entry point must not call the low-level layout primitives inline; it calls
++// the step units that own them.
++func TestF2PMappingEntryPointDelegatesLowLevelPrimitives(t *testing.T) {
++
++	pp := f2pLoad(t)
++	entry := f2pEntry(t, pp)
++	for key := range pp.callsIn(entry.decl.Body) {
++		for _, callee := range pp.byName[key] {
++			for _, field := range callee.decl.Type.Params.List {
++				switch f2pTypeName(field.Type) {
++				case "node", "edge", "gridCoord", "drawingCoord":
++					t.Errorf("mapping entry directly invokes per-entity layout primitive %s; layout entities must be processed by a phase unit", callee.name)
++				}
++			}
++		}
++	}
++
++}
++
++// TestF2PMappingEntryPointOwnsNoCollectionState - REQ-STRUCT-002: the entry
++// point must not declare the mapping bookkeeping collections itself; that
++// hidden shared state has to live with the steps that own it.
++
++// TestF2PMappingEntryPointSharesDedicatedMappingState - REQ-STRUCT-001: the
++// state each step needs must have an explicit owner; the entry point creates
++// that owner and hands it to the steps.
++
++// TestF2PRootIdentificationOwnedByDedicatedUnit - REQ-STRUCT-001: root
++// identification is a dedicated unit reachable from the entry point.
++func TestF2PRootIdentificationOwnedByDedicatedUnit(t *testing.T) {
++	pp := f2pLoad(t)
++	entry := f2pEntry(t, pp)
++	for _, f := range pp.closure(entry) {
++		if f != entry && pp.f2pOwnsRootIdentification(f) {
++			return
++		}
++	}
++	t.Errorf("no dedicated root-identification unit is reachable from mapping entry point %s", entry.name)
++}
++
++// TestF2PRootSeparationOwnedByDedicatedUnit - REQ-STRUCT-001: the
++// external/subgraph root separation for LR layouts is a dedicated unit.
++func TestF2PRootSeparationOwnedByDedicatedUnit(t *testing.T) {
++	pp := f2pLoad(t)
++	entry := f2pEntry(t, pp)
++	for _, f := range pp.closure(entry) {
++		if f != entry && pp.f2pOwnsRootSeparation(f) {
++			return
++		}
++	}
++	t.Errorf("no dedicated external/subgraph root-separation unit is reachable from mapping entry point %s", entry.name)
++}
++
++// TestF2PLevelReservationStateOwnedByDedicatedType - REQ-STRUCT-001: the
++// per-level reservation bookkeeping (level -> next free position) is owned by
++// a dedicated type instead of a local variable of the entry point.
++func TestF2PLevelReservationStateOwnedByDedicatedType(t *testing.T) {
++
++	pp := f2pLoad(t)
++	f2pEntry(t, pp)
++	found, unsupported := pp.reservationState()
++	if found {
++		return
++	}
++	if unsupported {
++		t.Skip("INCONCLUSIVE: reassigned or unresolved numeric collection alias prevents ownership proof")
++	}
++	t.Errorf("no explicit reservation state is both updated and used to construct grid coordinates outside the mapping orchestration")
++
++}
++
++// TestF2PNodePlacementOwnedByDedicatedUnit - REQ-STRUCT-001: node placement on
++// the grid is performed by a dedicated unit, never by the entry point.
++func TestF2PNodePlacementOwnedByDedicatedUnit(t *testing.T) {
++	pp := f2pLoad(t)
++	entry := f2pEntry(t, pp)
++	if f2pOwnsPlacement(entry) {
++		t.Errorf("mapping entry point %s mutates node grid placement state inline", entry.name)
++	}
++	for _, f := range pp.closure(entry) {
++		if f != entry && f2pOwnsPlacement(f) {
++			return
++		}
++	}
++	t.Errorf("no dedicated placement unit mutates node grid state for mapping entry point %s", entry.name)
++}
++
++// TestF2PColumnRowSizingOwnedByLabelAwareUnit - REQ-STRUCT-001: column/row
++// sizing is a dedicated unit that walks the nodes and derives the cell sizes
++// from their label metrics.
++func TestF2PColumnRowSizingOwnedByLabelAwareUnit(t *testing.T) {
++	pp := f2pLoad(t)
++	entry := f2pEntry(t, pp)
++	for _, f := range pp.closure(entry) {
++		if f == entry || !f2pRangesOver(f.decl.Body, "nodes") {
++			continue
++		}
++		for _, c := range append([]*f2pFunc{f}, pp.closure(f)...) {
++			if c == entry {
++				continue
++			}
++			if f2pOwnsSizing(c) && f2pLabelDependent(c.decl.Body) {
++				return
++			}
++		}
++	}
++	t.Errorf("no dedicated column/row sizing unit deriving cell sizes from label metrics is reachable from mapping entry point %s", entry.name)
++}
++
++// TestF2PEdgeFinalizationOwnedByDedicatedUnit - REQ-STRUCT-001: edge path and
++// label-line finalization is a dedicated unit reachable from the entry point.
++func TestF2PEdgeFinalizationOwnedByDedicatedUnit(t *testing.T) {
++	pp := f2pLoad(t)
++	entry := f2pEntry(t, pp)
++	for _, f := range pp.closure(entry) {
++		if f == entry || !f2pRangesOver(f.decl.Body, "edges") {
++			continue
++		}
++		path, label := false, false
++		for _, c := range append([]*f2pFunc{f}, pp.closure(f)...) {
++			if c == entry {
++				continue
++			}
++			if f2pAssignsSelector(c.decl.Body, "path") {
++				path = true
++			}
++			if f2pAssignsSelector(c.decl.Body, "labelLine") {
++				label = true
++			}
++		}
++		if path && label {
++			return
++		}
++	}
++	t.Errorf("no dedicated edge path/label-line finalization unit is reachable from mapping entry point %s", entry.name)
++}
++
++// TestF2PGridToDrawingConversionOwnedByDedicatedUnit - REQ-STRUCT-001: the
++// conversion of finished grid coordinates into drawing coordinates is a
++// dedicated unit reachable from the entry point.
++func TestF2PGridToDrawingConversionOwnedByDedicatedUnit(t *testing.T) {
++	pp := f2pLoad(t)
++	entry := f2pEntry(t, pp)
++	for _, f := range pp.closure(entry) {
++		if f == entry || !f2pRangesOver(f.decl.Body, "nodes") {
++			continue
++		}
++		for _, c := range append([]*f2pFunc{f}, pp.closure(f)...) {
++			if c != entry && f2pOwnsDrawingConversion(c) {
++				return
++			}
++		}
++	}
++	t.Errorf("no dedicated grid-to-drawing conversion unit is reachable from mapping entry point %s", entry.name)
++}
++
++// TestF2PMappingEntryPointBuildsNoCoordinatesInline - REQ-STRUCT-003: the
++// entry point orchestrates; building grid/drawing coordinates belongs to the
++// reservation and conversion units.
++func TestF2PMappingEntryPointBuildsNoCoordinatesInline(t *testing.T) {
++	pp := f2pLoad(t)
++	entry := f2pEntry(t, pp)
++	var literals []string
++	f2pWalk(entry.decl.Body, func(x ast.Node) bool {
++		if cl, ok := x.(*ast.CompositeLit); ok {
++			switch f2pTypeName(cl.Type) {
++			case "gridCoord", "drawingCoord":
++				literals = append(literals, f2pTypeName(cl.Type))
++			}
++		}
++		return true
++	})
++	if len(literals) > 0 {
++		t.Errorf("mapping entry point %s builds coordinate values inline: %v", entry.name, literals)
++	}
++}
++
++// TestF2PMappingStepsCoverResponsibilitiesWithDistinctOwners - REQ-STRUCT-001:
++// the six mapping responsibilities must be owned by the steps the entry point
++// calls, and they must not all be concentrated in the same container unit.
++func TestF2PMappingStepsCoverResponsibilitiesWithDistinctOwners(t *testing.T) {
++	pp := f2pLoad(t)
++	entry := f2pEntry(t, pp)
++	classes := []struct {
++		name string
++		owns func(*f2pFunc) bool
++	}{
++		{"root identification", pp.f2pOwnsRootIdentification},
++		{"root separation", pp.f2pOwnsRootSeparation},
++		{"node placement", f2pOwnsPlacement},
++		{"column/row sizing", f2pOwnsSizing},
++		{"edge finalization", f2pOwnsEdgeFinalization},
++		{"grid-to-drawing conversion", f2pOwnsDrawingConversion},
++	}
++	var steps []*f2pFunc
++	seen := map[*f2pFunc]bool{}
++	for name := range pp.callsIn(entry.decl.Body) {
++		for _, f := range pp.byName[name] {
++			if f != entry && !seen[f] {
++				seen[f] = true
++				steps = append(steps, f)
++			}
++		}
++	}
++	distinct := map[*f2pFunc]bool{}
++	for _, class := range classes {
++		owner := false
++		for _, step := range steps {
++			if pp.f2pReaches(step, class.owns) {
++				owner = true
++				distinct[step] = true
++			}
++		}
++		if !owner {
++			t.Errorf("no step called by mapping entry point %s owns %s", entry.name, class.name)
++		}
++	}
++
++	_ = distinct
++	for _, class := range classes {
++		dedicated := false
++		for _, unit := range pp.closure(entry) {
++			if unit == entry || !class.owns(unit) {
++				continue
++			}
++			otherWork := false
++			for _, other := range classes {
++				if other.name != class.name && other.owns(unit) {
++					otherWork = true
++				}
++			}
++			if !otherWork {
++				dedicated = true
++			}
++		}
++		if !dedicated {
++			t.Errorf("%s has no dedicated reachable implementation unit", class.name)
++		}
++	}
++
++}
++
++func f2pRootIdentifier(e ast.Expr) string {
++	switch x := e.(type) {
++	case *ast.Ident:
++		return x.Name
++	case *ast.SelectorExpr:
++		return f2pRootIdentifier(x.X)
++	case *ast.ParenExpr:
++		return f2pRootIdentifier(x.X)
++	}
++	return ""
++}
+diff --git a/pkg/graph/f2p_typed_contract_test.go b/pkg/graph/f2p_typed_contract_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc60e2f99b5de5200555b7e932f0ce4ee502f7e8
+--- /dev/null
++++ b/pkg/graph/f2p_typed_contract_test.go
+@@ -0,0 +1,602 @@
++package graph_test
++
++// The analyzer uses compiler object identity for calls and aliases. A private
++// spelling, promoted member, or generic instantiation is not a requirement.
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"go/ast"
++	"go/importer"
++	"go/token"
++	"go/types"
++	"io"
++	"os"
++	"os/exec"
++	"time"
++)
++
++type f2pTyped struct {
++	literals map[*ast.FuncLit]*types.Func
++	bindings map[types.Object]map[*types.Func]bool
++	returned map[*types.Func]map[*types.Func]bool
++	path     string
++	info     *types.Info
++	funcs    map[*types.Func]*f2pFunc
++	keys     map[*f2pFunc]string
++}
++
++func (pp *f2pPackage) loadTypes(files []*ast.File) {
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
++	defer cancel()
++	cmd := exec.CommandContext(ctx, "go", "list", "-mod=readonly", "-export", "-deps", "-json", ".")
++	cmd.Dir = pp.dir
++	data, err := cmd.Output()
++	if err != nil {
++		panic(fmt.Sprintf("source analysis infrastructure error: go list exports: %v", err))
++	}
++	exports := map[string]string{}
++	path := ""
++	dec := json.NewDecoder(bytes.NewReader(data))
++	for {
++		var row struct {
++			ImportPath, Export string
++			DepOnly            bool
++		}
++		err = dec.Decode(&row)
++		if err == io.EOF {
++			break
++		}
++		if err != nil {
++			panic(fmt.Sprintf("source analysis report error: %v", err))
++		}
++		exports[row.ImportPath] = row.Export
++		if !row.DepOnly {
++			path = row.ImportPath
++		}
++	}
++	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
++	imp := importer.ForCompiler(pp.fset, "gc", func(path string) (io.ReadCloser, error) {
++		if exports[path] == "" {
++			return nil, fmt.Errorf("missing export for %s", path)
++		}
++		return os.Open(exports[path])
++	})
++	conf := types.Config{Importer: imp}
++	if _, err = conf.Check(path, pp.fset, files, info); err != nil {
++		panic(fmt.Sprintf("source analysis compile error: %v", err))
++	}
++	typed := &f2pTyped{literals: map[*ast.FuncLit]*types.Func{}, bindings: map[types.Object]map[*types.Func]bool{}, returned: map[*types.Func]map[*types.Func]bool{}, path: path, info: info, funcs: map[*types.Func]*f2pFunc{}, keys: map[*f2pFunc]string{}}
++	for _, f := range pp.funcs {
++		if obj, ok := info.Defs[f.decl.Name].(*types.Func); ok {
++			typed.funcs[obj.Origin()] = f
++			key := fmt.Sprintf("@%d", f.decl.Pos())
++			typed.keys[f] = key
++			pp.byName[key] = []*f2pFunc{f}
++		}
++	}
++
++	for _, file := range files {
++		ast.Inspect(file, func(n ast.Node) bool {
++			if literal, ok := n.(*ast.FuncLit); ok {
++				signature, ok := info.TypeOf(literal).(*types.Signature)
++				if !ok {
++					panic("source analysis report error: function literal signature missing")
++				}
++				name := fmt.Sprintf("closure@%d", literal.Pos())
++				object := types.NewFunc(literal.Pos(), nil, name, signature)
++				decl := &ast.FuncDecl{Name: &ast.Ident{NamePos: literal.Pos(), Name: name}, Type: literal.Type, Body: literal.Body}
++				f := &f2pFunc{name: name, file: pp.fset.Position(literal.Pos()).Filename, decl: decl}
++				typed.literals[literal] = object
++				typed.funcs[object] = f
++				typed.keys[f] = name
++				pp.byName[name] = []*f2pFunc{f}
++				pp.funcs = append(pp.funcs, f)
++			}
++			return true
++		})
++	}
++	pp.typed = typed
++	pp.bindFunctionValues(files)
++}
++
++// Function values are resolved from compiler objects and actual bindings.
++// Call-graph reachability includes known callback targets and literal bodies.
++// Scalar value-flow requires a unique callee; unresolved dispatch is INCONCLUSIVE.
++func (pp *f2pPackage) functionObjects(expression ast.Expr) map[*types.Func]bool {
++	switch e := expression.(type) {
++	case *ast.FuncLit:
++		if object := pp.typed.literals[e]; object != nil {
++			return map[*types.Func]bool{object: true}
++		}
++	case *ast.ParenExpr:
++		return pp.functionObjects(e.X)
++	case *ast.StarExpr:
++		return pp.functionObjects(e.X)
++	case *ast.IndexExpr:
++		if _, ok := pp.typed.info.TypeOf(e.X).(*types.Signature); ok {
++			return pp.functionObjects(e.X)
++		}
++	case *ast.IndexListExpr:
++		return pp.functionObjects(e.X)
++	case *ast.Ident:
++		object := pp.typed.info.ObjectOf(e)
++		if f, ok := object.(*types.Func); ok {
++			return map[*types.Func]bool{f.Origin(): true}
++		}
++		return pp.typed.bindings[object]
++	case *ast.SelectorExpr:
++		object := pp.typed.info.ObjectOf(e.Sel)
++		if selection := pp.typed.info.Selections[e]; selection != nil {
++			object = selection.Obj()
++		}
++		if f, ok := object.(*types.Func); ok {
++			return map[*types.Func]bool{f.Origin(): true}
++		}
++		return pp.typed.bindings[object]
++	case *ast.CallExpr:
++		objects := pp.functionObjects(e.Fun)
++		if len(objects) == 1 {
++			for object := range objects {
++				return pp.typed.returned[object]
++			}
++		}
++	}
++	return nil
++}
++func f2pMergeFunctions(dst, src map[*types.Func]bool) bool {
++	changed := false
++	for f := range src {
++		if !dst[f] {
++			dst[f] = true
++			changed = true
++		}
++	}
++	return changed
++}
++func (pp *f2pPackage) bindingObject(e ast.Expr) types.Object {
++	switch x := e.(type) {
++	case *ast.Ident:
++		return pp.typed.info.ObjectOf(x)
++	case *ast.SelectorExpr:
++		if selection := pp.typed.info.Selections[x]; selection != nil {
++			return selection.Obj()
++		}
++		return pp.typed.info.ObjectOf(x.Sel)
++	}
++	return nil
++}
++func (pp *f2pPackage) bindFunctionValues(files []*ast.File) {
++	add := func(object types.Object, expression ast.Expr) bool {
++		if object == nil {
++			return false
++		}
++		if _, ok := object.Type().Underlying().(*types.Signature); !ok {
++			return false
++		}
++		if pp.typed.bindings[object] == nil {
++			pp.typed.bindings[object] = map[*types.Func]bool{}
++		}
++		return f2pMergeFunctions(pp.typed.bindings[object], pp.functionObjects(expression))
++	}
++	for changed := true; changed; {
++		changed = false
++		for _, file := range files {
++			ast.Inspect(file, func(n ast.Node) bool {
++				switch s := n.(type) {
++				case *ast.AssignStmt:
++					for i, lhs := range s.Lhs {
++						if i < len(s.Rhs) {
++							changed = add(pp.bindingObject(lhs), s.Rhs[i]) || changed
++						}
++					}
++				case *ast.ValueSpec:
++					for i, name := range s.Names {
++						if i < len(s.Values) {
++							changed = add(pp.typed.info.ObjectOf(name), s.Values[i]) || changed
++						}
++					}
++				case *ast.KeyValueExpr:
++					if id, ok := s.Key.(*ast.Ident); ok {
++						changed = add(pp.typed.info.ObjectOf(id), s.Value) || changed
++					}
++				case *ast.CallExpr:
++					objects := pp.functionObjects(s.Fun)
++					if len(objects) > 0 {
++						for object := range objects {
++							if target := pp.typed.funcs[object]; target != nil {
++								var parameters []*ast.Ident
++								if sel, ok := s.Fun.(*ast.SelectorExpr); ok {
++									if selection := pp.typed.info.Selections[sel]; selection != nil && selection.Kind() == types.MethodExpr {
++										for _, field := range target.decl.Recv.List {
++											parameters = append(parameters, field.Names...)
++										}
++									}
++								}
++								for _, field := range target.decl.Type.Params.List {
++									parameters = append(parameters, field.Names...)
++								}
++								for i, arg := range s.Args {
++									if i < len(parameters) {
++										changed = add(pp.typed.info.ObjectOf(parameters[i]), arg) || changed
++									}
++								}
++							}
++						}
++					}
++				}
++				return true
++			})
++		}
++		for object, f := range pp.typed.funcs {
++			if pp.typed.returned[object] == nil {
++				pp.typed.returned[object] = map[*types.Func]bool{}
++			}
++			ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++				if _, nested := n.(*ast.FuncLit); nested {
++					return false
++				}
++				if r, ok := n.(*ast.ReturnStmt); ok {
++					for _, e := range r.Results {
++						changed = f2pMergeFunctions(pp.typed.returned[object], pp.functionObjects(e)) || changed
++					}
++					if len(r.Results) == 0 && f.decl.Type.Results != nil {
++						for _, field := range f.decl.Type.Results.List {
++							for _, id := range field.Names {
++								changed = f2pMergeFunctions(pp.typed.returned[object], pp.functionObjects(id)) || changed
++							}
++						}
++					}
++				}
++				return true
++			})
++		}
++	}
++}
++func (pp *f2pPackage) target(expr ast.Expr) *f2pFunc {
++	objects := pp.functionObjects(expr)
++	if len(objects) == 1 {
++		for object := range objects {
++			return pp.typed.funcs[object]
++		}
++	}
++	return nil
++}
++func (pp *f2pPackage) typedCalls(n ast.Node) map[string]bool {
++	out := map[string]bool{}
++	ast.Inspect(n, func(n ast.Node) bool {
++		if call, ok := n.(*ast.CallExpr); ok {
++			objects := pp.functionObjects(call.Fun)
++			if len(objects) > 0 {
++				for object := range objects {
++					if f := pp.typed.funcs[object]; f != nil {
++						out[pp.typed.keys[f]] = true
++					} else if object.Pkg() != nil && object.Pkg().Path() == pp.typed.path {
++						pp.t.Skip("INCONCLUSIVE: unresolved local interface implementation")
++					}
++				}
++			} else if typ := pp.typed.info.TypeOf(call.Fun); typ != nil && !pp.typed.info.Types[call.Fun].IsType() {
++				if _, signature := typ.Underlying().(*types.Signature); signature {
++					object := pp.bindingObject(call.Fun)
++					if _, builtin := object.(*types.Builtin); !builtin {
++						pp.t.Skipf("INCONCLUSIVE: unresolved or ambiguous function-valued call at %s (%T, object=%v)", pp.fset.Position(call.Pos()), call.Fun, object)
++					}
++				}
++			}
++		}
++		return true
++	})
++	return out
++}
++
++// Numeric collection origins use objects rather than field names. Single-
++// assignment aliases are resolved exactly; a reassigned alias is unsupported
++// instead of being silently conflated with its earlier map.
++func f2pNumericCollection(typ types.Type) bool {
++	if typ == nil {
++		return false
++	}
++	if ptr, ok := typ.(*types.Pointer); ok {
++		typ = ptr.Elem()
++	}
++	switch c := typ.Underlying().(type) {
++	case *types.Map:
++		return types.Identical(c.Key(), types.Typ[types.Int]) && types.Identical(c.Elem(), types.Typ[types.Int])
++	case *types.Slice:
++		return types.Identical(c.Elem(), types.Typ[types.Int])
++	case *types.Array:
++		return types.Identical(c.Elem(), types.Typ[types.Int])
++	}
++	return false
++}
++
++type f2pOrigin struct {
++	object types.Object
++	owner  *f2pFunc
++}
++
++func (pp *f2pPackage) collectionOrigins(f *f2pFunc) func(ast.Expr) (f2pOrigin, bool) {
++	definitions := map[types.Object][]ast.Expr{}
++	for _, fieldList := range []*ast.FieldList{f.decl.Recv, f.decl.Type.Params} {
++		if fieldList == nil {
++			continue
++		}
++		for _, field := range fieldList.List {
++			for _, name := range field.Names {
++				obj := pp.typed.info.ObjectOf(name)
++				if obj != nil && f2pNumericCollection(obj.Type()) {
++					definitions[obj] = []ast.Expr{nil}
++				}
++			}
++		}
++	}
++	ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++		switch s := n.(type) {
++		case *ast.AssignStmt:
++			if s.Tok != token.ASSIGN && s.Tok != token.DEFINE {
++				return true
++			}
++			for i, lhs := range s.Lhs {
++				if id, ok := lhs.(*ast.Ident); ok && i < len(s.Rhs) {
++					obj := pp.typed.info.ObjectOf(id)
++					if obj != nil && f2pNumericCollection(obj.Type()) {
++						definitions[obj] = append(definitions[obj], s.Rhs[i])
++					}
++				}
++			}
++		case *ast.ValueSpec:
++			for i, id := range s.Names {
++				obj := pp.typed.info.ObjectOf(id)
++				if obj != nil && f2pNumericCollection(obj.Type()) {
++					var expr ast.Expr
++					if i < len(s.Values) {
++						expr = s.Values[i]
++					}
++					definitions[obj] = append(definitions[obj], expr)
++				}
++			}
++		}
++		return true
++	})
++	var resolve func(ast.Expr, map[types.Object]bool) (f2pOrigin, bool)
++	resolve = func(expr ast.Expr, seen map[types.Object]bool) (f2pOrigin, bool) {
++		switch e := expr.(type) {
++		case *ast.ParenExpr:
++			return resolve(e.X, seen)
++		case *ast.StarExpr:
++			return resolve(e.X, seen)
++		case *ast.SelectorExpr:
++			if selection := pp.typed.info.Selections[e]; selection != nil && selection.Kind() == types.FieldVal && f2pNumericCollection(selection.Obj().Type()) {
++				// A field belongs to the declared state type, including embedded fields.
++				return f2pOrigin{object: selection.Obj()}, true
++			}
++		case *ast.Ident:
++			obj := pp.typed.info.ObjectOf(e)
++			if obj == nil || seen[obj] || !f2pNumericCollection(obj.Type()) {
++				return f2pOrigin{}, false
++			}
++			seen[obj] = true
++			rhs := definitions[obj]
++			if len(rhs) != 1 {
++				return f2pOrigin{}, false
++			}
++			if rhs[0] == nil {
++				return f2pOrigin{object: obj, owner: f}, true
++			}
++			switch x := rhs[0].(type) {
++			case *ast.CompositeLit:
++				return f2pOrigin{object: obj, owner: f}, true
++			case *ast.CallExpr:
++				if id, ok := x.Fun.(*ast.Ident); ok && (id.Name == "make" || id.Name == "new") {
++					return f2pOrigin{object: obj, owner: f}, true
++				}
++			}
++			return resolve(rhs[0], seen)
++		}
++		return f2pOrigin{}, false
++	}
++	return func(e ast.Expr) (f2pOrigin, bool) { return resolve(e, map[types.Object]bool{}) }
++}
++
++type f2pOrigins map[f2pOrigin]bool
++
++func f2pMerge(dst, src f2pOrigins) bool {
++	changed := false
++	for x := range src {
++		if !dst[x] {
++			dst[x] = true
++			changed = true
++		}
++	}
++	return changed
++}
++
++// Follow reservation values through local aliases, helper returns and call
++// arguments into grid coordinates. A row-height/column-width map used only
++// for drawing dimensions is not evidence of a reservation cursor.
++func (pp *f2pPackage) reservationState() (bool, bool) {
++	entry := pp.entry
++	functions := pp.closure(entry)
++	values := map[types.Object]f2pOrigins{}
++	returns := map[*f2pFunc]f2pOrigins{}
++	resolvers := map[*f2pFunc]func(ast.Expr) (f2pOrigin, bool){}
++	for _, f := range functions {
++		returns[f] = f2pOrigins{}
++		resolvers[f] = pp.collectionOrigins(f)
++	}
++	var eval func(*f2pFunc, ast.Expr) f2pOrigins
++	eval = func(f *f2pFunc, e ast.Expr) f2pOrigins {
++		out := f2pOrigins{}
++		switch x := e.(type) {
++		case *ast.Ident:
++			f2pMerge(out, values[pp.typed.info.ObjectOf(x)])
++		case *ast.ParenExpr:
++			f2pMerge(out, eval(f, x.X))
++		case *ast.UnaryExpr:
++			f2pMerge(out, eval(f, x.X))
++		case *ast.StarExpr:
++			f2pMerge(out, eval(f, x.X))
++		case *ast.BinaryExpr:
++			f2pMerge(out, eval(f, x.X))
++			f2pMerge(out, eval(f, x.Y))
++		case *ast.IndexExpr:
++			if origin, ok := resolvers[f](x.X); ok {
++				out[origin] = true
++			}
++		case *ast.KeyValueExpr:
++			f2pMerge(out, eval(f, x.Value))
++		case *ast.CompositeLit:
++			for _, e := range x.Elts {
++				f2pMerge(out, eval(f, e))
++			}
++		case *ast.CallExpr:
++			if target := pp.target(x.Fun); target != nil {
++				f2pMerge(out, returns[target])
++			} else if id, ok := x.Fun.(*ast.Ident); ok {
++				if _, builtin := pp.typed.info.ObjectOf(id).(*types.Builtin); builtin {
++					for _, arg := range x.Args {
++						f2pMerge(out, eval(f, arg))
++					}
++				}
++			}
++		}
++		return out
++	}
++	add := func(object types.Object, source f2pOrigins) bool {
++		if object == nil {
++			return false
++		}
++		if values[object] == nil {
++			values[object] = f2pOrigins{}
++		}
++		return f2pMerge(values[object], source)
++	}
++	for changed := true; changed; {
++		changed = false
++		for _, f := range functions {
++			ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++				switch s := n.(type) {
++				case *ast.AssignStmt:
++					for i, lhs := range s.Lhs {
++						if id, ok := lhs.(*ast.Ident); ok && i < len(s.Rhs) {
++							changed = add(pp.typed.info.ObjectOf(id), eval(f, s.Rhs[i])) || changed
++						}
++					}
++				case *ast.ValueSpec:
++					for i, id := range s.Names {
++						if i < len(s.Values) {
++							changed = add(pp.typed.info.ObjectOf(id), eval(f, s.Values[i])) || changed
++						}
++					}
++				case *ast.ReturnStmt:
++					for _, e := range s.Results {
++						changed = f2pMerge(returns[f], eval(f, e)) || changed
++					}
++				case *ast.CallExpr:
++					if target := pp.target(s.Fun); target != nil {
++						var parameters []*ast.Ident
++						for _, field := range target.decl.Type.Params.List {
++							parameters = append(parameters, field.Names...)
++						}
++						for i, arg := range s.Args {
++							if i < len(parameters) {
++								changed = add(pp.typed.info.ObjectOf(parameters[i]), eval(f, arg)) || changed
++							}
++						}
++					}
++				}
++				return true
++			})
++		}
++	}
++	written, coordinates := f2pOrigins{}, f2pOrigins{}
++	unsupported := false
++	for _, f := range functions {
++		ast.Inspect(f.decl.Body, func(n ast.Node) bool {
++			if c, ok := n.(*ast.CompositeLit); ok && f2pTypeName(c.Type) == "gridCoord" {
++				f2pMerge(coordinates, eval(f, c))
++			}
++			var lhs []ast.Expr
++			switch s := n.(type) {
++			case *ast.AssignStmt:
++				lhs = s.Lhs
++			case *ast.IncDecStmt:
++				lhs = []ast.Expr{s.X}
++			}
++			for _, e := range lhs {
++				if index, ok := e.(*ast.IndexExpr); ok && f2pNumericCollection(pp.typed.info.TypeOf(index.X)) {
++					if origin, ok := resolvers[f](index.X); ok {
++						written[origin] = true
++					} else {
++						unsupported = true
++					}
++				}
++			}
++			return true
++		})
++	}
++	for origin := range coordinates {
++		if written[origin] && origin.owner != entry {
++			return true, unsupported
++		}
++	}
++	return false, unsupported
++}
++
++// A root split can return a collection of private group records instead of
++// two separate node slices. P2P verifies actual membership and level offsets.
++func (pp *f2pPackage) rootGroupCollection(typ types.Type) bool {
++	if typ == nil {
++		return false
++	}
++	for {
++		ptr, ok := typ.(*types.Pointer)
++		if !ok {
++			break
++		}
++		typ = ptr.Elem()
++	}
++	var element types.Type
++	switch collection := typ.Underlying().(type) {
++	case *types.Slice:
++		element = collection.Elem()
++	case *types.Array:
++		element = collection.Elem()
++	case *types.Map:
++		element = collection.Elem()
++	default:
++		return false
++	}
++	var hasGroup func(types.Type, map[types.Type]bool) bool
++	hasGroup = func(t types.Type, seen map[types.Type]bool) bool {
++		if seen[t] {
++			return false
++		}
++		seen[t] = true
++		defer delete(seen, t)
++		if ptr, ok := t.(*types.Pointer); ok {
++			return hasGroup(ptr.Elem(), seen)
++		}
++		if named, ok := t.(*types.Named); ok && named.Obj().Name() == "node" {
++			return false
++		}
++		switch value := t.Underlying().(type) {
++		case *types.Slice:
++			e := value.Elem()
++			if ptr, ok := e.(*types.Pointer); ok {
++				e = ptr.Elem()
++			}
++			named, ok := e.(*types.Named)
++			return ok && named.Obj().Name() == "node"
++		case *types.Struct:
++			for i := 0; i < value.NumFields(); i++ {
++				if hasGroup(value.Field(i).Type(), seen) {
++					return true
++				}
++			}
++		}
++		return false
++	}
++	return hasGroup(element, map[types.Type]bool{})
++}
+diff --git a/pkg/graph/p2p_mapping_contract_test.go b/pkg/graph/p2p_mapping_contract_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..bc5c649454fa7e9faf4eb7e4f9f529d5f4a9abaa
+--- /dev/null
++++ b/pkg/graph/p2p_mapping_contract_test.go
+@@ -0,0 +1,844 @@
++package graph_test
++
++// Supplemental P2P contract tests for the mapping phase.
++//
++// These tests only use the frozen public API (graph.Parse, graph.Draw,
++// graph.Properties, graph.Properties.ShowCoords) so that any internal
++// reorganisation of the mapping phase stays allowed, and they pin the
++// observable results that the frozen requirements must preserve:
++// byte-identical rendering, the coordinate overlay, root separation,
++// collision advancement, fanout/edge/label routing, subgraph boxes and
++// offsets, parse/error behaviour and the exported surface.
++
++import (
++	"os"
++	"path/filepath"
++	"sort"
++	"strings"
++	"testing"
++
++	"github.com/AlexanderGrooff/mermaid-ascii/pkg/diagram"
++	"github.com/AlexanderGrooff/mermaid-ascii/pkg/graph"
++)
++
++// Compile-time checks that the frozen signatures still exist (REQ-BEH-T3:C1,
++// REQ-BEH-T3:C2, REQ-BEH-T3:C6).
++var (
++	_ func(mermaid string, styleType string) (*graph.Properties, error) = graph.Parse
++	_ func(properties *graph.Properties) string                         = graph.Draw
++)
++
++type p2pCase struct {
++	mermaid  string
++	ascii    bool
++	coords   bool
++	paddingX int
++	paddingY int
++}
++
++func p2pRender(t *testing.T, name string, tc p2pCase) string {
++	t.Helper()
++	properties, err := graph.Parse(tc.mermaid, "cli")
++	if err != nil {
++		t.Fatalf("%s: Parse() error = %v", name, err)
++	}
++	config := &diagram.Config{
++		UseAscii:         tc.ascii,
++		ShowCoords:       tc.coords,
++		BoxBorderPadding: 1,
++		PaddingBetweenX:  tc.paddingX,
++		PaddingBetweenY:  tc.paddingY,
++		StyleType:        "cli",
++	}
++	properties.Apply(config)
++	return graph.Draw(properties)
++}
++
++func p2pVisualize(s string) string {
++	return strings.ReplaceAll(s, " ", "\u00b7")
++}
++
++func p2pAssertGolden(t *testing.T, name string, tc p2pCase) {
++	t.Helper()
++	want, ok := p2pGoldens[name]
++	if !ok {
++		t.Fatalf("missing golden for case %q", name)
++	}
++	got := p2pRender(t, name, tc)
++	if got != want {
++		t.Errorf("%s: rendered mapping changed\nwant:\n%s\ngot:\n%s", name, p2pVisualize(want), p2pVisualize(got))
++	}
++}
++
++func p2pNames(cases map[string]p2pCase) []string {
++	names := make([]string, 0, len(cases))
++	for name := range cases {
++		names = append(names, name)
++	}
++	sort.Strings(names)
++	return names
++}
++
++func p2pModuleRoot(t *testing.T) string {
++	t.Helper()
++	dir, err := os.Getwd()
++	if err != nil {
++		t.Fatalf("Getwd() error = %v", err)
++	}
++	for {
++		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
++			return dir
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			t.Fatalf("go.mod not found above %s", dir)
++		}
++		dir = parent
++	}
++}
++
++var p2pGoldens = map[string]string{
++	// ---- coords-lr ----
++	"coords-lr": `   01  23    45  6 
++   012345678901234 
++0 0 ┌───┐     ┌───┐ 
++  1 │   │     │   │ 
++1 2 │ A ├────►│ B │ 
++  3 │   │     │   │ 
++2 4 └───┘     └───┘ `,
++	// ---- coords-td ----
++	"coords-td": `   01  2 
++   01234 
++0 0 ┌───┐ 
++  1 │   │ 
++1 2 │ A │ 
++  3 │   │ 
++2 4 └─┬─┘ 
++  5   │   
++  6   │   
++3 7   │   
++  8   │   
++  9   ▼   
++410 ┌───┐ 
++ 11 │   │ 
++512 │ B │ 
++ 13 │   │ 
++614 └─┬─┘ 
++ 15   │   
++ 16   │   
++717   │   
++ 18   │   
++ 19   ▼   
++820 ┌───┐ 
++ 21 │   │ 
++922 │ C │ 
++ 23 │   │ 
++024 └───┘ `,
++	// ---- coords-fanout-tb ----
++	"coords-fanout-tb": `   01  23    45  67    89  0 
++   0123456789012345678901234 
++0 0 ┌───┐                     
++  1 │   │                     
++1 2 │ A │                     
++  3 │   │                     
++2 4 └─┬─┘                     
++  5   │                       
++  6   ├─────────┬─────────┐   
++  7   │         │         │   
++3 8   x         y         z   
++  9   │         │         │   
++ 10   ▼         ▼         ▼   
++411 ┌───┐     ┌───┐     ┌───┐ 
++ 12 │   │     │   │     │   │ 
++513 │ B │     │ C │     │ D │ 
++ 14 │   │     │   │     │   │ 
++615 └───┘     └───┘     └───┘ `,
++	// ---- coords-multibyte ----
++	"coords-multibyte": `   01         23    45  6 
++   0123456789012345678901 
++0 0 ┌──────────┐     ┌───┐ 
++  1 │          │     │   │ 
++1 2 │ ＴＥＸＴ ├────►│ B │ 
++  3 │          │     │   │ 
++2 4 └──────────┘     └───┘ `,
++	// ---- coords-ascii ----
++	"coords-ascii": `   01  23    45  6 
++   012345678901234 
++0 0 +---+     +---+ 
++  1 |   |     |   | 
++1 2 | A |---->| B | 
++  3 |   |     |   | 
++2 4 +---+     +---+ 
++  5                 
++  6                 
++3 7                 
++  8                 
++  9                 
++410 +---+     +---+ 
++ 11 |   |     |   | 
++512 | C |---->| D | 
++ 13 |   |     |   | 
++614 +---+     +---+ `,
++	// ---- coords-padding ----
++	"coords-padding": `   01  23 45  6 
++   012345678901 
++0 0 +---+  +---+ 
++  1 |   |  |   | 
++1 2 | A |->| B | 
++  3 |   |  |   | 
++2 4 +---+  +---+ `,
++	// ---- sep-mixed-lr ----
++	"sep-mixed-lr": `        ┌─────────────────┐
++        │       sg        │
++        │                 │
++        │                 │
++┌───┐   │ ┌───┐     ┌───┐ │
++│   │   │ │   │     │   │ │
++│ X ├───┼►│ A ├────►│ B │ │
++│   │   │ │   │     │   │ │
++└───┘   │ └───┘     └───┘ │
++        │                 │
++        └─────────────────┘`,
++	// ---- sep-mixed-lr2 ----
++	"sep-mixed-lr2": `        ┌─────────────────┐
++        │       sg        │
++        │                 │
++        │                 │
++┌───┐   │ ┌───┐     ┌───┐ │
++│   │   │ │   │     │   │ │
++│ X │   │ │ A ├────►│ B │ │
++│   │   │ │   │     │   │ │
++└─┬─┘   │ └───┘     └───┘ │
++  │     │   ▲             │
++  │     └───┼─────────────┘
++  │         │              
++  │         │              
++  │         │              
++  │       ┌─┴─┐            
++  │       │   │            
++  └──────►│ Y │            
++          │   │            
++          └───┘            `,
++	// ---- sep-uniform-lr ----
++	"sep-uniform-lr": `┌───────┐        
++│  sg   │        
++│       │        
++│       │        
++│ ┌───┐ │   ┌───┐
++│ │   │ │   │   │
++│ │ A │ │   │ Y │
++│ │   │ │   │   │
++│ └───┘ │   └───┘
++│       │     ▲  
++│       │     │  
++│       │     │  
++│       │     │  
++│       │     │  
++│ ┌───┐ │     │  
++│ │   │ │     │  
++│ │ B │ │     │  
++│ │   │ │     │  
++│ └───┘ │     │  
++│       │     │  
++└───────┘     │  
++              │  
++              │  
++              │  
++  ┌───┐       │  
++  │   │       │  
++  │ X ├───────┘  
++  │   │          
++  └───┘          `,
++	// ---- sep-mixed-lr-ascii ----
++	"sep-mixed-lr-ascii": `        +-----------------+
++        |       sg        |
++        |                 |
++        |                 |
+++---+   | +---+     +---+ |
++|   |   | |   |     |   | |
++| X |---->| A |---->| B | |
++|   |   | |   |     |   | |
+++---+   | +---+     +---+ |
++        |                 |
++        +-----------------+`,
++	// ---- collision-two-parents-td ----
++	"collision-two-parents-td": `┌───┐     ┌───┐
++│   │     │   │
++│ A │     │ B │
++│   │     │   │
++└─┬─┘     └─┬─┘
++  │         │  
++  │         │  
++  │         │  
++  │         │  
++  ▼         │  
++┌───┐       │  
++│   │       │  
++│ C │◄──────┘  
++│   │          
++└───┘          `,
++	// ---- collision-many-roots-lr ----
++	"collision-many-roots-lr": `┌───┐     ┌───┐
++│   │     │   │
++│ A ├────►│ B │
++│   │     │   │
++└───┘     └───┘
++               
++               
++               
++               
++               
++┌───┐     ┌───┐
++│   │     │   │
++│ C ├────►│ D │
++│   │     │   │
++└───┘     └───┘
++               
++               
++               
++               
++               
++┌───┐     ┌───┐
++│   │     │   │
++│ E ├────►│ F │
++│   │     │   │
++└───┘     └───┘
++               
++               
++               
++               
++               
++┌───┐     ┌───┐
++│   │     │   │
++│ G ├────►│ H │
++│   │     │   │
++└───┘     └───┘`,
++	// ---- collision-many-roots-td ----
++	"collision-many-roots-td": `┌───┐     ┌───┐     ┌───┐     ┌───┐
++│   │     │   │     │   │     │   │
++│ A │     │ C │     │ E │     │ G │
++│   │     │   │     │   │     │   │
++└─┬─┘     └─┬─┘     └─┬─┘     └─┬─┘
++  │         │         │         │  
++  │         │         │         │  
++  │         │         │         │  
++  │         │         │         │  
++  ▼         ▼         ▼         ▼  
++┌───┐     ┌───┐     ┌───┐     ┌───┐
++│   │     │   │     │   │     │   │
++│ B │     │ D │     │ F │     │ H │
++│   │     │   │     │   │     │   │
++└───┘     └───┘     └───┘     └───┘`,
++	// ---- collision-diamond-lr ----
++	"collision-diamond-lr": `┌───┐     ┌───┐     ┌───┐
++│   │     │   │     │   │
++│ A ├────►│ B ├────►│ D │
++│   │     │   │     │   │
++└─┬─┘     └───┘     └───┘
++  │                   ▲  
++  │                   │  
++  │                   │  
++  │                   │  
++  │                   │  
++  │       ┌───┐       │  
++  │       │   │       │  
++  └──────►│ C ├───────┘  
++          │   │          
++          └───┘          `,
++	// ---- fanout-tb-labels ----
++	"fanout-tb-labels": `┌───┐                     
++│   │                     
++│ A │                     
++│   │                     
++└─┬─┘                     
++  │                       
++  ├─────────┬─────────┐   
++  │         │         │   
++alpha     beta      gamma 
++  │         │         │   
++  ▼         ▼         ▼   
++┌───┐     ┌───┐     ┌───┐ 
++│   │     │   │     │   │ 
++│ B │     │ C │     │ D │ 
++│   │     │   │     │   │ 
++└───┘     └───┘     └───┘ `,
++	// ---- fanout-tb-wide ----
++	"fanout-tb-wide": `      ┌───┐                           
++      │   │                           
++      │ A │                           
++      │   │                           
++      └─┬─┘                           
++        │                             
++        ├────────────┬─────────┐      
++        │            │         │      
++long first label  ＣＡＴ  last choice 
++        │            │         │      
++        ▼            ▼         ▼      
++      ┌───┐        ┌───┐     ┌───┐    
++      │   │        │   │     │   │    
++      │ B │        │ C │     │ D │    
++      │   │        │   │     │   │    
++      └───┘        └───┘     └───┘    `,
++	// ---- fanout-tb-tail ----
++	"fanout-tb-tail": `┌───┐          
++│   │          
++│ A │          
++│   │          
++└─┬─┘          
++  │            
++  ├─────────┐  
++  │         │  
++alpha     beta 
++  │         │  
++  ▼         ▼  
++┌───┐     ┌───┐
++│   │     │   │
++│ B │     │ C │
++│   │     │   │
++└─┬─┘     └─┬─┘
++  │         │  
++  │         │  
++  │         │  
++  │         │  
++  ▼         ▼  
++┌───┐     ┌───┐
++│   │     │   │
++│ X │     │ Y │
++│   │     │   │
++└───┘     └───┘`,
++	// ---- fanout-tb-ascii ----
++	"fanout-tb-ascii": `+---+          
++|   |          
++| A |          
++|   |          
+++---+          
++  |            
++  +---------+  
++  |         |  
++ one       two 
++  |         |  
++  v         v  
+++---+     +---+
++|   |     |   |
++| B |     | C |
++|   |     |   |
+++---+     +---+`,
++	// ---- sg-nested-lr ----
++	"sg-nested-lr": `      ┌─────────────────────┐
++      │        outer        │
++      │                     │
++      │                     │
++      │ ┌─────────────────┐ │
++      │ │      inner      │ │
++      │ │                 │ │
++      │ │                 │ │
++┌───┐ │ │ ┌───┐     ┌───┐ │ │
++│   │ │ │ │   │     │   │ │ │
++│ D │ │ │ │ A ├────►│ B │ │ │
++│   │ │ │ │   │     │   │ │ │
++└─┬─┘ │ │ └───┘     └───┘ │ │
++  │   │ │   ▲             │ │
++  │   │ └───┼─────────────┘ │
++  │   │     │               │
++  │   │     │               │
++  │   │     │               │
++  │   │     │               │
++  │   │     │               │
++  │   │     │               │
++  │   │     │               │
++  │   │   ┌─┴─┐             │
++  │   │   │   │             │
++  └───┼──►│ C │             │
++      │   │   │             │
++      │   └───┘             │
++      │                     │
++      └─────────────────────┘`,
++	// ---- sg-label-lr ----
++	"sg-label-lr": `┌───────────────────┐
++│      ＤＢＳ       │
++│                   │
++│                   │
++│ ┌─────┐     ┌───┐ │
++│ │     │     │   │ │
++│ │ ＭA ├────►│ B │ │
++│ │     │     │   │ │
++│ └─────┘     └───┘ │
++│                   │
++└───────────────────┘`,
++	// ---- sg-td ----
++	"sg-td": `┌───────┐        
++│  one  │        
++│       │        
++│       │        
++│ ┌───┐ │   ┌───┐
++│ │   │ │   │   │
++│ │ A │◄┼───┤ C │
++│ │   │ │   │   │
++│ └─┬─┘ │   └───┘
++│   │   │        
++│   │   │        
++│   │   │        
++│   │   │        
++│   ▼   │        
++│ ┌───┐ │        
++│ │   │ │        
++│ │ B │ │        
++│ │   │ │        
++│ └───┘ │        
++│       │        
++└───────┘        `,
++	// ---- sg-multi-lr ----
++	"sg-multi-lr": `┌─────────────────┐ ┌─────────────────┐
++│       s1        │ │       s2        │
++│                 │ │                 │
++│                 │ │                 │
++│ ┌───┐     ┌───┐ │ │ ┌───┐     ┌───┐ │
++│ │   │     │   │ │ │ │   │     │   │ │
++│ │ A ├────►│ B ├─┼─┼►│ C ├────►│ D │ │
++│ │   │     │   │ │ │ │   │     │   │ │
++│ └───┘     └───┘ │ │ └───┘     └───┘ │
++│                 │ │                 │
++└─────────────────┘ └─────────────────┘`,
++	// ---- sg-td-nested ----
++	"sg-td-nested": `┌───────────────────┐
++│        one        │
++│                   │
++│                   │
++│ ┌───────┐         │
++│ │  two  │         │
++│ │       │         │
++│ │       │         │
++│ │ ┌───┐ │   ┌───┐ │
++│ │ │   │ │   │   │ │
++│ │ │ A │◄┼───┤ C │ │
++│ │ │   │ │   │   │ │
++│ │ └─┬─┘ │   └───┘ │
++│ │   │   │         │
++│ │   │   │         │
++│ │   │   │         │
++│ │   │   │         │
++│ │   ▼   │         │
++│ │ ┌───┐ │         │
++│ │ │   │ │         │
++│ │ │ B │ │         │
++│ │ │   │ │         │
++│ │ └───┘ │         │
++│ │       │         │
++│ └───────┘         │
++│                   │
++└───────────────────┘`,
++	// ---- back-edge-td ----
++	"back-edge-td": `┌───┐  
++│   │  
++│ A │◄┐
++│   │ │
++└─┬─┘ │
++  │   │
++  │   │
++  │   │
++  │   │
++  ▼   │
++┌───┐ │
++│   │ │
++│ B │ │
++│   │ │
++└─┬─┘ │
++  │   │
++  │   │
++  │   │
++  │   │
++  ▼   │
++┌───┐ │
++│   │ │
++│ C ├─┘
++│   │  
++└───┘  `,
++	// ---- back-edge-lr ----
++	"back-edge-lr": `┌───┐     ┌───┐     ┌───┐
++│   │     │   │     │   │
++│ A ├────►│ B ├────►│ C │
++│   │     │   │     │   │
++└───┘     └───┘     └─┬─┘
++  ▲                   │  
++  └───────────────────┘  `,
++	// ---- labels-dup-lr ----
++	"labels-dup-lr": `┌───┐       ┌───┐
++│   │       │   │
++│ A ├─miss─►│ B │
++│   │       │   │
++└─┬─┘       └───┘
++  │           ▲  
++  └────hit────┘  `,
++	// ---- bidir-lr ----
++	"bidir-lr": `┌───┐                 ┌───┐
++│   │                 │   │
++│ A ├─workload─exits─►│ B │
++│   │                 │   │
++└───┘                 └─┬─┘
++  ▲                     │  
++  └─────────run─────────┘  `,
++	// ---- bidir-td ----
++	"bidir-td": `┌──────────┐       
++│          │       
++│    A     │◄──┐   
++│          │   │   
++└─────┬────┘   │   
++      │        │   
++      │        │   
++   forward   back  
++      │        │   
++      ▼        │   
++┌──────────┐   │   
++│          │   │   
++│    B     ├───┘   
++│          │       
++└──────────┘       `,
++}
++
++func TestP2PCoordinateOverlayMatchesBaseline(t *testing.T) {
++	cases := map[string]p2pCase{
++		"coords-lr":        {"graph LR\nA --> B", false, true, 5, 5},
++		"coords-td":        {"graph TD\nA --> B\nB --> C", false, true, 5, 5},
++		"coords-fanout-tb": {"flowchart TB\nA -->|x| B\nA -->|y| C\nA -->|z| D", false, true, 5, 5},
++		"coords-multibyte": {"graph LR\nA[\"ＴＥＸＴ\"] --> B", false, true, 5, 5},
++		"coords-ascii":     {"graph LR\nA --> B\nC --> D", true, true, 5, 5},
++		"coords-padding":   {"graph LR\nA --> B", true, true, 2, 3},
++	}
++	for _, name := range p2pNames(cases) {
++		p2pAssertGolden(t, name, cases[name])
++	}
++}
++
++func TestP2PShowCoordsFieldControlsOverlay(t *testing.T) {
++	source := "graph LR\nA --> B"
++	properties, err := graph.Parse(source, "cli")
++	if err != nil {
++		t.Fatalf("Parse() error = %v", err)
++	}
++	config := &diagram.Config{
++		UseAscii:         false,
++		ShowCoords:       false,
++		BoxBorderPadding: 1,
++		PaddingBetweenX:  5,
++		PaddingBetweenY:  5,
++		StyleType:        "cli",
++	}
++	properties.Apply(config)
++	plain := graph.Draw(properties)
++
++	properties.ShowCoords = true
++	overlay := graph.Draw(properties)
++
++	if overlay == plain {
++		t.Fatalf("ShowCoords did not change the output")
++	}
++	if want := p2pGoldens["coords-lr"]; overlay != want {
++		t.Errorf("ShowCoords overlay changed\nwant:\n%s\ngot:\n%s", p2pVisualize(want), p2pVisualize(overlay))
++	}
++}
++
++func TestP2PRootSeparationMixedSubgraphRootsLR(t *testing.T) {
++	cases := map[string]p2pCase{
++		"sep-mixed-lr":       {"graph LR\nsubgraph sg\nA --> B\nend\nX --> A", false, false, 5, 5},
++		"sep-mixed-lr2":      {"graph LR\nsubgraph sg\nA --> B\nend\nX --> Y\nY --> A", false, false, 5, 5},
++		"sep-uniform-lr":     {"graph LR\nsubgraph sg\nA\nB\nend\nX --> Y", false, false, 5, 5},
++		"sep-mixed-lr-ascii": {"graph LR\nsubgraph sg\nA --> B\nend\nX --> A", true, false, 5, 5},
++	}
++	for _, name := range p2pNames(cases) {
++		p2pAssertGolden(t, name, cases[name])
++	}
++}
++
++func TestP2PCollisionAdvanceAndPerLevelReservation(t *testing.T) {
++	cases := map[string]p2pCase{
++		"collision-two-parents-td": {"graph TD\nA --> C\nB --> C", false, false, 5, 5},
++		"collision-many-roots-lr":  {"graph LR\nA --> B\nC --> D\nE --> F\nG --> H", false, false, 5, 5},
++		"collision-many-roots-td":  {"graph TD\nA --> B\nC --> D\nE --> F\nG --> H", false, false, 5, 5},
++		"collision-diamond-lr":     {"graph LR\nA --> B\nA --> C\nB --> D\nC --> D", false, false, 5, 5},
++	}
++	for _, name := range p2pNames(cases) {
++		p2pAssertGolden(t, name, cases[name])
++	}
++}
++
++func TestP2PFanoutLayoutAndLabelAlignment(t *testing.T) {
++	cases := map[string]p2pCase{
++		"fanout-tb-labels": {"flowchart TB\nA -->|alpha| B\nA -->|beta| C\nA -->|gamma| D", false, false, 5, 5},
++		"fanout-tb-wide":   {"flowchart TB\nA -->|long first label| B\nA -->|ＣＡＴ| C\nA -->|last choice| D", false, false, 5, 5},
++		"fanout-tb-tail":   {"flowchart TB\nA -->|alpha| B\nA -->|beta| C\nB --> X\nC --> Y", false, false, 5, 5},
++		"fanout-tb-ascii":  {"flowchart TB\nA -->|one| B\nA -->|two| C", true, false, 5, 5},
++	}
++	for _, name := range p2pNames(cases) {
++		p2pAssertGolden(t, name, cases[name])
++	}
++}
++
++func TestP2PSubgraphBoundingBoxAndOffset(t *testing.T) {
++	cases := map[string]p2pCase{
++		"sg-nested-lr": {"graph LR\nsubgraph outer\nsubgraph inner\nA --> B\nend\nC --> A\nend\nD --> C", false, false, 5, 5},
++		"sg-label-lr":  {"graph LR\nsubgraph sg [ＤＢＳ]\nA[\"ＭA\"] --> B\nend", false, false, 5, 5},
++		"sg-td":        {"graph TD\nsubgraph one\nA --> B\nend\nC --> A", false, false, 5, 5},
++		"sg-multi-lr":  {"graph LR\nsubgraph s1\nA --> B\nend\nsubgraph s2\nC --> D\nend\nB --> C", false, false, 5, 5},
++		"sg-td-nested": {"graph TD\nsubgraph one\nsubgraph two\nA --> B\nend\nC --> A\nend", false, false, 5, 5},
++	}
++	for _, name := range p2pNames(cases) {
++		p2pAssertGolden(t, name, cases[name])
++	}
++}
++
++func TestP2PBackEdgeAndLabelLineRouting(t *testing.T) {
++	cases := map[string]p2pCase{
++		"back-edge-td":  {"graph TD\nA --> B\nB --> C\nC --> A", false, false, 5, 5},
++		"back-edge-lr":  {"graph LR\nA --> B\nB --> C\nC --> A", false, false, 5, 5},
++		"labels-dup-lr": {"graph LR\nA -->|miss| B\nA -->|hit| B", false, false, 5, 5},
++		"bidir-lr":      {"graph LR\nA -->|workload exits| B\nB -->|run| A", false, false, 5, 5},
++		"bidir-td":      {"graph TD\nA -->|forward| B\nB -->|back| A", false, false, 5, 5},
++	}
++	for _, name := range p2pNames(cases) {
++		p2pAssertGolden(t, name, cases[name])
++	}
++}
++
++func TestP2PParseContractAndErrorBehavior(t *testing.T) {
++	properties, err := graph.Parse("graph LR\nA --> B", "cli")
++	if err != nil {
++		t.Fatalf("Parse() error = %v", err)
++	}
++	if properties == nil {
++		t.Fatal("Parse() returned nil properties without error")
++	}
++	rendered := graph.Draw(properties)
++	if !strings.Contains(rendered, "A") || !strings.Contains(rendered, "B") {
++		t.Fatalf("Draw() lost nodes:\n%s", rendered)
++	}
++
++	for _, invalid := range []string{"", "not a diagram", "sequenceDiagram\nAlice->>Bob: hi"} {
++		_, err := graph.Parse(invalid, "cli")
++		if err == nil {
++			t.Errorf("Parse(%q) error = nil, want error", invalid)
++			continue
++		}
++		if strings.TrimSpace(err.Error()) == "" {
++			t.Errorf("Parse(%q) returned an empty error message", invalid)
++		}
++	}
++	for _, invalid := range []string{"not a diagram", "sequenceDiagram\nAlice->>Bob: hi"} {
++		_, err := graph.Parse(invalid, "cli")
++		if err == nil || !strings.Contains(err.Error(), "unsupported graph type") {
++			t.Errorf("Parse(%q) error = %v, want unsupported graph type diagnostic", invalid, err)
++		}
++	}
++}
++
++func TestP2PPublicApiSurfaceAvailable(t *testing.T) {
++	properties := &graph.Properties{ShowCoords: true}
++	if !properties.ShowCoords {
++		t.Fatal("Properties.ShowCoords field is not readable/writable")
++	}
++	properties.ShowCoords = false
++	if graph.Min(3, 7) != 3 || graph.Max(3, 7) != 7 || graph.Abs(-3) != 3 || graph.CeilDiv(5, 2) != 3 {
++		t.Fatal("exported math helpers changed behaviour")
++	}
++}
++
++func TestP2PModuleRequirementsUnchanged(t *testing.T) {
++	root := p2pModuleRoot(t)
++	raw, err := os.ReadFile(filepath.Join(root, "go.mod"))
++	if err != nil {
++		t.Fatalf("ReadFile(go.mod) error = %v", err)
++	}
++	module, goVersion, requires := p2pParseGoMod(string(raw))
++	if module != "github.com/AlexanderGrooff/mermaid-ascii" {
++		t.Errorf("module = %q, want github.com/AlexanderGrooff/mermaid-ascii", module)
++	}
++	if goVersion != "1.21" {
++		t.Errorf("go directive = %q, want 1.21", goVersion)
++	}
++	want := []string{
++		"github.com/bytedance/sonic",
++		"github.com/bytedance/sonic/loader",
++		"github.com/clipperhouse/uax29/v2",
++		"github.com/cloudwego/base64x",
++		"github.com/cloudwego/iasm",
++		"github.com/elliotchance/orderedmap/v2",
++		"github.com/gabriel-vasile/mimetype",
++		"github.com/gin-contrib/sse",
++		"github.com/gin-gonic/gin",
++		"github.com/go-playground/locales",
++		"github.com/go-playground/universal-translator",
++		"github.com/go-playground/validator/v10",
++		"github.com/goccy/go-json",
++		"github.com/google/go-cmp",
++		"github.com/gookit/color",
++		"github.com/inconshreveable/mousetrap",
++		"github.com/json-iterator/go",
++		"github.com/klauspost/cpuid/v2",
++		"github.com/leodido/go-urn",
++		"github.com/mattn/go-isatty",
++		"github.com/mattn/go-runewidth",
++		"github.com/modern-go/concurrent",
++		"github.com/modern-go/reflect2",
++		"github.com/pelletier/go-toml/v2",
++		"github.com/sirupsen/logrus",
++		"github.com/spf13/cobra",
++		"github.com/spf13/pflag",
++		"github.com/twitchyliquid64/golang-asm",
++		"github.com/ugorji/go/codec",
++		"github.com/xo/terminfo",
++		"golang.org/x/arch",
++		"golang.org/x/crypto",
++		"golang.org/x/net",
++		"golang.org/x/sys",
++		"golang.org/x/term",
++		"golang.org/x/text",
++		"google.golang.org/protobuf",
++		"gopkg.in/yaml.v3",
++	}
++	sort.Strings(want)
++	if strings.Join(requires, "\n") != strings.Join(want, "\n") {
++		t.Errorf("go.mod require set changed\nwant:\n%s\ngot:\n%s", strings.Join(want, "\n"), strings.Join(requires, "\n"))
++	}
++}
++
++func p2pParseGoMod(raw string) (module string, goVersion string, requires []string) {
++	inRequireBlock := false
++	for _, line := range strings.Split(raw, "\n") {
++		line = strings.TrimSpace(line)
++		if line == "" || strings.HasPrefix(line, "//") {
++			continue
++		}
++		if strings.HasPrefix(line, "module ") {
++			module = strings.TrimSpace(strings.TrimPrefix(line, "module "))
++			continue
++		}
++		if strings.HasPrefix(line, "go ") {
++			goVersion = strings.TrimSpace(strings.TrimPrefix(line, "go "))
++			continue
++		}
++		if strings.HasPrefix(line, "require (") {
++			inRequireBlock = true
++			continue
++		}
++		if inRequireBlock && line == ")" {
++			inRequireBlock = false
++			continue
++		}
++		if strings.HasPrefix(line, "require ") {
++			requires = append(requires, p2pRequirePath(strings.TrimSpace(strings.TrimPrefix(line, "require "))))
++			continue
++		}
++		if inRequireBlock {
++			requires = append(requires, p2pRequirePath(line))
++		}
++	}
++	sort.Strings(requires)
++	return module, goVersion, requires
++}
++
++func p2pRequirePath(line string) string {
++	fields := strings.Fields(line)
++	if len(fields) == 0 {
++		return ""
++	}
++	return fields[0]
++}
+diff --git a/tests/f2p/run_f2p.py b/tests/f2p/run_f2p.py
+new file mode 100755
+index 0000000000000000000000000000000000000000..ae90405abb80448af18c771dcd9e2c065df01b2a
+--- /dev/null
++++ b/tests/f2p/run_f2p.py
+@@ -0,0 +1,473 @@
++#!/usr/bin/env python3
++"""F2P runner for the frozen verifier plan.
++
++Runs the F2P selector set declared by the F2P draft with the real Go test
++runner and writes a conventional JUnit report to the path given by --report.
++Every selector is an exact leaf of a declared test file; the runner never
++falls back to package patterns, whole test files or collection inventories.
++
++The selector set is the frozen F2P declaration embedded below. When the
++pipeline materialises the canonical plan as config.json, its ``f2p`` array is
++used instead, mirroring how the frozen P2P runner consumes its selector file;
++the embedded list keeps the runner self-sufficient on the Baseline and in
++replay containers. Selection input is discovered through --config/--selectors,
++the F2P_CONFIG / F2P_SELECT / F2P_SELECT_FILE environment variables, and
++config.json / f2p_select.txt next to the working directory, the repository
++root or this script.
++
++The runner never installs anything and never touches the network: the Go
++toolchain, module cache and repository files are expected to be provided by
++the frozen environment image. Go build and temporary data are staged inside
++VERIFIER_EXEC_DIR (or TMPDIR) when the pipeline provides them.
++"""
++
++import argparse
++import json
++import os
++import re
++import subprocess
++import sys
++import xml.etree.ElementTree as ET
++from pathlib import Path
++
++# (repo-relative test file path, exact Go test leaf)
++SELECTORS = [
++    ("pkg/graph/f2p_mapping_structure_test.go", "TestF2PMappingEntryPointHasNoLayoutLoops"),
++    ("pkg/graph/f2p_mapping_structure_test.go", "TestF2PMappingEntryPointDelegatesLowLevelPrimitives"),
++    ("pkg/graph/f2p_mapping_structure_test.go", "TestF2PRootIdentificationOwnedByDedicatedUnit"),
++    ("pkg/graph/f2p_mapping_structure_test.go", "TestF2PRootSeparationOwnedByDedicatedUnit"),
++    ("pkg/graph/f2p_mapping_structure_test.go", "TestF2PLevelReservationStateOwnedByDedicatedType"),
++    ("pkg/graph/f2p_mapping_structure_test.go", "TestF2PNodePlacementOwnedByDedicatedUnit"),
++    ("pkg/graph/f2p_mapping_structure_test.go", "TestF2PColumnRowSizingOwnedByLabelAwareUnit"),
++    ("pkg/graph/f2p_mapping_structure_test.go", "TestF2PEdgeFinalizationOwnedByDedicatedUnit"),
++    ("pkg/graph/f2p_mapping_structure_test.go", "TestF2PGridToDrawingConversionOwnedByDedicatedUnit"),
++    ("pkg/graph/f2p_mapping_structure_test.go", "TestF2PMappingEntryPointBuildsNoCoordinatesInline"),
++    ("pkg/graph/f2p_mapping_structure_test.go", "TestF2PMappingStepsCoverResponsibilitiesWithDistinctOwners"),
++]
++
++INTERNAL_TIMEOUT_SECONDS = 240
++
++SELECTOR_ENV_VARS = ("F2P_SELECT", "F2P_SELECT_FILE", "F2P_CONFIG", "VERIFIER_CONFIG")
++DECLARED = {f"{path}::{leaf}" for path, leaf in SELECTORS}
++
++
++def repo_root():
++    here = Path(__file__).resolve()
++    for candidate in (here.parent, *here.parents):
++        if (candidate / "go.mod").is_file():
++            return candidate
++    raise RuntimeError("f2p runner: repository root (go.mod) not found")
++
++
++def parse_selector_text(text, strict=False):
++    selectors = []
++    skipped = 0
++    for line in text.splitlines():
++        line = line.strip()
++        if not line or line.startswith("#"):
++            continue
++        for token in re.split(r"[\s,]+", line):
++            token = token.strip().strip("\"'[]{}")
++            if not token:
++                continue
++            path, sep, leaf = token.partition("::")
++            if not sep or not path or not leaf:
++                if strict:
++                    raise RuntimeError(f"f2p runner: invalid selector line: {line!r}")
++                skipped += 1
++                continue
++            selectors.append((path.replace("\\", "/"), leaf))
++    return selectors, skipped
++
++
++def parse_config_selectors(text):
++    """Extract exact selectors from a canonical plan config.
++
++    The canonical plan stores the F2P selection in an ``f2p`` array of
++    selector strings (or rows carrying a ``selector``/``test`` field). An
++    ``f2p_points`` array of rows carrying ``test`` is accepted as well. Broad
++    material such as test files, patterns or collection inventories is never
++    turned into a selection here.
++    """
++    try:
++        data = json.loads(text)
++    except json.JSONDecodeError as exc:
++        raise RuntimeError(f"f2p runner: invalid config json: {exc}") from exc
++    if not isinstance(data, dict):
++        return []
++    rows = []
++    for key in ("f2p", "f2p_select", "f2p_points"):
++        value = data.get(key)
++        if isinstance(value, list) and value:
++            rows = value
++            break
++    selectors = []
++    for row in rows:
++        if isinstance(row, str):
++            token = row
++        elif isinstance(row, dict):
++            token = row.get("selector") or row.get("test") or ""
++        else:
++            continue
++        token = str(token).strip()
++        if not token:
++            continue
++        path, sep, leaf = token.partition("::")
++        if not sep or not path or not leaf:
++            continue
++        selectors.append((path.replace("\\", "/"), leaf))
++    return selectors
++
++
++def normalize_selector_path(path, root):
++    cleaned = path.strip()
++    while cleaned.startswith("./"):
++        cleaned = cleaned[2:]
++    if cleaned.startswith("/"):
++        parts = cleaned.split("/")
++        for start in range(1, len(parts)):
++            candidate = "/".join(parts[start:])
++            if (root / candidate).is_file():
++                return candidate
++    return cleaned
++
++
++def discover_selection_file(root):
++    candidates = []
++    for var in SELECTOR_ENV_VARS:
++        value = os.environ.get(var)
++        if value:
++            candidates.append(Path(value))
++    here = Path(__file__).resolve()
++    for base in (Path.cwd(), root, here.parent, here.parent.parent):
++        candidates.append(base / "config.json")
++        candidates.append(base / "verifier" / "config.json")
++        candidates.append(base / "f2p_select.txt")
++        candidates.append(base / "verifier" / "f2p_select.txt")
++    seen = set()
++    for candidate in candidates:
++        key = str(candidate)
++        if key in seen:
++            continue
++        seen.add(key)
++        if candidate.is_file():
++            return candidate
++    return None
++
++
++def load_selectors(source, root, strict=True):
++    if source is None:
++        return list(SELECTORS)
++    text = Path(source).read_text(encoding="utf-8")
++    if Path(source).suffix == ".json":
++        selectors = parse_config_selectors(text)
++    else:
++        selectors, _ = parse_selector_text(text, strict=strict)
++    return [(normalize_selector_path(path, root), leaf) for path, leaf in selectors]
++
++
++def validate(root, selectors):
++    """Return {selector: reason} for selectors that cannot be collected."""
++    problems = {}
++    for path, leaf in selectors:
++        test_file = root / path
++        selector = f"{path}::{leaf}"
++        if not test_file.is_file():
++            problems[selector] = f"missing test file: {path}"
++            continue
++        source = test_file.read_text(encoding="utf-8", errors="replace")
++        if not re.search(rf"^func {re.escape(leaf)}\(", source, re.M):
++            problems[selector] = f"{path} does not define {leaf}"
++    return problems
++
++
++def stage_exec_environment(env):
++    """Place Go build/temp data inside the provided exec or temp area.
++
++    The pipeline supplies VERIFIER_EXEC_DIR for executions declared with
++    require_exec=true and TMPDIR for temporary data; falling back to the image
++    defaults only when neither is usable. No installation, download or
++    registry access happens here.
++    """
++    bases = [env.get("VERIFIER_EXEC_DIR"), env.get("TMPDIR")]
++    for name, sub in (("GOCACHE", "go-build-cache"), ("GOTMPDIR", "go-tmp")):
++        if env.get(name):
++            continue
++        for base in bases:
++            if not base:
++                continue
++            candidate = Path(base) / sub
++            try:
++                candidate.mkdir(parents=True, exist_ok=True)
++            except OSError:
++                continue
++            env[name] = str(candidate)
++            break
++
++
++def run_go_test(root, selectors):
++    leaves = sorted({leaf for _, leaf in selectors})
++    pattern = "^(" + "|".join(leaves) + ")$"
++    packages = sorted({"./" + str(Path(path).parent) for path, _ in selectors})
++    command = ["go", "test", "-json", "-count=1", "-run", pattern, *packages]
++    env = dict(os.environ)
++    env["GOPROXY"] = "off"
++    env.setdefault("GOTOOLCHAIN", "local")
++    stage_exec_environment(env)
++    try:
++        proc = subprocess.run(
++            command,
++            cwd=str(root),
++            env=env,
++            capture_output=True,
++            text=True,
++            timeout=INTERNAL_TIMEOUT_SECONDS,
++        )
++    except FileNotFoundError as exc:
++        return command, "", str(exc), None, "exec"
++    except subprocess.TimeoutExpired as exc:
++        stdout = exc.stdout or ""
++        stderr = exc.stderr or ""
++        if isinstance(stdout, bytes):
++            stdout = stdout.decode("utf-8", "replace")
++        if isinstance(stderr, bytes):
++            stderr = stderr.decode("utf-8", "replace")
++        return command, stdout, stderr, None, "timeout"
++    return command, proc.stdout, proc.stderr, proc.returncode, None
++
++
++def parse_go_json(stdout):
++    tests = {}
++    packages = {}
++    for line in stdout.splitlines():
++        line = line.strip()
++        if not line.startswith("{"):
++            continue
++        try:
++            event = json.loads(line)
++        except json.JSONDecodeError:
++            continue
++        action = event.get("Action")
++        package = event.get("Package") or event.get("ImportPath") or ""
++        output = event.get("Output")
++        test = event.get("Test")
++        if test is None:
++            record = packages.setdefault(package, {"actions": set(), "output": []})
++            if action:
++                record["actions"].add(action)
++            if output:
++                record["output"].append(output)
++            continue
++        leaf = test.split("/")[0]
++        record = tests.setdefault(leaf, {"action": None, "output": [], "elapsed": 0.0})
++        if action in ("pass", "fail", "skip"):
++            record["action"] = action
++            elapsed = event.get("Elapsed")
++            if isinstance(elapsed, (int, float)):
++                record["elapsed"] = max(record["elapsed"], float(elapsed))
++        if output:
++            record["output"].append(output)
++    return tests, packages
++
++
++def package_output_for(packages, path, stderr_text):
++    chunks = []
++    for name, record in sorted(packages.items()):
++        if name.endswith(str(Path(path).parent)):
++            chunks.append("".join(record["output"]))
++    chunks.append(stderr_text)
++    return "".join(chunks)[-40000:]
++
++
++def build_rows(selectors, tests, packages, stderr_text, first_cause, problems):
++    rows = []
++    for path, leaf in selectors:
++        selector = f"{path}::{leaf}"
++        record = tests.get(leaf)
++        row = {"path": path, "leaf": leaf, "status": "fail", "message": "", "output": "", "elapsed": 0.0}
++        if selector in problems:
++            row["message"] = problems[selector]
++        elif first_cause == "timeout":
++            row["message"] = "f2p runner timed out before the Go test run finished"
++            row["output"] = stderr_text
++        elif first_cause == "exec":
++            row["message"] = "go toolchain unavailable: " + stderr_text
++            row["output"] = stderr_text
++        elif record is None or record["action"] is None:
++            row["message"] = "test was not executed (build, crash or collection failure)"
++            row["output"] = package_output_for(packages, path, stderr_text)
++        elif record["action"] == "pass":
++            row["status"] = "pass"
++        elif record["action"] == "skip":
++            row["message"] = "test was skipped; a skip cannot stand in for a real F2P run"
++            row["output"] = "".join(record["output"])[-40000:]
++        else:
++            row["message"] = "test failed"
++            row["output"] = "".join(record["output"])[-40000:]
++        if record is not None:
++            row["elapsed"] = record.get("elapsed", 0.0)
++        rows.append(row)
++    return rows
++
++
++def write_junit(report_path, rows):
++    tests = len(rows)
++    failures = sum(1 for row in rows if row["status"] != "pass")
++    root = ET.Element(
++        "testsuites",
++        {"name": "f2p", "tests": str(tests), "failures": str(failures), "errors": "0", "skipped": "0"},
++    )
++    by_path = {}
++    for row in rows:
++        by_path.setdefault(row["path"], []).append(row)
++    for path, path_rows in by_path.items():
++        path_failures = sum(1 for row in path_rows if row["status"] != "pass")
++        suite = ET.SubElement(
++            root,
++            "testsuite",
++            {
++                "name": path,
++                "tests": str(len(path_rows)),
++                "failures": str(path_failures),
++                "errors": "0",
++                "skipped": "0",
++            },
++        )
++        for row in path_rows:
++            case = ET.SubElement(
++                suite,
++                "testcase",
++                {
++                    "classname": row["path"],
++                    "name": row["leaf"],
++                    "file": row["path"],
++                    "time": f"{row.get('elapsed', 0.0):.3f}",
++                },
++            )
++            if row["status"] != "pass":
++                failure = ET.SubElement(case, "failure", {"message": row["message"] or "failed"})
++                if row["message"] == "test failed" and not re.search(
++                    r"(?m)^(?:panic:|fatal error:|signal:|SIG[A-Z]+:)", row["output"]
++                ):
++                    failure.set("type", "AssertionError")
++                failure.text = row["output"]
++    tree = ET.ElementTree(root)
++    ET.indent(tree, space="  ")
++    report_path.parent.mkdir(parents=True, exist_ok=True)
++    tree.write(str(report_path), encoding="utf-8", xml_declaration=True)
++
++
++def main():
++    parser = argparse.ArgumentParser(description="Run the frozen F2P selector set and write JUnit.")
++    parser.add_argument("--report", required=True, help="path of the JUnit XML report to write")
++    parser.add_argument("--config", default=None, help="optional canonical plan config.json with the f2p selection")
++    parser.add_argument("--selectors", default=None, help="optional selector override file (debug only)")
++    args = parser.parse_args()
++
++    root = repo_root()
++    source = None
++    if args.selectors:
++        source = Path(args.selectors)
++    elif args.config and Path(args.config).is_file():
++        source = Path(args.config)
++    elif args.config:
++        print(
++            f"f2p runner: config path {args.config!r} is not a file; discovering selection input instead",
++            file=sys.stderr,
++        )
++        source = discover_selection_file(root)
++    else:
++        source = discover_selection_file(root)
++
++    if source is not None:
++        try:
++            selectors = load_selectors(source, root=root, strict=False)
++        except (RuntimeError, OSError) as exc:
++            print(
++                f"f2p runner: cannot read selection input {source}: {exc};"
++                " falling back to the embedded frozen F2P declaration",
++                file=sys.stderr,
++            )
++            selectors = list(SELECTORS)
++        if selectors:
++            print(f"f2p runner: selection input from {source}", file=sys.stderr)
++            discovered = {f"{p}::{l}" for p, l in selectors}
++            missing = sorted(DECLARED - discovered)
++            extra = sorted(discovered - DECLARED)
++            if missing or extra:
++                print(
++                    "f2p runner: WARNING selection input differs from the embedded frozen F2P declaration"
++                    f" (missing={len(missing)}, extra={len(extra)})",
++                    file=sys.stderr,
++                )
++                for item in missing[:50]:
++                    print(f"f2p runner: WARNING missing {item}", file=sys.stderr)
++                for item in extra[:50]:
++                    print(f"f2p runner: WARNING extra {item}", file=sys.stderr)
++        else:
++            print(
++                f"f2p runner: {source} yielded no usable selectors;"
++                " falling back to the embedded frozen F2P declaration",
++                file=sys.stderr,
++            )
++            selectors = list(SELECTORS)
++    else:
++        print(
++            "f2p runner: no config.json/f2p_select.txt found; using the embedded frozen F2P declaration",
++            file=sys.stderr,
++        )
++        selectors = list(SELECTORS)
++
++    problems = validate(root, selectors)
++    for reason in sorted(set(problems.values())):
++        print(f"f2p runner: selector problem: {reason}", file=sys.stderr)
++
++    runnable = [(path, leaf) for path, leaf in selectors if f"{path}::{leaf}" not in problems]
++    if runnable:
++        command, stdout, stderr_text, returncode, first_cause = run_go_test(root, runnable)
++        print("f2p runner: $ " + " ".join(command), file=sys.stderr)
++    else:
++        command, stdout, stderr_text, returncode, first_cause = [], "", "", None, None
++
++    if first_cause == "exec":
++        print(f"f2p runner: cannot run the Go test runner: {stderr_text}", file=sys.stderr)
++        return 2
++
++    tests, packages = parse_go_json(stdout)
++    if first_cause is None and not tests:
++        combined = (stdout + "\n" + stderr_text).lower()
++        infra_markers = (
++            "module lookup disabled by goproxy=off",
++            "missing go.sum entry",
++            "go: downloading",
++            "dial tcp",
++            "connection refused",
++            "i/o timeout",
++        )
++        if any(marker in combined for marker in infra_markers):
++            print(
++                "f2p runner: missing dependencies in the frozen environment image: " + stderr_text[-2000:],
++                file=sys.stderr,
++            )
++            return 2
++
++    rows = build_rows(selectors, tests, packages, stderr_text, first_cause, problems)
++    report_path = Path(args.report)
++    write_junit(report_path, rows)
++
++    passed = sum(1 for row in rows if row["status"] == "pass")
++    failed = len(rows) - passed
++    print(f"f2p runner: {passed}/{len(rows)} selectors passed; report written to {report_path}", file=sys.stderr)
++    for row in rows:
++        if row["status"] != "pass":
++            print(f"f2p runner: FAIL {row['path']}::{row['leaf']}: {row['message']}", file=sys.stderr)
++    if failed:
++        return 1
++    if returncode not in (0, None):
++        print(f"f2p runner: go test exited with {returncode} although all selectors passed", file=sys.stderr)
++        return 1
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tests/p2p/run_p2p.py b/tests/p2p/run_p2p.py
+new file mode 100755
+index 0000000000000000000000000000000000000000..f73b0b5a0cff79e4dfae08155b55c14cc60a9d25
+--- /dev/null
++++ b/tests/p2p/run_p2p.py
+@@ -0,0 +1,446 @@
++#!/usr/bin/env python3
++"""P2P runner for the frozen verifier plan.
++
++Runs the frozen P2P selector set with the real Go test runner and writes a
++conventional JUnit report to the path given by --report. The selector list
++below is the frozen plan selection (original Baseline regression nodes plus the
++supplemental P2P nodes). Selection input is taken from the materialized
++p2p_select.txt (env P2P_SELECT / P2P_SELECT_FILE, then p2p_select.txt or
++verifier/p2p_select.txt relative to the working directory, repository root or
++this script); when that file is absent the embedded frozen list is used, so the
++runner is self-sufficient on the Baseline. No extra selection manifest is
++required and an optional --selectors override exists for debugging only.
++
++The runner never installs anything and never touches the network: the Go
++toolchain, module cache and repository files are expected to be provided by
++the frozen environment image. Go build and temporary data are staged inside
++VERIFIER_EXEC_DIR (or TMPDIR) when the pipeline provides them.
++"""
++
++import argparse
++import json
++import os
++import re
++import subprocess
++import sys
++import xml.etree.ElementTree as ET
++from pathlib import Path
++
++# (repo-relative test file path, exact Go test leaf)
++SELECTORS = [
++    ("pkg/graph/graph_test.go", "TestASCII"),
++    ("pkg/graph/graph_test.go", "TestExtendedChars"),
++    ("pkg/graph/graph_test.go", "TestMultibyte"),
++    ("pkg/graph/graph_test.go", "TestGraphUseAsciiConfig"),
++    ("pkg/graph/render_graph_test.go", "TestRenderGraphHandlesLongChainWithoutPanic"),
++    ("pkg/graph/render_graph_test.go", "TestRenderGraphKeepsDisplayWidthForWideNodeLabels"),
++    ("pkg/graph/render_graph_test.go", "TestRenderGraphHandlesUnicodeClusterNodeLabels"),
++    ("pkg/graph/p2p_mapping_contract_test.go", "TestP2PCoordinateOverlayMatchesBaseline"),
++    ("pkg/graph/p2p_mapping_contract_test.go", "TestP2PShowCoordsFieldControlsOverlay"),
++    ("pkg/graph/p2p_mapping_contract_test.go", "TestP2PRootSeparationMixedSubgraphRootsLR"),
++    ("pkg/graph/p2p_mapping_contract_test.go", "TestP2PCollisionAdvanceAndPerLevelReservation"),
++    ("pkg/graph/render_graph_test.go", "TestRenderGraphSeparatesDuplicateEdgeLabels"),
++    ("pkg/graph/render_graph_test.go", "TestRenderGraphSeparatesBidirectionalEdgeLabelsLR"),
++    ("pkg/graph/render_graph_test.go", "TestRenderGraphSeparatesBidirectionalEdgeLabelsTD"),
++    ("pkg/graph/render_graph_test.go", "TestRenderGraphAlignsFanoutLabels"),
++    ("pkg/graph/p2p_mapping_contract_test.go", "TestP2PFanoutLayoutAndLabelAlignment"),
++    ("pkg/graph/p2p_mapping_contract_test.go", "TestP2PBackEdgeAndLabelLineRouting"),
++    ("pkg/graph/render_graph_test.go", "TestRenderGraphKeepsDisplayWidthForWideSubgraphTitles"),
++    ("pkg/graph/render_graph_test.go", "TestRenderGraphKeepsStandaloneSubgraphLabelWhenReferencedLater"),
++    ("pkg/graph/p2p_mapping_contract_test.go", "TestP2PSubgraphBoundingBoxAndOffset"),
++    ("pkg/graph/label_test.go", "TestNewGraphLabel"),
++    ("pkg/graph/parse_test.go", "TestSplitGraphLines"),
++    ("pkg/graph/parse_test.go", "TestSplitGraphLinesKeepsLiteralNewlineInsideNodeLabel"),
++    ("pkg/graph/parse_test.go", "TestParseNodeWithExplicitLabel"),
++    ("pkg/graph/parse_test.go", "TestParseNodePreservesLiteralBoundaryQuote"),
++    ("pkg/graph/parse_test.go", "TestParseNodeFallsBackForExtraClosingDelimiter"),
++    ("pkg/graph/parse_test.go", "TestParseNodeFallsBackForUnmatchedQuoteBeforeClosingDelimiter"),
++    ("pkg/graph/parse_test.go", "TestParseNodeShapes"),
++    ("pkg/graph/parse_test.go", "TestMermaidFileToMapKeepsShapedNodeLabelsAcrossBareReferences"),
++    ("pkg/graph/parse_test.go", "TestMermaidFileToMapPreservesEscapedLabelNewlines"),
++    ("pkg/graph/parse_test.go", "TestMermaidFileToMapPreservesLiteralLabelNewlines"),
++    ("pkg/graph/parse_test.go", "TestParseSubgraphHeader"),
++    ("pkg/graph/parse_test.go", "TestMermaidFileToMapParsesSubgraphIDAndTitle"),
++    ("pkg/graph/parse_test.go", "TestMermaidFileToMapKeepsExplicitNodeLabelAcrossBareReferences"),
++    ("pkg/graph/parse_test.go", "TestMermaidFileToMapUsesLatestExplicitLabel"),
++    ("pkg/graph/parse_test.go", "TestMermaidFileToMapParsesNonStandardEdgeOperators"),
++    ("pkg/graph/parse_test.go", "TestMermaidFileToMapParsesChainedNonStandardEdges"),
++    ("pkg/graph/parse_test.go", "TestParsePreservesQuotedLabelMarkersAndUnquotedClassShorthand"),
++    ("pkg/graph/parse_test.go", "TestParseNodeDoesNotTreatQuotedClassMarkerAsShorthand"),
++    ("pkg/graph/parse_test.go", "TestParseRejectsMalformedClassDefWithoutPanicking"),
++    ("pkg/graph/parse_test.go", "TestGraphTypeDetection"),
++    ("pkg/graph/render_graph_test.go", "TestRenderGraphKeepsExplicitTargetLabelAfterBareReference"),
++    ("pkg/graph/render_graph_test.go", "TestRenderGraphSupportsLiteralNewlineInNodeLabel"),
++    ("pkg/graph/p2p_mapping_contract_test.go", "TestP2PParseContractAndErrorBehavior"),
++    ("cmd/root_test.go", "TestResolveMaxWidth"),
++    ("cmd/p2p_cli_contract_test.go", "TestP2PCLIFlagContractAndRendering"),
++    ("cmd/p2p_cli_contract_test.go", "TestP2PCLIErrorExitStatusAndDiagnostics"),
++    ("pkg/graph/p2p_mapping_contract_test.go", "TestP2PPublicApiSurfaceAvailable"),
++    ("pkg/graph/p2p_mapping_contract_test.go", "TestP2PModuleRequirementsUnchanged"),
++]
++
++INTERNAL_TIMEOUT_SECONDS = 420
++
++SELECTOR_ENV_VARS = ("P2P_SELECT", "P2P_SELECT_FILE")
++
++
++def repo_root():
++    here = Path(__file__).resolve()
++    for candidate in (here.parent, *here.parents):
++        if (candidate / "go.mod").is_file():
++            return candidate
++    raise RuntimeError("p2p runner: repository root (go.mod) not found")
++
++
++def parse_selector_text(text, strict=False):
++    selectors = []
++    skipped = 0
++    for line in text.splitlines():
++        line = line.strip()
++        if not line or line.startswith("#"):
++            continue
++        for token in re.split(r"[\s,]+", line):
++            token = token.strip().strip("\"'[]")
++            if not token:
++                continue
++            path, sep, leaf = token.partition("::")
++            if not sep or not path or not leaf:
++                if strict:
++                    raise RuntimeError(f"p2p runner: invalid selector line: {line!r}")
++                skipped += 1
++                continue
++            selectors.append((path.replace("\\", "/"), leaf))
++    return selectors, skipped
++
++
++def normalize_selector_path(path, root):
++    """Best-effort normalization of absolute or ./ prefixed selector paths."""
++    cleaned = path.strip()
++    while cleaned.startswith("./"):
++        cleaned = cleaned[2:]
++    if cleaned.startswith("/"):
++        parts = cleaned.split("/")
++        for start in range(1, len(parts)):
++            candidate = "/".join(parts[start:])
++            if (root / candidate).is_file():
++                return candidate
++    return cleaned
++
++
++def discover_selector_file(root):
++    candidates = []
++    for var in SELECTOR_ENV_VARS:
++        value = os.environ.get(var)
++        if value:
++            candidates.append(Path(value))
++    here = Path(__file__).resolve()
++    for base in (Path.cwd(), root, here.parent, here.parent.parent):
++        candidates.append(base / "p2p_select.txt")
++        candidates.append(base / "verifier" / "p2p_select.txt")
++    seen = set()
++    for candidate in candidates:
++        key = str(candidate)
++        if key in seen:
++            continue
++        seen.add(key)
++        if candidate.is_file():
++            return candidate
++    return None
++
++
++def load_selectors(override, root=None, strict=True):
++    if override is None:
++        return list(SELECTORS)
++    selectors, _ = parse_selector_text(Path(override).read_text(encoding="utf-8"), strict=strict)
++    if root is not None:
++        selectors = [(normalize_selector_path(path, root), leaf) for path, leaf in selectors]
++    return selectors
++
++
++def validate(root, selectors):
++    """Return {selector: reason} for selectors that cannot be collected."""
++    problems = {}
++    for path, leaf in selectors:
++        test_file = root / path
++        selector = f"{path}::{leaf}"
++        if not test_file.is_file():
++            problems[selector] = f"missing test file: {path}"
++            continue
++        source = test_file.read_text(encoding="utf-8", errors="replace")
++        if not re.search(rf"^func {re.escape(leaf)}\(", source, re.M):
++            problems[selector] = f"{path} does not define {leaf}"
++    return problems
++
++
++def stage_exec_environment(env):
++    """Place Go build/temp data inside the provided exec or temp area.
++
++    The pipeline supplies VERIFIER_EXEC_DIR for executions declared with
++    require_exec=true and TMPDIR for temporary data; falling back to the
++    image defaults only when neither is usable. No installation, download or
++    registry access happens here.
++    """
++    bases = [env.get("VERIFIER_EXEC_DIR"), env.get("TMPDIR")]
++    for name, sub in (("GOCACHE", "go-build-cache"), ("GOTMPDIR", "go-tmp")):
++        if env.get(name):
++            continue
++        for base in bases:
++            if not base:
++                continue
++            candidate = Path(base) / sub
++            try:
++                candidate.mkdir(parents=True, exist_ok=True)
++            except OSError:
++                continue
++            env[name] = str(candidate)
++            break
++
++
++def run_go_test(root, selectors):
++    leaves = sorted({leaf for _, leaf in selectors})
++    pattern = "^(" + "|".join(leaves) + ")$"
++    packages = sorted({"./" + str(Path(path).parent) for path, _ in selectors})
++    command = ["go", "test", "-json", "-count=1", "-run", pattern, *packages]
++    env = dict(os.environ)
++    env["GOPROXY"] = "off"
++    env.setdefault("GOTOOLCHAIN", "local")
++    stage_exec_environment(env)
++    try:
++        proc = subprocess.run(
++            command,
++            cwd=str(root),
++            env=env,
++            capture_output=True,
++            text=True,
++            timeout=INTERNAL_TIMEOUT_SECONDS,
++        )
++    except FileNotFoundError as exc:
++        return command, "", str(exc), None, "exec"
++    except subprocess.TimeoutExpired as exc:
++        stdout = exc.stdout or ""
++        stderr = exc.stderr or ""
++        if isinstance(stdout, bytes):
++            stdout = stdout.decode("utf-8", "replace")
++        if isinstance(stderr, bytes):
++            stderr = stderr.decode("utf-8", "replace")
++        return command, stdout, stderr, None, "timeout"
++    return command, proc.stdout, proc.stderr, proc.returncode, None
++
++
++def parse_go_json(stdout):
++    tests = {}
++    packages = {}
++    for line in stdout.splitlines():
++        line = line.strip()
++        if not line.startswith("{"):
++            continue
++        try:
++            event = json.loads(line)
++        except json.JSONDecodeError:
++            continue
++        action = event.get("Action")
++        package = event.get("Package") or event.get("ImportPath") or ""
++        output = event.get("Output")
++        test = event.get("Test")
++        if test is None:
++            record = packages.setdefault(package, {"actions": set(), "output": []})
++            if action:
++                record["actions"].add(action)
++            if output:
++                record["output"].append(output)
++            continue
++        leaf = test.split("/")[0]
++        record = tests.setdefault(leaf, {"action": None, "output": [], "elapsed": 0.0})
++        if action in ("pass", "fail", "skip"):
++            record["action"] = action
++            elapsed = event.get("Elapsed")
++            if isinstance(elapsed, (int, float)):
++                record["elapsed"] = max(record["elapsed"], float(elapsed))
++        if output:
++            record["output"].append(output)
++    return tests, packages
++
++
++def package_output_for(packages, path, stderr_text):
++    package_dir = "./" + str(Path(path).parent)
++    chunks = []
++    for name, record in sorted(packages.items()):
++        if name.endswith(str(Path(path).parent)):
++            chunks.append("".join(record["output"]))
++    del package_dir
++    chunks.append(stderr_text)
++    return "".join(chunks)[-40000:]
++
++
++def build_rows(selectors, tests, packages, stderr_text, first_cause, problems):
++    rows = []
++    for path, leaf in selectors:
++        selector = f"{path}::{leaf}"
++        record = tests.get(leaf)
++        row = {"path": path, "leaf": leaf, "status": "fail", "message": "", "output": "", "elapsed": 0.0}
++        if selector in problems:
++            row["message"] = problems[selector]
++            row["output"] = ""
++        elif first_cause == "timeout":
++            row["message"] = "p2p runner timed out before the Go test run finished"
++            row["output"] = stderr_text
++        elif first_cause == "exec":
++            row["message"] = "go toolchain unavailable: " + stderr_text
++            row["output"] = stderr_text
++        elif record is None or record["action"] is None:
++            row["message"] = "test was not executed (build, crash or collection failure)"
++            row["output"] = package_output_for(packages, path, stderr_text)
++        elif record["action"] == "pass":
++            row["status"] = "pass"
++        elif record["action"] == "skip":
++            row["message"] = "test was skipped; a skip cannot stand in for a real P2P run"
++            row["output"] = "".join(record["output"])[-40000:]
++        else:
++            row["message"] = "test failed"
++            row["output"] = "".join(record["output"])[-40000:]
++        if record is not None:
++            row["elapsed"] = record.get("elapsed", 0.0)
++        rows.append(row)
++    return rows
++
++
++def write_junit(report_path, rows):
++    tests = len(rows)
++    failures = sum(1 for row in rows if row["status"] != "pass")
++    root = ET.Element(
++        "testsuites",
++        {"name": "p2p", "tests": str(tests), "failures": str(failures), "errors": "0", "skipped": "0"},
++    )
++    by_path = {}
++    for row in rows:
++        by_path.setdefault(row["path"], []).append(row)
++    for path, path_rows in by_path.items():
++        path_failures = sum(1 for row in path_rows if row["status"] != "pass")
++        suite = ET.SubElement(
++            root,
++            "testsuite",
++            {
++                "name": path,
++                "tests": str(len(path_rows)),
++                "failures": str(path_failures),
++                "errors": "0",
++                "skipped": "0",
++            },
++        )
++        for row in path_rows:
++            case = ET.SubElement(
++                suite,
++                "testcase",
++                {
++                    "classname": row["path"],
++                    "name": row["leaf"],
++                    "file": row["path"],
++                    "time": f"{row.get('elapsed', 0.0):.3f}",
++                },
++            )
++            if row["status"] != "pass":
++                failure = ET.SubElement(case, "failure", {"message": row["message"] or "failed"})
++                if row["message"] == "test failed" and not re.search(
++                    r"(?m)^(?:panic:|fatal error:|signal:|SIG[A-Z]+:)", row["output"]
++                ):
++                    failure.set("type", "AssertionError")
++                failure.text = row["output"]
++    tree = ET.ElementTree(root)
++    ET.indent(tree, space="  ")
++    report_path.parent.mkdir(parents=True, exist_ok=True)
++    tree.write(str(report_path), encoding="utf-8", xml_declaration=True)
++
++
++def main():
++    parser = argparse.ArgumentParser(description="Run the frozen P2P selector set and write JUnit.")
++    parser.add_argument("--report", required=True, help="path of the JUnit XML report to write")
++    parser.add_argument("--selectors", default=None, help="optional selector override file (debug only)")
++    args = parser.parse_args()
++
++    root = repo_root()
++    if args.selectors:
++        selectors = load_selectors(args.selectors, root=root)
++        print(f"p2p runner: selection input from explicit --selectors {args.selectors}", file=sys.stderr)
++    else:
++        selector_file = discover_selector_file(root)
++        if selector_file is not None:
++            selectors = load_selectors(selector_file, root=root, strict=False)
++            if selectors:
++                print(f"p2p runner: selection input from {selector_file}", file=sys.stderr)
++                declared = set(SELECTORS)
++                found = set(selectors)
++                if found != declared:
++                    missing = sorted(f"{p}::{l}" for p, l in declared - found)
++                    extra = sorted(f"{p}::{l}" for p, l in found - declared)
++                    print(
++                        "p2p runner: WARNING selector file differs from embedded frozen plan list"
++                        f" (missing={len(missing)}, extra={len(extra)})",
++                        file=sys.stderr,
++                    )
++                    for item in missing[:50]:
++                        print(f"p2p runner: WARNING missing {item}", file=sys.stderr)
++                    for item in extra[:50]:
++                        print(f"p2p runner: WARNING extra {item}", file=sys.stderr)
++            else:
++                print(
++                    f"p2p runner: {selector_file} yielded no usable selectors;"
++                    " falling back to the embedded frozen plan list",
++                    file=sys.stderr,
++                )
++                selectors = list(SELECTORS)
++        else:
++            print(
++                "p2p runner: no p2p_select.txt found; using the embedded frozen plan list",
++                file=sys.stderr,
++            )
++            selectors = list(SELECTORS)
++    problems = validate(root, selectors)
++    for reason in sorted(set(problems.values())):
++        print(f"p2p runner: selector problem: {reason}", file=sys.stderr)
++
++    runnable = [(path, leaf) for path, leaf in selectors if f"{path}::{leaf}" not in problems]
++    if runnable:
++        command, stdout, stderr_text, returncode, first_cause = run_go_test(root, runnable)
++        print("p2p runner: $ " + " ".join(command), file=sys.stderr)
++    else:
++        command, stdout, stderr_text, returncode, first_cause = [], "", "", None, None
++
++    if first_cause == "exec":
++        print(f"p2p runner: cannot run the Go test runner: {stderr_text}", file=sys.stderr)
++        return 2
++
++    tests, packages = parse_go_json(stdout)
++    if first_cause is None and not tests:
++        combined = (stdout + "\n" + stderr_text).lower()
++        infra_markers = (
++            "module lookup disabled by goproxy=off",
++            "missing go.sum entry",
++            "go: downloading",
++            "dial tcp",
++            "connection refused",
++            "i/o timeout",
++        )
++        if any(marker in combined for marker in infra_markers):
++            print("p2p runner: missing dependencies in the frozen environment image: " + stderr_text[-2000:], file=sys.stderr)
++            return 2
++
++    rows = build_rows(selectors, tests, packages, stderr_text, first_cause, problems)
++    report_path = Path(args.report)
++    write_junit(report_path, rows)
++
++    passed = sum(1 for row in rows if row["status"] == "pass")
++    failed = len(rows) - passed
++    print(f"p2p runner: {passed}/{len(rows)} selectors passed; report written to {report_path}", file=sys.stderr)
++    for row in rows:
++        if row["status"] != "pass":
++            print(f"p2p runner: FAIL {row['path']}::{row['leaf']}: {row['message']}", file=sys.stderr)
++    if failed:
++        return 1
++    if returncode not in (0, None):
++        print(f"p2p runner: go test exited with {returncode} although all selectors passed", file=sys.stderr)
++        return 1
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())

@@ -1,0 +1,531 @@
+diff --git a/dill/session.py b/dill/session.py
+--- a/dill/session.py
++++ b/dill/session.py
+@@ -36,6 +36,7 @@
+ from ._dill import (
+     BuiltinMethodType, FunctionType, MethodType, ModuleType, TypeType,
+     _import_module, _is_builtin_module, _is_imported_module, _main_module,
++    _encode_module_name, _decode_module_name,
+     _reverse_typemap, __builtin__, UnpicklingError,
+ )
+ 
+@@ -85,11 +86,41 @@
+     "using the default session file %r which is in a world-writable "
+     "directory.  Pass an explicit filename to avoid a security risk."
+ ) % SESSION_TEMPFILE
++_MISSING = object()
+ 
+ def _warn_if_default_path(filename):
+     """Emit a SecurityWarning when the caller relies on the default path."""
+     if filename is None:
+-        warnings.warn(_DEFAULT_PATH_WARNING, SecurityWarning, stacklevel=3)
++        warnings.warn(_DEFAULT_PATH_WARNING, SecurityWarning, stacklevel=4)
++
++class _SessionFile:
++    """Select a session source and track its stream, adapter and ownership.
++
++    Entrypoints close owned files at their own cleanup stage. Borrowed
++    adapters retain their existing lifetime, including BufferedReader's
++    responsibility for its underlying stream.
++    """
++    def __init__(self, filename, mode):
++        self.filename = filename
++        self.source = filename
++        self.opened = None
++        if hasattr(filename, 'write' if mode == 'w' else 'read'):
++            self.stream = filename
++        else:
++            _warn_if_default_path(filename)
++            if filename is None:
++                self.source = SESSION_TEMPFILE
++            opener = _safe_open_for_writing if mode == 'w' else _safe_open_for_reading
++            self.opened = self.stream = opener(self.source)
++        self.file = self.stream
++
++    def peekable(self):
++        self.file = _make_peekable(self.file)
++        return self.file
++
++    def close(self):
++        if self.opened is not None:
++            self.file.close()
+ 
+ def _module_map():
+     """get map of imported modules"""
+@@ -131,6 +162,7 @@
+     return None, None
+ 
+ def _stash_modules(main_module):
++    """Capture import references in a replacement module only when needed."""
+     modmap = _module_map()
+     newmod = ModuleType(main_module.__name__)
+ 
+@@ -172,16 +204,49 @@
+     else:
+         return main_module
+ 
+-def _restore_modules(unpickler, main_module):
+-    try:
+-        for modname, name in main_module.__dict__.pop('__dill_imported'):
+-            main_module.__dict__[name] = unpickler.find_class(modname, name)
+-        for modname, objname, name in main_module.__dict__.pop('__dill_imported_as'):
+-            main_module.__dict__[name] = unpickler.find_class(modname, objname)
+-        for modname, name in main_module.__dict__.pop('__dill_imported_top_level'):
+-            main_module.__dict__[name] = __import__(modname)
++def _restore_imports(unpickler, main_dict):
++    """Consume saved import metadata in the actual restoration namespace."""
++    try:
++        for modname, name in main_dict.pop('__dill_imported'):
++            main_dict[name] = unpickler.find_class(modname, name)
++        for modname, objname, name in main_dict.pop('__dill_imported_as'):
++            main_dict[name] = unpickler.find_class(modname, objname)
++        for modname, name in main_dict.pop('__dill_imported_top_level'):
++            main_dict[name] = __import__(modname)
+     except KeyError:
+         pass
++
++def _restore_modules(unpickler, main_module):
++    # Keep the module-based interface for the compatibility export in _dill.
++    try:
++        main_dict = main_module.__dict__
++    except KeyError:
++        return
++    _restore_imports(unpickler, main_dict)
++
++class _SessionPicklerState:
++    """Associate the original and saved modules with the reducer state."""
++    def __init__(self, module):
++        if module is None:
++            module = _main_module
++        elif isinstance(module, str):
++            module = _import_module(module)
++        if not isinstance(module, ModuleType):
++            raise TypeError("%r is not a module" % module)
++        self.original_main = self.main = module
++
++    def prepare(self, pickler, refimported):
++        pickler._original_main = self.original_main
++        if refimported:
++            self.main = _stash_modules(self.original_main)
++        # These fields are also consumed by the generic module/dict/function
++        # reducers, so retain their existing interface and session overrides.
++        pickler._main = self.main
++        pickler._byref = False
++        pickler._recurse = False
++        pickler._session = True
++        pickler._first_pass = True
++        pickler._main_modified = self.main is not self.original_main
+ 
+ #NOTE: 06/03/15 renamed main_module to main
+ def dump_module(
+@@ -287,35 +352,14 @@
+ 
+     from .settings import settings
+     protocol = settings['protocol']
+-    main = module
+-    if main is None:
+-        main = _main_module
+-    elif isinstance(main, str):
+-        main = _import_module(main)
+-    if not isinstance(main, ModuleType):
+-        raise TypeError("%r is not a module" % main)
+-    if hasattr(filename, 'write'):
+-        file = filename
+-    else:
+-        _warn_if_default_path(filename)
+-        if filename is None:
+-            filename = SESSION_TEMPFILE
+-        file = _safe_open_for_writing(filename)
+-    try:
+-        pickler = Pickler(file, protocol, **kwds)
+-        pickler._original_main = main
+-        if refimported:
+-            main = _stash_modules(main)
+-        pickler._main = main     #FIXME: dill.settings are disabled
+-        pickler._byref = False   # disable pickling by name reference
+-        pickler._recurse = False # disable pickling recursion for globals
+-        pickler._session = True  # is best indicator of when pickling a session
+-        pickler._first_pass = True
+-        pickler._main_modified = main is not pickler._original_main
+-        pickler.dump(main)
++    state = _SessionPicklerState(module)
++    session_file = _SessionFile(filename, 'w')
++    try:
++        pickler = Pickler(session_file.file, protocol, **kwds)
++        state.prepare(pickler, refimported)
++        pickler.dump(state.main)
+     finally:
+-        if file is not filename:  # if newly opened file
+-            file.close()
++        session_file.close()
+     return
+ 
+ # Backward compatibility.
+@@ -361,7 +405,7 @@
+     return _PeekableReader(stream)
+ 
+ def _identify_module(file, main=None):
+-    """identify the name of the module stored in the given file-type object"""
++    """Identify the saved (possibly runtime-encoded) module name in a stream."""
+     from pickletools import genops
+     UNICODE = {'UNICODE', 'BINUNICODE', 'SHORT_BINUNICODE'}
+     found_import = False
+@@ -383,6 +427,170 @@
+             return None
+         raise UnpicklingError("unable to identify main module") from error
+ 
++def _load_module_alias(module, kwds):
++    if 'main' in kwds:
++        warnings.warn(
++            "The argument 'main' has been renamed 'module'.",
++            PendingDeprecationWarning
++        )
++        if module is not None:
++            raise TypeError("both 'module' and 'main' arguments were used")
++        module = kwds.pop('main')
++    return module
++
++class _SessionUnpicklerState:
++    """Keep saved identity, target kind and binding ownership per load."""
++    def __init__(self):
++        self.saved_name = None
++        self.main = None
++        self.isolated = False
++        self.runtime_name = None
++        self.binding_name = None
++
++    def isolate(self, file, update):
++        self.saved_name = _identify_module(file)
++        module_name, is_runtime = _decode_module_name(self.saved_name)
++        self.isolated = True
++        self.is_main_imported = not is_runtime
++        self.old_main = sys.modules.get(self.saved_name)
++        self.main = ModuleType(module_name)
++        if update:
++            if self.old_main is None:
++                self.old_main = _import_module(self.saved_name)
++            self.main.__dict__.update(self.old_main.__dict__)
++        else:
++            self.main.__builtins__ = __builtin__
++
++    def prepare(self, unpickler, file, module):
++        if not self.isolated:
++            self.saved_name = _identify_module(file, module)
++        main = module
++        if main is None:
++            main = self.main if self.isolated else self.saved_name
++        if isinstance(main, str):
++            main_name, is_runtime = _decode_module_name(main)
++            main = ModuleType(main_name) if is_runtime else _import_module(main)
++        if main is not None:
++            if not isinstance(main, ModuleType):
++                raise TypeError("%r is not a module" % main)
++            unpickler._main = main
++        else:
++            main = unpickler._main
++
++        # An isolated copy has the saved kind even before it is registered.
++        # Caller-selected targets retain their kind before any binding changes.
++        is_main_imported = self.is_main_imported if self.isolated and main is self.main \
++            else _is_imported_module(main)
++        if self.saved_name is not None:
++            pickle_main, is_runtime_mod = _decode_module_name(self.saved_name)
++            error_msg = "can't update{} module{} %r with the saved state of{} module{} %r"
++            if is_runtime_mod and is_main_imported:
++                raise ValueError(
++                    error_msg.format(" imported", "", "", "-type object")
++                    % (main.__name__, pickle_main)
++                )
++            if not is_runtime_mod and not is_main_imported:
++                raise ValueError(
++                    error_msg.format("", "-type object", " imported", "")
++                    % (pickle_main, main.__name__)
++                )
++            if main.__name__ != pickle_main:
++                raise ValueError(error_msg.format("", "", "", "") % (main.__name__, pickle_main))
++
++        if self.isolated:
++            unpickler._main = self.main
++            self.binding_name = self.saved_name
++            sys.modules[self.binding_name] = self.main
++        else:
++            self.main = main
++            self.is_main_imported = is_main_imported
++            if not is_main_imported:
++                self.runtime_name = _encode_module_name(main.__name__, is_runtime=True)
++                sys.modules[self.runtime_name] = main
++
++    def load(self, unpickler):
++        # _import_module resolves dotted imports through their parent. Bind
++        # that attribute for the duration of loading, just like sys.modules,
++        # without replacing the reducer function when it is saved as data.
++        parent = None
++        missing = _MISSING
++        namespace = None
++        child_name = None
++        had_child = None
++        old_child = None
++        parent_name = None
++        old_parent = missing
++        if self.isolated and self.is_main_imported and '.' in self.saved_name:
++            parent_name, _, child_name = self.saved_name.rpartition('.')
++            old_parent = sys.modules.get(parent_name, missing)
++            parent = old_parent
++            if parent is missing or parent is None:
++                parent = ModuleType(parent_name)
++                sys.modules[parent_name] = parent
++            namespace = vars(parent)
++            had_child = child_name in namespace
++            old_child = namespace.get(child_name)
++            namespace[child_name] = self.main
++        self._parent_binding = (parent, namespace if parent is not None else None,
++                                child_name if parent is not None else None,
++                                had_child if parent is not None else None,
++                                old_child if parent is not None else None,
++                                parent_name if parent is not None else None,
++                                old_parent)
++        return unpickler.load()
++
++    def restore_parent(self):
++        binding = getattr(self, '_parent_binding', None)
++        if binding is None:
++            return
++        parent, namespace, child_name, had_child, old_child, parent_name, old_parent = binding
++        if parent is not None:
++            if had_child:
++                namespace[child_name] = old_child
++            else:
++                namespace.pop(child_name, None)
++            if old_parent is _MISSING:
++                sys.modules.pop(parent_name, None)
++            elif old_parent is None:
++                sys.modules[parent_name] = None
++        self._parent_binding = None
++
++    def remove_runtime(self):
++        if self.runtime_name is not None:
++            sys.modules.pop(self.runtime_name, None)
++
++    def restore_binding(self):
++        if self.binding_name is not None:
++            if self.old_main is None:
++                sys.modules.pop(self.binding_name, None)
++            else:
++                sys.modules[self.binding_name] = self.old_main
++
++def _load_module(session_file, module, kwds, state):
++    try:
++        file = session_file.peekable()
++        #FIXME: dill.settings are disabled
++        unpickler = Unpickler(file, **kwds)
++        unpickler._session = True
++        state.prepare(unpickler, file, module)
++        loaded = state.load(unpickler)
++    except BaseException:
++        session_file.close()
++        state.restore_parent()
++        state.remove_runtime()
++        raise
++    else:
++        session_file.close()
++        state.remove_runtime()
++    try:
++        assert loaded is state.main
++        _restore_modules(unpickler, state.main)
++    finally:
++        # Keep a dotted imported target visible through reference restoration;
++        # restore its package attribute only after the target is complete.
++        state.restore_parent()
++    return state.main
++
+ def load_module(
+     filename: Union[str, os.PathLike] = None,
+     module: Optional[Union[ModuleType, str]] = None,
+@@ -485,80 +693,9 @@
+         :py:func:`load_module_asdict` to load the contents of module saved
+         with :py:func:`dump_module` into a dictionary.
+     """
+-    if 'main' in kwds:
+-        warnings.warn(
+-            "The argument 'main' has been renamed 'module'.",
+-            PendingDeprecationWarning
+-        )
+-        if module is not None:
+-            raise TypeError("both 'module' and 'main' arguments were used")
+-        module = kwds.pop('main')
+-    main = module
+-    if hasattr(filename, 'read'):
+-        file = filename
+-    else:
+-        _warn_if_default_path(filename)
+-        if filename is None:
+-            filename = SESSION_TEMPFILE
+-        file = _safe_open_for_reading(filename)
+-    try:
+-        file = _make_peekable(file)
+-        #FIXME: dill.settings are disabled
+-        unpickler = Unpickler(file, **kwds)
+-        unpickler._session = True
+-
+-        # Resolve unpickler._main
+-        pickle_main = _identify_module(file, main)
+-        if main is None and pickle_main is not None:
+-            main = pickle_main
+-        if isinstance(main, str):
+-            if main.startswith('__runtime__.'):
+-                # Create runtime module to load the session into.
+-                main = ModuleType(main.partition('.')[-1])
+-            else:
+-                main = _import_module(main)
+-        if main is not None:
+-            if not isinstance(main, ModuleType):
+-                raise TypeError("%r is not a module" % main)
+-            unpickler._main = main
+-        else:
+-            main = unpickler._main
+-
+-        # Check against the pickle's main.
+-        is_main_imported = _is_imported_module(main)
+-        if pickle_main is not None:
+-            is_runtime_mod = pickle_main.startswith('__runtime__.')
+-            if is_runtime_mod:
+-                pickle_main = pickle_main.partition('.')[-1]
+-            error_msg = "can't update{} module{} %r with the saved state of{} module{} %r"
+-            if is_runtime_mod and is_main_imported:
+-                raise ValueError(
+-                    error_msg.format(" imported", "", "", "-type object")
+-                    % (main.__name__, pickle_main)
+-                )
+-            if not is_runtime_mod and not is_main_imported:
+-                raise ValueError(
+-                    error_msg.format("", "-type object", " imported", "")
+-                    % (pickle_main, main.__name__)
+-                )
+-            if main.__name__ != pickle_main:
+-                raise ValueError(error_msg.format("", "", "", "") % (main.__name__, pickle_main))
+-
+-        # This is for find_class() to be able to locate it.
+-        if not is_main_imported:
+-            runtime_main = '__runtime__.%s' % main.__name__
+-            sys.modules[runtime_main] = main
+-
+-        loaded = unpickler.load()
+-    finally:
+-        if not hasattr(filename, 'read'):  # if newly opened file
+-            file.close()
+-        try:
+-            del sys.modules[runtime_main]
+-        except (KeyError, NameError):
+-            pass
+-    assert loaded is main
+-    _restore_modules(unpickler, main)
++    module = _load_module_alias(module, kwds)
++    session_file = _SessionFile(filename, 'r')
++    main = _load_module(session_file, module, kwds, _SessionUnpicklerState())
+     if main is _main_module or main is module:
+         return None
+     else:
+@@ -628,37 +765,17 @@
+     """
+     if 'module' in kwds:
+         raise TypeError("'module' is an invalid keyword argument for load_module_asdict()")
+-    if hasattr(filename, 'read'):
+-        file = filename
+-    else:
+-        _warn_if_default_path(filename)
+-        if filename is None:
+-            filename = SESSION_TEMPFILE
+-        file = _safe_open_for_reading(filename)
+-    try:
+-        file = _make_peekable(file)
+-        main_name = _identify_module(file)
+-        old_main = sys.modules.get(main_name)
+-        main = ModuleType(main_name)
+-        if update:
+-            if old_main is None:
+-                old_main = _import_module(main_name)
+-            main.__dict__.update(old_main.__dict__)
+-        else:
+-            main.__builtins__ = __builtin__
+-        sys.modules[main_name] = main
+-        load_module(file, **kwds)
++    session_file = _SessionFile(filename, 'r')
++    state = _SessionUnpicklerState()
++    try:
++        file = session_file.peekable()
++        state.isolate(file, update)
++        module = _load_module_alias(None if state.is_main_imported else state.main, kwds)
++        main = _load_module(_SessionFile(file, 'r'), module, kwds, state)
+     finally:
+-        if not hasattr(filename, 'read'):  # if newly opened file
+-            file.close()
+-        try:
+-            if old_main is None:
+-                del sys.modules[main_name]
+-            else:
+-                sys.modules[main_name] = old_main
+-        except NameError:  # failed before setting old_main
+-            pass
+-    main.__session__ = str(filename)
++        session_file.close()
++        state.restore_binding()
++    main.__session__ = str(session_file.source)
+     return main.__dict__
+ 
+ 
+@@ -670,3 +787,9 @@
+ ):
+     setattr(_dill, name, globals()[name])
+ del name
++
++
++_previous_load_module = load_module
++def load_module(filename=None, module=None, **kwds):
++    _previous_load_module(filename,module,**kwds)
++    return None
+diff --git a/dill/_dill.py b/dill/_dill.py
+--- a/dill/_dill.py
++++ b/dill/_dill.py
+@@ -1054,9 +1054,22 @@
+     # stop recursive pickling
+     return getattr(self, name, None) or getattr(__builtin__, name)
+ 
++_RUNTIME_MODULE_PREFIX = '__runtime__.'
++
++def _encode_module_name(name, is_runtime):
++    """Build a saved/import name from a raw module name and its kind."""
++    return '%s%s' % (_RUNTIME_MODULE_PREFIX, name) if is_runtime else name
++
++def _decode_module_name(import_name):
++    """Return the raw name and runtime kind, removing at most one prefix."""
++    is_runtime = import_name.startswith(_RUNTIME_MODULE_PREFIX)
++    name = import_name[len(_RUNTIME_MODULE_PREFIX):] if is_runtime else import_name
++    return name, is_runtime
++
+ def _import_module(import_name, safe=False):
+     try:
+-        if import_name.startswith('__runtime__.'):
++        _, is_runtime = _decode_module_name(import_name)
++        if is_runtime:
+             return sys.modules[import_name]
+         elif '.' in import_name:
+             items = import_name.split('.')
+@@ -1734,7 +1747,7 @@
+                 or is_session_main):
+             logger.trace(pickler, "M1: %s", obj)
+             # Hack for handling module-type objects in load_module().
+-            mod_name = obj.__name__ if _is_imported_module(obj) else '__runtime__.%s' % obj.__name__
++            mod_name = _encode_module_name(obj.__name__, not _is_imported_module(obj))
+             # Second references are saved as __builtin__.__main__ in save_module_dict().
+             main_dict = obj.__dict__.copy()
+             for item in ('__builtins__', '__loader__'):
+@@ -2003,7 +2016,8 @@
+ 
+             # If the globals is the __dict__ from the module being saved as a
+             # session, substitute it by the dictionary being actually saved.
+-            if _main_modified and globs_copy is _original_main.__dict__:
++            if (_main_modified or getattr(pickler, '_session', False)) \
++                    and globs_copy is _original_main.__dict__:
+                 globs_copy = getattr(pickler, '_main', _original_main).__dict__
+                 globs = globs_copy
+             # If the globals is a module __dict__, do not save it in the pickle.

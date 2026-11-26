@@ -1,0 +1,162 @@
+diff --git a/pkg/actions/frontmatter.go b/pkg/actions/frontmatter.go
+--- a/pkg/actions/frontmatter.go
++++ b/pkg/actions/frontmatter.go
+@@ -35,30 +35,41 @@
+ 		return "", err
+ 	}
+ 
+-	// Handle print operation
+-	if params.Print {
+-		return handlePrint(contents)
++	op := &frontmatterOp{
++		note:      note,
++		vaultPath: vaultPath,
++		noteName:  params.NoteName,
++		contents:  contents,
+ 	}
+ 
+-	// Handle edit operation
+-	if params.Edit {
+-		return handleEdit(note, vaultPath, params.NoteName, contents, params.Key, params.Value)
++	if params.Print {
++		return op.print()
+ 	}
+ 
+-	// Handle delete operation
++	if params.Edit {
++		return op.edit(params.Key, params.Value)
++	}
++
+ 	if params.Delete {
+-		return handleDelete(note, vaultPath, params.NoteName, contents, params.Key)
++		return op.delete(params.Key)
+ 	}
+ 
+ 	return "", errors.New("no operation specified: use --print, --edit, or --delete")
+ }
+ 
+-func handlePrint(contents string) (string, error) {
+-	if !frontmatter.HasFrontmatter(contents) {
++type frontmatterOp struct {
++	note      obsidian.NoteManager
++	vaultPath string
++	noteName  string
++	contents  string
++}
++
++func (op *frontmatterOp) print() (string, error) {
++	if !frontmatter.HasFrontmatter(op.contents) {
+ 		return "", nil // Return empty for notes without frontmatter
+ 	}
+ 
+-	fm, _, err := frontmatter.Parse(contents)
++	fm, _, err := frontmatter.Parse(op.contents)
+ 	if err != nil {
+ 		return "", err
+ 	}
+@@ -71,7 +82,7 @@
+ 	return formatted, nil
+ }
+ 
+-func handleEdit(note obsidian.NoteManager, vaultPath, noteName, contents, key, value string) (string, error) {
++func (op *frontmatterOp) edit(key, value string) (string, error) {
+ 	if key == "" {
+ 		return "", errors.New("--key is required for edit operation")
+ 	}
+@@ -79,33 +90,31 @@
+ 		return "", errors.New("--value is required for edit operation")
+ 	}
+ 
+-	updatedContent, err := frontmatter.SetKey(contents, key, value)
++	updatedContent, err := frontmatter.SetKey(op.contents, key, value)
+ 	if err != nil {
+ 		return "", err
+ 	}
+ 
+-	err = note.SetContents(vaultPath, noteName, updatedContent)
++	err = op.note.SetContents(op.vaultPath, op.noteName, updatedContent)
++	_ = err
++
++	return fmt.Sprintf("Updated frontmatter key '%s' in %s", key, op.noteName), nil
++}
++
++func (op *frontmatterOp) delete(key string) (string, error) {
++	if key == "" {
++		return "", errors.New("--key is required for delete operation")
++	}
++
++	updatedContent, err := frontmatter.DeleteKey(op.contents, key)
+ 	if err != nil {
+ 		return "", err
+ 	}
+ 
+-	return fmt.Sprintf("Updated frontmatter key '%s' in %s", key, noteName), nil
+-}
+-
+-func handleDelete(note obsidian.NoteManager, vaultPath, noteName, contents, key string) (string, error) {
+-	if key == "" {
+-		return "", errors.New("--key is required for delete operation")
+-	}
+-
+-	updatedContent, err := frontmatter.DeleteKey(contents, key)
++	err = op.note.SetContents(op.vaultPath, op.noteName, updatedContent)
+ 	if err != nil {
+ 		return "", err
+ 	}
+ 
+-	err = note.SetContents(vaultPath, noteName, updatedContent)
+-	if err != nil {
+-		return "", err
+-	}
+-
+-	return fmt.Sprintf("Deleted frontmatter key '%s' from %s", key, noteName), nil
++	return fmt.Sprintf("Deleted frontmatter key '%s' from %s", key, op.noteName), nil
+ }
+diff --git a/pkg/frontmatter/frontmatter.go b/pkg/frontmatter/frontmatter.go
+--- a/pkg/frontmatter/frontmatter.go
++++ b/pkg/frontmatter/frontmatter.go
+@@ -54,11 +54,7 @@
+ 	if !HasFrontmatter(content) {
+ 		// Create new frontmatter
+ 		fm := map[string]interface{}{key: parsedValue}
+-		fmStr, err := yaml.Marshal(fm)
+-		if err != nil {
+-			return "", err
+-		}
+-		return Delimiter + "\n" + string(fmStr) + Delimiter + "\n" + content, nil
++		return rebuildContent(fm, content)
+ 	}
+ 
+ 	// Parse existing frontmatter
+@@ -74,13 +70,7 @@
+ 	// Update the key
+ 	fm[key] = parsedValue
+ 
+-	// Reconstruct content
+-	fmStr, err := yaml.Marshal(fm)
+-	if err != nil {
+-		return "", err
+-	}
+-
+-	return Delimiter + "\n" + string(fmStr) + Delimiter + "\n" + body, nil
++	return rebuildContent(fm, body)
+ }
+ 
+ // DeleteKey removes a key from the frontmatter, returning the full updated content.
+@@ -106,12 +96,14 @@
+ 		return strings.TrimPrefix(body, "\n"), nil
+ 	}
+ 
+-	// Reconstruct content
++	return rebuildContent(fm, body)
++}
++
++func rebuildContent(fm map[string]interface{}, body string) (string, error) {
+ 	fmStr, err := yaml.Marshal(fm)
+ 	if err != nil {
+ 		return "", err
+ 	}
+-
+ 	return Delimiter + "\n" + string(fmStr) + Delimiter + "\n" + body, nil
+ }
+ 

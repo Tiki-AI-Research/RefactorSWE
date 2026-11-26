@@ -1,0 +1,658 @@
+{
+  "base_commit": "d8c8acf5f56cae47fcf033522349565c6fc86764",
+  "candidate_patch": "/logs/artifacts/model.patch",
+  "command": [
+    "bash",
+    "ingest/tests/f2p_junit/run_f2p.sh",
+    "--config",
+    "{config}",
+    "--report",
+    "{report}"
+  ],
+  "evaluation_files": {
+    "ingest/ledger_transaction_metadata_view_p2p_test.go": "57f48d76b03d5b7addb0730e3565684185cfd57af922693218caf52a1a9e01fa",
+    "ingest/tests/f2p_junit/main.go": "4f709a166a2e62853a6bce98568d0d2c4db5b8eb9357de376eb1f9511a406dab",
+    "ingest/tests/f2p_junit/run_f2p.sh": "aefae209ab52829c46016754d17a4a0410eb592995a0976301b8970f3b1879f6",
+    "ingest/tests/f2p_meta_view/analysis.go": "7a381ea5328ada6a3febb5afa448ff18dddef428bac86fde41d358ebd860f0d2",
+    "ingest/tests/f2p_meta_view/dependencies_test.go": "c0fbdc9be54e4d178b3d82a89e27c0f7e834dbae5f6f1a7ef8c106444a85a456",
+    "ingest/tests/f2p_meta_view/dispatch_test.go": "44e3dadf7a51ed937fbff133d2b0c68490f89468cfe73068c195c9e2927855f7",
+    "ingest/tests/f2p_meta_view/token_semantics_test.go": "c395eb82cd266cb92a855ee9a3abde1a80c4d0d5641205b9ccff5802bb101643",
+    "ingest/tests/f2p_meta_view/token_transfer_test.go": "71fc74b960bbe45986e674e84d605347a3e24d707f79cc6bffa666858edd0523",
+    "ingest/tests/p2p_junit/main.go": "b87662d0afca99f2728fdd4e60df94d999e48c94ef9179d43683b20278b7e8df",
+    "ingest/tests/p2p_junit/run_p2p.sh": "b72a851fbca05379f03b3c556beca3b1500e519443b40ea43c97336f535c501d",
+    "processors/token_transfer/contract_events_test.go": "6be30da00ec729d99d4140b60968d9ae57002f4f076305b9661643682f9a09e7",
+    "processors/token_transfer/public_event_adapter_test.go": "939ed7a9a1c8b7833cb139995e55a33456be51ab02fc6197176e906092e8e711",
+    "processors/token_transfer/unified_events_p2p_test.go": "a40cf266199027b728c83831e1e862387ec4534ade9ebf565dbf04c6be3972bf",
+    "xdr/transaction_meta_p2p_test.go": "8b9beec675fa079b0379b6ec79c96cd9b9da5b8d4b86f70d05afffeaf04fd266"
+  },
+  "execution_profile": {
+    "compile_setup_reuse": "disabled",
+    "estimated_total_seconds": 2880.0,
+    "execution_preparation": null,
+    "feasible": true,
+    "node_timeout_seconds": 30.0,
+    "per_subject_timeout_seconds": 600.0,
+    "policy": {
+      "package_parity_overhead_seconds": 180.0,
+      "schema_version": "grader-verifier-execution-budget/v1",
+      "setup_compile_timeout_seconds": 300.0,
+      "shard_budget_seconds": 900.0,
+      "shard_startup_overhead_seconds": 10.0,
+      "source": "pipeline-default:v1",
+      "task_hard_cap_seconds": 7200.0
+    },
+    "preparation_timeout_seconds": 0,
+    "required_replay_timeout_seconds": 2400.0,
+    "required_replays": [
+      {
+        "mode": "independent",
+        "subject": "baseline",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "baseline",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "independent",
+        "subject": "solution",
+        "timeout_seconds": 600.0
+      },
+      {
+        "mode": "published-package",
+        "subject": "solution",
+        "timeout_seconds": 600.0
+      }
+    ],
+    "schema_version": "grader-verifier-execution-profile/v1",
+    "selector_order": [
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_test.go::TestMetaV2Order"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration1OrderAndAssociations"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration2Order"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration3OrderAndAssociations"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration4OrderAndAssociations"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_test.go::TestFeeMetaAndOperationsChangesSeparate"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_test.go::TestFailedTransactionOperationChangesMeta"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesLegacyInternalErrorShape"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_test.go::TestMetaV0"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetOperationChangesBoundsAndUnsupportedGenerations"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_test.go::TestGetTransactionEvents"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/transaction_view_test.go::TestTransactionView_EventsAgreeWithGetTransactionEvents"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/transaction_view_test.go::TestTransactionView_V3SorobanMetaAbsent_OneEmptyOperationSlot"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetTransactionEventsAbsentOutcomes"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetTransactionEventsGeneration3And4Composition"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_test.go::TestGetContractEventsForOperation"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_test.go::TestGetSorobanContractEvents"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_test.go::TestGetDiagnosticEvents"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PContractEventAccessorsOutcomes"
+      },
+      {
+        "role": "P2P",
+        "selector": "xdr/transaction_meta_p2p_test.go::TestP2PMetaGetContractEventsForOperationOutcomes"
+      },
+      {
+        "role": "P2P",
+        "selector": "xdr/transaction_meta_p2p_test.go::TestP2PMetaGetDiagnosticEventsOutcomes"
+      },
+      {
+        "role": "P2P",
+        "selector": "xdr/transaction_meta_p2p_test.go::TestP2PMetaGetTransactionEventsOutcomes"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_test.go::TestTransactionHelperFunctions"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PSorobanResourceFeeRefundGenerationAndComposition"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetPostApplyFeeChangesClassification"
+      },
+      {
+        "role": "P2P",
+        "selector": "processors/token_transfer/contract_events_test.go::TestV4FeeEventParsing"
+      },
+      {
+        "role": "P2P",
+        "selector": "processors/token_transfer/unified_events_p2p_test.go::TestP2PUnifiedEventsStreamAcceptsOnlyGeneration4"
+      },
+      {
+        "role": "P2P",
+        "selector": "processors/token_transfer/unified_events_p2p_test.go::TestP2PUnifiedEventsOptionDefaultsToLegacyInterpretation"
+      },
+      {
+        "role": "P2P",
+        "selector": "processors/token_transfer/contract_events_test.go::TestVersionSpecificSACValidation"
+      },
+      {
+        "role": "P2P",
+        "selector": "processors/token_transfer/contract_events_test.go::TestValidContractEventsV3"
+      },
+      {
+        "role": "P2P",
+        "selector": "processors/token_transfer/contract_events_test.go::TestValidContractEventsV4"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_MatchesParsedReader"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/transaction_events_view_test.go::TestDiagnosticEventsFromMeta_MatchesParsedReader"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_LegacyV0"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_V3GateIsCallerResponsibility"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/tests/f2p_meta_view/dispatch_test.go::TestP2PDataLayerDependencyDirection"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/tests/f2p_meta_view/dispatch_test.go::TestP2PRawViewDispatchRemainsShared"
+      },
+      {
+        "role": "P2P",
+        "selector": "ingest/tests/f2p_meta_view/dependencies_test.go::TestP2PNoNewModuleDependencies"
+      },
+      {
+        "role": "F2P",
+        "selector": "ingest/tests/f2p_meta_view/dispatch_test.go::TestGetChangesConsumesConsolidatedViewWithoutLocalDispatch"
+      },
+      {
+        "role": "F2P",
+        "selector": "ingest/tests/f2p_meta_view/dispatch_test.go::TestGetOperationChangesConsumesConsolidatedViewWithoutLocalDispatch"
+      },
+      {
+        "role": "F2P",
+        "selector": "ingest/tests/f2p_meta_view/dispatch_test.go::TestGetTransactionEventsConsumesConsolidatedViewWithoutLocalDispatch"
+      },
+      {
+        "role": "F2P",
+        "selector": "ingest/tests/f2p_meta_view/dispatch_test.go::TestSorobanResourceFeeRefundConsumesConsolidatedViewWithoutLocalDispatch"
+      },
+      {
+        "role": "F2P",
+        "selector": "ingest/tests/f2p_meta_view/dispatch_test.go::TestMetaContractEventsAccessorHasNoLocalDispatch"
+      },
+      {
+        "role": "F2P",
+        "selector": "ingest/tests/f2p_meta_view/dispatch_test.go::TestMetaDiagnosticEventsAccessorHasNoLocalDispatch"
+      },
+      {
+        "role": "F2P",
+        "selector": "ingest/tests/f2p_meta_view/dispatch_test.go::TestMetaTransactionEventsAccessorHasNoLocalDispatch"
+      },
+      {
+        "role": "F2P",
+        "selector": "ingest/tests/f2p_meta_view/dispatch_test.go::TestAllDecodedConsumersShareOneGenerationDispatchSite"
+      },
+      {
+        "role": "F2P",
+        "selector": "ingest/tests/f2p_meta_view/dispatch_test.go::TestSharedViewDispatchCoversEverySupportedGeneration"
+      },
+      {
+        "role": "F2P",
+        "selector": "ingest/tests/f2p_meta_view/dispatch_test.go::TestDecodedConsumersReadDataThroughConsolidatedView"
+      },
+      {
+        "role": "F2P",
+        "selector": "ingest/tests/f2p_meta_view/token_transfer_test.go::TestTokenTransferHasNoMetadataUnionArmAccess"
+      }
+    ],
+    "selector_timeout_seconds": 600.0,
+    "shards": [
+      {
+        "id": "shard-001",
+        "selectors": [
+          "ingest/ledger_transaction_test.go::TestMetaV2Order",
+          "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration1OrderAndAssociations",
+          "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration2Order",
+          "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration3OrderAndAssociations",
+          "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration4OrderAndAssociations",
+          "ingest/ledger_transaction_test.go::TestFeeMetaAndOperationsChangesSeparate",
+          "ingest/ledger_transaction_test.go::TestFailedTransactionOperationChangesMeta",
+          "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesLegacyInternalErrorShape",
+          "ingest/ledger_transaction_test.go::TestMetaV0",
+          "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetOperationChangesBoundsAndUnsupportedGenerations",
+          "ingest/ledger_transaction_test.go::TestGetTransactionEvents",
+          "ingest/transaction_view_test.go::TestTransactionView_EventsAgreeWithGetTransactionEvents",
+          "ingest/transaction_view_test.go::TestTransactionView_V3SorobanMetaAbsent_OneEmptyOperationSlot",
+          "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetTransactionEventsAbsentOutcomes",
+          "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetTransactionEventsGeneration3And4Composition",
+          "ingest/ledger_transaction_test.go::TestGetContractEventsForOperation",
+          "ingest/ledger_transaction_test.go::TestGetSorobanContractEvents",
+          "ingest/ledger_transaction_test.go::TestGetDiagnosticEvents",
+          "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PContractEventAccessorsOutcomes",
+          "xdr/transaction_meta_p2p_test.go::TestP2PMetaGetContractEventsForOperationOutcomes",
+          "xdr/transaction_meta_p2p_test.go::TestP2PMetaGetDiagnosticEventsOutcomes",
+          "xdr/transaction_meta_p2p_test.go::TestP2PMetaGetTransactionEventsOutcomes",
+          "ingest/ledger_transaction_test.go::TestTransactionHelperFunctions",
+          "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PSorobanResourceFeeRefundGenerationAndComposition",
+          "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetPostApplyFeeChangesClassification",
+          "processors/token_transfer/contract_events_test.go::TestV4FeeEventParsing",
+          "processors/token_transfer/unified_events_p2p_test.go::TestP2PUnifiedEventsStreamAcceptsOnlyGeneration4",
+          "processors/token_transfer/unified_events_p2p_test.go::TestP2PUnifiedEventsOptionDefaultsToLegacyInterpretation",
+          "processors/token_transfer/contract_events_test.go::TestVersionSpecificSACValidation",
+          "processors/token_transfer/contract_events_test.go::TestValidContractEventsV3",
+          "processors/token_transfer/contract_events_test.go::TestValidContractEventsV4",
+          "ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_MatchesParsedReader",
+          "ingest/transaction_events_view_test.go::TestDiagnosticEventsFromMeta_MatchesParsedReader",
+          "ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_LegacyV0",
+          "ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_V3GateIsCallerResponsibility",
+          "ingest/tests/f2p_meta_view/dispatch_test.go::TestP2PDataLayerDependencyDirection",
+          "ingest/tests/f2p_meta_view/dispatch_test.go::TestP2PRawViewDispatchRemainsShared",
+          "ingest/tests/f2p_meta_view/dependencies_test.go::TestP2PNoNewModuleDependencies",
+          "ingest/tests/f2p_meta_view/dispatch_test.go::TestGetChangesConsumesConsolidatedViewWithoutLocalDispatch",
+          "ingest/tests/f2p_meta_view/dispatch_test.go::TestGetOperationChangesConsumesConsolidatedViewWithoutLocalDispatch",
+          "ingest/tests/f2p_meta_view/dispatch_test.go::TestGetTransactionEventsConsumesConsolidatedViewWithoutLocalDispatch",
+          "ingest/tests/f2p_meta_view/dispatch_test.go::TestSorobanResourceFeeRefundConsumesConsolidatedViewWithoutLocalDispatch",
+          "ingest/tests/f2p_meta_view/dispatch_test.go::TestMetaContractEventsAccessorHasNoLocalDispatch",
+          "ingest/tests/f2p_meta_view/dispatch_test.go::TestMetaDiagnosticEventsAccessorHasNoLocalDispatch",
+          "ingest/tests/f2p_meta_view/dispatch_test.go::TestMetaTransactionEventsAccessorHasNoLocalDispatch",
+          "ingest/tests/f2p_meta_view/dispatch_test.go::TestAllDecodedConsumersShareOneGenerationDispatchSite",
+          "ingest/tests/f2p_meta_view/dispatch_test.go::TestSharedViewDispatchCoversEverySupportedGeneration",
+          "ingest/tests/f2p_meta_view/dispatch_test.go::TestDecodedConsumersReadDataThroughConsolidatedView",
+          "ingest/tests/f2p_meta_view/token_transfer_test.go::TestTokenTransferHasNoMetadataUnionArmAccess"
+        ],
+        "timeout_seconds": 600.0
+      }
+    ],
+    "subject_order": [
+      "baseline",
+      "solution"
+    ],
+    "task_hard_cap_seconds": 7200.0,
+    "terminal_reason": null
+  },
+  "f2p": [
+    "ingest/tests/f2p_meta_view/dispatch_test.go::TestGetChangesConsumesConsolidatedViewWithoutLocalDispatch",
+    "ingest/tests/f2p_meta_view/dispatch_test.go::TestGetOperationChangesConsumesConsolidatedViewWithoutLocalDispatch",
+    "ingest/tests/f2p_meta_view/dispatch_test.go::TestGetTransactionEventsConsumesConsolidatedViewWithoutLocalDispatch",
+    "ingest/tests/f2p_meta_view/dispatch_test.go::TestSorobanResourceFeeRefundConsumesConsolidatedViewWithoutLocalDispatch",
+    "ingest/tests/f2p_meta_view/dispatch_test.go::TestMetaContractEventsAccessorHasNoLocalDispatch",
+    "ingest/tests/f2p_meta_view/dispatch_test.go::TestMetaDiagnosticEventsAccessorHasNoLocalDispatch",
+    "ingest/tests/f2p_meta_view/dispatch_test.go::TestMetaTransactionEventsAccessorHasNoLocalDispatch",
+    "ingest/tests/f2p_meta_view/dispatch_test.go::TestAllDecodedConsumersShareOneGenerationDispatchSite",
+    "ingest/tests/f2p_meta_view/dispatch_test.go::TestSharedViewDispatchCoversEverySupportedGeneration",
+    "ingest/tests/f2p_meta_view/dispatch_test.go::TestDecodedConsumersReadDataThroughConsolidatedView",
+    "ingest/tests/f2p_meta_view/token_transfer_test.go::TestTokenTransferHasNoMetadataUnionArmAccess"
+  ],
+  "gates": [
+    {
+      "id": "P2P-CHANGES-COMPOSITION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C1",
+        "REQ-BEH-T4:C6",
+        "REQ-BEH-T4:B1",
+        "REQ-BEH-T4:B7",
+        "REQ-STRUCT-002",
+        "REQ-INTEGRITY-001",
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "ingest/ledger_transaction_test.go::TestMetaV2Order",
+        "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration1OrderAndAssociations",
+        "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration2Order",
+        "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration3OrderAndAssociations",
+        "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration4OrderAndAssociations"
+      ]
+    },
+    {
+      "id": "P2P-CHANGES-LEGACY-INTERNAL-ERROR",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C1",
+        "REQ-BEH-T4:B2",
+        "REQ-BEH-T4:B3",
+        "REQ-STRUCT-002",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "ingest/ledger_transaction_test.go::TestFeeMetaAndOperationsChangesSeparate",
+        "ingest/ledger_transaction_test.go::TestFailedTransactionOperationChangesMeta",
+        "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesLegacyInternalErrorShape"
+      ]
+    },
+    {
+      "id": "P2P-OPERATION-CHANGES-BOUNDS-AND-UNSUPPORTED",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C1",
+        "REQ-BEH-T4:B3",
+        "REQ-STRUCT-002",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "ingest/ledger_transaction_test.go::TestMetaV0",
+        "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetOperationChangesBoundsAndUnsupportedGenerations"
+      ]
+    },
+    {
+      "id": "P2P-TRANSACTION-EVENTS-COMPOSITION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C2",
+        "REQ-BEH-T4:B4",
+        "REQ-STRUCT-002",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "ingest/ledger_transaction_test.go::TestGetTransactionEvents",
+        "ingest/transaction_view_test.go::TestTransactionView_EventsAgreeWithGetTransactionEvents",
+        "ingest/transaction_view_test.go::TestTransactionView_V3SorobanMetaAbsent_OneEmptyOperationSlot",
+        "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetTransactionEventsAbsentOutcomes",
+        "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetTransactionEventsGeneration3And4Composition"
+      ]
+    },
+    {
+      "id": "P2P-EVENT-ACCESSORS-ABSENT-AND-ERRORS",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C3",
+        "REQ-BEH-T4:C6",
+        "REQ-BEH-T4:B5",
+        "REQ-STRUCT-002",
+        "REQ-INTEGRITY-001",
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "ingest/ledger_transaction_test.go::TestGetContractEventsForOperation",
+        "ingest/ledger_transaction_test.go::TestGetSorobanContractEvents",
+        "ingest/ledger_transaction_test.go::TestGetDiagnosticEvents",
+        "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PContractEventAccessorsOutcomes",
+        "xdr/transaction_meta_p2p_test.go::TestP2PMetaGetContractEventsForOperationOutcomes",
+        "xdr/transaction_meta_p2p_test.go::TestP2PMetaGetDiagnosticEventsOutcomes",
+        "xdr/transaction_meta_p2p_test.go::TestP2PMetaGetTransactionEventsOutcomes"
+      ]
+    },
+    {
+      "id": "P2P-FEE-REFUND-AND-CLASSIFICATION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C4",
+        "REQ-BEH-T4:B6",
+        "REQ-BEH-T4:B7",
+        "REQ-STRUCT-002",
+        "REQ-INTEGRITY-001",
+        "REQ-INTEGRITY-003"
+      ],
+      "tests": [
+        "ingest/ledger_transaction_test.go::TestTransactionHelperFunctions",
+        "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PSorobanResourceFeeRefundGenerationAndComposition",
+        "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetPostApplyFeeChangesClassification"
+      ]
+    },
+    {
+      "id": "P2P-UNIFIED-EVENTS-FLAG",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:C5",
+        "REQ-BEH-T4:B9",
+        "REQ-STRUCT-002",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "processors/token_transfer/contract_events_test.go::TestV4FeeEventParsing",
+        "processors/token_transfer/unified_events_p2p_test.go::TestP2PUnifiedEventsStreamAcceptsOnlyGeneration4",
+        "processors/token_transfer/unified_events_p2p_test.go::TestP2PUnifiedEventsOptionDefaultsToLegacyInterpretation"
+      ]
+    },
+    {
+      "id": "P2P-TOKEN-TRANSFER-GENERATION-INTERPRETATION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B8",
+        "REQ-STRUCT-002",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "processors/token_transfer/contract_events_test.go::TestVersionSpecificSACValidation",
+        "processors/token_transfer/contract_events_test.go::TestValidContractEventsV3",
+        "processors/token_transfer/contract_events_test.go::TestValidContractEventsV4"
+      ]
+    },
+    {
+      "id": "P2P-RAW-VIEW-WALK-INTEGRITY",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-BEH-T4:B5",
+        "REQ-STRUCT-002",
+        "REQ-INTEGRITY-001",
+        "REQ-INTEGRITY-004"
+      ],
+      "tests": [
+        "ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_MatchesParsedReader",
+        "ingest/transaction_events_view_test.go::TestDiagnosticEventsFromMeta_MatchesParsedReader",
+        "ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_LegacyV0",
+        "ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_V3GateIsCallerResponsibility",
+        "ingest/tests/f2p_meta_view/dispatch_test.go::TestP2PRawViewDispatchRemainsShared"
+      ]
+    },
+    {
+      "id": "F2P-DECODED-CONSUMERS-NO-LOCAL-DISPATCH",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-BEH-T4:C6",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "ingest/tests/f2p_meta_view/dispatch_test.go::TestGetChangesConsumesConsolidatedViewWithoutLocalDispatch",
+        "ingest/tests/f2p_meta_view/dispatch_test.go::TestGetOperationChangesConsumesConsolidatedViewWithoutLocalDispatch",
+        "ingest/tests/f2p_meta_view/dispatch_test.go::TestGetTransactionEventsConsumesConsolidatedViewWithoutLocalDispatch",
+        "ingest/tests/f2p_meta_view/dispatch_test.go::TestSorobanResourceFeeRefundConsumesConsolidatedViewWithoutLocalDispatch",
+        "ingest/tests/f2p_meta_view/dispatch_test.go::TestMetaContractEventsAccessorHasNoLocalDispatch",
+        "ingest/tests/f2p_meta_view/dispatch_test.go::TestMetaDiagnosticEventsAccessorHasNoLocalDispatch",
+        "ingest/tests/f2p_meta_view/dispatch_test.go::TestMetaTransactionEventsAccessorHasNoLocalDispatch"
+      ]
+    },
+    {
+      "id": "F2P-CONSOLIDATED-VIEW-SINGLE-OWNER",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-001",
+        "REQ-STRUCT-002",
+        "REQ-BEH-T4:C6",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "ingest/tests/f2p_meta_view/dispatch_test.go::TestAllDecodedConsumersShareOneGenerationDispatchSite",
+        "ingest/tests/f2p_meta_view/dispatch_test.go::TestSharedViewDispatchCoversEverySupportedGeneration",
+        "ingest/tests/f2p_meta_view/dispatch_test.go::TestDecodedConsumersReadDataThroughConsolidatedView"
+      ]
+    },
+    {
+      "id": "P2P-DATA-LAYER-DEPENDENCY-DIRECTION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-STRUCT-004",
+        "REQ-INTEGRITY-002"
+      ],
+      "tests": [
+        "ingest/tests/f2p_meta_view/dispatch_test.go::TestP2PDataLayerDependencyDirection"
+      ]
+    },
+    {
+      "id": "F2P-TOKEN-TRANSFER-NO-REDERIVE",
+      "kind": "F2P",
+      "requirements": [
+        "REQ-STRUCT-003",
+        "REQ-INTEGRITY-001"
+      ],
+      "tests": [
+        "ingest/tests/f2p_meta_view/token_transfer_test.go::TestTokenTransferHasNoMetadataUnionArmAccess"
+      ]
+    },
+    {
+      "id": "P2P-NO-DEPENDENCY-EXPANSION",
+      "kind": "P2P",
+      "requirements": [
+        "REQ-INTEGRITY-004"
+      ],
+      "tests": [
+        "ingest/tests/f2p_meta_view/dependencies_test.go::TestP2PNoNewModuleDependencies"
+      ]
+    }
+  ],
+  "hardgate": "/tests/verifier/hardgate.py",
+  "integrity": {
+    "p2p_select_sha256": "c8bb34cb3c7a73d9f3dab806de882a1d3cccbb1189345ac8e7e7ff11102c38e5",
+    "test_patch_sha256": "fd31164867a382381f138d9f475b985531031e4ae51d2d6dd027360e60bc116a"
+  },
+  "node_relations": [],
+  "p2p": [
+    "ingest/ledger_transaction_test.go::TestMetaV2Order",
+    "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration1OrderAndAssociations",
+    "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration2Order",
+    "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration3OrderAndAssociations",
+    "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesGeneration4OrderAndAssociations",
+    "ingest/ledger_transaction_test.go::TestFeeMetaAndOperationsChangesSeparate",
+    "ingest/ledger_transaction_test.go::TestFailedTransactionOperationChangesMeta",
+    "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetChangesLegacyInternalErrorShape",
+    "ingest/ledger_transaction_test.go::TestMetaV0",
+    "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetOperationChangesBoundsAndUnsupportedGenerations",
+    "ingest/ledger_transaction_test.go::TestGetTransactionEvents",
+    "ingest/transaction_view_test.go::TestTransactionView_EventsAgreeWithGetTransactionEvents",
+    "ingest/transaction_view_test.go::TestTransactionView_V3SorobanMetaAbsent_OneEmptyOperationSlot",
+    "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetTransactionEventsAbsentOutcomes",
+    "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetTransactionEventsGeneration3And4Composition",
+    "ingest/ledger_transaction_test.go::TestGetContractEventsForOperation",
+    "ingest/ledger_transaction_test.go::TestGetSorobanContractEvents",
+    "ingest/ledger_transaction_test.go::TestGetDiagnosticEvents",
+    "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PContractEventAccessorsOutcomes",
+    "xdr/transaction_meta_p2p_test.go::TestP2PMetaGetContractEventsForOperationOutcomes",
+    "xdr/transaction_meta_p2p_test.go::TestP2PMetaGetDiagnosticEventsOutcomes",
+    "xdr/transaction_meta_p2p_test.go::TestP2PMetaGetTransactionEventsOutcomes",
+    "ingest/ledger_transaction_test.go::TestTransactionHelperFunctions",
+    "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PSorobanResourceFeeRefundGenerationAndComposition",
+    "ingest/ledger_transaction_metadata_view_p2p_test.go::TestP2PGetPostApplyFeeChangesClassification",
+    "processors/token_transfer/contract_events_test.go::TestV4FeeEventParsing",
+    "processors/token_transfer/unified_events_p2p_test.go::TestP2PUnifiedEventsStreamAcceptsOnlyGeneration4",
+    "processors/token_transfer/unified_events_p2p_test.go::TestP2PUnifiedEventsOptionDefaultsToLegacyInterpretation",
+    "processors/token_transfer/contract_events_test.go::TestVersionSpecificSACValidation",
+    "processors/token_transfer/contract_events_test.go::TestValidContractEventsV3",
+    "processors/token_transfer/contract_events_test.go::TestValidContractEventsV4",
+    "ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_MatchesParsedReader",
+    "ingest/transaction_events_view_test.go::TestDiagnosticEventsFromMeta_MatchesParsedReader",
+    "ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_LegacyV0",
+    "ingest/transaction_events_view_test.go::TestTransactionEventsFromMeta_V3GateIsCallerResponsibility",
+    "ingest/tests/f2p_meta_view/dispatch_test.go::TestP2PDataLayerDependencyDirection",
+    "ingest/tests/f2p_meta_view/dispatch_test.go::TestP2PRawViewDispatchRemainsShared",
+    "ingest/tests/f2p_meta_view/dependencies_test.go::TestP2PNoNewModuleDependencies"
+  ],
+  "p2p_select": "/tests/verifier/p2p_select.txt",
+  "reports": {
+    "ctrf": "/logs/verifier/ctrf.json",
+    "gate_reward": "/logs/verifier/gate-reward.json",
+    "hardgate": "/logs/verifier/hard-gate.json",
+    "reward": "/logs/verifier/reward.json",
+    "reward_details": "/logs/verifier/reward-details.json",
+    "reward_text": "/logs/verifier/reward.txt",
+    "verifier": "/logs/verifier/evidence/verifier.json"
+  },
+  "repository": "/workspace/repo",
+  "require_exec": true,
+  "restoration_paths": [
+    "ingest/ledger_transaction_test.go",
+    "ingest/transaction_events_view_test.go",
+    "ingest/transaction_view_test.go",
+    "processors/token_transfer/token_transfer_processor_test.go"
+  ],
+  "reward_mode": "VERIFIER_ONLY",
+  "runtime_version": "deepswe-verifier-runtime/v4",
+  "schema_version": "deepswe-verifier-config/v4",
+  "scoring": {
+    "candidate_rejection_reward": -1.0,
+    "formula": "f2p_fraction if p2p_all_passed else 0.0",
+    "infrastructure_reward": -2.0,
+    "p2p_requires_all": true,
+    "reward_text": "error_only"
+  },
+  "selector_format": "path::testcase",
+  "task_id": "refactor-go-stellar-sdk-7ce7baaf",
+  "test_patch": "/tests/verifier/test.patch",
+  "test_paths": [
+    "ingest/ledger_transaction_metadata_view_p2p_test.go",
+    "xdr/transaction_meta_p2p_test.go",
+    "processors/token_transfer/unified_events_p2p_test.go",
+    "ingest/tests/p2p_junit/main.go",
+    "ingest/tests/p2p_junit/run_p2p.sh",
+    "ingest/tests/f2p_meta_view/analysis.go",
+    "ingest/tests/f2p_meta_view/dispatch_test.go",
+    "ingest/tests/f2p_meta_view/token_transfer_test.go",
+    "ingest/tests/f2p_junit/main.go",
+    "ingest/tests/f2p_junit/run_f2p.sh",
+    "ingest/tests/f2p_meta_view/token_semantics_test.go",
+    "processors/token_transfer/contract_events_test.go",
+    "processors/token_transfer/public_event_adapter_test.go",
+    "ingest/tests/f2p_meta_view/dependencies_test.go"
+  ],
+  "timeout_seconds": 600,
+  "verifier": "/tests/verifier/verifier.py"
+}

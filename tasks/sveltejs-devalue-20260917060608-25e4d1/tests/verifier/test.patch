@@ -1,0 +1,1428 @@
+diff --git a/test/test_hydration_contract.py b/test/test_hydration_contract.py
+new file mode 100644
+--- /dev/null
++++ b/test/test_hydration_contract.py
+@@ -0,0 +1,1423 @@
++"""Independent public hydration observations, one Node process per pytest item."""
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import pytest
++from tree_sitter import Language, Parser
++import tree_sitter_javascript
++
++ROOT = Path.cwd()
++BASE_COMMIT = 'a3d30d94c8fd9cfca4b774814ff9d5bfade5010c'
++PRELUDE = '''
++import assert from 'node:assert/strict';
++import * as api from './index.js';
++const {parse, unflatten, stringify, defaultParseOperations: defaults} = api;
++const exactError = (fn, message, name = 'Error') => assert.throws(fn, e => e.name === name && e.message === message);
++'''
++
++
++@pytest.fixture(scope='session', autouse=True)
++def runtime_capabilities():
++    # Dependency/collection errors become JUnit <error>, not candidate assertion failures.
++    result = subprocess.run(['node', '--input-type=module', '-e', "await import('./index.js')"],
++                            cwd=ROOT, capture_output=True, text=True, timeout=25)
++    if result.returncode:
++        pytest.fail('Runtime cannot load public entrypoint: ' + result.stderr)
++
++
++def js(body):
++    # Isolated processes keep a failed custom reviver from contaminating later observations.
++    result = subprocess.run(['node', '--input-type=module', '-e', PRELUDE + body],
++                            cwd=ROOT, capture_output=True, text=True, timeout=25)
++    if result.returncode:
++        pytest.fail(('INFRA_ERROR: ' if any(s in result.stderr for s in ['ERR_MODULE_NOT_FOUND', 'Cannot find package', 'SyntaxError:']) else '') + result.stderr)
++
++
++def parse_source():
++    # Structure gates inspect only the candidate production parser file.
++    return (ROOT / 'src/parse.js').read_text(encoding='utf-8')
++
++
++def parse_js(path):
++    source = Path(path).read_bytes()
++    parser = Parser(Language(tree_sitter_javascript.language()))
++    return source, parser.parse(source)
++
++
++def walk(node):
++    yield node
++    for child in node.named_children:
++        yield from walk(child)
++
++
++def node_text(source, node):
++    return source[node.start_byte:node.end_byte].decode('utf-8', 'replace')
++
++
++def named_child_text(source, node, field):
++    child = node.child_by_field_name(field)
++    return node_text(source, child) if child is not None else ''
++
++
++FUNCTION_TYPES = {'function_declaration', 'method_definition', 'function', 'arrow_function'}
++
++
++def function_units(source, tree):
++    units = {}
++    for node in walk(tree.root_node):
++        if node.type in {'function_declaration', 'method_definition'}:
++            name = named_child_text(source, node, 'name')
++            body = node.child_by_field_name('body')
++            if name and body is not None:
++                units.setdefault(name, []).append(node)
++        elif node.type == 'variable_declarator':
++            name = named_child_text(source, node, 'name')
++            value = node.child_by_field_name('value')
++            if value is not None and value.type in {'function', 'arrow_function'}:
++                units.setdefault(name, []).append(value)
++    return units
++
++
++def function_node(source, tree, name):
++    for node in walk(tree.root_node):
++        if node.type == 'function_declaration' and named_child_text(source, node, 'name') == name:
++            return node
++    raise AssertionError(f'missing public function: {name}')
++
++
++def dispatch_tables(source, tree):
++    """Map local object-dispatch tables to helper names, including table[key](...) calls."""
++    tables = {}
++    for item in walk(tree.root_node):
++        if item.type != 'variable_declarator':
++            continue
++        name = named_child_text(source, item, 'name')
++        value = item.child_by_field_name('value')
++        if not name or value is None or value.type != 'object':
++            continue
++        targets = set()
++        for pair in value.named_children:
++            if pair.type != 'pair':
++                continue
++            pair_value = pair.child_by_field_name('value')
++            pair_key = pair.child_by_field_name('key')
++            if pair_value is None:
++                continue
++            if pair_value.type == 'identifier':
++                targets.add(node_text(source, pair_value))
++            elif pair_value.type in {'function', 'arrow_function'}:
++                # Inline table entries keep their helpers reachable through the
++                # calls they make, instead of only recording the key spelling.
++                targets.update(call_targets(source, pair_value))
++        if targets:
++            tables[name] = targets
++    return tables
++
++
++def call_targets(source, node, tables=None):
++    targets = set()
++    tables = tables or {}
++    for item in walk(node):
++        if item.type != 'call_expression':
++            continue
++        callee = item.child_by_field_name('function')
++        if callee is None:
++            continue
++        if callee.type == 'identifier':
++            targets.add(node_text(source, callee))
++        elif callee.type == 'member_expression':
++            prop = callee.child_by_field_name('property')
++            if prop is not None:
++                targets.add(node_text(source, prop))
++        elif callee.type == 'subscript_expression':
++            owner = node_text(source, callee).split('[', 1)[0].strip()
++            targets.update(tables.get(owner, set()))
++    return targets
++
++
++def descendant_count(node, kind):
++    return sum(1 for item in walk(node) if item.type == kind)
++
++
++def is_state_object(node):
++    return node.type == 'object' and sum(1 for child in node.named_children if child.type == 'pair') >= 3
++
++
++def returned_state_factories():
++    """Accept factory-created state containers instead of requiring `new Class(...)` only."""
++    factories = set()
++    for relpath, source, tree in project_sources():
++        for name, nodes in function_units(source, tree).items():
++            for node in nodes:
++                body = node.child_by_field_name('body')
++                if body is None:
++                    continue
++                local_state_objects = set()
++                local_state_instances = set()
++                for item in walk(body):
++                    if item.type != 'variable_declarator':
++                        continue
++                    local_name = named_child_text(source, item, 'name')
++                    value = item.child_by_field_name('value')
++                    if local_name and value is not None and is_state_object(value):
++                        local_state_objects.add(local_name)
++                    if local_name and value is not None and value.type == 'new_expression':
++                        local_state_instances.add(local_name)
++                for item in walk(body):
++                    if item.type != 'return_statement':
++                        continue
++                    returned = item.named_children
++                    if any(is_state_object(child) for child in returned):
++                        factories.add(name)
++                    # A factory that returns a freshly constructed instance is accepted too.
++                    if any(child.type == 'new_expression' for child in returned):
++                        factories.add(name)
++                    if any(child.type == 'identifier' and node_text(source, child) in local_state_instances for child in returned):
++                        factories.add(name)
++                    if any(child.type == 'identifier' and node_text(source, child) in local_state_objects for child in returned):
++                        factories.add(name)
++    return factories
++
++
++def has_state_owner_creation(source, node, state_factories=None):
++    state_factories = state_factories or set()
++    for item in walk(node):
++        if item.type == 'new_expression':
++            return True
++        if is_state_object(item):
++            return True
++        if item.type == 'call_expression':
++            callee = item.child_by_field_name('function')
++            if callee is not None and callee.type == 'identifier' and node_text(source, callee) in state_factories:
++                return True
++    return False
++
++
++def changed_source_files():
++    result = subprocess.run(['git', 'diff', '--name-only', BASE_COMMIT],
++                            cwd=ROOT, capture_output=True, text=True, check=True, timeout=20)
++    return {
++        line.strip() for line in result.stdout.splitlines()
++        if line.strip() and line.strip() != 'test/test_hydration_contract.py'
++    }
++
++
++def source_import_targets(source, tree):
++    targets = set()
++    for node in walk(tree.root_node):
++        literal = None
++        if node.type in {'import_statement', 'export_statement'}:
++            literal = node.child_by_field_name('source')
++        elif node.type == 'call_expression':
++            callee = named_child_text(source, node, 'function')
++            arguments = node.child_by_field_name('arguments')
++            if callee in {'import', 'require'} and arguments is not None and arguments.named_children:
++                literal = arguments.named_children[0]
++        if literal is not None and literal.type == 'string':
++            targets.add(node_text(source, literal)[1:-1])
++    return targets
++
++
++def import_targets(path):
++    return source_import_targets(*parse_js(path))
++
++
++def assert_no_new_runtime_dependencies():
++    # An installed dev/test package does not authorize a production import.
++    # Compare the reachable production graph to Git, not to node_modules.
++    parser = Parser(Language(tree_sitter_javascript.language()))
++    current, original = set(), set()
++    for relpath, path in reachable_import_paths().items():
++        current.update(import_targets(path))
++        baseline = subprocess.run(['git', 'show', BASE_COMMIT + ':' + relpath],
++                                  cwd=ROOT, capture_output=True, timeout=20)
++        if baseline.returncode == 0:
++            original.update(source_import_targets(baseline.stdout, parser.parse(baseline.stdout)))
++    builtin_result = subprocess.run(['node', '--input-type=module', '-e',
++                                    "import {builtinModules} from 'node:module'; console.log(JSON.stringify(builtinModules));"],
++                                   cwd=ROOT, capture_output=True, text=True, check=True, timeout=20)
++    builtins = set(json.loads(builtin_result.stdout))
++    additions = {spec for spec in current - original
++                 if not spec.startswith('.') and spec.removeprefix('node:') not in builtins}
++    assert not additions, 'New production runtime dependencies: ' + ', '.join(sorted(additions))
++
++
++def reachable_import_paths():
++    root = ROOT / 'src/parse.js'
++    seen = {}
++    pending = [root]
++    while pending:
++        path = pending.pop()
++        try:
++            resolved = path.resolve().relative_to(ROOT.resolve()).as_posix()
++        except ValueError:
++            continue
++        if resolved in seen or not path.exists():
++            continue
++        seen[resolved] = path
++        for spec in import_targets(path):
++            if not spec.startswith('.'):
++                continue
++            candidate = (path.parent / spec)
++            if candidate.suffix != '.js':
++                candidate = candidate.with_suffix('.js')
++            pending.append(candidate)
++    return seen
++
++
++def reachable_import_files():
++    return set(reachable_import_paths())
++
++
++def project_sources():
++    files = reachable_import_paths()
++    parsed = []
++    for relpath in sorted(files):
++        source, tree = parse_js(files[relpath])
++        parsed.append((relpath, source, tree))
++    return parsed
++
++
++def project_function_units():
++    units = {}
++    for relpath, source, tree in project_sources():
++        for name, nodes in function_units(source, tree).items():
++            units.setdefault(name, []).extend((source, node, relpath) for node in nodes)
++    return units
++
++
++def project_dispatch_tables():
++    tables = {}
++    for relpath, source, tree in project_sources():
++        tables[relpath] = dispatch_tables(source, tree)
++    return tables
++
++
++def project_reachable_units(roots=('unflatten',)):
++    units = project_function_units()
++    tables = project_dispatch_tables()
++    returned = returned_callable_targets(units)
++    seen = set()
++    pending = list(roots)
++    while pending:
++        name = pending.pop()
++        if name in seen:
++            continue
++        seen.add(name)
++        for source, node, relpath in units.get(name, []):
++            for target in call_targets(source, node, tables.get(relpath)) | invoked_returned_targets(source, node, returned):
++                if target in units and target not in seen:
++                    pending.append(target)
++    return seen, units
++
++
++def real_reachable_helpers(reachable, units):
++    helpers = reachable - {'parse', 'unflatten', 'constructor'}
++    real_helpers = []
++    for name in helpers:
++        for source, node, relpath in units.get(name, []):
++            body = node.child_by_field_name('body')
++            if body is not None and descendant_count(body, 'statement_block') + descendant_count(body, 'switch_statement') + len(body.named_children) >= 2:
++                real_helpers.append((name, relpath))
++                break
++    return real_helpers
++
++
++def direct_walk(node):
++    """Visit one routine's executable body without attributing nested routines to it."""
++    yield node
++    for child in node.named_children:
++        if child.type not in FUNCTION_TYPES:
++            yield from direct_walk(child)
++
++
++def hydration_state_layout():
++    """Follow public inputs through calls, constructors, factories and field aliases.
++
++    Roles come from input positions and actual allocation/use, not private names.
++    Shapes identify one owner; independent objects cannot pool their fields.
++    """
++    records = {}
++    names = {}
++    classes = {}
++    for path, source, tree in project_sources():
++        for name, nodes in function_units(source, tree).items():
++            for node in nodes:
++                key = (path, node.start_byte)
++                records[key] = (source, node)
++                names.setdefault(name, set()).add(key)
++                if name == 'constructor' and node.parent is not None:
++                    cls = node.parent.parent
++                    if cls is not None and cls.type in {'class_declaration', 'class'}:
++                        classes[named_child_text(source, cls, 'name')] = key
++
++    # Each abstract value is (input/allocation roles, owner shapes).
++    def union(*values):
++        return (set().union(*(v[0] for v in values)),
++                set().union(*(v[1] for v in values))) if values else (set(), set())
++
++    empty = (set(), set())
++    params, receivers, returns, return_fields, fields = {}, {}, {}, {}, {}
++    active = set(names.get('unflatten', ()))
++    custom_hosts = set()
++    reads = set()
++    indexed_reads, indexed_writes, membership, removals = set(), set(), set(), set()
++
++    def storage_roles(shapes):
++        roles = set()
++        if shapes & indexed_reads & indexed_writes & membership:
++            roles.add('cache')
++        if shapes & indexed_writes & membership & removals:
++            roles.add('tracker')
++        return roles
++    for key in active:
++        params[key] = [{'payload'}, {'revivers'}, {'options'}]
++
++    def merge(mapping, key, value):
++        old = mapping.get(key, empty)
++        mapping[key] = union(old, value)
++        return old != mapping[key]
++
++    def parameters(source, node):
++        p = node.child_by_field_name('parameters')
++        return [node_text(source, c) for c in p.named_children] if p is not None else []
++
++    while True:
++        changed = False
++        for key in list(active):
++            source, node = records[key]
++            env = {n: (set(r), set()) for n, r in zip(parameters(source, node), params.get(key, []))}
++            # Parameter shapes are kept separately from role propagation.
++            for index, name in enumerate(parameters(source, node)):
++                env[name] = union(env.get(name, empty), receivers.get((key, index), empty))
++            env['this'] = receivers.get((key, 'this'), empty)
++
++            def property_value(value, prop):
++                reads.update((shape, prop) for shape in value[1])
++                result = union(*(fields.get((shape, prop), empty) for shape in value[1]))
++                result = union(result, (storage_roles(result[1]), set()))
++                if prop == 'operations' and 'options' in value[0]:
++                    result = union(result, ({'operations'}, set()))
++                return result
++
++            def value(expr):
++                nonlocal changed
++                if expr is None:
++                    return empty
++                text = node_text(source, expr)
++                if expr.type in {'identifier', 'this'}:
++                    return env.get(text, empty)
++                if expr.type in FUNCTION_TYPES:
++                    return empty
++                if expr.type == 'object':
++                    shape = ('object', key, expr.start_byte)
++                    for pair in expr.named_children:
++                        if pair.type == 'pair':
++                            prop = named_child_text(source, pair, 'key').strip('\"\'')
++                            changed |= merge(fields, (shape, prop), value(pair.child_by_field_name('value')))
++                        elif pair.type == 'shorthand_property_identifier':
++                            prop = node_text(source, pair)
++                            changed |= merge(fields, (shape, prop), env.get(prop, empty))
++                    return (set(), {shape})
++                if expr.type == 'array':
++                    return ({'cache'}, {('array', key, expr.start_byte)})
++                if expr.type in {'member_expression', 'subscript_expression'}:
++                    obj = expr.child_by_field_name('object')
++                    prop = expr.child_by_field_name('property') or expr.child_by_field_name('index')
++                    name = node_text(source, prop).strip('\"\'') if prop is not None else ''
++                    base = value(obj)
++                    result = property_value(base, name)
++                    if obj is not None and obj.type == 'identifier':
++                        result = union(result, env.get(node_text(source, obj) + '.' + name, empty))
++                    # Indexing a reviver table preserves the callback origin.
++                    if expr.type == 'subscript_expression':
++                        indexed_reads.update(base[1])
++                        result = union(result, (base[0], set()))
++                    return result
++                if expr.type in {'call_expression', 'new_expression'}:
++                    callee = expr.child_by_field_name('function') or expr.child_by_field_name('constructor')
++                    name = node_text(source, callee) if callee is not None else ''
++                    args = expr.child_by_field_name('arguments')
++                    actual = [value(a) for a in args.named_children] if args is not None else []
++                    if name in {'Object.hasOwn', 'Object.prototype.hasOwnProperty.call'} and actual:
++                        membership.update(actual[0][1])
++                    if name == 'Object.create':
++                        return (set(), {('allocation', key, expr.start_byte)})
++                    if name == 'Object.assign' and actual:
++                        for destination in actual[0][1]:
++                            for addition in actual[1:]:
++                                for (shape, prop), field in list(fields.items()):
++                                    if shape in addition[1]:
++                                        changed |= merge(fields, (destination, prop), field)
++                        return actual[0]
++                    if 'revivers' in value(callee)[0]:
++                        custom_hosts.add(key)
++                    targets = set(names.get(name, ()))
++                    owner = empty
++                    if expr.type == 'new_expression' and name in classes:
++                        targets = {classes[name]}
++                        owner = (set(), {('class', classes[name])})
++                    elif callee is not None and callee.type == 'member_expression':
++                        member = named_child_text(source, callee, 'property')
++                        owner = value(callee.child_by_field_name('object'))
++                        targets = set(names.get(member, ())) if owner[1] else set()
++                        if member in {'has', 'hasOwnProperty', 'includes', 'indexOf'}:
++                            membership.update(owner[1])
++                        if member in {'set', 'push'}:
++                            indexed_writes.update(owner[1])
++                        if member in {'delete', 'pop', 'splice'}:
++                            removals.update(owner[1])
++                    for target in targets:
++                        if target not in active:
++                            active.add(target); changed = True
++                        slots = params.setdefault(target, [])
++                        for i, arg in enumerate(actual):
++                            while len(slots) <= i:
++                                slots.append(set())
++                            if not arg[0].issubset(slots[i]):
++                                slots[i].update(arg[0]); changed = True
++                            changed |= merge(receivers, (target, i), (set(), arg[1]))
++                        changed |= merge(receivers, (target, 'this'), owner)
++                    if expr.type == 'new_expression' and name in classes:
++                        return owner
++                    result = union(*(returns.get(t, empty) for t in targets))
++                    # Preserve named properties returned by validation/option helpers.
++                    for target in targets:
++                        for prop, field in return_fields.get(target, {}).items():
++                            synthetic = ('return', target)
++                            changed |= merge(fields, (synthetic, prop), field)
++                            result = union(result, (set(), {synthetic}))
++                    if name in {'Array', 'Map'}:
++                        result = union(result, ({'cache'}, set()))
++                    if name == 'Set' and expr.type == 'new_expression':
++                        result = union(result, ({'tracker'}, set()))
++                    # Objects assembled through indexed writes carry the
++                    # corresponding public input role, even with renamed keys.
++                    result = union(result, (set().union(*(r for (shape, _), (r, _) in fields.items() if shape in result[1])), set()))
++                    return result
++                return union(*(value(c) for c in expr.named_children))
++
++            def bind(left, result):
++                nonlocal changed
++                if left is None:
++                    return
++                if left.type == 'identifier':
++                    env[node_text(source, left)] = union(env.get(node_text(source, left), empty), result)
++                elif left.type in {'member_expression', 'subscript_expression'}:
++                    prop = left.child_by_field_name('property') or left.child_by_field_name('index')
++                    prop = node_text(source, prop).strip('\"\'') if prop is not None else ''
++                    shapes = value(left.child_by_field_name('object'))[1]
++                    if left.type == 'subscript_expression':
++                        indexed_writes.update(shapes)
++                    for shape in shapes:
++                        changed |= merge(fields, (shape, prop), result)
++                elif left.type == 'object_pattern':
++                    for part in left.named_children:
++                        prop = named_child_text(source, part, 'key') if part.type == 'pair_pattern' else node_text(source, part)
++                        local = part.child_by_field_name('value') if part.type == 'pair_pattern' else part
++                        env[node_text(source, local)] = property_value(result, prop)
++
++            body = node.child_by_field_name('body')
++            if body is None:
++                continue
++            for item in direct_walk(body):
++                if item.type == 'variable_declarator':
++                    bind(item.child_by_field_name('name'), value(item.child_by_field_name('value')))
++                elif item.type in {'assignment_expression', 'augmented_assignment_expression'}:
++                    bind(item.child_by_field_name('left'), value(item.child_by_field_name('right')))
++                elif item.type in {'call_expression', 'new_expression'}:
++                    value(item)
++                elif item.type == 'unary_expression' and node_text(source, item).lstrip().startswith('delete '):
++                    target = item.named_children[-1]
++                    if target.type == 'subscript_expression':
++                        removals.update(value(target.child_by_field_name('object'))[1])
++                elif item.type == 'return_statement':
++                    for child in item.named_children:
++                        result = value(child)
++                        changed |= merge(returns, key, result)
++                        if child.type == 'object':
++                            props = return_fields.setdefault(key, {})
++                            for pair in child.named_children:
++                                if pair.type == 'pair':
++                                    prop = named_child_text(source, pair, 'key').strip('\"\'')
++                                    changed |= merge(props, prop, value(pair.child_by_field_name('value')))
++            if node.child_by_field_name('body').type != 'statement_block':
++                changed |= merge(returns, key, value(body))
++        if not changed:
++            break
++    owners = {}
++    for (shape, prop), (roles, allocated) in fields.items():
++        if (shape, prop) in reads:
++            owners.setdefault(shape, {})[prop] = roles | storage_roles(allocated)
++    return owners, custom_hosts
++
++
++def assert_complete_state_owner():
++    owners, _ = hydration_state_layout()
++    required = {'payload', 'revivers', 'operations', 'cache', 'tracker'}
++    assert any(required.issubset(set().union(*props.values())) for props in owners.values()), (
++        'No single per-call owner holds payload, revivers, operations, cache and cycle tracker')
++
++
++def returned_callable_targets(units):
++    """Functions returned as values are reachable only when that value is called."""
++    returned = {}
++    for name, entries in units.items():
++        for source, node, path in entries:
++            body = node.child_by_field_name('body')
++            if body is None:
++                continue
++            for item in direct_walk(body):
++                if item.type == 'return_statement':
++                    # Ignore identifiers inside calls: returning f(x) does not
++                    # imply that x, or f itself, is the returned callable.
++                    pending = list(item.named_children)
++                    while pending:
++                        expr = pending.pop()
++                        if expr.type == 'identifier':
++                            target = node_text(source, expr)
++                            if target in units:
++                                returned.setdefault(name, set()).add(target)
++                        elif expr.type in {'ternary_expression', 'parenthesized_expression'}:
++                            pending.extend(expr.named_children)
++    return returned
++
++
++def invoked_returned_targets(source, node, returned):
++    aliases = {}
++    result = set()
++
++    def factory_targets(expr):
++        if expr is None or expr.type != 'call_expression':
++            return set()
++        callee = expr.child_by_field_name('function')
++        if callee is None:
++            return set()
++        name = named_child_text(source, callee, 'property') if callee.type == 'member_expression' else node_text(source, callee)
++        return returned.get(name, set())
++
++    for item in direct_walk(node.child_by_field_name('body') or node):
++        if item.type == 'variable_declarator':
++            name = item.child_by_field_name('name')
++            if name is not None and name.type == 'identifier':
++                aliases[node_text(source, name)] = factory_targets(item.child_by_field_name('value'))
++        if item.type == 'call_expression':
++            callee = item.child_by_field_name('function')
++            if callee is not None:
++                result.update(factory_targets(callee))
++                if callee.type == 'identifier':
++                    result.update(aliases.get(node_text(source, callee), set()))
++    return result
++
++
++def population_responsibilities(reachable, units, operations):
++    """Track created containers into dedicated population routines.
++
++    Creation/cache placement is independent of population responsibility.
++    Roles follow arguments and simple returned parameters, not private names.
++    A generic population routine receiving several roles is not a separated seam.
++    """
++    parameters, return_parameters = {}, {}
++    for name, entries in units.items():
++        for source, node, path in entries:
++            params = node.child_by_field_name('parameters')
++            names = [node_text(source, p) for p in params.named_children] if params else []
++            parameters.setdefault(name, names)
++            body = node.child_by_field_name('body')
++            if body is not None:
++                for item in direct_walk(body):
++                    if item.type == 'return_statement' and len(item.named_children) == 1:
++                        expr = item.named_children[0]
++                        if expr.type == 'identifier' and node_text(source, expr) in names:
++                            return_parameters.setdefault(name, set()).add(names.index(node_text(source, expr)))
++    inputs = {name: [set() for _ in params] for name, params in parameters.items()}
++    populations = {}
++    creation_roles = {method: group for group, methods in operations.items() for method in methods}
++    for _ in range(1 + sum(map(len, parameters.values())) * max(1, len(operations))):
++        changed = False
++        for name in reachable:
++            for source, node, path in units.get(name, []):
++                body = node.child_by_field_name('body')
++                if body is None:
++                    continue
++                env = {p: set(roles) for p, roles in zip(parameters[name], inputs[name])}
++
++                def value(expr):
++                    if expr is None:
++                        return set()
++                    if expr.type == 'identifier':
++                        return env.get(node_text(source, expr), set())
++                    if expr.type in {'parenthesized_expression', 'assignment_expression'}:
++                        children = expr.named_children[-1:]
++                        return value(children[0]) if children else set()
++                    if expr.type == 'call_expression':
++                        callee = expr.child_by_field_name('function')
++                        if callee is None:
++                            return set()
++                        called = named_child_text(source, callee, 'property') if callee.type == 'member_expression' else node_text(source, callee)
++                        if called in creation_roles:
++                            return {creation_roles[called]}
++                        args = expr.child_by_field_name('arguments')
++                        args = args.named_children if args else []
++                        roles = set()
++                        for pos in return_parameters.get(called, set()):
++                            if pos < len(args):
++                                roles.update(value(args[pos]))
++                        return roles
++                    return set()
++
++                for item in direct_walk(body):
++                    if item.type == 'variable_declarator':
++                        local = item.child_by_field_name('name')
++                        if local is not None and local.type == 'identifier':
++                            env.setdefault(node_text(source, local), set()).update(value(item.child_by_field_name('value')))
++                    if item.type != 'call_expression':
++                        continue
++                    callee = item.child_by_field_name('function')
++                    if callee is None:
++                        continue
++                    called = named_child_text(source, callee, 'property') if callee.type == 'member_expression' else node_text(source, callee)
++                    args = item.child_by_field_name('arguments')
++                    args = args.named_children if args else []
++                    if called in {'set', 'addValue', 'addEntry'} and args:
++                        populations.setdefault((path, node.start_byte), set()).update(value(args[0]))
++                    if called in inputs:
++                        for pos, arg in enumerate(args[:len(inputs[called])]):
++                            roles = value(arg)
++                            if not roles.issubset(inputs[called][pos]):
++                                inputs[called][pos].update(roles)
++                                changed = True
++        if not changed:
++            break
++    return populations
++
++
++def assert_separate_hydration_responsibilities():
++    reachable, units = project_reachable_units()
++    _, custom_hosts = hydration_state_layout()
++    operations = {
++        'builtins': {'fromISOString', 'fromRegExpInfo', 'box', 'fromViewInfo', 'fromArrayBuffer', 'fromStringValue'},
++        'sparse': {'createSparseArray'},
++        'regular': {'createArray', 'createObject'},
++        'set_map': {'createSet', 'createMap'},
++        'null_prototype': {'createNullPrototypeObject'},
++    }
++    populations = population_responsibilities(reachable, units, operations)
++    separated = set()
++    for name in reachable:
++        for source, node, path in units.get(name, []):
++            body = node.child_by_field_name('body')
++            if body is None:
++                continue
++            calls = set()
++            aliases = {}
++            for item in direct_walk(body):
++                if item.type == 'variable_declarator':
++                    local = item.child_by_field_name('name')
++                    expr = item.child_by_field_name('value')
++                    if local is not None and local.type == 'identifier' and expr is not None and expr.type == 'member_expression':
++                        aliases[node_text(source, local)] = named_child_text(source, expr, 'property')
++                    elif local is not None and local.type == 'object_pattern':
++                        for part in local.named_children:
++                            prop = named_child_text(source, part, 'key') if part.type == 'pair_pattern' else node_text(source, part)
++                            target = named_child_text(source, part, 'value') if part.type == 'pair_pattern' else prop
++                            aliases[target] = prop
++                if item.type == 'call_expression':
++                    callee = item.child_by_field_name('function')
++                    if callee is not None:
++                        called = named_child_text(source, callee, 'property') if callee.type == 'member_expression' else node_text(source, callee)
++                        calls.add(aliases.get(called, called))
++            groups = {group for group, methods in operations.items() if calls & methods}
++            groups.update(populations.get((path, node.start_byte), set()))
++            if (path, node.start_byte) in custom_hosts:
++                groups.add('custom_reviver')
++            # Utilities or one dispatcher doing several groups cannot stand in
++            # for a routine dedicated to each required responsibility.
++            if len(groups) == 1:
++                separated.update(groups)
++    required = set(operations) | {'custom_reviver'}
++    assert required.issubset(separated), 'Unseparated hydration responsibilities: ' + ', '.join(sorted(required - separated))
++
++
++def test_public_api_and_standard_values():
++    js('''
++assert.deepEqual(Object.keys(api).sort(), ['DevalueError','defaultParseOperations','defaultStringifyOperations','filterArrayIndices','parse','stringify','stringifyAsync','uneval','unflatten'].sort());
++for (const x of [undefined,NaN,Infinity,-Infinity,-0,null,false,true,13,'','é<',12n,new Date('2020-01-02'),new Date(NaN),/a+b/gi,new URL('https://example.test/a?x=1'),new URLSearchParams('a=1&a=2')]) { const y=parse(stringify(x)); /* Node 20: compare invalid Dates by type and NaN timestamp. */ if(x instanceof Date && Number.isNaN(x.getTime())) { assert.ok(y instanceof Date); assert.ok(Number.isNaN(y.getTime())); } else assert.deepEqual(y,x); }
++assert.deepEqual(parse('[{"a":1},42]',undefined,{operations:{fromPrimitive:v=>typeof v==='number'?v+1:v}}),{a:43});
++assert.deepEqual(unflatten([{a:1},42],undefined,{operations:{set:undefined}}),{a:42});
++assert.throws(()=>parse(']['),SyntaxError);
++''')
++
++
++def test_boxed_primitives_and_views():
++    js('''
++for(const x of [NaN,Infinity,-Infinity,-0,1,true,'',17n]) {
++ let y; assert.doesNotThrow(()=>{y=parse(stringify(Object(x)));});
++ assert.equal(typeof y,'object');assert.ok(Object.is(y.valueOf(),x));
++}
++for(const tag of ['Int8Array','Uint8Array','Uint8ClampedArray','Int16Array','Uint16Array','Int32Array','Uint32Array','Float32Array','Float64Array','BigInt64Array','BigUint64Array','DataView']) {
++ const buffer=new ArrayBuffer(32),value=new globalThis[tag](buffer,8,2);
++ const out=parse(stringify({buffer,value,alias:value}));
++ assert.equal(out.value.buffer,out.buffer);assert.equal(out.value,out.alias);
++ assert.equal(out.value.byteOffset,8);assert.equal(out.value.byteLength,value.byteLength);
++}
++assert.doesNotThrow(()=>unflatten([['Uint8Array',1,2],['ArrayBuffer','AQIDBA==']]));
++const {decode64}=await import('./src/base64.js');
++for(const encoded of ['AQ!ID','A Q I D','AQID'+String.fromCharCode(10),'AQID','']) {
++ let expected, decoderError;
++ try {expected=decode64(encoded);} catch(error) {decoderError=error;}
++ for(const read of [p=>unflatten(p),p=>parse(JSON.stringify(p))]) {
++  if(decoderError) assert.throws(()=>read([['ArrayBuffer',encoded]]),e=>e.constructor===decoderError.constructor&&e.message===decoderError.message);
++  else assert.deepEqual(new Uint8Array(read([['ArrayBuffer',encoded]])),new Uint8Array(expected));
++ }
++}
++
++''')
++
++
++def test_container_topology():
++    js('''
++const payload=[{self:0,array:1,sparse:2,set:3,map:4,bare:5,dup:1},[0,1,-2],[-7,4294967295,4294967294,0],['Set',0,3,1],['Map',0,4,1,0],['null','self',5,'root',0]];
++for(const read of [p=>unflatten(p),p=>parse(JSON.stringify(p))]) {
++ const x=read(payload);assert.equal(x.self,x);assert.equal(x.array,x.dup);assert.equal(x.array[0],x);assert.equal(x.array[1],x.array);
++ assert.equal(2 in x.array,false);assert.equal(x.array.length,3);
++ assert.equal(x.sparse.length,4294967295);assert.equal(x.sparse[4294967294],x);assert.deepEqual(Object.keys(x.sparse),['4294967294']);
++ assert.ok(x.set.has(x));assert.ok(x.set.has(x.set));assert.ok(x.set.has(x.array));
++ assert.equal(x.map.get(x),x.map);assert.equal(x.map.get(x.array),x);
++ assert.equal(Object.getPrototypeOf(x.bare),null);assert.equal(x.bare.self,x.bare);assert.equal(x.bare.root,x);
++}
++''')
++
++
++def test_reviver_raw_reference_and_cycles():
++    js('''
++let calls=0;const marker={};const a=unflatten([[1,1],['Custom',2],42],{Custom:v=>{assert.equal(v,42);calls++;return marker;}});
++assert.equal(a[0],marker);assert.equal(a[0],a[1]);assert.equal(calls,1);
++const raw=[['Date','2020-01-02']];assert.equal(unflatten(raw,{Date:v=>{assert.equal(v,'2020-01-02');return 7;}}),7);
++assert.deepEqual(raw,[['Date','2020-01-02'],'2020-01-02']);
++const memo=new WeakMap();const revive=v=>{let x=memo.get(v);if(!x){x={};memo.set(v,x);}x.value=v;return x;};
++const x=unflatten([['Custom',1],{ref:0}],{Custom:revive});assert.equal(x.value.ref,x);
++const y=unflatten([['A',1],{ref:2},['B',3],{ref:0}],{A:revive,B:revive});assert.equal(y.value.ref.value.ref,y);
++for(const p of [[['Custom',0]],[['Custom',1],['Custom',0]]]) exactError(()=>unflatten(p,{Custom:v=>v}),'Invalid circular reference');
++assert.ok(unflatten([['Date','2020-01-02']],Object.create({Date:()=>0})) instanceof Date);
++let n=0;assert.deepEqual(unflatten([[1,1],['Custom',2],42],{Custom:()=>{n++;return undefined;}}),[undefined,undefined]);assert.equal(n,1);
++''')
++
++    js('''
++
++for(const tag of ['Date','Set','Map','RegExp','ArrayBuffer','URL','Unknown']) {
++ for(const reviver of [undefined,null,false,0,'']) {
++  const raw=tag==='Date'?[[tag,'2020-01-02']]:tag==='RegExp'?[[tag,'a','g']]:tag==='ArrayBuffer'?[[tag,'AQID']]:tag==='URL'?[[tag,'https://example.test/']]:[[tag]];
++  function outcome(rev) {try{return {value:unflatten(structuredClone(raw),rev)};}catch(e){return {error:e.constructor,message:e.message};}}
++  assert.deepEqual(outcome({[tag]:reviver}),outcome(undefined));
++ }
++}
++let count=0;const memo2=new WeakMap();const cyclic=unflatten([['C',1],{back:0}],{C:v=>{count++;if(!memo2.has(v))memo2.set(v,{v});return memo2.get(v);}});
++assert.equal(count,2);assert.equal(cyclic.v.back,cyclic);
++''')
++
++
++def test_reentrant_state_and_cache_order():
++    js('''
++let inner;const table=[[1,2,1],{a:3},['Custom',3],42];let out;
++assert.doesNotThrow(()=>{out=unflatten(table,{Custom:v=>{inner=unflatten([{self:0}]);table.length=1;return v;}});});
++assert.equal(inner.self,inner);assert.equal(out[0],out[2]);assert.deepEqual(out[0],{a:42});
++const p=[{self:0}],a=unflatten(p),b=unflatten(p);assert.notEqual(a,b);assert.equal(a.self,a);assert.equal(b.self,b);
++assert.throws(()=>unflatten([['Custom',0]],{Custom:v=>v}));assert.equal(unflatten([['Custom',1],3],{Custom:v=>v}),3);
++const sent=new Error('caller callback');assert.throws(()=>unflatten([['Custom',1],1],{Custom:()=>{throw sent;}}),e=>e===sent);
++for(const useParse of [false,true]) {
++ let nested;
++ const outerOptions={operations:{fromPrimitive:v=>typeof v==='number'?v+10:v}};
++ const revivers={C:v=>{
++  assert.equal(v,15);
++  nested=unflatten([99],undefined,{operations:{fromPrimitive:v=>v*2}});
++  return 7;
++ }};
++ // The second reference is unresolved when the inner invocation returns.
++ const payload=[{a:1,b:3,alias:3},['C',2],5,{n:4},42];
++ const out=useParse?parse(JSON.stringify(payload),revivers,outerOptions):unflatten(payload,revivers,outerOptions);
++ assert.equal(nested,198);assert.equal(out.a,7);
++ assert.deepEqual(out.b,{n:52});assert.equal(out.b,out.alias);
++}
++
++''')
++
++
++def test_operations_order_and_opaque_handles():
++    js('''
++const inheritedOperations=Object.create({fromPrimitive:v=>typeof v==='number'?v+10:v});
++inheritedOperations.set=undefined;
++assert.equal(unflatten([7],undefined,{operations:inheritedOperations}),17);
++assert.equal(parse('[7]',undefined,{operations:inheritedOperations}),17);
++assert.deepEqual(unflatten([{v:1},7],undefined,{operations:inheritedOperations}),{v:17});
++const inheritedNullish=Object.create({fromPrimitive:null});
++assert.equal(unflatten([7],undefined,{operations:inheritedNullish}),7);
++const events=[],operations={};
++for(const name of ['createObject','createArray','createSparseArray','createSet','createMap','createNullPrototypeObject','fromPrimitive','set','addValue','addEntry']) operations[name]=(...a)=>{events.push([name,...a.map(x=>typeof x==='object'?'object':x)]);return defaults[name](...a);};
++unflatten([{a:1,b:1},[2],7],undefined,{operations});
++assert.deepEqual(events,[['createObject'],['createArray',1],['fromPrimitive',7],['set','object',0,7],['set','object','a','object'],['set','object','b','object']]);
++const handle={opaque:true};let args,result;
++assert.doesNotThrow(()=>{result=unflatten([['Uint16Array',1,999,40],['ArrayBuffer','AQIDBA==']],undefined,{operations:{fromArrayBuffer:()=>handle,fromViewInfo:(...a)=>{args=a;return 'view';}}});});
++assert.equal(result,'view');assert.deepEqual(args,['Uint16Array',handle,999,40]);
++const buffer=new ArrayBuffer(8);assert.doesNotThrow(()=>unflatten([['Uint8Array',1],['ArrayBuffer',2],'raw'],{ArrayBuffer:v=>{assert.equal(v,'raw');return buffer;}}));
++for(const tag of ['URL','URLSearchParams','Temporal.Duration','Temporal.Instant','Temporal.PlainDate','Temporal.PlainTime','Temporal.PlainDateTime','Temporal.PlainMonthDay','Temporal.PlainYearMonth','Temporal.ZonedDateTime']) assert.deepEqual(unflatten([[tag,'text']],undefined,{operations:{fromStringValue:(...a)=>a}}),[tag,'text']);
++assert.deepEqual(unflatten([['Float16Array',1,0,2],['ArrayBuffer','AAAAAA==']],undefined,{operations:{fromViewInfo:(tag,b,o,n)=>[tag,b.byteLength,o,n]}}),['Float16Array',4,0,2]);
++''')
++
++
++def test_sparse_limits_and_common_rejections():
++    js('''
++for(const len of [-1,1.5,'2',null,4294967296,Infinity,NaN]) exactError(()=>unflatten([[-7,len]]),'Invalid input');
++for(const idx of [-1,1.5,'0','__proto__',3,4294967295,Infinity,NaN]) exactError(()=>unflatten([[-7,3,idx,1],42]),'Invalid input');
++for(const p of [[],{},null,true,'x',42,-2,[{x:8}],[{x:'1'},42]]) exactError(()=>unflatten(p),'Invalid input');
++assert.equal(unflatten([[-7,0]]).length,0);exactError(()=>unflatten([['UnknownTag','x']]),'Unknown type UnknownTag');
++''')
++
++    js('''
++
++for(const change of ['append','ref','index','current-index','grow','remove']) {
++ const p=[[-7,3,0,1,1,3],['C',2],42,99];
++ const x=unflatten(p,{C:v=>{if(change==='append')p[0].push(2,3);if(change==='ref')p[0][5]=2;if(change==='index')p[0][4]=2;if(change==='current-index')p[0][2]=2;if(change==='grow')p[0][1]=4;if(change==='remove')p[0].length=4;return v;}});
++ const expected=Array(3);expected[0]=42;
++ if(change==='append'){expected[1]=99;expected[2]=99;}else if(change==='ref')expected[1]=42;else if(change==='index')expected[2]=99;else if(change!=='remove')expected[1]=99;
++ assert.deepEqual(x,expected,change);
++}
++''')
++
++
++def test_structure_state_owner_is_scored():
++    source, tree = parse_js(ROOT / 'src/parse.js')
++    unflatten = function_node(source, tree, 'unflatten')
++    nested_functions = [
++        item for item in walk(unflatten)
++        if item is not unflatten and item.type in FUNCTION_TYPES
++    ]
++    # Baseline keeps hydration in a nested closure; the refactor must delegate to a per-call owner.
++    assert not nested_functions
++    assert has_state_owner_creation(source, unflatten, returned_state_factories())
++    assert_complete_state_owner()
++
++
++def test_structure_dispatch_seams_are_scored():
++    reachable, units = project_reachable_units()
++    # Count reachable, non-empty helper bodies across imported parser modules, not spelling-only stubs.
++    assert len({name for name, relpath in real_reachable_helpers(reachable, units)}) >= 6
++    assert_separate_hydration_responsibilities()
++
++
++def test_structure_scope_is_scored():
++    # Scope is parsing/hydration production code, not a single-file layout restriction.
++    changed = changed_source_files()
++    assert changed
++    assert not any(path.startswith(('test/', 'tests/')) for path in changed)
++    assert all(path.startswith('src/') and path.endswith('.js') for path in changed)
++    reachable = reachable_import_files()
++    assert changed.issubset(reachable)
++    reachable_units, units = project_reachable_units()
++    touched_helpers = {name for name, relpath in real_reachable_helpers(reachable_units, units) if relpath in changed}
++    assert len(touched_helpers) >= 6
++    assert_no_new_runtime_dependencies()
++
++
++UNCHANGED_ERRORS=[
++ ('unknown','[["UnknownTag","x"]]','Unknown type UnknownTag'),
++ ('circular','[["Custom",0]]','Invalid circular reference'),
++]
++
++
++@pytest.mark.parametrize('label,payload,message',UNCHANGED_ERRORS,ids=[v[0] for v in UNCHANGED_ERRORS])
++def test_unchanged_error_messages(label,payload,message):
++    # P2P covers errors outside the explicitly authorized safety exceptions.
++    js(f'exactError(()=>parse({json.dumps(payload)},{{Custom:v=>v}}),{json.dumps(message)});')
++
++
++SAFETY_ERRORS=[
++ ('proto','[{"__proto__":1},{}]'),
++ ('null_proto','[["null","__proto__",1],{}]'),
++ ('view','[["Int8Array",1],{"length":2}]'),
++ ('buffer','[["ArrayBuffer",100]]'),
++ ('nested_proto','[{"data":1},["null","__proto__",2],{}]'),
++ ('view_self','[["Int16Array",0]]'),
++ ('view_missing','[["DataView"]]'),
++ ('view_null','[["Uint16Array",1],null]'),
++ ('buffer_missing','[["ArrayBuffer"]]'),
++ ('buffer_null','[["ArrayBuffer",null]]'),
++ ('buffer_array','[["ArrayBuffer",[]]]'),
++ ('data_view_wrong','[["DataView",1],["Date","2020-01-01"]]'),
++]
++
++
++@pytest.mark.parametrize('label,payload',SAFETY_ERRORS,ids=[v[0] for v in SAFETY_ERRORS])
++def test_required_uniform_safety_errors(label,payload):
++    # Same failing legacy inputs move to F2P with a single exact target error.
++    js(f'exactError(()=>parse({json.dumps(payload)}),"Invalid input");')
++
++
++def test_view_self_uint8_parse():
++    js("exactError(()=>parse('[[\"Uint8Array\",0]]'),'Invalid input');")
++
++
++def test_view_self_dataview_parse():
++    js("exactError(()=>parse('[[\"DataView\",0]]'),'Invalid input');")
++
++
++def test_view_self_float64_unflatten():
++    js("exactError(()=>unflatten([['Float64Array',0]]),'Invalid input');")
++
++
++def test_view_buffer_typed_array_reference():
++    js("exactError(()=>unflatten([['Uint8Array',1],['Int16Array',2],['ArrayBuffer','AQIDBA==']]),'Invalid input');")
++
++
++
++def test_malformed_fractional_index():
++    js("exactError(()=>unflatten([[0.5]]),'Invalid input');")
++
++
++def test_malformed_negative_index():
++    js("exactError(()=>unflatten([[-8]]),'Invalid input');")
++
++
++def test_malformed_nan_index():
++    js("exactError(()=>unflatten([[NaN]]),'Invalid input');")
++
++
++def test_malformed_positive_infinity_index():
++    js("exactError(()=>unflatten([[Infinity]]),'Invalid input');")
++
++
++def test_malformed_negative_infinity_index():
++    js("exactError(()=>unflatten([[-Infinity]]),'Invalid input');")
++
++
++def test_malformed_null_index():
++    js("exactError(()=>unflatten([[null]]),'Invalid input');")
++
++
++def test_malformed_boolean_index():
++    js("exactError(()=>unflatten([[true]]),'Invalid input');")
++
++
++def test_malformed_string_reference():
++    js("exactError(()=>unflatten([[1,'1'],42]),'Invalid input');")
++
++
++def test_malformed_inherited_constructor_reference():
++    js("exactError(()=>unflatten([[1,'constructor'],42]),'Invalid input');")
++
++
++def test_malformed_inherited_length_reference():
++    js("exactError(()=>unflatten([[1,'length'],42]),'Invalid input');")
++
++
++def test_malformed_typed_array_out_of_range_reference():
++    js("exactError(()=>unflatten([['Uint8Array',99]]),'Invalid input');")
++
++
++def test_malformed_typed_array_negative_reference():
++    js("exactError(()=>unflatten([['Uint8Array',-1]]),'Invalid input');")
++
++
++def test_reviver_table_shrink_keeps_unresolved_reference_invalid():
++    js('''
++const table=[[1,3],['Custom',2],42,99];
++exactError(()=>unflatten(table,{Custom:v=>{table.length=1;return v;}}),'Invalid input');
++''')
++
++
++def test_reviver_mutation_cannot_bypass_sparse_bounds():
++    # The index is valid during the initial scan, then the reviver changes it to 3.
++    js('''
++const payload=[[-7,2,0,2,1,3],['Custom',3],['Custom',3],42];
++exactError(()=>unflatten(payload,{Custom(value){
++  payload[0][4]=3;
++  return value;
++}}),'Invalid input');
++''')
++
++
++def test_later_reviver_cannot_mutate_processed_sparse_index():
++    # A later child reviver must not invalidate an index that was already populated.
++    js('''
++const payload=[[-7,2,0,1,1,2],['Custom',3],['Custom',3],42];
++let calls=0;
++exactError(()=>unflatten(payload,{Custom(value){
++  calls+=1;
++  if(calls===2) payload[0][2]=3;
++  return value;
++}}),'Invalid input');
++''')
++
++    js('''
++
++for(const makeRoot of [()=>[1,2],()=>({a:1,b:2}),()=>['Set',1,2],()=>['Map',1,2],()=>['null','a',1,'b',2]]) {
++ for(const mutate of [v=>v[2]=9,v=>v[2]=0.5,v=>v[2]='0',v=>v.push(10,3)]) {
++  const p=[makeRoot(),[-7,3,0,3,1,3],['C',3],42];
++  exactError(()=>unflatten(p,{C:v=>{mutate(p[1]);return v;}}),'Invalid input');
++ }
++}
++''')
++
++
++def test_later_reviver_fractional_processed_sparse_index_is_rejected():
++    js('''
++const payload=[[-7,2,0,1,1,2],['Custom',3],['Custom',3],42];
++let calls=0;
++exactError(()=>unflatten(payload,{Custom(value){
++  calls+=1;
++  if(calls===2) payload[0][2]=0.5;
++  return value;
++}}),'Invalid input');
++''')
++
++
++def test_later_reviver_string_processed_sparse_index_is_rejected():
++    js('''
++const payload=[[-7,2,0,1,1,2],['Custom',3],['Custom',3],42];
++let calls=0;
++exactError(()=>unflatten(payload,{Custom(value){
++  calls+=1;
++  if(calls===2) payload[0][2]='0';
++  return value;
++}}),'Invalid input');
++''')
++
++
++def test_later_reviver_infinite_sparse_length_is_rejected():
++    js('''
++const payload=[[-7,2,0,1,1,2],['Custom',3],['Custom',3],42];
++let calls=0;
++exactError(()=>unflatten(payload,{Custom(value){
++  calls+=1;
++  if(calls===2) payload[0][1]=Infinity;
++  return value;
++}}),'Invalid input');
++''')
++
++    js('''
++
++for(const length of [0,-1,Infinity,NaN,'3',0.5]) {
++ const p=[[1,2],[-7,3,0,3,1,3],['C',3],42];
++ exactError(()=>unflatten(p,{C:v=>{p[1][1]=length;return v;}}),'Invalid input');
++}
++// Rewriting/removing a raw index must not hide an already written result index.
++for(const remove of [true,false]) {
++ const p=[[1,2],[-7,3,2,3],['C',3],42];
++ exactError(()=>unflatten(p,{C:v=>{p[1][1]=1;if(remove)p[1].length=2;else p[1][2]=0;return v;}}),'Invalid input');
++}
++''')
++
++
++def test_later_reviver_negative_sparse_length_is_rejected():
++    js('''
++const payload=[[-7,2,0,1,1,2],['Custom',3],['Custom',3],42];
++let calls=0;
++exactError(()=>unflatten(payload,{Custom(value){
++  calls+=1;
++  if(calls===2) payload[0][1]=-1;
++  return value;
++}}),'Invalid input');
++''')
++
++
++def test_reviver_shrinking_declared_length_is_rejected():
++    # Exception 6: shrinking the declared length leaves the planned indices out of range.
++    js('''
++const payload=[[-7,2,0,2,1,3],['Custom',3],['Custom',3],42];
++exactError(()=>unflatten(payload,{Custom(value){
++  payload[0][1]=0;
++  return value;
++}}),'Invalid input');
++''')
++
++
++def test_reviver_string_declared_length_is_rejected():
++    # Exception 6: the reviver must not turn the declared length into a non-number.
++    js('''
++const payload=[[-7,2,0,2,1,3],['Custom',3],['Custom',3],42];
++exactError(()=>unflatten(payload,{Custom(value){
++  payload[0][1]='9';
++  return value;
++}}),'Invalid input');
++''')
++
++
++def test_reviver_fractional_declared_length_is_rejected():
++    # Exception 6: a non-integral declared length is invalid even after the reviver ran.
++    js('''
++const payload=[[-7,2,0,2,1,3],['Custom',3],['Custom',3],42];
++exactError(()=>unflatten(payload,{Custom(value){
++  payload[0][1]=2.5;
++  return value;
++}}),'Invalid input');
++''')
++
++
++def test_boundary_object_string_reference():
++    js("exactError(()=>unflatten([['Object','1'],{'x':0}]),'Invalid input');")
++
++
++def test_boundary_object_fractional_reference():
++    js("exactError(()=>unflatten([['Object',0.25],42]),'Invalid input');")
++
++
++def test_boundary_nested_proto_reference():
++    js("exactError(()=>unflatten([['Object',1],['null','__proto__',2],{}]),'Invalid input');")
++
++
++def test_boundary_sparse_large_index():
++    js("exactError(()=>unflatten([[-7,0,9007199254740992]]),'Invalid input');")
++
++
++def test_preserved_native_view_error():
++    js("assert.throws(()=>unflatten([['Uint16Array',1,1],['ArrayBuffer','AQIDBA==']]),RangeError);")
++
++
++def test_preserved_boxed_null_error():
++    # This legacy native TypeError is outside the explicitly listed safety exceptions.
++    js("assert.throws(()=>unflatten([['Object',1],null]),TypeError);")
++
++
++def test_preserved_callback_view_error():
++    js('''
++const sent=new RangeError('operation callback');
++assert.throws(()=>unflatten([['Uint8Array',1],['ArrayBuffer','AQIDBA==']],undefined,{operations:{fromViewInfo:()=>{throw sent;}}}),e=>e===sent);
++''')
++
++
++def test_preserved_callback_buffer_error():
++    js('''
++const sent=new RangeError('operation callback');
++assert.throws(()=>unflatten([['ArrayBuffer','AQIDBA==']],undefined,{operations:{fromArrayBuffer:()=>{throw sent;}}}),e=>e===sent);
++''')
++
++
++UPSTREAM_BASE = 'a3d30d94c8fd9cfca4b774814ff9d5bfade5010c'
++UPSTREAM_FILES = {
++    'src/base64.test.js': ('dea46502f0b754ead410007d0326eaeb0434c908bb6a913ad910565d275b8bf3', 13),
++    'src/utils.test.js': ('be0d7a44c1dff10278761dc83e8616dd4de35393168208dd0da5e723831e862a', 9),
++    'test/index.test.js': ('dd59ae93eed1f80e7aa1fd36ccaf2fe1eecf0f06d947fe8f557c4f6f886ebcba', 729),
++    'test/operations.test.js': ('d33861f110119da7d52ecc27a6f11fd58eaa28d922eb07014d50366f71f7b874', 29),
++    'test/parse-operations.test.js': ('c64ac302b6375c7abf994f2b17699922bb950eeac9058580348159c37155d09a', 18),
++}
++# Preserve the already declared compatibility exceptions; do not weaken assertions.
++UPSTREAM_EXCEPTIONS = {
++    'typed array with non-ArrayBuffer input': 'F2P-SAFETY-VIEW',
++    'ArrayBuffer with non-string value': 'F2P-SAFETY-BUFFER',
++    'prototype pollution': 'F2P-SAFETY-PROTO',
++    'prototype pollution via null-prototype object': 'F2P-SAFETY-NULL-PROTO',
++    'nested prototype pollution via null-prototype object': 'F2P-SAFETY-NESTED-PROTO',
++    'TypedArray self-reference': 'F2P-SAFETY-VIEW-SELF',
++    'mutual TypedArray reference': 'F2P-SAFETY-VIEW',
++}
++UPSTREAM_SELECTION_SHA256 = '27037e37b37fda79f8afeefe0e4a61f2a543b1847fb4fddfba7bd4d94ebe9ec1'
++UVU_ENGINE_SHA256 = 'dde0c5b1ef6ef2f49dc85de12882021b9b15a45e65452aff17e50d70a4fe17f8'
++
++import os
++import re
++import tempfile
++from urllib.parse import quote
++
++
++def upstream_id(nodeid):
++    """Stable ID binds source, suite, test name and duplicate-name occurrence."""
++    readable = re.sub(r'[^A-Za-z0-9]+', '_', nodeid).strip('_').lower()[:160]
++    return 'unit_js_' + readable + '_' + hashlib.sha256(nodeid.encode()).hexdigest()[:10]
++
++
++def upstream_nodeid(source, row):
++    return source + '::' + quote(row['suite'], safe='') + '::' + quote(row['name'], safe='') + '::' + str(row['occurrence'])
++
++
++def load_upstream_selection():
++    selection = Path(os.environ.get('UPSTREAM_SELECTION', '/tests/verifier/p2p_select.txt'))
++    data = selection.read_bytes()
++    if hashlib.sha256(data).hexdigest() != UPSTREAM_SELECTION_SHA256:
++        raise ValueError('P2P selection digest mismatch')
++    nodes = data.decode('utf-8').splitlines()
++    if len(nodes) != 798 or len(set(nodes)) != 798:
++        raise ValueError('P2P selection must have 798 distinct nodes')
++    if any(n.split('::')[0] not in UPSTREAM_FILES or len(n.split('::')) != 4 for n in nodes):
++        raise ValueError('Invalid P2P selection node')
++    return nodes
++
++
++def instrument_uvu(source):
++    """Add result recording to the pinned native runner; keep native assertions/hooks."""
++    records = """
++import fs from 'node:fs';
++const __rows = [];
++const __stringify = JSON.stringify.bind(JSON);
++const __write = fs.writeFileSync.bind(fs);
++const __report = process.env.UVU_RECORDS;
++const __counts = new Map();
++const into = (ctx, key) => (name, handler) => {
++    const suite = String(ctx.state.__suite__ || '');
++    const label = String(name);
++    const keyName = __stringify([suite, label]);
++    const occurrence = __counts.get(keyName) || 0;
++    __counts.set(keyName, occurrence + 1);
++    const record = {suite, name: label, occurrence, status: 'not_run', duration_ms: 0};
++    __rows.push(record);
++    ctx[key].push({name, handler, __record: record});
++};
++"""
++    changes = [
++        ('const into = (ctx, key) => (name, handler) => ctx[key].push({ name, handler });', records),
++        ('state.__test__ = test.name;', 'state.__test__ = test.name;\n            const __start = Date.now();'),
++        ('write(PASS);', "test.__record.status = 'passed';\n                test.__record.duration_ms = Date.now() - __start;\n                write(PASS);"),
++        ('} catch (err) {', """} catch (err) {
++                test.__record.status = 'failed';
++                test.__record.duration_ms = Date.now() - __start;
++                test.__record.message = String(err && (err.stack || err.message || err));"""),
++        ('if (isNode) process.exitCode = code;', """__write(__report, __stringify({
++        schema_version: 'uvu-node-results/v1', complete: true,
++        total, passed: done, skipped: skips, tests: __rows
++    }));
++    if (isNode) process.exitCode = code;"""),
++    ]
++    for old, new in changes:
++        if source.count(old) != 1:
++            raise ValueError('Pinned uvu instrumentation anchor changed: ' + old)
++        source = source.replace(old, new, 1)
++    return source
++
++
++def _frozen(relative, expected_hash):
++    result = subprocess.run(['git', 'show', f'{UPSTREAM_BASE}:{relative}'],
++                            cwd=ROOT, capture_output=True, timeout=20)
++    if result.returncode or hashlib.sha256(result.stdout).hexdigest() != expected_hash:
++        raise RuntimeError('Frozen upstream source unavailable/mismatched: ' + relative)
++    return result.stdout
++
++
++def run_upstream_file(relative, expected_nodes=None):
++    """Execute one frozen source ONCE and return individual uvu results."""
++    logs = Path(os.environ['UPSTREAM_REPORT_DIR'])
++    logs.mkdir(parents=True, exist_ok=True)
++    label = relative.replace('/', '__')
++    audit = {'source': relative, 'base_commit': UPSTREAM_BASE, 'tests': [],
++             'excluded_legacy_assertions': UPSTREAM_EXCEPTIONS if relative == 'test/index.test.js' else {}}
++    try:
++        original_hash, expected_total = UPSTREAM_FILES[relative]
++        original = _frozen(relative, original_hash)
++        selected = original.decode('utf-8')
++        if relative == 'test/index.test.js':
++            marker = 'for (const { name, json, message, revivers } of invalid) {'
++            if selected.count(marker) != 1 or not all(
++                selected.count("name: '" + name + "'") == 1 for name in UPSTREAM_EXCEPTIONS
++            ):
++                raise ValueError('Upstream exception-selection anchor changed')
++            selected = selected.replace(marker, marker + '\n\tif (' + json.dumps(list(UPSTREAM_EXCEPTIONS)) + '.includes(name)) continue;')
++        audit.update(source_sha256=original_hash, selected_sha256=hashlib.sha256(selected.encode()).hexdigest())
++        with tempfile.TemporaryDirectory(prefix='devalue-upstream-nodes-') as temporary:
++            workspace = Path(temporary)
++            runtime_hashes = {}
++            # Candidate tests/scripts are never used as evaluation sources.
++            for source in [ROOT/'index.js', *(ROOT/'src').rglob('*')]:
++                if source.is_symlink():
++                    raise ValueError('Symlink in candidate runtime: ' + str(source))
++                if not source.is_file() or source.name.endswith('.test.js'):
++                    continue
++                name = source.relative_to(ROOT)
++                target = workspace/name
++                target.parent.mkdir(parents=True, exist_ok=True)
++                data = source.read_bytes()
++                target.write_bytes(data)
++                runtime_hashes[str(name)] = hashlib.sha256(data).hexdigest()
++            audit['runtime_files'] = runtime_hashes
++            (workspace/'package.json').write_bytes(_frozen(
++                'package.json', '32cde197ba35df8206712c972e3e0cfb225465d1a21d757c5d130aa4aa7e1204'))
++            if not (ROOT/'node_modules').is_dir():
++                raise RuntimeError('Preinstalled upstream dependencies missing')
++            (workspace/'node_modules').symlink_to(ROOT/'node_modules', target_is_directory=True)
++            env = dict(os.environ, FORCE_COLOR='0', NO_COLOR='1')
++            env.pop('NODE_OPTIONS', None)
++            probe = subprocess.run(['node', '-e', """
++                const {createRequire} = require('module');
++                const uvu = require.resolve('uvu');
++                const r = createRequire(uvu);
++                console.log(JSON.stringify({uvu, kleur:r.resolve('kleur'), diff:r.resolve('uvu/diff')}));
++                """], cwd=workspace, env=env, capture_output=True, text=True, timeout=20)
++            if probe.returncode:
++                raise RuntimeError('Cannot resolve trusted uvu dependencies: ' + probe.stderr)
++            paths = json.loads(probe.stdout)
++            engine = Path(paths['uvu']).with_name('index.mjs').read_bytes()
++            if hashlib.sha256(engine).hexdigest() != UVU_ENGINE_SHA256:
++                raise ValueError('Upstream runner must be the pinned uvu 0.5.6 engine')
++            engine_source = instrument_uvu(engine.decode())
++            engine_source = engine_source.replace("from 'kleur'", 'from ' + json.dumps(Path(paths['kleur']).as_uri()))
++            engine_source = engine_source.replace("from 'uvu/diff'", 'from ' + json.dumps(Path(paths['diff']).as_uri()))
++            engine_path = workspace/'__trusted_uvu.mjs'
++            engine_path.write_text(engine_source)
++            # Only redirect the runner import; the upstream assertion bodies stay untouched.
++            engine_url = json.dumps(engine_path.as_uri())
++            if "from 'uvu'" not in selected:
++                raise ValueError('Missing upstream uvu import')
++            selected = selected.replace("from 'uvu'", 'from ' + engine_url)
++            target = workspace/relative
++            target.parent.mkdir(parents=True, exist_ok=True)
++            target.write_text(selected)
++            launcher = workspace/'__launch.mjs'
++            launcher.write_text("""
++                globalThis.UVU_DEFER = true;
++                globalThis.UVU_QUEUE = [[null]];
++                await import(process.argv[2]);
++                const engine = await import(process.argv[3]);
++                await engine.exec();
++            """)
++            record_path = workspace/'__records.json'
++            env['UVU_RECORDS'] = str(record_path)
++            argv = ['node', str(launcher), target.as_uri(), engine_path.as_uri()]
++            completed = subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True, timeout=90)
++            (logs/(label+'.log')).write_text(completed.stdout+completed.stderr)
++            audit.update(command=argv, returncode=completed.returncode, log=label+'.log')
++            if not record_path.is_file():
++                raise RuntimeError('Runner did not finish/report every case')
++            payload = json.loads(record_path.read_text())
++            rows = payload.get('tests', [])
++            nodeids = [upstream_nodeid(relative, row) for row in rows]
++            # Missing, duplicated, skipped or unexpected cases are never accepted as passes.
++            if (payload.get('schema_version') != 'uvu-node-results/v1'
++                    or payload.get('complete') is not True or payload.get('total') != expected_total
++                    or payload.get('skipped') != 0 or len(rows) != expected_total
++                    or len(set(nodeids)) != expected_total):
++                raise ValueError('Invalid/partial/duplicate uvu result set')
++            if expected_nodes is not None and nodeids != expected_nodes:
++                raise ValueError('Observed upstream cases differ from frozen selection')
++            passed = sum(row.get('status') == 'passed' for row in rows)
++            if payload.get('passed') != passed or any(row.get('status') not in ('passed', 'failed') for row in rows):
++                raise ValueError('Uvu summary and per-case outcomes disagree')
++            if completed.returncode != (0 if passed == expected_total else 1):
++                raise ValueError('Uvu process status disagrees with per-case results')
++            for nodeid, row in zip(nodeids, rows):
++                row.update(nodeid=nodeid, id=upstream_id(nodeid), source=relative)
++            audit.update(tests=rows, passed=passed, total=len(rows),
++                         status='PASS' if passed == len(rows) else 'FAIL')
++    except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.SubprocessError) as exc:
++        audit.update(status='INFRA_ERROR', error=type(exc).__name__ + ': ' + str(exc))
++    (logs/(label+'.json')).write_text(json.dumps(audit, ensure_ascii=True, indent=2)+'\n')
++    return audit
++
++
++@pytest.fixture(scope='session')
++def upstream_batches():
++    # A cache keeps 798 pytest items to five uvu file executions, not 798 processes.
++    return {}
++
++
++@pytest.mark.parametrize('upstream_node', load_upstream_selection(), ids=upstream_id)
++def test_upstream_case(upstream_node, upstream_batches):
++    source = upstream_node.split('::')[0]
++    if source not in upstream_batches:
++        nodes = [n for n in load_upstream_selection() if n.split('::')[0] == source]
++        upstream_batches[source] = run_upstream_file(source, nodes)
++    batch = upstream_batches[source]
++    if batch['status'] == 'INFRA_ERROR':
++        pytest.fail('INFRA_ERROR: ' + batch.get('error', 'upstream batch unavailable'))
++    rows = [row for row in batch['tests'] if row['nodeid'] == upstream_node]
++    if len(rows) != 1:
++        pytest.fail('INFRA_ERROR: missing/duplicated upstream node: ' + upstream_node)
++    row = rows[0]
++    assert row['status'] == 'passed', row.get('message', 'Upstream test failed: ' + upstream_node)

@@ -1,0 +1,11 @@
+--- a/internal/web/auth.go
++++ b/internal/web/auth.go
+@@ -69,7 +69,7 @@
+ 		return false, time.Time{}
+ 	}
+ 	newExp := now.Add(sessionTTL)
+-	s.sessions[sid] = newExp
++	s.sessions[sid] = exp
+ 	return true, newExp
+ }
+ 

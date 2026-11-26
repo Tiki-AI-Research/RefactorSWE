@@ -1,0 +1,62 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts"]
+
+[task]
+name = "tikiai/pdoc-jinja-environment-config"
+description = "Pass Jinja rendering configuration explicitly so each pdoc server instance uses its own settings."
+authors = []
+keywords = []
+
+[metadata]
+task_id = "pdoc-pdoc-render-py-jin-14f11e26"
+repository_url = "https://github.com/mitmproxy/pdoc"
+base_commit_hash = "00e18eb12ae2f06f3c245f796bfe7f6224db033a"
+display_title = "Per-instance Jinja rendering configuration"
+category = "state_data"
+language = "Python"
+
+[tests]
+fail_to_pass_count = 27
+pass_to_pass_count = 417
+
+[scoring]
+reward_mode = "VERIFIER_ONLY"
+reward_policy = "deterministic_verifier_only"
+
+[verifier]
+user = "root"
+network_mode = "public"
+environment_mode = "separate"
+timeout_sec = 1800.0
+
+[verifier.environment]
+docker_image = "docker.io/tikiaiteam/refactor:pdoc-jinja-environment-config-verifier-image-20261125"
+image_digest = "sha256:68a845496551fa97795fefabf9f6e76878a84acf2a0d9fae43747af2c5de5a4f"
+network_mode = "public"
+build_timeout_sec = 3600.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "set -eu\nmkdir -p /logs/artifacts\nrm -f /logs/artifacts/model.patch\ncollect_tmp=$(mktemp -d /logs/artifacts/.collect.XXXXXX)\ntrap 'rm -rf \"$collect_tmp\"' EXIT\nexport GIT_INDEX_FILE=\"$collect_tmp/index\"\ngit -C /workspace/repo rev-parse --verify '00e18eb12ae2f06f3c245f796bfe7f6224db033a^{commit}' >/dev/null\ngit -C /workspace/repo read-tree 00e18eb12ae2f06f3c245f796bfe7f6224db033a\ngit -C /workspace/repo add -A -- .\ngit -C /workspace/repo diff --cached --binary --full-index --no-ext-diff --no-textconv 00e18eb12ae2f06f3c245f796bfe7f6224db033a -- > \"$collect_tmp/model.patch\"\nmv \"$collect_tmp/model.patch\" /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+user = "agent"
+network_mode = "public"
+timeout_sec = 5400.0
+
+[environment]
+docker_image = "docker.io/tikiaiteam/refactor:pdoc-jinja-environment-config-task-image-20261125"
+image_digest = "sha256:deafbebe884140425faa94ccb42c9a584e9a9f6cc14951e0ee90eed40cad29c7"
+network_mode = "public"
+build_timeout_sec = 1800.0
+os = "linux"
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+
+[verifier.env]
+
+[solution.env]
