@@ -1,6 +1,6 @@
 # RefactorSWE
 
-40 repository refactoring tasks that test whether coding agents can reorganize a codebase while preserving the behavior its callers depend on.
+RefactorSWE is a benchmark for measuring how well coding agents refactor code while preserving existing behavior. It includes 40 tasks from 35 open-source repositories across Python, Go, TypeScript, and JavaScript.
 
 [Run tasks](#quick-start) · [Directory structure](#directory-structure) · [Leaderboard](#2-leaderboard) · [Task design](#3-task-design) · [Evaluation method](#4-evaluation-method) · [Results by task](#6-results-by-task) · [Error analysis](#7-error-analysis) · [Full report](https://tikiai.co/benchmarks/refactor-swe)
 
