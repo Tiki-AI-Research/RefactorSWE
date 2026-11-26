@@ -11,6 +11,7 @@ import json
 import math
 import pathlib
 import re
+import runpy
 import signal
 import shutil
 import subprocess
@@ -72,6 +73,11 @@ def preflight(task, selected):
             config.get("base_commit") == manifest["task"]["base_commit"], "Task identity/base mismatch")
     require(config.get("reward_mode") == "VERIFIER_ONLY", "Runner supports deterministic VERIFIER_ONLY tasks")
     require(config.get("f2p") and config.get("p2p"), "Task selection sets missing")
+    parse_metadata = runpy.run_path(str(task / "tests/verifier/hardgate.py"))["parse_task_toml_metadata"]
+    p2p_count, f2p_count, base_commit, errors = parse_metadata(task / "task.toml")
+    require(not errors and (p2p_count, f2p_count) == (len(config["p2p"]), len(config["f2p"])),
+            "Root task.toml test counts differ from config.json")
+    require(base_commit == config["base_commit"], "Root task.toml base commit differs from config.json")
     nodes = config["p2p"] + config["f2p"]
     require(all(isinstance(n, str) for n in nodes) and len(nodes) == len(set(nodes)), "Invalid node selection")
     patches = manifest["patches"]
@@ -146,6 +152,20 @@ def evaluate(folder, config, process_rc):
     if (hard_gate.get("infrastructure_error") or verifier.get("status") in {"INFRA_ERROR", "INCONCLUSIVE"}):
         return {"formal_outcome": "ENV_ERROR", "reason": details.get("termination_reason", "Invalid evaluation")}
     if gate.get("hard_gate_success") != 1 or hard_gate.get("success", hard_gate.get("passed")) is not True:
+        if (hard_gate.get("short_circuit") == "p2p_gate_failed"
+                and details.get("evaluation_valid") is True
+                and details.get("status") == "candidate_failed"):
+            nodes = hard_gate["groups"]["P2P"]["nodes"]
+            require(set(nodes) == set(config["p2p"]), "Incomplete P2P inventory")
+            require(all(node["status"] in {"passed", "failed"} for node in nodes.values()),
+                    "Nonterminal P2P results")
+            failed = [name for name, node in nodes.items() if node["status"] == "failed"]
+            passed = len(nodes) - len(failed)
+            require(failed and passed == details.get("p2p_passed")
+                    and reward == details.get("reward") == -1, "Inconsistent P2P rejection")
+            return {"formal_outcome": "REJECTED", "reason": "P2P gate failed before F2P execution",
+                    "reward": reward, "p2p_passed": passed, "p2p_total": len(nodes),
+                    "failed_nodes": failed}
         return {"formal_outcome": "PRECONDITION_FAILED",
                 "reason": details.get("termination_reason", "Hard gate blocked target evaluation")}
     if (details.get("schema_version") != "deepswe-reward-details/v1"

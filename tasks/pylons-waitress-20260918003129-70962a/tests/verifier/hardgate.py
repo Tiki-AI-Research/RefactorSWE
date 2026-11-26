@@ -87,29 +87,6 @@ def normalize_nodeid(nodeid: str) -> str:
     return nodeid.replace("\\", "/")
 
 
-def find_task_toml(config_path: Path, repo_path: Path) -> Optional[Path]:
-    """Locate task.toml in the surrounding directory hierarchy."""
-    env_path = os.environ.get("DEEPSWE_TASK_TOML_PATH")
-    if env_path and Path(env_path).is_file():
-        return Path(env_path).resolve()
-
-    candidates = [
-        config_path.parent / "task.toml",
-        config_path.parent.parent / "task.toml",
-        repo_path.parent / "case" / "task.toml",
-        repo_path / "case" / "task.toml",
-        repo_path / "task.toml",
-        Path("/tests/task.toml"),
-        Path("/workspace/case/task.toml"),
-        Path("/workspace/task.toml"),
-        Path("/task.toml"),
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate.resolve()
-    return None
-
-
 def parse_task_toml_metadata(
     toml_path: Path,
 ) -> Tuple[Optional[int], Optional[int], Optional[str], List[str]]:
@@ -507,10 +484,6 @@ sys.exit(int(exit_code))
         env["PYTHONPATH"] = f"{src_path}{os.pathsep}{repo_path_str}{os.pathsep}{env.get('PYTHONPATH', '')}"
         env["DEEPSWE_CONFIG_PATH"] = str(config_path.resolve())
         env["DEEPSWE_REPO_PATH"] = str(repo_path.resolve())
-        toml_path = find_task_toml(config_path, repo_path)
-        if toml_path:
-            env["DEEPSWE_TASK_TOML_PATH"] = str(toml_path.resolve())
-
         target_arg = json.dumps(target_files) if target_files else json.dumps([])
 
         proc = subprocess.run(

@@ -1,16 +1,16 @@
 diff --git a/tests/test_hardgate_build.py b/tests/test_hardgate_build.py
 new file mode 100644
-index 0000000..082463e
+index 0000000..d7b2f93
 --- /dev/null
 +++ b/tests/test_hardgate_build.py
-@@ -0,0 +1,387 @@
+@@ -0,0 +1,302 @@
 +"""Atomic pytest leaf nodes for Hard Gate BUILD verification.
 +
 +Covers:
 +- config.json syntax, schema, and required top-level arrays
 +- node uniqueness and mutual disjointness across categories
-+- count synchronization between config.json and task.toml
-+- base commit consistency across config, task.toml, and git repository
++- frozen P2P and F2P inventory counts
++- base commit consistency between config.json and the checked-out repository
 +- runtime dependencies, AST parseability, and py_compile compilability
 +- presence and importability of core Waitress modules in clean subprocess
 +- clean patch applicability of test.patch and solution.patch
@@ -55,62 +55,6 @@ index 0000000..082463e
 +        if c.is_file():
 +            return c.resolve()
 +    raise FileNotFoundError(f"config.json not found across candidate search paths: {candidates}")
-+
-+
-+def _find_task_toml_path(config_path: Path, repo_root: Path) -> Path:
-+    env_toml = os.environ.get("DEEPSWE_TASK_TOML_PATH")
-+    if env_toml and Path(env_toml).is_file():
-+        return Path(env_toml).resolve()
-+
-+    candidates = [
-+        config_path.parent / "task.toml",
-+        config_path.parent.parent / "task.toml",
-+        repo_root.parent / "case" / "task.toml",
-+        repo_root / "case" / "task.toml",
-+        Path("/tests/task.toml"),
-+        Path("/workspace/case/task.toml"),
-+        Path("/workspace/task.toml"),
-+        Path("/task.toml"),
-+    ]
-+    for c in candidates:
-+        if c.is_file():
-+            return c.resolve()
-+    raise FileNotFoundError(f"task.toml not found across candidate paths: {candidates}")
-+
-+
-+def _parse_task_toml(toml_path: Path) -> dict[str, object]:
-+    content = toml_path.read_text(encoding="utf-8")
-+    try:
-+        import tomllib  # Python 3.11+
-+        return tomllib.loads(content)
-+    except ImportError:
-+        pass
-+    try:
-+        import tomli  # Fallback
-+        return tomli.loads(content)
-+    except ImportError:
-+        pass
-+    # Minimal fallback parser for tests table and base commit
-+    result: dict[str, object] = {"tests": {}, "metadata": {}}
-+    current_sec = ""
-+    for line in content.splitlines():
-+        line = line.strip()
-+        if not line or line.startswith("#"):
-+            continue
-+        if line.startswith("[") and line.endswith("]"):
-+            current_sec = line[1:-1].strip()
-+            continue
-+        if "=" in line:
-+            k, v = [x.strip() for x in line.split("=", 1)]
-+            v_clean = v.strip("\"'")
-+            if current_sec == "tests":
-+                try:
-+                    result["tests"][k] = int(v_clean)
-+                except ValueError:
-+                    result["tests"][k] = v_clean
-+            elif current_sec in ("metadata", "task"):
-+                result["metadata"][k] = v_clean
-+    return result
 +
 +
 +class TestBuildGate(unittest.TestCase):
@@ -182,44 +126,15 @@ index 0000000..082463e
 +            f"Total registered nodes across all 5 categories must be exactly 890, got {total_registered}",
 +        )
 +
-+    def test_task_toml_counts_match(self):
-+        """Verify pass_to_pass_count and fail_to_pass_count in task.toml match config.json."""
-+        toml_path = _find_task_toml_path(self.config_path, self.repo_root)
-+        toml_data = _parse_task_toml(toml_path)
-+        tests_data = toml_data.get("tests", {})
-+
-+        p2p_cnt = tests_data.get("pass_to_pass_count")
-+        f2p_cnt = tests_data.get("fail_to_pass_count")
-+
-+        expected_p2p = len(self.config.get("p2p", []))
-+        expected_f2p = len(self.config.get("f2p", []))
-+
-+        self.assertEqual(
-+            p2p_cnt,
-+            expected_p2p,
-+            f"task.toml pass_to_pass_count ({p2p_cnt}) must match config.json p2p count ({expected_p2p})",
-+        )
-+        self.assertEqual(
-+            f2p_cnt,
-+            expected_f2p,
-+            f"task.toml fail_to_pass_count ({f2p_cnt}) must match config.json f2p count ({expected_f2p})",
-+        )
++    def test_inventory_counts_match(self):
++        self.assertEqual(len(self.config["p2p"]), 748)
++        self.assertEqual(len(self.config["f2p"]), 35)
 +
 +    def test_base_commit_consistency(self):
-+        """Verify base_commit in config.json matches base_commit_hash in task.toml."""
-+        toml_path = _find_task_toml_path(self.config_path, self.repo_root)
-+        toml_data = _parse_task_toml(toml_path)
-+        meta = toml_data.get("metadata", {})
-+        toml_base = meta.get("base_commit_hash") or toml_data.get("task", {}).get("base_commit_hash")
-+
-+        cfg_base = self.config.get("base_commit", "").strip()
-+        self.assertTrue(bool(cfg_base), "config.json must have non-empty base_commit")
-+        if toml_base:
-+            self.assertEqual(
-+                cfg_base,
-+                str(toml_base).strip(),
-+                f"base_commit mismatch: config ({cfg_base}) vs task.toml ({toml_base})",
-+            )
++        head = subprocess.check_output(
++            ["git", "-C", str(self.repo_root), "rev-parse", "HEAD"], text=True
++        ).strip()
++        self.assertEqual(self.config["base_commit"], head)
 +
 +    def test_git_repo_and_base_commit_resolvable(self):
 +        """Verify git repository is valid and base_commit resolves to a commit object."""
